@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <!-- UI data layer (M14): the four views bind to this. Kestrel + Minimal API, no extra packages. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Partner.Api</RootNamespace>
+    <AssemblyName>partner-api</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />
+  </ItemGroup>
+</Project>

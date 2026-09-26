@@ -1,0 +1,552 @@
+using Partner.Core.Agent;
+using Partner.Core.Agent.Hooks;
+using Partner.Core.Agent.Llm;
+using Partner.Core.Agent.Tools;
+using Partner.Core.Contracts;
+using Partner.Core.Queue;
+using Partner.Core.Sessions;
+using Partner.Core.Tests.Sessions;
+
+namespace Partner.Core.Tests.Agent;
+
+internal sealed class FakeTool(string name, Func<string, CancellationToken, Task<ToolResult>>? impl = null) : ITool
+{
+    public ToolSpec Spec { get; } = new(name, $"fake tool {name}", "{\"type\":\"object\"}");
+
+    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
+        impl is null
+            ? Task.FromResult(new ToolResult(true, $"{name}({argumentsJson})"))
+            : impl(argumentsJson, ct);
+}
+
+internal sealed class RecordingHook(
+    AgentPhase phase,
+    string name,
+    List<string> log,
+    Func<HookContext, HookOutcome>? decide = null,
+    int priority = 100) : IAgentHook
+{
+    public AgentPhase Phase => phase;
+
+    public string Name => name;
+
+    public int Priority => priority;
+
+    public IReadOnlyList<string> Before => Array.Empty<string>();
+
+    public IReadOnlyList<string> After => Array.Empty<string>();
+
+    public ValueTask<HookOutcome> RunAsync(HookContext ctx, CancellationToken ct)
+    {
+        log.Add(name);
+        return ValueTask.FromResult(decide?.Invoke(ctx) ?? HookOutcome.Continue);
+    }
+}
+
+internal sealed class BlockingLlmClient : ILlmClient
+{
+    public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+        throw new InvalidOperationException("unreachable");
+    }
+}
+
+internal sealed class ThrowingLlmClient(string message) : ILlmClient
+{
+    public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
+        throw new InvalidOperationException(message);
+}
+
+/// <summary>Acceptance tests for the turn runner (design doc §2.9.8).</summary>
+public sealed class AgentTurnRunnerTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-tests", Guid.NewGuid().ToString("n"));
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_dir))
+        {
+            Directory.Delete(_dir, recursive: true);
+        }
+    }
+
+    private static InputItem Claimed(string payload = "hello", InputSource source = InputSource.Text) => new()
+    {
+        ItemId = "item-1",
+        Seq = 1,
+        Status = InputItemStatus.Running,
+        Source = source,
+        Payload = payload,
+        IdempotencyKey = "text:client:1",
+    };
+
+    private static LlmResponse Say(string text, string finish = "stop") =>
+        new(text, Array.Empty<LlmToolCall>(), finish);
+
+    private static LlmResponse Call(string id, string name, string args = "{}") =>
+        new(null, new[] { new LlmToolCall(id, name, args) }, "tool_calls");
+
+    private async Task<List<SessionEvent>> RawAsync(ISessionStore store)
+    {
+        var events = new List<SessionEvent>();
+        await foreach (var e in store.ReadAllAsync())
+        {
+            events.Add(e);
+        }
+
+        return events;
+    }
+
+    private AgentTurnRunner Build(
+        ISessionStore session,
+        ILlmClient llm,
+        IToolRegistry? tools = null,
+        IToolGovernance? governance = null,
+        IApprovalHandler? approval = null,
+        HookRegistry? hooks = null,
+        AgentTurnOptions? options = null,
+        IContextAssembler? assembler = null) =>
+        new(
+            session,
+            llm,
+            tools ?? new InMemoryToolRegistry(),
+            governance ?? new AllowListGovernance(Array.Empty<string>()),
+            approval ?? new DenyAllApprovalHandler(),
+            hooks ?? new HookRegistry(),
+            assembler,
+            options);
+
+    [Fact]
+    public async Task Turn_writes_events_in_the_documented_order()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say("hi there") }));
+
+            var result = await runner.RunAsync(Claimed());
+
+            var kinds = (await RawAsync(store)).Select(e => e.Kind).ToArray();
+            Assert.Equal(
+                new[]
+                {
+                    SessionEventKind.TurnStart,
+                    SessionEventKind.StepStart,
+                    SessionEventKind.User,
+                    SessionEventKind.Assistant,
+                    SessionEventKind.StepEnd,
+                    SessionEventKind.TurnEnd,
+                },
+                kinds);
+
+            Assert.Equal(TurnEndReason.Completed, result.Reason);
+            Assert.Equal(1, result.Steps);
+            Assert.Equal(1, result.AssistantMessages);
+
+            var end = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.TurnEnd);
+            Assert.Equal(TurnEndReason.Completed, end.Meta!["reason"]);
+        }
+    }
+
+    [Fact]
+    public async Task Turn_requires_a_claimed_running_item()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say("x") }));
+
+            var queued = new InputItem
+            {
+                ItemId = "item-1",
+                Seq = 1,
+                Status = InputItemStatus.Queued,
+                Source = InputSource.Text,
+                Payload = "hello",
+                IdempotencyKey = "text:client:1",
+            };
+            await Assert.ThrowsAsync<InvalidOperationException>(() => runner.RunAsync(queued));
+        }
+    }
+
+    [Fact]
+    public async Task Tool_results_commit_in_model_order_not_completion_order()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            // "slow" is dispatched first but finishes last.
+            tools.Register(new FakeTool("slow", async (_, ct) =>
+            {
+                await Task.Delay(80, ct);
+                return new ToolResult(true, "slow-done");
+            }));
+            tools.Register(new FakeTool("fast", (_, _) => Task.FromResult(new ToolResult(true, "fast-done"))));
+
+            var llm = new ScriptedLlmClient(new[]
+            {
+                new LlmResponse(null, new[] { new LlmToolCall("c1", "slow", "{}"), new LlmToolCall("c2", "fast", "{}") }, "tool_calls"),
+                Say("all done"),
+            });
+
+            var runner = Build(store, llm, tools, new AllowListGovernance(new[] { "slow", "fast" }));
+            await runner.RunAsync(Claimed());
+
+            var events = await RawAsync(store);
+            Assert.Equal(new[] { "slow", "fast" }, events.Where(e => e.Kind == SessionEventKind.ToolCall).Select(e => e.Body));
+            Assert.Equal(new[] { "slow-done", "fast-done" },
+                events.Where(e => e.Kind == SessionEventKind.ToolResult).Select(e => e.Body));
+
+            // The second request must carry the tool results in model order too.
+            var second = llm.Requests[1];
+            var toolMessages = second.Messages.Where(m => m.Role == "tool").Select(m => m.Content).ToArray();
+            Assert.Equal(new[] { "slow-done", "fast-done" }, toolMessages);
+        }
+    }
+
+    [Fact]
+    public async Task Tool_failure_is_fed_back_and_the_turn_continues()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("boom", (_, _) => throw new InvalidOperationException("kaboom")));
+
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "boom"), Say("recovered") });
+            var runner = Build(store, llm, tools, new AllowListGovernance(new[] { "boom" }));
+
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.Equal(TurnEndReason.Completed, result.Reason);
+            Assert.Equal(2, result.Steps);
+
+            var events = await RawAsync(store);
+            var toolResult = events.Single(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal("false", toolResult.Meta!["ok"]);
+            Assert.Contains("kaboom", toolResult.Body);
+
+            var fedBack = llm.Requests[1].Messages.Single(m => m.Role == "tool");
+            Assert.Contains("kaboom", fedBack.Content);
+        }
+    }
+
+    [Fact]
+    public async Task Tool_timeout_is_reported_as_a_result()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("hang", async (_, ct) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return new ToolResult(true, "never");
+            }));
+
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "hang"), Say("ok") });
+            var runner = Build(store, llm, tools, new AllowListGovernance(new[] { "hang" }),
+                options: new AgentTurnOptions { ToolTimeout = TimeSpan.FromMilliseconds(40) });
+
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.Equal(TurnEndReason.Completed, result.Reason);
+            var toolResult = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal("false", toolResult.Meta!["ok"]);
+            Assert.Contains("timeout", toolResult.Body);
+        }
+    }
+
+    [Fact]
+    public async Task Denied_tool_is_a_result_not_an_exception()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("secret"));
+
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "secret"), Say("ok") });
+            // Fail-closed governance: nothing is allowed.
+            var runner = Build(store, llm, tools, new AllowListGovernance(Array.Empty<string>()));
+
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.Equal(TurnEndReason.Completed, result.Reason);
+            var toolResult = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal("false", toolResult.Meta!["ok"]);
+            Assert.Contains("denied", toolResult.Body);
+        }
+    }
+
+    [Fact]
+    public async Task Ask_without_approval_is_denied()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("maybe"));
+
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "maybe"), Say("ok") });
+            var runner = Build(store, llm, tools, new AllowListGovernance(Array.Empty<string>(), new[] { "maybe" }));
+
+            await runner.RunAsync(Claimed());
+
+            var toolResult = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal("false", toolResult.Meta!["ok"]);
+            Assert.Contains("approval denied", toolResult.Body);
+        }
+    }
+
+    [Fact]
+    public async Task Unknown_tool_is_a_result()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "ghost"), Say("ok") });
+            var runner = Build(store, llm, governance: new AllowListGovernance(new[] { "ghost" }));
+
+            await runner.RunAsync(Claimed());
+
+            var toolResult = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Contains("unknown tool", toolResult.Body);
+        }
+    }
+
+    [Fact]
+    public async Task Hooks_run_in_phase_order_and_finally_always_runs()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var log = new List<string>();
+            var hooks = new HookRegistry();
+            hooks.Register(new RecordingHook(AgentPhase.PreDispatch, "pre-dispatch", log));
+            hooks.Register(new RecordingHook(AgentPhase.PostDispatch, "post-dispatch", log));
+            hooks.Register(new RecordingHook(AgentPhase.PreAgentBuild, "pre-build", log));
+            hooks.Register(new RecordingHook(AgentPhase.PostAgentBuild, "post-build", log));
+            hooks.Register(new RecordingHook(AgentPhase.PreExecute, "pre-execute", log));
+            hooks.Register(new RecordingHook(AgentPhase.PostResponse, "post-response", log));
+            hooks.Register(new RecordingHook(AgentPhase.Finally, "finally", log));
+
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say("done") }), hooks: hooks);
+            await runner.RunAsync(Claimed());
+
+            Assert.Equal(
+                new[] { "pre-dispatch", "post-dispatch", "pre-build", "post-build", "pre-execute", "post-response", "finally" },
+                log);
+        }
+    }
+
+    [Fact]
+    public async Task Injected_prompts_reach_the_system_message_and_the_session()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var log = new List<string>();
+            var hooks = new HookRegistry();
+            hooks.Register(new RecordingHook(AgentPhase.PreExecute, "inject", log, ctx =>
+            {
+                ctx.Inject("voice style: be brief", 10);
+                return HookOutcome.Continue;
+            }));
+
+            var llm = new ScriptedLlmClient(new[] { Say("ok") });
+            var runner = Build(store, llm, hooks: hooks);
+            await runner.RunAsync(Claimed());
+
+            Assert.Contains("voice style: be brief", llm.Requests[0].Messages[0].Content);
+
+            var system = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.System);
+            Assert.Contains("voice style: be brief", system.Body);
+        }
+    }
+
+    [Fact]
+    public async Task ShortCircuit_skips_the_agent_entirely()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var log = new List<string>();
+            var hooks = new HookRegistry();
+            hooks.Register(new RecordingHook(AgentPhase.PreExecute, "stop-here", log, _ => HookOutcome.ShortCircuit));
+
+            var llm = new ScriptedLlmClient(Array.Empty<LlmResponse>());
+            var runner = Build(store, llm, hooks: hooks);
+
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.Equal(TurnEndReason.Completed, result.Reason);
+            Assert.Empty(llm.Requests);
+            Assert.Equal(0, result.Steps);
+
+            var events = await RawAsync(store);
+            Assert.DoesNotContain(events, e => e.Kind == SessionEventKind.Assistant);
+            Assert.Equal("short-circuit", events.Single(e => e.Kind == SessionEventKind.TurnEnd).Meta!["detail"]);
+        }
+    }
+
+    [Fact]
+    public async Task SkipAgent_is_sticky_and_skips_the_agent_steps()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var log = new List<string>();
+            var hooks = new HookRegistry();
+            hooks.Register(new RecordingHook(AgentPhase.PreDispatch, "skip", log, _ => HookOutcome.SkipAgent));
+            hooks.Register(new RecordingHook(AgentPhase.PreExecute, "after-skip", log));
+
+            var llm = new ScriptedLlmClient(Array.Empty<LlmResponse>());
+            var runner = Build(store, llm, hooks: hooks);
+
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.True(hooks.SkipAgent);
+            Assert.Contains("after-skip", log); // sticky does not block later hooks
+            Assert.Equal(0, result.Steps);
+            Assert.Equal("skip-agent", (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.TurnEnd).Meta!["detail"]);
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_records_aborted_and_runs_error_and_finally_hooks()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var log = new List<string>();
+            var hooks = new HookRegistry();
+            hooks.Register(new RecordingHook(AgentPhase.OnError, "on-error", log));
+            hooks.Register(new RecordingHook(AgentPhase.Finally, "finally", log));
+
+            var runner = Build(store, new BlockingLlmClient(), hooks: hooks);
+
+            using var cts = new CancellationTokenSource();
+            var turn = runner.RunAsync(Claimed(), cts.Token);
+            await Task.Delay(60);
+            await cts.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => turn);
+
+            var events = await RawAsync(store);
+            var end = events.Single(e => e.Kind == SessionEventKind.TurnEnd);
+            Assert.Equal(TurnEndReason.Aborted, end.Meta!["reason"]);
+            Assert.Contains("finally", log);
+        }
+    }
+
+    [Fact]
+    public async Task Exception_records_error_content_and_turn_end_error()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var log = new List<string>();
+            var hooks = new HookRegistry();
+            hooks.Register(new RecordingHook(AgentPhase.OnError, "on-error", log, ctx =>
+            {
+                ctx.Extras["seen-error"] = ctx.Error ?? "(none)";
+                return HookOutcome.Continue;
+            }));
+            hooks.Register(new RecordingHook(AgentPhase.Finally, "finally", log));
+
+            var runner = Build(store, new ThrowingLlmClient("model exploded"), hooks: hooks);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => runner.RunAsync(Claimed()));
+            Assert.Equal("model exploded", ex.Message);
+
+            var events = await RawAsync(store);
+            Assert.Contains(events, e => e.Kind == SessionEventKind.System && e.Body.Contains("model exploded"));
+            Assert.Equal(TurnEndReason.Error, events.Single(e => e.Kind == SessionEventKind.TurnEnd).Meta!["reason"]);
+            Assert.Equal(new[] { "on-error", "finally" }, log);
+        }
+    }
+
+    [Fact]
+    public async Task Step_limit_is_recorded_as_budget_exhaustion()
+    {
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("tick"));
+
+            // Always asks for another tool call: the turn can only end on the step budget.
+            var llm = new ScriptedLlmClient(new[]
+            {
+                Call("c1", "tick"), Call("c2", "tick"), Call("c3", "tick"),
+            });
+
+            var runner = Build(store, llm, tools, new AllowListGovernance(new[] { "tick" }),
+                options: new AgentTurnOptions { MaxSteps = 2 });
+
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.Equal(TurnEndReason.MaxTokens, result.Reason);
+            Assert.Equal(2, result.Steps);
+
+            var end = (await RawAsync(store)).Single(e => e.Kind == SessionEventKind.TurnEnd);
+            Assert.Equal("step-limit", end.Meta!["detail"]);
+        }
+    }
+
+    [Fact]
+    public async Task Flush_failure_surfaces_and_the_turn_is_not_marked_successful()
+    {
+        // Buffered store: appends alone are not durable, so the runner's own end-of-turn barrier is what
+        // must fail loudly (design doc §2.9.7).
+        var sink = new FakeSink();
+        var store = new JsonlSessionStore(sink, flushOnAppend: false);
+        await using (store)
+        {
+            sink.FailNextFlush();
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say("hi") }));
+
+            await Assert.ThrowsAsync<IOException>(() => runner.RunAsync(Claimed()));
+            Assert.True(store.Faulted);
+        }
+    }
+
+    [Fact]
+    public async Task Per_append_flush_failure_also_surfaces()
+    {
+        var sink = new FakeSink();
+        var store = new JsonlSessionStore(sink, flushOnAppend: true);
+        await using (store)
+        {
+            sink.FailNextFlush();
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say("hi") }));
+
+            await Assert.ThrowsAsync<IOException>(() => runner.RunAsync(Claimed()));
+            Assert.True(store.Faulted);
+        }
+    }
+
+    [Fact]
+    public async Task Buffered_mode_turn_is_durable_only_after_the_turn_completes()
+    {
+        var sink = new FakeSink();
+        var store = new JsonlSessionStore(sink, flushOnAppend: false);
+        await using (store)
+        {
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say("hi") }));
+            var result = await runner.RunAsync(Claimed());
+
+            Assert.Equal(TurnEndReason.Completed, result.Reason);
+            Assert.Equal(0, store.Faulted ? 1 : 0); // not faulted
+
+            // Everything the turn wrote is durable once it returned.
+            var durable = sink.ReadLines().Count;
+            Assert.True(durable >= 6, $"expected >= 6 durable records, got {durable}");
+        }
+    }
+
+    private (JsonlSessionStore Store, long Repaired) SessionStore() => JsonlSessionStore.Open(_dir);
+}

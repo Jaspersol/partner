@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Partner.McpTestServer</RootNamespace>
+    <AssemblyName>Partner.McpTestServer</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+</Project>

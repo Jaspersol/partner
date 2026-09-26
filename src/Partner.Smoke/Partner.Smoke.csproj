@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- The smoke harness exercises the real desktop layer, so it targets Windows like M9 does. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RootNamespace>Partner.Smoke</RootNamespace>
+    <AssemblyName>partner-smoke</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />
+    <ProjectReference Include="../Partner.Desktop/Partner.Desktop.csproj" />
+    <ProjectReference Include="../Partner.Voice/Partner.Voice.csproj" />
+    <ProjectReference Include="../Partner.Game/Partner.Game.csproj" />
+    <ProjectReference Include="../Partner.Api/Partner.Api.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

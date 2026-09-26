@@ -1,0 +1,12 @@
+# Normalise line endings on commit; the working tree keeps whatever the platform uses.
+* text=auto
+
+# Visual Studio rewrites .sln with CRLF and would otherwise show a whole-file diff.
+*.sln text eol=crlf
+*.csproj text eol=crlf
+
+# Binary assets must never be normalised.
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary

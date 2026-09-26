@@ -1,0 +1,798 @@
+{
+  "capabilities": [
+    {
+      "id": "session.append_only_log",
+      "owner": "M1",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "session log opens clean",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "session has 6 content events (3 user \u002B 3 assistant)",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "raw log keeps every event (edits included)",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "restart: session log still clean",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "restart: last seq preserved",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "restart: seq continues without reuse",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "session.editable_projection",
+      "owner": "M1",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "edit replaces the projected body",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "edit keeps the original body",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "edit is not rendered as its own content",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "revision count is 1",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "projection is rebuildable from the log",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "queue.single_fifo",
+      "owner": "M2",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "queue depth counts the three distinct items",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "running item is visible while executing",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "consumed in arrival order",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "queue drained",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "no running item after drain",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "queue.idempotent_restart",
+      "owner": "M2",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "duplicate idempotency key reuses the seq",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "restart: consumed idempotency key still dedupes",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "restart: new item gets a fresh seq",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "queue.crash_recovery",
+      "owner": "M2",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "crash recovery: interrupted item is re-queued",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "crash recovery: attempt counter advanced",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "agent.turn_state_machine",
+      "owner": "M3",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "turn: item is claimed before the turn",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "turn: completes with reason=completed",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "turn: two steps (tool then answer)",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "turn: event order matches the spec (assistant only when the step has text)",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "turn: projection shows the answer but not control events",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "agent.tool_loop",
+      "owner": "M3",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "turn: one tool call executed",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "agent.hook_phases",
+      "owner": "M3",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "turn: hook injection is recorded as a system event",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "skills.workspace_scan",
+      "owner": "M8",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "skills: workspace scan finds valid skills and warns about bad ones",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "skills.injection",
+      "owner": "M8",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "skills: injection reaches the model prompt",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "skills: injection is recorded in the session",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "scheduler.durable_delivery",
+      "owner": "M4",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "scheduler: task delivers one queue item",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "scheduler: item carries the (taskId, occurrenceAt) key",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "scheduler: task advances to the next occurrence",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "scheduler.receipt_dedup",
+      "owner": "M4",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "scheduler: restart does not re-deliver the same occurrence",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "scheduler.failure_retention",
+      "owner": "M4",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "scheduler: failed delivery keeps the obligation",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "scheduler: a failing task is not lost and recovers",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "scheduler.schedule_to_turn",
+      "owner": "M4",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "scheduler: scheduled item is claimable",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "scheduler: scheduled item runs as a turn",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "scheduler: session records the schedule turn",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "memory.recall_pipeline",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: recall finds the relevant record and not the noise",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "memory: recall is explainable",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "memory.offline_degradation",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: offline (no embeddings) still recalls",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "memory.privacy_delete",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: privacy delete purges, hides from search, then compacts",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "memory.promotion",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: promotion preserves content as an episodic copy",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "memory.injection_budget",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: injection respects the token budget",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "memory.scale_p99",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: 100000 records \u2014 retrieval P99 under 500ms",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "governance.policy_decisions",
+      "owner": "M6",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "governance: policy allows a listed tool",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "governance: explicit deny is refused",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "governance.fail_closed",
+      "owner": "M6",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "governance: unlisted tool is refused (fail-closed)",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "governance.target_param_rules",
+      "owner": "M6",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "governance: target parameter rules reject an out-of-scope target",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "governance.enforced_in_turn",
+      "owner": "M6",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "governance: denial is enforced inside a real turn",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "mcp.stdio_lifecycle",
+      "owner": "M7",
+      "level": "covered",
+      "evidence": [
+        {
+          "check": "mcp: test-double server is built",
+          "ran": false,
+          "passed": false
+        },
+        {
+          "check": "mcp: server starts and lists tools",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "mcp.tool_bridge",
+      "owner": "M7",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "mcp: tool call round-trips through the client",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "mcp.governed_turn",
+      "owner": "M7",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "mcp: mcp tool runs inside a governed turn",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.window_enumeration",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: window enumeration finds visible windows",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.gdi_capture",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: GDI capture returns pixels",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.post_action_verification",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: post-action verification measures rather than assuming",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.lease_gating",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: lease is issued per entity with a unique generation",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: action on an unknown entity is refused without injecting",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: an expired lease refuses the action without injecting",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.input_marshalling",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: input marshalling matches the Win32 contract",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.utterance_to_queue",
+      "owner": "M10",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: speech followed by silence produces one utterance",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: the utterance becomes a queue item with a boot-scoped key",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.asr_contract",
+      "owner": "M10",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: the ASR request carried a 16 kHz mono WAV",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.playback_gate",
+      "owner": "M10/M11",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: playback closed the gate",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: input during playback is discarded and reported",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: reopening the gate reports the discarded audio",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: gate reports its blockers while closed",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.output_ordering",
+      "owner": "M11",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: output speaks sentences in order, cleaned of markdown",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.threshold_guard",
+      "owner": "M10",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: a threshold at or below the noise floor is detected",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.failure_visibility",
+      "owner": "M10/M11",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: an unreachable ASR service is reported and produces no utterance",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: a dead TTS service fails visibly without stalling playback",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "voice.output_switch",
+      "owner": "M11",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: output disabled means no synthesis and no playback",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "game.process_adapter",
+      "owner": "M12",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "game: adapter attaches to a real game process and reads its state",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "game: the action outcome carries the post-action state",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "game: detaching stops the child process",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "game.reflex_loop",
+      "owner": "M12",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "game: a reflex behavior acts and the world changes",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "game: an async reflex behavior is not preempted mid-run",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "game.sensor_debounce",
+      "owner": "M12",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "game: sensor chatter debounces while action signals never do",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "game.latency_monitor",
+      "owner": "M12",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "game: latency is measured, not assumed",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "ui.auth",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: an unauthenticated request is rejected on every endpoint",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "ui: a wrong token is rejected and the right one is accepted",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "ui.session_view",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: session view shows the edit, keeps the original, and re-runs nothing",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "ui.memory_view",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: memory edit records the actor and the revision",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "ui: memory delete removes it from search and from the list",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "ui.queue_view",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: queue view shows state and honours cancel",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "ui.settings",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: settings round-trip through the API",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "ui.projection_rebuild",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: rebuilding projections reproduces the same session view",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "checksFailed": 0
+}

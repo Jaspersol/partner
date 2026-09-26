@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Partner",
+  "version": "0.1.0",
+  "identifier": "dev.partner.shell",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; connect-src http://127.0.0.1:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../src/Partner.Api/bin/Release/net8.0/win-x64/publish": "api/"
+    }
+  }
+}

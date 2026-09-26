@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Partner.Core</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Memory layer (M5): SQLite + FTS5. The only third-party runtime dependency so far. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+</Project>

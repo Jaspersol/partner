@@ -1,0 +1,25 @@
+[package]
+name = "partner-shell"
+version = "0.1.0"
+description = "Desktop shell for the Partner runtime: hosts the Vue UI and owns the API sidecar."
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[features]
+# Without this, a release binary still points at devUrl and shows ERR_CONNECTION_REFUSED because no dev
+# server is running. `tauri dev` builds with --no-default-features, which is what selects the dev server.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# The shell is a thin host; a small binary keeps the bundle dominated by the .NET sidecar it ships.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

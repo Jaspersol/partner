@@ -1,0 +1,17 @@
+# Build output
+bin/
+obj/
+dist/
+target/
+src-tauri/gen/
+
+# Dependencies
+node_modules/
+
+# IDE / editor
+.vs/
+.idea/
+*.user
+
+# Generated at build time: the committed baseline is capabilities/manifest.baseline.json
+capabilities/manifest.json

@@ -1,0 +1,193 @@
+:root {
+  --bg: #f7f7f8;
+  --pane: #ffffff;
+  --line: #d8d8dc;
+  --text: #1c1c1e;
+  --muted: #6b6b70;
+  --accent: #0a6cff;
+  --warn: #b06000;
+  --error: #b00020;
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+nav {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--pane);
+}
+
+nav button {
+  padding: 4px 14px;
+}
+
+nav button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+main {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--pane);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.blocked {
+  font-weight: 600;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 2fr 1.2fr;
+  height: 100%;
+}
+
+.pane {
+  padding: 8px 10px;
+  overflow: auto;
+}
+
+.pane.detail {
+  border-left: 1px solid var(--line);
+  background: var(--pane);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.list li {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.list li.selected {
+  background: #e8f0ff;
+}
+
+.list.compact li {
+  cursor: default;
+  font-size: 12px;
+}
+
+.meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.edited {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.validity {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.error {
+  color: var(--error);
+}
+
+textarea,
+input[type='number'],
+input[type='text'] {
+  width: 100%;
+  margin: 6px 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+}
+
+header input {
+  width: 180px;
+  margin: 0;
+}
+
+.form label {
+  display: block;
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.form label input[type='number'] {
+  width: 120px;
+  margin-left: 6px;
+}
+
+.form label input[type='checkbox'] {
+  margin-right: 6px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+button {
+  padding: 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--pane);
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+h2 {
+  font-size: 14px;
+  margin: 0 0 6px;
+}
+
+h3 {
+  font-size: 13px;
+  margin: 14px 0 4px;
+}
