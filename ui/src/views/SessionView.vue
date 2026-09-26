@@ -40,6 +40,31 @@ const visible = computed(() => {
   })
 })
 
+/** Context occupancy as a short label: what the history costs against the room the prompt has. */
+const contextLabel = computed(() => {
+  const usage = view.value?.context
+  if (!usage) {
+    return ''
+  }
+
+  const percent = Math.round(usage.fraction * 100)
+  return `上下文 ${format(usage.usedTokens)} / ${format(usage.budgetTokens)}（${percent}%）`
+})
+
+const contextHint = computed(() => {
+  const usage = view.value?.context
+  if (!usage) {
+    return ''
+  }
+
+  const folded = usage.foldedItems > 0 ? ` · 已折叠 ${usage.foldedItems} 条` : ''
+  return `窗口 ${usage.contextTokens} token（预留输出 ${usage.maxTokens}）· 保留 ${usage.keptItems} 条${folded}`
+})
+
+function format(tokens: number): string {
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens)
+}
+
 const revisionNote = computed(() => {
   const item = selected.value
   if (!item || item.revisionCount === 0) {
@@ -178,6 +203,15 @@ defineExpose({ refresh, focusComposer })
         {{ inspectorCollapsed ? "‹ 展开检视" : "› 收起检视" }}
       </button>
       <span class="spacer" />
+      <span
+        v-if="contextLabel"
+        class="muted context-meter"
+        :class="{ 'context-tight': (view?.context.fraction ?? 0) >= 0.85 }"
+        :title="contextHint"
+        data-test="session-context"
+      >
+        {{ contextLabel }}
+      </span>
       <span class="muted" data-test="session-summary">
         {{ visible.length }} / {{ view?.items.length ?? 0 }} 条事件 · 最后 seq={{ view?.lastSeq ?? 0 }}
       </span>
@@ -234,6 +268,16 @@ defineExpose({ refresh, focusComposer })
 
 .spacer {
   flex: 1;
+}
+
+/* The meter turns loud only when the window is nearly full — that is when it matters. */
+.context-meter {
+  white-space: nowrap;
+}
+
+.context-tight {
+  color: var(--warn);
+  font-weight: 600;
 }
 
 .notice {

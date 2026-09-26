@@ -19,7 +19,7 @@ import type { QueueView } from '../src/api'
 
 function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface {
   return {
-    session: vi.fn(async () => ({ lastSeq: 0, items: [] })),
+    session: vi.fn(async () => ({ lastSeq: 0, items: [], context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 } })),
     editSession: vi.fn(async () => {}),
     deleteEvent: vi.fn(async () => {}),
     retractFrom: vi.fn(async () => {}),

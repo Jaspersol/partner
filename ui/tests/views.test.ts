@@ -39,6 +39,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
 
   const session: SessionViewData = {
     lastSeq: 3,
+    context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
     items: [
       { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'first', originalBody: 'first', revisionCount: 1 },
       { seq: 3, at: '2026-09-26T10:00:02+00:00', kind: 'Assistant', source: 'Text', body: 'second', originalBody: null, revisionCount: 0 },
@@ -179,6 +180,53 @@ describe('session view', () => {
 
     expect(calls.edits).toEqual([])
     expect(wrapper.find('[data-test="error"]').text()).toContain('正文不能为空')
+  })
+})
+
+describe('context meter', () => {
+  it('shows what the history costs against the prompt budget', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: 3,
+        items: [],
+        context: { usedTokens: 1240, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 6, foldedItems: 2, fraction: 0.043 },
+      })),
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const meter = wrapper.find('[data-test=session-context]')
+    expect(meter.text()).toContain('上下文 1.2k / 28.7k')
+    expect(meter.text()).toContain('4%')
+    // The tooltip carries the detail the label has no room for.
+    expect(meter.attributes('title')).toContain('已折叠 2 条')
+  })
+
+  it('turns loud when the window is nearly full', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: 1,
+        items: [],
+        context: { usedTokens: 28000, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 40, foldedItems: 0, fraction: 0.97 },
+      })),
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test=session-context]').classes()).toContain('context-tight')
+  })
+
+  it('renders nothing rather than a wrong number when the API omits it', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({ lastSeq: 1, items: [] }) as unknown as SessionViewData),
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test=session-context]').exists()).toBe(false)
   })
 })
 

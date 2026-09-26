@@ -5,6 +5,7 @@ using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Skills;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Hosting;
+using Partner.Core.Memory;
 using Partner.Core.Sessions;
 
 namespace Partner.Api;
@@ -60,6 +61,23 @@ public sealed class ConsumerHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// The counter in use: the model's own tokenizer when one is configured, the local estimate otherwise.
+    /// </summary>
+    public ITokenCounter Tokens { get; private set; } = new ApproximateTokenCounter();
+
+    /// <summary>How much of the context window the session currently occupies.</summary>
+    public async Task<ContextUsage> MeasureContextAsync(RuntimeSettings settings, CancellationToken ct = default)
+    {
+        var assembler = new SessionWindowContextAssembler(
+            _context.Session,
+            settings.Model.ContextTokens,
+            settings.Model.MaxTokens,
+            Tokens);
+
+        return await assembler.MeasureAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Folds history that no longer fits the window. Only possible while a model is configured, because the
     /// summary is produced by that model.
     /// </summary>
@@ -69,7 +87,7 @@ public sealed class ConsumerHost : IAsyncDisposable
 
         return llm is null
             ? Task.FromResult(new CompactionResult(0, null, "未配置模型，无法压缩"))
-            : new SessionCompactor(_context.Session, llm).CompactAsync(promptBudget, ct);
+            : new SessionCompactor(_context.Session, llm, Tokens).CompactAsync(promptBudget, ct);
     }
 
     /// <summary>
@@ -107,17 +125,24 @@ public sealed class ConsumerHost : IAsyncDisposable
         if (injected is not null)
         {
             llm = injected;
+            // An injected client has no tokenizer endpoint to ask.
+            Tokens = new ApproximateTokenCounter();
         }
         else
         {
             _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-            llm = new HttpLlmClient(_http, new HttpLlmOptions
+            var client = new HttpLlmClient(_http, new HttpLlmOptions
             {
                 BaseUrl = config!.BaseUrl,
                 Model = config.Model,
                 ApiKey = config.ApiKey,
                 Timeout = config.Timeout,
             });
+
+            llm = client;
+
+            // Two arms: the model's own tokenizer where the server has one, the local estimate as the floor.
+            Tokens = new DualArmTokenCounter(client, new ApproximateTokenCounter());
         }
 
         var runner = new AgentTurnRunner(

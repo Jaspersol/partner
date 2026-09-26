@@ -145,7 +145,8 @@ public static class ViewEndpoints
     // ---- session view (查看 + 编辑 + 编辑历史) ----------------------------------------------------
     private static void MapSession(WebApplication app)
     {
-        app.MapGet("/api/session", async (ApiContext ctx, long? from, int? take, CancellationToken ct) =>
+        app.MapGet("/api/session", async (
+            ApiContext ctx, ConsumerHost consumer, long? from, int? take, CancellationToken ct) =>
         {
             var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
             var items = view.Items
@@ -162,7 +163,25 @@ public static class ViewEndpoints
                     revisionCount = i.RevisionCount,
                 });
 
-            return Results.Ok(new { lastSeq = view.LastSeq, items });
+            // The window's occupancy is measured the same way a turn would assemble it, so the number the UI
+            // shows is the number that decides whether history has to be folded.
+            var usage = await consumer.MeasureContextAsync(ctx.Settings.Load(), ct).ConfigureAwait(false);
+
+            return Results.Ok(new
+            {
+                lastSeq = view.LastSeq,
+                items,
+                context = new
+                {
+                    usedTokens = usage.UsedTokens,
+                    budgetTokens = usage.BudgetTokens,
+                    contextTokens = usage.ContextTokens,
+                    maxTokens = usage.MaxTokens,
+                    keptItems = usage.KeptItems,
+                    foldedItems = usage.FoldedItems,
+                    fraction = usage.Fraction,
+                },
+            });
         });
 
         app.MapPost("/api/session/{seq:long}/edit", async (

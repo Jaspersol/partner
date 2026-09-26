@@ -53,10 +53,11 @@ public sealed class SessionCompactor
 
         // The same rule the assembler uses: the newest suffix that fits stays, the rest is folded. A
         // disagreement between the two would either send more than the window allows or fold what fits.
-        var fits = ContextBudget.FitNewestFirst(
+        var fits = await ContextBudget.FitNewestFirstAsync(
             conversation,
-            entry => ContextBudget.Cost(_tokens, entry.Body),
-            promptBudget);
+            (entry, token) => ContextBudget.CostAsync(_tokens, entry.Body, token),
+            promptBudget,
+            ct).ConfigureAwait(false);
 
         var keepFrom = fits.Count > 0 ? fits[0].Seq : long.MaxValue;
         var older = conversation.Where(item => item.Seq < keepFrom).ToList();
@@ -65,7 +66,11 @@ public sealed class SessionCompactor
         // call to make the context longer rather than shorter.
         if (older.Count == 0)
         {
-            var used = fits.Sum(entry => ContextBudget.Cost(_tokens, entry.Body));
+            var used = 0;
+            foreach (var entry in fits)
+            {
+                used += await ContextBudget.CostAsync(_tokens, entry.Body, ct).ConfigureAwait(false);
+            }
             return new CompactionResult(0, null, $"无需压缩：历史约 {used} token ≤ 预算 {promptBudget}");
         }
 

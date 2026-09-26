@@ -9,6 +9,8 @@ namespace Partner.Core.Tests.Agent.Llm;
 /// <summary>Captures the outgoing request and answers with a canned body.</summary>
 internal sealed class StubHandler(HttpStatusCode status, string body) : HttpMessageHandler
 {
+    public int Requests { get; private set; }
+
     public HttpRequestMessage? Request { get; private set; }
 
     public string? RequestBody { get; private set; }
@@ -17,6 +19,7 @@ internal sealed class StubHandler(HttpStatusCode status, string body) : HttpMess
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        Requests++;
         Request = request;
         Authorization = request.Headers.Authorization?.ToString();
         RequestBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);

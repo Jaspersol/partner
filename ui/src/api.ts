@@ -13,9 +13,21 @@ export interface SessionItem {
   revisionCount: number
 }
 
+/** How much of the model's context window the history currently occupies. */
+export interface ContextUsage {
+  usedTokens: number
+  budgetTokens: number
+  contextTokens: number
+  maxTokens: number
+  keptItems: number
+  foldedItems: number
+  fraction: number
+}
+
 export interface SessionView {
   lastSeq: number
   items: SessionItem[]
+  context: ContextUsage
 }
 
 export interface SessionRevision {

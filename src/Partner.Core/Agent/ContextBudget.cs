@@ -9,7 +9,7 @@ namespace Partner.Core.Agent;
 /// </summary>
 public static class ContextBudget
 {
-    /// <summary>Per-message overhead the approximate counter does not see (role markers, separators).</summary>
+    /// <summary>Per-message overhead the counters do not see (role markers, separators).</summary>
     public const int MessageOverheadTokens = 4;
 
     /// <summary>
@@ -17,7 +17,11 @@ public static class ContextBudget
     /// selection: dropping a turn from the middle would leave the conversation answering something that is no
     /// longer in context.
     /// </summary>
-    public static List<T> FitNewestFirst<T>(IReadOnlyList<T> items, Func<T, int> cost, int budget)
+    public static async ValueTask<List<T>> FitNewestFirstAsync<T>(
+        IReadOnlyList<T> items,
+        Func<T, CancellationToken, ValueTask<int>> cost,
+        int budget,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(items);
         ArgumentNullException.ThrowIfNull(cost);
@@ -33,7 +37,7 @@ public static class ContextBudget
 
         for (var i = items.Count - 1; i >= 0; i--)
         {
-            var price = cost(items[i]);
+            var price = await cost(items[i], ct).ConfigureAwait(false);
 
             if (used + price > budget)
             {
@@ -48,10 +52,10 @@ public static class ContextBudget
     }
 
     /// <summary>Cost of one piece of text as a message: its tokens plus the framing overhead.</summary>
-    public static int Cost(ITokenCounter counter, string? text)
+    public static async ValueTask<int> CostAsync(ITokenCounter counter, string? text, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(counter);
-        return counter.Count(text ?? string.Empty) + MessageOverheadTokens;
+        return await counter.CountAsync(text ?? string.Empty, ct).ConfigureAwait(false) + MessageOverheadTokens;
     }
 
     /// <summary>

@@ -208,6 +208,18 @@ describe('the API contract the UI binds to', () => {
     expect(report.sessionLastSeq).toBeGreaterThan(0)
   })
 
+  it('reports how much of the context window the history occupies', async () => {
+    const session = await api.session()
+    const usage = session.context
+
+    // The budget is the window minus the room reserved for the completion.
+    expect(usage.contextTokens).toBe(32768)
+    expect(usage.maxTokens).toBe(4096)
+    expect(usage.budgetTokens).toBe(usage.contextTokens - usage.maxTokens)
+    expect(usage.usedTokens).toBeGreaterThan(0)
+    expect(usage.usedTokens).toBeLessThanOrEqual(usage.budgetTokens)
+  })
+
   it('lists the devices the runtime can see', async () => {
     const devices = await api.devices()
 

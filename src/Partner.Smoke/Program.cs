@@ -1648,6 +1648,9 @@ internal static class Program
                     .Select(item => item.GetProperty("body").GetString())
                     .ToList();
 
+                var wireQueue = await wireHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                var wireItem = wireQueue.GetProperty("items").EnumerateArray().FirstOrDefault();
+
                 Check("consumer: a real HTTP model call completes a turn end to end",
                     settled
                     && assistant.Count == 1
@@ -1655,7 +1658,8 @@ internal static class Program
                     && provider.RequestPath?.Contains("/v1/chat/completions", StringComparison.Ordinal) == true
                     // No key configured means no Authorization header, rather than an empty one.
                     && provider.SawAuthorization is null,
-                    $"settled={settled} reply={assistant.FirstOrDefault()} path={provider.RequestPath} auth={provider.SawAuthorization ?? "(none)"}");
+                    $"settled={settled} status={wireItem.GetProperty("status").GetString()} "
+                    + $"requests=[{string.Join(" | ", provider.Requests)}]");
             }
             finally
             {
@@ -1839,22 +1843,55 @@ internal static class Program
                 Check("session: events after a retraction stay visible", revived, $"revived={revived}");
 
                 // Shrinking the context folds history once, using the model that is already configured. Enough
-                // history is needed first: folding one event is not compaction.
+                // history is needed first: folding one event is not compaction. The wait is on the session's own
+                // sequence — a turn that is mid-flight is not in the history yet.
+                var fillSeq = (await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session"))
+                    .GetProperty("lastSeq").GetInt64();
+
                 for (var i = 0; i < 3; i++)
                 {
                     await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = $"填充 {i}" });
                 }
 
-                for (var attempt = 0; attempt < 200; attempt++)
+                for (var attempt = 0; attempt < 400; attempt++)
                 {
-                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                    if (polled.GetProperty("depth").GetInt32() == 0)
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    if (polled.GetProperty("lastSeq").GetInt64() >= fillSeq + 6)
                     {
                         break;
                     }
 
                     await Task.Delay(25);
                 }
+
+                // The context meter: the occupancy reported to the UI is the one that decides folding. Measured
+                // against the roomy default window, where another turn is a visible increase. The wait is on the
+                // session itself — queue depth can read zero while a turn is mid-flight, and then the reply this
+                // check is about has not been written yet.
+                var usageView = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var usageBefore = usageView.GetProperty("context");
+                var seqBefore = usageView.GetProperty("lastSeq").GetInt64();
+
+                await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "再填充一些内容让占用增长" });
+
+                var usageAfter = usageBefore;
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    if (polled.GetProperty("lastSeq").GetInt64() >= seqBefore + 2)
+                    {
+                        usageAfter = polled.GetProperty("context");
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                Check("context: the reported occupancy follows the history",
+                    usageAfter.GetProperty("usedTokens").GetInt32() > usageBefore.GetProperty("usedTokens").GetInt32()
+                    && usageAfter.GetProperty("usedTokens").GetInt32() <= usageAfter.GetProperty("budgetTokens").GetInt32(),
+                    $"{usageBefore.GetProperty("usedTokens").GetInt32()} -> {usageAfter.GetProperty("usedTokens").GetInt32()} "
+                    + $"budget={usageAfter.GetProperty("budgetTokens").GetInt32()}");
 
                 var beforeShrink = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var shrink = await settingsHttp.PutAsJsonAsync("/api/settings", new
@@ -1877,8 +1914,24 @@ internal static class Program
                     + $"{shrinkBody.GetProperty("reason").GetString() ?? "(no reason)"}");
 
                 var compacted = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var compactedUsage = compacted.GetProperty("context");
                 var summaries = compacted.GetProperty("items").EnumerateArray()
                     .Count(i => i.GetProperty("kind").GetString() == "Summary");
+
+                // After folding, the meter must show the folded history rather than the raw log. The window here
+                // is deliberately tiny (16 tokens), so the always-sent system block alone can exceed the budget —
+                // what matters is that folding lowered the prompt, not that it fits this artificial window.
+                Check("context: the meter reflects the folding",
+                    compactedUsage.GetProperty("foldedItems").GetInt32() > 0
+                    && compactedUsage.GetProperty("usedTokens").GetInt32() < usageAfter.GetProperty("usedTokens").GetInt32(),
+                    $"folded={compactedUsage.GetProperty("foldedItems").GetInt32()} "
+                    + $"{usageAfter.GetProperty("usedTokens").GetInt32()} -> {compactedUsage.GetProperty("usedTokens").GetInt32()} "
+                    + $"budget={compactedUsage.GetProperty("budgetTokens").GetInt32()}");
+
+                Check("context: the budget is the window minus the reserved output",
+                    compactedUsage.GetProperty("budgetTokens").GetInt32()
+                    == compactedUsage.GetProperty("contextTokens").GetInt32() - compactedUsage.GetProperty("maxTokens").GetInt32(),
+                    $"{compactedUsage.GetProperty("contextTokens").GetInt32()} - {compactedUsage.GetProperty("maxTokens").GetInt32()}");
 
                 Check("settings: the compaction leaves exactly one summary standing in for the history",
                     summaries == 1
@@ -2103,6 +2156,9 @@ internal static class Program
         /// <summary>The last request body, so the message shape sent to a provider can be asserted.</summary>
         public string? LastRequestBody { get; private set; }
 
+        /// <summary>Every request line seen, in order — the only way to see where a stuck turn stopped.</summary>
+        public List<string> Requests { get; } = new();
+
         private async Task ServeAsync()
         {
             while (!_stop.IsCancellationRequested)
@@ -2131,45 +2187,70 @@ internal static class Program
         private async Task AnswerAsync(TcpClient client)
         {
             var stream = client.GetStream();
-            using var reader = new StreamReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
 
-            RequestPath = await reader.ReadLineAsync();
-            var length = 0;
+            // Read the request framing byte by byte, deliberately without a StreamReader: a buffered reader
+            // pre-reads into its own buffer, so a later read straight from the stream would wait forever for
+            // bytes the reader had already swallowed. Content-Length also counts bytes, not characters.
+            var header = new List<byte>();
+            var single = new byte[1];
 
-            while (await reader.ReadLineAsync() is { } header)
+            while (true)
             {
-                if (header.Length == 0)
+                var read = await stream.ReadAsync(single);
+                if (read == 0)
+                {
+                    return;
+                }
+
+                header.Add(single[0]);
+
+                if (header.Count >= 4
+                    && header[^4] == (byte)'\r' && header[^3] == (byte)'\n'
+                    && header[^2] == (byte)'\r' && header[^1] == (byte)'\n')
                 {
                     break;
                 }
+            }
 
-                if (header.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+            var lines = System.Text.Encoding.ASCII.GetString(header.ToArray()).Split("\r\n");
+            RequestPath = lines[0];
+            Requests.Add(RequestPath);
+
+            var length = 0;
+
+            foreach (var line in lines.Skip(1))
+            {
+                if (line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
                 {
-                    SawAuthorization = header["Authorization:".Length..].Trim();
+                    SawAuthorization = line["Authorization:".Length..].Trim();
                 }
 
-                if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
                 {
-                    length = int.Parse(header["Content-Length:".Length..].Trim(), CultureInfo.InvariantCulture);
+                    length = int.Parse(line["Content-Length:".Length..].Trim(), CultureInfo.InvariantCulture);
                 }
             }
 
-            var body = new char[length];
-            var read = 0;
-            while (read < length)
+            var body = new byte[length];
+            var filled = 0;
+            while (filled < length)
             {
-                var chunk = await reader.ReadAsync(body.AsMemory(read, length - read));
+                var chunk = await stream.ReadAsync(body.AsMemory(filled, length - filled));
                 if (chunk == 0)
                 {
                     break;
                 }
 
-                read += chunk;
+                filled += chunk;
             }
+
+            LastRequestBody = System.Text.Encoding.UTF8.GetString(body, 0, filled);
 
             // One socket serves both the completion and the listing, so the proxy is exercised for real.
             var payload = RequestPath?.Contains("/models", StringComparison.Ordinal) == true
                 ? "{\"data\":[{\"id\":\"smoke-model-a\"},{\"id\":\"smoke-model-b\"}]}"
+                : RequestPath?.Contains("/tokenize", StringComparison.Ordinal) == true
+                    ? "{\"tokens\":[1,2,3,4,5,6,7]}"
                 : System.Text.Json.JsonSerializer.Serialize(new
                 {
                     choices = new[]
@@ -2181,8 +2262,6 @@ internal static class Program
                         },
                     },
                 });
-
-            LastRequestBody = new string(body, 0, read);
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(payload);
             var head = System.Text.Encoding.ASCII.GetBytes(

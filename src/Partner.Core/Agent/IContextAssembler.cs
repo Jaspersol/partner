@@ -6,6 +6,18 @@ using Partner.Core.Sessions;
 
 namespace Partner.Core.Agent;
 
+/// <summary>How much of the context window the history currently occupies.</summary>
+public sealed record ContextUsage(
+    int UsedTokens,
+    int BudgetTokens,
+    int ContextTokens,
+    int MaxTokens,
+    int KeptItems,
+    int FoldedItems)
+{
+    public double Fraction => BudgetTokens <= 0 ? 0 : (double)UsedTokens / BudgetTokens;
+}
+
 /// <summary>
 /// Builds the messages a turn starts with (design doc §2.9.4):
 /// <c>system (base + hook injections)</c> → <c>session window (trimmed to the token budget)</c> →
@@ -17,6 +29,9 @@ public interface IContextAssembler
         InputItem item,
         IReadOnlyList<string> injectedPrompts,
         CancellationToken ct = default);
+
+    /// <summary>What the history costs right now, without a turn — the number a UI shows.</summary>
+    Task<ContextUsage> MeasureAsync(CancellationToken ct = default);
 }
 
 /// <summary>
@@ -28,7 +43,8 @@ public interface IContextAssembler
 /// completion, so a prompt can never fill the window and leave the answer truncated.
 /// </para>
 /// <para>
-/// Memory injection (design doc §2.5) is a later decorator of this interface.
+/// Counting goes through <see cref="ITokenCounter.CountAsync"/>, so a provider-backed counter is used where
+/// one exists and the local estimate is the fallback.
 /// </para>
 /// </summary>
 public sealed class SessionWindowContextAssembler : IContextAssembler
@@ -55,6 +71,21 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         _baseSystemPrompt = baseSystemPrompt ?? "You are a single-user local assistant.";
     }
 
+    public async Task<ContextUsage> MeasureAsync(CancellationToken ct = default)
+    {
+        var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
+        var plan = await PlanAsync(view, injectedPrompts: Array.Empty<string>(), currentInput: null, ct)
+            .ConfigureAwait(false);
+
+        return new ContextUsage(
+            plan.SystemTokens + plan.TurnTokens,
+            ContextBudget.PromptBudget(_contextTokens, _reserveForOutput),
+            _contextTokens,
+            _reserveForOutput,
+            plan.Kept.Count,
+            plan.FoldedCount);
+    }
+
     public async Task<IReadOnlyList<LlmMessage>> AssembleInitialAsync(
         InputItem item,
         IReadOnlyList<string> injectedPrompts,
@@ -64,36 +95,57 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         ArgumentNullException.ThrowIfNull(injectedPrompts);
 
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
+        var plan = await PlanAsync(view, injectedPrompts, item.Payload, ct).ConfigureAwait(false);
 
+        var messages = new List<LlmMessage>
+        {
+            new("system", BuildSystem(_baseSystemPrompt, injectedPrompts, plan.Context)),
+        };
+
+        messages.AddRange(plan.Turns);
+
+        // The current input is the last user message; the window above is history only.
+        messages.Add(new LlmMessage("user", item.Payload));
+        return messages;
+    }
+
+    /// <summary>Everything the two public entry points share: what fits, and what it costs.</summary>
+    private async Task<Plan> PlanAsync(
+        SessionView view,
+        IReadOnlyList<string> injectedPrompts,
+        string? currentInput,
+        CancellationToken ct)
+    {
         // A summary stands in for history that was folded away, so it is context rather than a turn.
         var summaries = view.Items.Where(entry => entry.Kind == SessionEventKind.Summary).ToList();
         var conversation = view.Items.Where(entry => entry.Kind != SessionEventKind.Summary).ToList();
 
-        // A chat-completions conversation has exactly one legal shape: system content first, then the
-        // user/assistant turns. Window entries that are neither (tool results, hook injections) must therefore
-        // be folded into the leading system message rather than emitted in place — sending a `system` message
-        // after a `user` message is rejected outright by providers (llama.cpp's templates raise
-        // "System message must be at the beginning").
-        var context = new List<string>();
-
-        foreach (var summary in summaries)
-        {
-            context.Add($"summary of earlier history: {summary.Body}");
-        }
+        var context = summaries.Select(summary => $"summary of earlier history: {summary.Body}").ToList();
 
         // The system block is always sent: dropping it would remove the instructions the turn runs under.
-        var systemTokens = ContextBudget.Cost(_tokens, _baseSystemPrompt)
-            + SumTokens(injectedPrompts)
-            + context.Sum(entry => ContextBudget.Cost(_tokens, entry));
+        var systemTokens = await ContextBudget.CostAsync(_tokens, _baseSystemPrompt, ct).ConfigureAwait(false);
 
-        var budget = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput)
-            - systemTokens
-            - ContextBudget.Cost(_tokens, item.Payload);
+        foreach (var prompt in injectedPrompts)
+        {
+            systemTokens += await ContextBudget.CostAsync(_tokens, prompt, ct).ConfigureAwait(false);
+        }
 
-        var kept = ContextBudget.FitNewestFirst(
+        foreach (var entry in context)
+        {
+            systemTokens += await ContextBudget.CostAsync(_tokens, entry, ct).ConfigureAwait(false);
+        }
+
+        var inputTokens = currentInput is null
+            ? 0
+            : await ContextBudget.CostAsync(_tokens, currentInput, ct).ConfigureAwait(false);
+
+        var budget = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput) - systemTokens - inputTokens;
+
+        var kept = await ContextBudget.FitNewestFirstAsync(
             conversation,
-            entry => ContextBudget.Cost(_tokens, entry.Body),
-            Math.Max(0, budget));
+            (entry, token) => ContextBudget.CostAsync(_tokens, entry.Body, token),
+            Math.Max(0, budget),
+            ct).ConfigureAwait(false);
 
         // Entries that are not conversational are still shown to the model, just inside the system block.
         foreach (var entry in kept.Where(entry => entry.Kind is not (SessionEventKind.User or SessionEventKind.Assistant or SessionEventKind.Schedule)))
@@ -108,24 +160,19 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
                 : new LlmMessage("user", entry.Body))
             .ToList();
 
-        var messages = new List<LlmMessage> { new("system", BuildSystem(_baseSystemPrompt, injectedPrompts, context)) };
-        messages.AddRange(turns);
-
-        // The current input is the last user message; the window above is history only.
-        messages.Add(new LlmMessage("user", item.Payload));
-        return messages;
-    }
-
-    /// <summary>Cost of the injected prompts, which are always sent.</summary>
-    private int SumTokens(IReadOnlyList<string> prompts)
-    {
-        var total = 0;
-        foreach (var prompt in prompts)
+        var turnTokens = 0;
+        foreach (var entry in kept)
         {
-            total += ContextBudget.Cost(_tokens, prompt);
+            turnTokens += await ContextBudget.CostAsync(_tokens, entry.Body, ct).ConfigureAwait(false);
         }
 
-        return total;
+        return new Plan(
+            context,
+            turns,
+            kept,
+            systemTokens,
+            turnTokens,
+            conversation.Count - kept.Count);
     }
 
     private static string BuildSystem(string basePrompt, IReadOnlyList<string> injectedPrompts, IReadOnlyList<string> context)
@@ -140,6 +187,12 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
         return string.Join("\n\n", blocks);
     }
+
+    private sealed record Plan(
+        List<string> Context,
+        List<LlmMessage> Turns,
+        List<SessionViewItem> Kept,
+        int SystemTokens,
+        int TurnTokens,
+        int FoldedCount);
 }
-
-
