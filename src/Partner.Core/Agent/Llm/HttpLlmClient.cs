@@ -60,10 +60,10 @@ public sealed class HttpLlmClient : ILlmClient
     public string Model => _options.Model;
 
     /// <summary>
-    /// Builds a client from the environment, or explains why it cannot. The reason is surfaced by the host so
-    /// "no consumer running" is never a silent state.
+    /// Reads the configuration from the environment, or explains why it cannot. Split from
+    /// <see cref="TryFromEnvironment"/> so a host can report the resolved endpoint without building a client.
     /// </summary>
-    public static (HttpLlmClient? Client, string Reason) TryFromEnvironment(HttpClient? http = null)
+    public static (HttpLlmOptions? Options, string Reason) OptionsFromEnvironment()
     {
         var baseUrl = Environment.GetEnvironmentVariable(BaseUrlVariable);
         var model = Environment.GetEnvironmentVariable(ModelVariable);
@@ -85,15 +85,30 @@ public sealed class HttpLlmClient : ILlmClient
             return (null, $"未配置模型：缺少 {string.Join(" 与 ", missing)}");
         }
 
-        var client = http ?? new HttpClient();
-        client.Timeout = Timeout.InfiniteTimeSpan; // the per-request token governs, not a second clock
-
-        return (new HttpLlmClient(client, new HttpLlmOptions
+        return (new HttpLlmOptions
         {
             BaseUrl = baseUrl.TrimEnd('/'),
             Model = model,
             ApiKey = apiKey,
-        }), "已配置模型");
+        }, "已从环境变量配置模型");
+    }
+
+    /// <summary>
+    /// Builds a client from the environment, or explains why it cannot. The reason is surfaced by the host so
+    /// "no consumer running" is never a silent state.
+    /// </summary>
+    public static (HttpLlmClient? Client, string Reason) TryFromEnvironment(HttpClient? http = null)
+    {
+        var (options, reason) = OptionsFromEnvironment();
+        if (options is null)
+        {
+            return (null, reason);
+        }
+
+        var client = http ?? new HttpClient();
+        client.Timeout = Timeout.InfiniteTimeSpan; // the per-request token governs, not a second clock
+
+        return (new HttpLlmClient(client, options), reason);
     }
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)

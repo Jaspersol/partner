@@ -43,7 +43,8 @@ public sealed class ApiContext : IAsyncDisposable
         var (session, _) = JsonlSessionStore.Open(workspace, clock);
         var queue = new JsonlInputQueue(workspace, capacity: 1024, clock: clock);
         var memory = new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), clock: clock);
-        var settings = new SettingsStore(Path.Combine(workspace, "settings", "voice.json"));
+        // Holds the whole runtime configuration now, not just the voice halves.
+        var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
 
         return await Task.FromResult(new ApiContext(workspace, session, queue, memory, settings)).ConfigureAwait(false);
     }

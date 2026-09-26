@@ -1,3 +1,4 @@
+using Partner.Api.Settings;
 using Partner.Core.Agent.Llm;
 using Partner.Api.Auth;
 using Partner.Api.Endpoints;
@@ -23,16 +24,19 @@ public static class ApiHost
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
 
         var context = await ApiContext.OpenAsync(workspace, clock).ConfigureAwait(false);
+        var consumer = ConsumerHost.Create(context, workspace);
 
-        // A caller-supplied client is for tests and diagnostics; otherwise the environment decides. Either way
-        // the reason travels with the host so a disabled consumer is never silent.
-        var (configured, reason) = llm is null
-            ? HttpLlmClient.TryFromEnvironment()
-            : ((ILlmClient?)llm, "已注入模型（测试或诊断）");
-
-        var consumer = configured is null
-            ? ConsumerHost.Disabled(reason)
-            : ConsumerHost.Start(context, workspace, configured);
+        if (llm is not null)
+        {
+            // A caller-supplied client is for tests and diagnostics: it bypasses the settings/env resolution
+            // entirely, because a scripted client has no endpoint to describe.
+            await consumer.ReconfigureAsync(config: null, "运行中（注入的模型）", llm).ConfigureAwait(false);
+        }
+        else
+        {
+            var (config, reason) = ModelConfig.Resolve(context.Settings.Load());
+            await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
+        }
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseSetting("urls", $"http://127.0.0.1:{port}");

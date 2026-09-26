@@ -199,23 +199,28 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
     [Fact]
     public async Task Settings_reject_a_negative_threshold_and_keep_the_previous_value()
     {
-        var bad = await _http.PutAsJsonAsync("/api/settings", new { silenceThreshold = -1.0 });
+        var bad = await _http.PutAsJsonAsync("/api/settings", new { input = new { silenceThreshold = -1.0 } });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         var current = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
-        Assert.Equal(VoiceSettingsDto.Default.SilenceThreshold, current.GetProperty("silenceThreshold").GetDouble());
+        Assert.Equal(
+            RuntimeSettings.Default.Input.SilenceThreshold,
+            current.GetProperty("input").GetProperty("silenceThreshold").GetDouble());
     }
 
     [Fact]
     public async Task Settings_survive_a_new_store_instance()
     {
-        var put = await _http.PutAsJsonAsync("/api/settings", new { inputEnabled = true, windowSeconds = 12.5 });
+        var put = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            input = new { enabled = true, windowSeconds = 12.5 },
+        });
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
 
         var reopened = new SettingsStore(_context.Settings.Path).Load();
 
-        Assert.True(reopened.InputEnabled);
-        Assert.Equal(12.5, reopened.WindowSeconds);
+        Assert.True(reopened.Input.Enabled);
+        Assert.Equal(12.5, reopened.Input.WindowSeconds);
     }
 
     [Fact]
@@ -227,7 +232,7 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
 
         var loaded = new SettingsStore(path).Load();
 
-        Assert.Equal(VoiceSettingsDto.Default, loaded);
+        Assert.Equal(RuntimeSettings.Default, loaded);
     }
 
     // ---- authentication (fail-closed) ------------------------------------------------------------

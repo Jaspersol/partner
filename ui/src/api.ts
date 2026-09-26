@@ -70,27 +70,83 @@ export interface MemoryRevision {
   actor: string
 }
 
-export interface VoiceSettings {
-  inputEnabled: boolean
-  inputDeviceId: string | null
+export interface InputSettings {
+  enabled: boolean
+  deviceId: string | null
   silenceThreshold: number
   utteranceGapMs: number
   sentenceGapMs: number
   windowSeconds: number
   asrStream: boolean
-  outputEnabled: boolean
-  outputDeviceId: string | null
+  maxSplitChars: number
+}
+
+export interface OutputSettings {
+  enabled: boolean
+  deviceId: string | null
+  voice: string | null
   speed: number
   gapMs: number
   drainMs: number
+  sampleRate: number
   muteDuringTts: boolean
 }
 
-export interface RebuildReport {
-  sessionItems: number
-  sessionLastSeq: number
-  memoryIndexed: number
-  queueLogEntries: number
+export interface AsrSettings {
+  baseUrl: string | null
+  model: string
+  language: string | null
+  connectTimeoutMs: number
+  readTimeoutMs: number
+  sampleRate: number
+}
+
+export interface TtsSettings {
+  baseUrl: string | null
+  lang: string
+  sampleRate: number
+  speakerRefPath: string | null
+  timeoutSeconds: number
+  chunkMs: number
+}
+
+/** What a client sends: the key is optional and write-only. */
+export interface ModelSettings {
+  baseUrl: string | null
+  model: string | null
+  /** Absent keeps the stored key, empty clears it, a value replaces it. */
+  apiKey?: string | null
+  timeoutSeconds: number
+}
+
+/** What the API returns: no key, only whether one is stored. */
+export interface ModelSettingsView {
+  baseUrl: string | null
+  model: string | null
+  apiKeySet: boolean
+  timeoutSeconds: number
+}
+
+export interface RuntimeSettings {
+  input: InputSettings
+  output: OutputSettings
+  asr: AsrSettings
+  tts: TtsSettings
+  model: ModelSettings
+}
+
+export interface SettingsView {
+  input: InputSettings
+  output: OutputSettings
+  asr: AsrSettings
+  tts: TtsSettings
+  model: ModelSettingsView
+}
+
+/** Saving returns what was stored plus the consumer state it produced. */
+export interface SettingsSaved {
+  settings: SettingsView
+  consumer: ConsumerState
 }
 
 /** What a delivery lands as: a queue item, not an executed turn. */
@@ -107,6 +163,13 @@ export interface ConsumerState {
   reason: string
   model: string | null
   stats: { completed: number; failed: number; canceled: number; skipped: number; handled: number }
+}
+
+export interface RebuildReport {
+  sessionItems: number
+  sessionLastSeq: number
+  memoryIndexed: number
+  queueLogEntries: number
 }
 
 /** The queue's shape reduced to what the badge and the status bar show. */
@@ -162,8 +225,8 @@ export interface PartnerApiSurface {
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
   deleteMemory(recordId: string): Promise<void>
   memoryRevisions(recordId: string): Promise<MemoryRevision[]>
-  settings(): Promise<VoiceSettings>
-  saveSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings>
+  settings(): Promise<SettingsView>
+  saveSettings(settings: RuntimeSettings): Promise<SettingsSaved>
   rebuild(): Promise<RebuildReport>
 }
 
@@ -254,12 +317,12 @@ export class PartnerApi implements PartnerApiSurface {
 
   // ---- settings --------------------------------------------------------------------------------
 
-  settings(): Promise<VoiceSettings> {
-    return this.request<VoiceSettings>('GET', '/api/settings')
+  settings(): Promise<SettingsView> {
+    return this.request<SettingsView>('GET', '/api/settings')
   }
 
-  saveSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
-    return this.request<VoiceSettings>('PUT', '/api/settings', settings)
+  saveSettings(settings: RuntimeSettings): Promise<SettingsSaved> {
+    return this.request<SettingsSaved>('PUT', '/api/settings', settings)
   }
 
   // ---- projections -----------------------------------------------------------------------------

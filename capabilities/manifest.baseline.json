@@ -752,6 +752,16 @@
           "check": "consumer: a real HTTP model call completes a turn end to end",
           "ran": true,
           "passed": true
+        },
+        {
+          "check": "settings: pointing the model settings at an endpoint re-points the consumer",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "settings: the API key is sent to the model but never echoed back",
+          "ran": true,
+          "passed": true
         }
       ]
     },
@@ -814,7 +824,7 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "ui: settings round-trip through the API",
+          "check": "ui: settings round-trip every section through the API",
           "ran": true,
           "passed": true
         }

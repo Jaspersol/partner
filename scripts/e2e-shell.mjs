@@ -272,7 +272,68 @@ async function main() {
     const consumerNote = await evaluate(cdp, 'document.querySelector(\'[data-test="composer-consumer"]\')?.textContent ?? ""')
     check('the UI explains that nothing is executing the queue', consumerNote.includes('未执行'), consumerNote.trim())
 
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-设置"]\').click()')
+    await waitFor(cdp, 'document.querySelector(\'[data-test="model-base-url"]\') !== null', 'the settings page')
+
+    // Settings are the configuration surface: editing them must reach the running runtime, not just the file.
+    const cards = await evaluate(cdp, `[...document.querySelectorAll('section.card h2')].map((h) => h.textContent.trim()).join('|')`)
+    check(
+      'the settings page covers every configurable subsystem',
+      cards.includes('语音识别') && cards.includes('语音合成') && cards.includes('模型'),
+      cards,
+    )
+
+    const beforeModel = await evaluate(cdp, 'document.querySelector(\'[data-test="model-effect"]\').textContent')
+    check('the model card says the queue is not being executed yet', beforeModel.includes('未配置模型'), beforeModel.trim())
+
+    await evaluate(
+      cdp,
+      `(() => {
+        const set = (selector, value) => {
+          const field = document.querySelector(selector)
+          field.value = value
+          field.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        set('[data-test="model-base-url"]', 'http://127.0.0.1:9/v1')
+        set('[data-test="model-name"]', 'e2e-model')
+        return true
+      })()`,
+    )
+    await evaluate(cdp, 'document.querySelector(\'[data-test="settings-save"]\').click()')
+
+    await waitFor(
+      cdp,
+      'document.querySelector(\'[data-test="status-consumer"]\').textContent.includes("消费中")',
+      'the consumer to start from the settings page',
+    )
+    const afterModel = await evaluate(cdp, 'document.querySelector(\'[data-test="status-consumer"]\').textContent')
+    check('saving a model endpoint starts the consumer without restarting the app', afterModel.includes('e2e-model'), afterModel.trim())
+
+    // The key is write-only: the field must stay empty and the state must say one is stored.
+    await evaluate(
+      cdp,
+      `(() => {
+        const field = document.querySelector('[data-test="model-api-key"]')
+        field.value = 'e2e-secret'
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`,
+    )
+    await evaluate(cdp, 'document.querySelector(\'[data-test="settings-save"]\').click()')
+    await waitFor(
+      cdp,
+      'document.querySelector(\'[data-test="model-api-key-state"]\').textContent.includes("已设置")',
+      'the key state to report as stored',
+    )
+    const keyField = await evaluate(cdp, 'document.querySelector(\'[data-test="model-api-key"]\').value')
+    const keyState = await evaluate(cdp, 'document.querySelector(\'[data-test="model-api-key-state"]\').textContent')
+    check('the API key is stored without being echoed back into the form', keyField === '' && keyState.includes('已设置'), `field="${keyField}" state=${keyState.trim()}`)
+
+    const settingsRaw = await (await fetch(`http://127.0.0.1:${port}/api/settings`, { headers: { Authorization: `Bearer ${token}` } })).text()
+    check('the API never returns the stored key', !settingsRaw.includes('e2e-secret'), 'value absent from the response')
+
     // Sidebar collapse is shell state; the sidebar must actually leave the layout.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
     await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')
     const sidebarHidden = await evaluate(
       cdp,

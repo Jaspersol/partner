@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import type { ConsumerState, PartnerApiSurface, QueueSummary } from '../src/api'
+import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings } from '../src/api'
 import Composer from '../src/components/Composer.vue'
 import Inspector from '../src/components/Inspector.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
@@ -32,21 +32,16 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     deleteMemory: vi.fn(async () => {}),
     memoryRevisions: vi.fn(async () => []),
     settings: vi.fn(async () => ({
-      inputEnabled: false,
-      inputDeviceId: null,
-      silenceThreshold: 0.03,
-      utteranceGapMs: 1200,
-      sentenceGapMs: 450,
-      windowSeconds: 8,
-      asrStream: false,
-      outputEnabled: false,
-      outputDeviceId: null,
-      speed: 1,
-      gapMs: 0,
-      drainMs: 400,
-      muteDuringTts: true,
+      input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40 },
+      output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
+      asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+      tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+      model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120 },
     })),
-    saveSettings: vi.fn(async (patch) => ({ ...(await stubApi().settings()), ...patch })),
+    saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
+      settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
+      consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
+    })),
     rebuild: vi.fn(async () => ({ sessionItems: 0, sessionLastSeq: 0, memoryIndexed: 0, queueLogEntries: 0 })),
     ...overrides,
   }

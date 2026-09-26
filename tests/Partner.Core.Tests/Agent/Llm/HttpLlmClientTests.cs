@@ -211,7 +211,7 @@ public sealed class HttpLlmClientTests
             Assert.NotNull(client);
             // The trailing slash is trimmed so the request path is not doubled.
             Assert.Equal("local-model", client.Model);
-            Assert.Equal("已配置模型", reason);
+            Assert.Contains("环境变量", reason, StringComparison.Ordinal);
         }
         finally
         {

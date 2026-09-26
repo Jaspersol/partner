@@ -10,12 +10,13 @@ import type {
   RebuildReport,
   SessionRevision,
   SessionView as SessionViewData,
-  VoiceSettings,
+  SettingsView,
+  RuntimeSettings,
 } from '../src/api'
 import MemoryView from '../src/views/MemoryView.vue'
 import QueueView from '../src/views/QueueView.vue'
 import SessionView from '../src/views/SessionView.vue'
-import SettingsView from '../src/views/SettingsView.vue'
+import SettingsViewComponent from '../src/views/SettingsView.vue'
 
 /**
  * View behaviour with a stub API. The stub implements the same interface the real client does, so the
@@ -27,7 +28,7 @@ interface Calls {
   memoryEdits: Array<{ recordId: string; body: string }>
   deletes: string[]
   cancels: string[]
-  saves: Partial<VoiceSettings>[]
+  saves: RuntimeSettings[]
   recalls: string[]
   submits: { payload: string; source: string }[]
 }
@@ -57,20 +58,30 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     { recordId: 'm1', tier: 'Semantic', scope: 'Global', body: 'likes jasmine tea', createdAt: '2026-09-26T10:00:00+00:00', validTo: null, supersededBy: null, editedBy: null, importance: 0.9 },
   ]
 
-  const settings: VoiceSettings = {
-    inputEnabled: false,
-    inputDeviceId: null,
-    silenceThreshold: 0.03,
-    utteranceGapMs: 1200,
-    sentenceGapMs: 450,
-    windowSeconds: 8,
-    asrStream: false,
-    outputEnabled: false,
-    outputDeviceId: null,
-    speed: 1,
-    gapMs: 0,
-    drainMs: 400,
-    muteDuringTts: true,
+  const settings: SettingsView = {
+    input: {
+      enabled: false,
+      deviceId: null,
+      silenceThreshold: 0.03,
+      utteranceGapMs: 1200,
+      sentenceGapMs: 450,
+      windowSeconds: 8,
+      asrStream: false,
+      maxSplitChars: 40,
+    },
+    output: {
+      enabled: false,
+      deviceId: null,
+      voice: null,
+      speed: 1,
+      gapMs: 0,
+      drainMs: 400,
+      sampleRate: 24000,
+      muteDuringTts: true,
+    },
+    asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+    tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+    model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120 },
   }
 
   const stub: PartnerApiSurface = {
@@ -102,9 +113,9 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     memoryRevisions: vi.fn(async (): Promise<MemoryRevision[]> => [{ at: '2026-09-26T10:00:09+00:00', before: 'likes tea', after: 'likes jasmine tea', actor: 'Human' }]),
     settings: vi.fn(async () => settings),
-    saveSettings: vi.fn(async (patch: Partial<VoiceSettings>) => {
+    saveSettings: vi.fn(async (patch: RuntimeSettings) => {
       calls.saves.push(patch)
-      return { ...settings, ...patch }
+      return { settings: settings as unknown as SettingsView, consumer: { running: false, reason: "未配置模型", model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } } }
     }),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
     ...overrides,
@@ -226,9 +237,79 @@ describe('memory view', () => {
 })
 
 describe('settings view', () => {
+  it('renders a card per configurable subsystem', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const headings = wrapper.findAll('section.card h2').map((node) => node.text())
+    expect(headings).toEqual(['语音输入', '语音输出', '语音识别（ASR）', '语音合成（TTS）', '模型（对话）'])
+
+    expect(wrapper.find('[data-test="asr-base-url"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="tts-base-url"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="model-base-url"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="model-api-key"]').exists()).toBe(true)
+  })
+
+  it('never fills the key field from the server and says whether one is stored', async () => {
+    const { stub } = createStub({
+      settings: vi.fn(async () => ({
+        input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40 },
+        output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
+        asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+        tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120 },
+      })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // The key is write-only: the server has one, the field must not.
+    expect(wrapper.find<HTMLInputElement>('[data-test="model-api-key"]').element.value).toBe('')
+    expect(wrapper.find('[data-test="model-api-key-state"]').text()).toBe('已设置')
+    expect(wrapper.find('[data-test="model-api-key-hint"]').text()).toContain('留空保持不变')
+  })
+
+  it('does not send an untouched key, and sends an explicit clear when asked', async () => {
+    const { stub, calls } = createStub({
+      settings: vi.fn(async () => ({
+        input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40 },
+        output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
+        asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+        tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120 },
+      })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    // An edit to an unrelated field must not wipe the stored key.
+    expect(calls.saves[0]?.model).not.toHaveProperty('apiKey')
+
+    await wrapper.find('[data-test="model-api-key-clear"]').trigger('click')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[1]?.model).toHaveProperty('apiKey', '')
+  })
+
+  it('says whether the queue will be executed at all', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // No endpoint filled in, no consumer running: the page must not imply the settings took effect.
+    expect(wrapper.find('[data-test="model-effect"]').text()).toContain('未配置模型')
+  })
+
   it('loads the stored values and shows what the API kept', async () => {
     const { stub, calls } = createStub()
-    const wrapper = mount(SettingsView, { props: { api: stub } })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
     expect(wrapper.find<HTMLInputElement>('[data-test="utterance-gap"]').element.value).toBe('1200')
@@ -237,7 +318,7 @@ describe('settings view', () => {
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
 
-    expect(calls.saves).toEqual([expect.objectContaining({ utteranceGapMs: 750 })])
+    expect(calls.saves).toEqual([expect.objectContaining({ input: expect.objectContaining({ utteranceGapMs: 750 }) })])
     // ui.md §5.6: the status carries a timestamp, so the exact wording is no longer a fixed string.
     const status = wrapper.find('[data-test="settings-status"]').text()
     expect(status).toContain('已保存')

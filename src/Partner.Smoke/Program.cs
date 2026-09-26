@@ -1448,19 +1448,24 @@ internal static class Program
             var settings = await http.GetFromJsonAsync<JsonElement>("/api/settings");
             var putSettings = await http.PutAsJsonAsync("/api/settings", new
             {
-                inputEnabled = true,
-                utteranceGapMs = 900,
-                outputEnabled = true,
-                muteDuringTts = true,
+                input = new { enabled = true, utteranceGapMs = 900 },
+                output = new { enabled = true, muteDuringTts = true },
+                asr = new { baseUrl = "http://127.0.0.1:45101", model = "smoke-asr", language = "Chinese" },
+                tts = new { baseUrl = "http://127.0.0.1:45102", lang = "zh", chunkMs = 120 },
             });
             putSettings.EnsureSuccessStatusCode();
             var saved = await http.GetFromJsonAsync<JsonElement>("/api/settings");
 
-            Check("ui: settings round-trip through the API",
-                settings.GetProperty("utteranceGapMs").GetDouble() == 1200
-                && saved.GetProperty("utteranceGapMs").GetDouble() == 900
-                && saved.GetProperty("inputEnabled").GetBoolean(),
-                $"default={settings.GetProperty("utteranceGapMs").GetDouble()} saved={saved.GetProperty("utteranceGapMs").GetDouble()}");
+            Check("ui: settings round-trip every section through the API",
+                settings.GetProperty("input").GetProperty("utteranceGapMs").GetDouble() == 1200
+                && saved.GetProperty("input").GetProperty("utteranceGapMs").GetDouble() == 900
+                && saved.GetProperty("input").GetProperty("enabled").GetBoolean()
+                && saved.GetProperty("output").GetProperty("muteDuringTts").GetBoolean()
+                && saved.GetProperty("asr").GetProperty("model").GetString() == "smoke-asr"
+                && saved.GetProperty("tts").GetProperty("chunkMs").GetInt32() == 120,
+                $"gap={saved.GetProperty("input").GetProperty("utteranceGapMs").GetDouble()} "
+                + $"asr={saved.GetProperty("asr").GetProperty("model").GetString()} "
+                + $"tts={saved.GetProperty("tts").GetProperty("chunkMs").GetInt32()}");
 
             // Queue view + cancel.
             var queuedSeq = await apiContext.Queue.EnqueueAsync(new InputItem
@@ -1653,6 +1658,80 @@ internal static class Program
                 await wireRun;
                 await wireConsumer.DisposeAsync();
                 await wireContext.DisposeAsync();
+            }
+
+            // Settings are the configuration surface, so pointing them at an endpoint must re-point the
+            // running consumer — not just change what the UI displays.
+            var settingsWorkspace = Path.Combine(root, "consumer-settings");
+            var settingsPort = FreePort();
+            var settingsToken = TokenAuth.Generate();
+            var settingsModelPort = FreePort();
+
+            using var settingsProvider = new FakeChatProvider(settingsModelPort, "由设置驱动的回复。");
+            var (settingsApp, settingsContext, settingsConsumer) =
+                await ApiHost.BuildAsync(settingsWorkspace, settingsPort, settingsToken, clock);
+            var settingsRun = settingsApp.RunAsync();
+            using var settingsHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{settingsPort}") };
+            settingsHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settingsToken);
+
+            try
+            {
+                await WaitForHostAsync(settingsHttp);
+
+                var put = await settingsHttp.PutAsJsonAsync("/api/settings", new
+                {
+                    model = new
+                    {
+                        baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
+                        model = "settings-model",
+                        apiKey = "smoke-key",
+                    },
+                });
+                var putBody = await put.Content.ReadFromJsonAsync<JsonElement>();
+                var reconfigured = putBody.GetProperty("consumer");
+
+                var delivered = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "设置驱动" });
+                var deliveredId = (await delivered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+
+                var settled = false;
+                for (var attempt = 0; attempt < 200 && !settled; attempt++)
+                {
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                    settled = polled.GetProperty("items").EnumerateArray().Any(item =>
+                        item.GetProperty("itemId").GetString() == deliveredId
+                        && item.GetProperty("status").GetString() == "Done");
+                    await Task.Delay(25);
+                }
+
+                var session = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var assistant = session.GetProperty("items").EnumerateArray()
+                    .Where(item => item.GetProperty("kind").GetString() == "Assistant")
+                    .Select(item => item.GetProperty("body").GetString())
+                    .ToList();
+
+                Check("settings: pointing the model settings at an endpoint re-points the consumer",
+                    reconfigured.GetProperty("running").GetBoolean()
+                    && reconfigured.GetProperty("model").GetString() == "settings-model"
+                    && reconfigured.GetProperty("reason").GetString()!.Contains("设置", StringComparison.Ordinal)
+                    && settled
+                    && assistant.Count == 1
+                    && assistant[0] == "由设置驱动的回复。"
+                    && settingsProvider.SawAuthorization == "Bearer smoke-key",
+                    $"running={reconfigured.GetProperty("running").GetBoolean()} settled={settled} reply={assistant.FirstOrDefault()}");
+
+                // The key went out on the wire but must never come back through the settings endpoint.
+                var raw = await settingsHttp.GetStringAsync("/api/settings");
+                Check("settings: the API key is sent to the model but never echoed back",
+                    !raw.Contains("smoke-key", StringComparison.Ordinal)
+                    && JsonDocument.Parse(raw).RootElement.GetProperty("model").GetProperty("apiKeySet").GetBoolean(),
+                    "apiKeySet=true, value absent");
+            }
+            finally
+            {
+                await settingsApp.StopAsync();
+                await settingsRun;
+                await settingsConsumer.DisposeAsync();
+                await settingsContext.DisposeAsync();
             }
         }
     }
@@ -2151,6 +2230,8 @@ internal static class Program
             "consumer: with a model the delivered input becomes a turn in the session",
             "consumer: the queue drains and the loop counts what it handled",
             "consumer: a real HTTP model call completes a turn end to end",
+            "settings: pointing the model settings at an endpoint re-points the consumer",
+            "settings: the API key is sent to the model but never echoed back",
         }),
         ("ui.composer", "M13", new[]
         {
@@ -2171,7 +2252,7 @@ internal static class Program
         }),
         ("ui.settings", "M13", new[]
         {
-            "ui: settings round-trip through the API",
+            "ui: settings round-trip every section through the API",
         }),
         ("ui.projection_rebuild", "M13", new[]
         {

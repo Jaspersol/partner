@@ -282,17 +282,32 @@ public static class ViewEndpoints
     // ---- settings view ----------------------------------------------------------------------------
     private static void MapSettings(WebApplication app)
     {
-        app.MapGet("/api/settings", (ApiContext ctx) => Results.Ok(ctx.Settings.Load()));
+        app.MapGet("/api/settings", (ApiContext ctx) => Results.Ok(SettingsView.From(ctx.Settings.Load())));
 
-        app.MapPut("/api/settings", (VoiceSettingsDto settings, ApiContext ctx) =>
+        app.MapPut("/api/settings", async (
+            RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, CancellationToken ct) =>
         {
-            if (settings.SilenceThreshold < 0)
+            var before = ctx.Settings.Load();
+
+            RuntimeSettings stored;
+            try
             {
-                return Results.BadRequest(new { error = "silenceThreshold must not be negative" });
+                stored = ctx.Settings.Save(incoming);
+            }
+            catch (SettingsValidationException invalid)
+            {
+                return Results.BadRequest(new { error = invalid.Message, errors = invalid.Errors });
             }
 
-            ctx.Settings.Save(settings);
-            return Results.Ok(ctx.Settings.Load());
+            // The model section is the one that must take effect now rather than at the next restart. Other
+            // sections can change without interrupting a turn in flight.
+            if (ModelConfig.Differs(before.Model, stored.Model))
+            {
+                var (config, reason) = ModelConfig.Resolve(stored);
+                await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
+            }
+
+            return Results.Ok(new { settings = SettingsView.From(stored), consumer = consumer.State });
         });
     }
 

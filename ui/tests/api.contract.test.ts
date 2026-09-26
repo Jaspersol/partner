@@ -116,8 +116,11 @@ describe('the API contract the UI binds to', () => {
     expect(Array.isArray(memory)).toBe(true)
 
     const settings = await api.settings()
-    expect(typeof settings.utteranceGapMs).toBe('number')
-    expect(typeof settings.muteDuringTts).toBe('boolean')
+    expect(typeof settings.input.utteranceGapMs).toBe('number')
+    expect(typeof settings.output.muteDuringTts).toBe('boolean')
+    expect(typeof settings.asr.model).toBe('string')
+    expect(typeof settings.tts.chunkMs).toBe('number')
+    expect(typeof settings.model.apiKeySet).toBe('boolean')
   })
 
   it('keeps the original body when a session event is edited', async () => {
@@ -140,13 +143,42 @@ describe('the API contract the UI binds to', () => {
     expect(revisions.at(-1)?.body).toBe(`${target.body} (edited)`)
   })
 
-  it('round-trips settings and reports what it stored', async () => {
-    const saved = await api.saveSettings({ utteranceGapMs: 777, inputEnabled: true })
-    expect(saved.utteranceGapMs).toBe(777)
-    expect(saved.inputEnabled).toBe(true)
+  it('round-trips every settings section and reports what it stored', async () => {
+    const current = await api.settings()
+    const saved = await api.saveSettings({
+      ...current,
+      input: { ...current.input, utteranceGapMs: 777, enabled: true },
+      asr: { ...current.asr, baseUrl: 'http://127.0.0.1:45101', model: 'contract-asr' },
+      tts: { ...current.tts, baseUrl: 'http://127.0.0.1:45102', chunkMs: 120 },
+    })
+
+    expect(saved.settings.input.utteranceGapMs).toBe(777)
+    expect(saved.settings.input.enabled).toBe(true)
+    expect(saved.settings.asr.model).toBe('contract-asr')
+    expect(saved.settings.tts.chunkMs).toBe(120)
+    // Saving always reports what the consumer did as a result.
+    expect(typeof saved.consumer.running).toBe('boolean')
 
     const reloaded = await api.settings()
-    expect(reloaded.utteranceGapMs).toBe(777)
+    expect(reloaded.asr.model).toBe('contract-asr')
+  })
+
+  it('never echoes the API key back', async () => {
+    const current = await api.settings()
+    const saved = await api.saveSettings({
+      ...current,
+      model: { ...current.model, apiKey: 'contract-secret' },
+    })
+
+    expect(saved.settings.model.apiKeySet).toBe(true)
+    expect(JSON.stringify(saved)).not.toContain('contract-secret')
+
+    // Clearing is an explicit empty string, not an omission.
+    const cleared = await api.saveSettings({
+      ...current,
+      model: { ...current.model, apiKey: '' },
+    })
+    expect(cleared.settings.model.apiKeySet).toBe(false)
   })
 
   it('rebuilds projections and reports the result', async () => {

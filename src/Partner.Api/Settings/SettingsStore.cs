@@ -4,43 +4,8 @@ using System.Text.Json.Serialization;
 namespace Partner.Api.Settings;
 
 /// <summary>
-/// Voice settings as the UI sees them (design doc §2.8.11 / §2.8.12). Deliberately a plain DTO: the API
-/// project must not depend on the voice layer's audio stack just to expose a form.
-/// </summary>
-public sealed record VoiceSettingsDto
-{
-    public bool InputEnabled { get; init; }
-
-    public string? InputDeviceId { get; init; }
-
-    public double SilenceThreshold { get; init; } = 0.03;
-
-    public double UtteranceGapMs { get; init; } = 1200;
-
-    public double SentenceGapMs { get; init; } = 450;
-
-    public double WindowSeconds { get; init; } = 8;
-
-    public bool AsrStream { get; init; }
-
-    public bool OutputEnabled { get; init; }
-
-    public string? OutputDeviceId { get; init; }
-
-    public double Speed { get; init; } = 1.0;
-
-    public double GapMs { get; init; }
-
-    public double DrainMs { get; init; } = 400;
-
-    public bool MuteDuringTts { get; init; } = true;
-
-    public static VoiceSettingsDto Default { get; } = new();
-}
-
-/// <summary>
-/// Persists the UI-editable settings. Writes go through a temp file + atomic replace so a crash cannot leave
-/// a half-written configuration behind — the same discipline the session log uses.
+/// Persists the runtime's editable settings. Writes go through a temp file + atomic replace so a crash cannot
+/// leave a half-written configuration behind — the same discipline the session log uses.
 /// </summary>
 public sealed class SettingsStore
 {
@@ -61,30 +26,64 @@ public sealed class SettingsStore
 
     public string Path => _path;
 
-    public VoiceSettingsDto Load()
+    public RuntimeSettings Load()
     {
         if (!File.Exists(_path))
         {
-            return VoiceSettingsDto.Default;
+            return RuntimeSettings.Default;
         }
 
         try
         {
-            return JsonSerializer.Deserialize<VoiceSettingsDto>(File.ReadAllText(_path), Json)
-                ?? VoiceSettingsDto.Default;
+            return JsonSerializer.Deserialize<RuntimeSettings>(File.ReadAllText(_path), Json)
+                ?? RuntimeSettings.Default;
         }
         catch (JsonException)
         {
-            // A corrupt settings file must not take the UI down; the defaults are safe and the file is
+            // A corrupt settings file must not take the runtime down; the defaults are safe and the file is
             // rewritten on the next save.
-            return VoiceSettingsDto.Default;
+            return RuntimeSettings.Default;
         }
     }
 
-    public void Save(VoiceSettingsDto settings)
+    /// <summary>
+    /// Applies <paramref name="incoming"/> on top of what is stored and persists the result.
+    /// <para>
+    /// The API key is the one field that is not a plain replace: <see langword="null"/> keeps the stored key,
+    /// an empty string clears it, and a value replaces it. Without that rule a full-object PUT would wipe the
+    /// key every time a client edited an unrelated field.
+    /// </para>
+    /// </summary>
+    /// <exception cref="SettingsValidationException">The merged settings are not usable.</exception>
+    public RuntimeSettings Save(RuntimeSettings incoming)
     {
-        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(incoming);
 
+        var stored = Load();
+        var merged = incoming with
+        {
+            Model = incoming.Model with { ApiKey = ResolveKey(incoming.Model.ApiKey, stored.Model.ApiKey) },
+        };
+
+        var errors = SettingsValidation.Validate(merged);
+        if (errors.Count > 0)
+        {
+            throw new SettingsValidationException(errors);
+        }
+
+        Write(merged);
+        return merged;
+    }
+
+    private static string? ResolveKey(string? incoming, string? stored) => incoming switch
+    {
+        null => stored,
+        "" => null,
+        _ => incoming,
+    };
+
+    private void Write(RuntimeSettings settings)
+    {
         var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_path));
         if (!string.IsNullOrEmpty(directory))
         {
@@ -104,4 +103,16 @@ public sealed class SettingsStore
             File.Move(temp, _path);
         }
     }
+}
+
+/// <summary>Carries every validation failure at once, so a client can fix them in one pass.</summary>
+public sealed class SettingsValidationException : Exception
+{
+    public SettingsValidationException(IReadOnlyList<string> errors)
+        : base(string.Join("; ", errors))
+    {
+        Errors = errors;
+    }
+
+    public IReadOnlyList<string> Errors { get; }
 }
