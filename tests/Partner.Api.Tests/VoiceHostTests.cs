@@ -283,6 +283,10 @@ internal sealed class SyntheticVoice : IVoiceComponents
         return LastSink;
     }
 
+    public IReadOnlyList<string> ListInputDevices() => new[] { "synthetic-mic", "synthetic-mic-2" };
+
+    public IReadOnlyList<string> ListOutputDevices() => new[] { "synthetic-speaker" };
+
     public IAsrClient CreateAsr(AsrOptions options) => new ScriptedAsr(this);
 
     public ITtsClient CreateTts(TtsOptions options) => new ScriptedTts(this);

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import type { ConsumerState, PartnerApiSurface, RuntimeSettings, VoiceState } from '../api'
+import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState } from '../api'
 
 const props = defineProps<{ api: PartnerApiSurface }>()
 const emit = defineEmits<{ context: [value: string] }>()
@@ -41,11 +41,39 @@ const status = ref('')
 const error = ref('')
 const consumer = ref<ConsumerState | null>(null)
 const voice = ref<VoiceState | null>(null)
+const devices = ref<DeviceList>({ inputs: [], outputs: [] })
+const models = ref<string[]>([])
+const modelProbeError = ref('')
+const probing = ref(false)
+
+const inputOptions = computed(() => withStored(devices.value.inputs, form.input.deviceId))
+const outputOptions = computed(() => withStored(devices.value.outputs, form.output.deviceId))
 
 const modelConfigured = computed(() => (form.model.baseUrl ?? '') !== '' && (form.model.model ?? '') !== '')
 const keyHint = computed(() =>
   apiKeySet.value ? '已设置 · 留空保持不变，输入新值即替换' : '未设置（本地服务通常不需要）',
 )
+
+/** A stored value that no longer enumerates must still be selectable, or the setting would silently change. */
+function withStored(available: string[], stored: string | null): string[] {
+  return stored !== null && stored !== '' && !available.includes(stored) ? [stored, ...available] : available
+}
+
+async function probeModels() {
+  probing.value = true
+  modelProbeError.value = ''
+
+  try {
+    const probe = await props.api.listModels(form.model.baseUrl ?? undefined)
+    models.value = probe.models
+    modelProbeError.value = probe.error ?? ''
+  } catch (failure) {
+    models.value = []
+    modelProbeError.value = String(failure)
+  } finally {
+    probing.value = false
+  }
+}
 
 function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   Object.assign(form.input, settings.input)
@@ -68,6 +96,7 @@ async function refresh() {
   try {
     apply(await props.api.settings())
     voice.value = await props.api.voice()
+    devices.value = await props.api.devices()
     emit('context', '设置 · 运行时')
   } catch (failure) {
     error.value = String(failure)
@@ -160,8 +189,13 @@ onMounted(refresh)
             <input type="checkbox" v-model="form.input.asrStream" @change="persist" />
           </label>
           <label class="field">
-            <span>输入设备 ID</span>
-            <input type="text" v-model="form.input.deviceId" placeholder="（默认设备）" />
+            <span>输入设备</span>
+            <select v-if="inputOptions.length > 0" v-model="form.input.deviceId" data-test="input-device">
+              <option :value="null">（默认设备）</option>
+              <option v-for="name in inputOptions" :key="name" :value="name">{{ name }}</option>
+            </select>
+            <input v-else type="text" v-model="form.input.deviceId" placeholder="（默认设备）" data-test="input-device" />
+            <span class="source">按名称模糊匹配；枚举不到设备时可手填</span>
           </label>
 
           <p class="card-note" data-test="input-effect">
@@ -205,8 +239,12 @@ onMounted(refresh)
             <input type="checkbox" v-model="form.output.muteDuringTts" @change="persist" />
           </label>
           <label class="field">
-            <span>输出设备 ID</span>
-            <input type="text" v-model="form.output.deviceId" placeholder="（默认设备）" />
+            <span>输出设备</span>
+            <select v-if="outputOptions.length > 0" v-model="form.output.deviceId" data-test="output-device">
+              <option :value="null">（默认设备）</option>
+              <option v-for="name in outputOptions" :key="name" :value="name">{{ name }}</option>
+            </select>
+            <input v-else type="text" v-model="form.output.deviceId" placeholder="（默认设备）" data-test="output-device" />
           </label>
 
           <p class="card-note" data-test="output-effect">
@@ -290,8 +328,18 @@ onMounted(refresh)
           </label>
           <label class="field">
             <span>模型名</span>
-            <input type="text" v-model="form.model.model" placeholder="qwen3" data-test="model-name" />
+            <select v-if="models.length > 0" v-model="form.model.model" data-test="model-name">
+              <option v-for="name in withStored(models, form.model.model)" :key="name" :value="name">{{ name }}</option>
+            </select>
+            <input v-else type="text" v-model="form.model.model" placeholder="qwen3" data-test="model-name" />
           </label>
+          <div class="row">
+            <button class="ghost" :disabled="probing" data-test="model-probe" @click="probeModels">
+              {{ probing ? '拉取中…' : '拉取模型列表' }}
+            </button>
+            <span v-if="models.length > 0" class="muted" data-test="model-count">{{ models.length }} 个可选</span>
+            <span v-if="modelProbeError" class="error break" data-test="model-probe-error">{{ modelProbeError }}</span>
+          </div>
           <label class="field">
             <span>API Key</span>
             <input

@@ -111,6 +111,44 @@ public sealed class HttpLlmClient : ILlmClient
         return (new HttpLlmClient(client, options), reason);
     }
 
+    /// <summary>
+    /// The model ids the endpoint advertises (<c>GET {base}/models</c>, the OpenAI-compatible listing). An
+    /// endpoint that does not implement it fails with the provider's own message rather than an empty list,
+    /// because "no models" and "cannot ask" are different answers for the caller.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListModelsAsync(CancellationToken ct = default)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Get, $"{_options.BaseUrl}/models");
+
+        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+        }
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(_options.Timeout);
+
+        using var response = await _http.SendAsync(message, deadline.Token).ConfigureAwait(false);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
+            throw new HttpRequestException(
+                $"列出模型返回 {(int)response.StatusCode} {response.StatusCode}：{Truncate(detail)}");
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<ModelsResponse>(Json, deadline.Token).ConfigureAwait(false);
+
+        return payload?.Data is { Count: > 0 }
+            ? payload.Data
+                .Select(model => model.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToList()
+            : Array.Empty<string>();
+    }
+
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -218,6 +256,10 @@ public sealed class HttpLlmClient : ILlmClient
     private sealed record ToolPayload(string Type, FunctionPayload Function);
 
     private sealed record FunctionPayload(string Name, string Description, JsonElement Parameters);
+
+    private sealed record ModelsResponse(IReadOnlyList<ModelEntry>? Data);
+
+    private sealed record ModelEntry(string Id);
 
     private sealed record ChatResponse(IReadOnlyList<ChatChoice>? Choices);
 

@@ -329,6 +329,40 @@ async function main() {
     const keyState = await evaluate(cdp, 'document.querySelector(\'[data-test="model-api-key-state"]\').textContent')
     check('the API key is stored without being echoed back into the form', keyField === '' && keyState.includes('已设置'), `field="${keyField}" state=${keyState.trim()}`)
 
+    // Discovery: the device pickers must offer the machine's real endpoints, not a text box.
+    const inputDeviceTag = await evaluate(cdp, `document.querySelector('[data-test="input-device"]').tagName`)
+    const inputDeviceOptions = await evaluate(
+      cdp,
+      `[...document.querySelectorAll('[data-test="input-device"] option')].map((o) => o.textContent).join('|')`,
+    )
+    check(
+      'the input device is a picker over the machine\'s real endpoints',
+      inputDeviceTag === 'SELECT' && inputDeviceOptions.split('|').length > 1,
+      `${inputDeviceTag}: ${inputDeviceOptions}`,
+    )
+
+    // A probe against a dead endpoint must explain itself, and must leave the field typeable.
+    await evaluate(
+      cdp,
+      `(() => {
+        const button = document.querySelector('[data-test="model-probe"]')
+        button.click()
+        return true
+      })()`,
+    )
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-test="model-probe-error"]')?.textContent.length > 0`,
+      'the model probe to report its failure',
+    )
+    const probeError = await evaluate(cdp, `document.querySelector('[data-test="model-probe-error"]').textContent`)
+    const nameTag = await evaluate(cdp, `document.querySelector('[data-test="model-name"]').tagName`)
+    check(
+      'a failed model probe says why and leaves the field typeable',
+      probeError.length > 0 && nameTag === 'INPUT',
+      `${nameTag}: ${probeError.slice(0, 80)}`,
+    )
+
     const settingsRaw = await (await fetch(`http://127.0.0.1:${port}/api/settings`, { headers: { Authorization: `Bearer ${token}` } })).text()
     check('the API never returns the stored key', !settingsRaw.includes('e2e-secret'), 'value absent from the response')
 

@@ -789,6 +789,16 @@
           "check": "settings: the API key is sent to the model but never echoed back",
           "ran": true,
           "passed": true
+        },
+        {
+          "check": "settings: the model listing is pulled through the API",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "settings: an unreachable model endpoint returns a reason, not a silent empty list",
+          "ran": true,
+          "passed": true
         }
       ]
     },

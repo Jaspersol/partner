@@ -1,7 +1,7 @@
 // @vitest-environment node
 // The contract test needs sockets, not a DOM; happy-dom would additionally impose CORS on the fetch calls.
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,7 +15,28 @@ import { ApiError, PartnerApi } from '../src/api'
 
 // vitest runs with the frontend directory as cwd.
 const repoRoot = join(process.cwd(), '..')
-const apiExe = join(repoRoot, 'src', 'Partner.Api', 'bin', 'Debug', 'net8.0', 'partner-api.exe')
+
+/**
+ * Finds the built API. The framework folder name follows the project's target framework, and a stale one can
+ * linger after a retarget — picking by existence rather than by a hardcoded name keeps the test pointed at
+ * what was actually built.
+ */
+function findApiExecutable(): string {
+  const debugRoot = join(repoRoot, 'src', 'Partner.Api', 'bin', 'Debug')
+  const candidates = existsSync(debugRoot)
+    ? readdirSync(debugRoot)
+        .map((name) => join(debugRoot, name, 'partner-api.exe'))
+        .filter((path) => existsSync(path))
+    : []
+
+  if (candidates.length === 0) {
+    throw new Error(`missing partner-api.exe under ${debugRoot} — run "dotnet build" before the frontend tests`)
+  }
+
+  return candidates.sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0]!
+}
+
+const apiExe = findApiExecutable()
 
 let api: PartnerApi
 let server: ChildProcess
@@ -185,6 +206,23 @@ describe('the API contract the UI binds to', () => {
     const report = await api.rebuild()
     expect(report.sessionItems).toBeGreaterThan(0)
     expect(report.sessionLastSeq).toBeGreaterThan(0)
+  })
+
+  it('lists the devices the runtime can see', async () => {
+    const devices = await api.devices()
+
+    // The contract test runs on a machine with audio endpoints, but the assertion that matters is shape:
+    // both directions come back as arrays of names, never null.
+    expect(Array.isArray(devices.inputs)).toBe(true)
+    expect(Array.isArray(devices.outputs)).toBe(true)
+  })
+
+  it('reports a model probe failure as a reason, not as an empty list', async () => {
+    const closed = 9
+    const probe = await api.listModels(`http://127.0.0.1:${closed}/v1`)
+
+    expect(probe.models).toEqual([])
+    expect(probe.error).toBeTruthy()
   })
 
   it('reports whether anything is executing the queue', async () => {

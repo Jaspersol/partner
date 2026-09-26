@@ -92,7 +92,8 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     sessionRevisions: vi.fn(async (): Promise<SessionRevision[]> => [{ seq: 2, at: '2026-09-26T10:00:01+00:00', body: 'first (edited)' }]),
     queue: vi.fn(async () => queue),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
-    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
+    devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),
+    listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9/v1', models: ['qwen3', 'llama3'] })),    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
     submitInput: vi.fn(async (payload: string, source: string) => {
       calls.submits.push({ payload, source })
       return { itemId: 'in-test', seq: 9, status: 'Queued', deduplicated: false }
@@ -327,6 +328,97 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="input-effect"]').text()).toContain('已识别 3 段')
     // Enabled but not running: the reason must be on screen, not in a log.
     expect(wrapper.find('[data-test="output-effect"]').text()).toContain('未配置 TTS')
+  })
+
+  it('offers the devices the runtime can see instead of asking for a name', async () => {
+    const { stub } = createStub({
+      devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)', '麦克风 (NVIDIA Broadcast)'], outputs: ['扬声器 (Realtek)'] })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const inputDevice = wrapper.find<HTMLSelectElement>('[data-test="input-device"]')
+    expect(inputDevice.element.tagName).toBe('SELECT')
+
+    const options = inputDevice.findAll('option').map((option) => option.text())
+    expect(options).toEqual(['（默认设备）', '麦克风 (USB)', '麦克风 (NVIDIA Broadcast)'])
+
+    // The output list is separate: picking a microphone for playback is not a thing.
+    expect(wrapper.find<HTMLSelectElement>('[data-test="output-device"]').findAll('option').map((o) => o.text())).toEqual([
+      '（默认设备）',
+      '扬声器 (Realtek)',
+    ])
+  })
+
+  it('keeps a stored device that no longer enumerates selectable', async () => {
+    const { stub } = createStub({
+      settings: vi.fn(async () => ({
+        input: { enabled: false, deviceId: '拔掉的麦克风', silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40 },
+        output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
+        asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+        tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120 },
+      })),
+      devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const select = wrapper.find<HTMLSelectElement>('[data-test="input-device"]')
+    // A device that is unplugged today must not silently become "default" on the next save.
+    expect(select.element.value).toBe('拔掉的麦克风')
+    expect(select.findAll('option').map((o) => o.text())).toContain('拔掉的麦克风')
+  })
+
+  it('falls back to typing when there are no devices to offer', async () => {
+    const { stub } = createStub({ devices: vi.fn(async () => ({ inputs: [], outputs: [] })) })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="input-device"]').element.tagName).toBe('INPUT')
+  })
+
+  it('pulls the model list and turns the name field into a picker', async () => {
+    const { stub } = createStub({
+      listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:11434/v1', models: ['llama3', 'qwen3:8b'] })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // Before pulling, the field is free text — a local endpoint may not implement the listing at all.
+    expect(wrapper.find('[data-test="model-name"]').element.tagName).toBe('INPUT')
+
+    await wrapper.find('[data-test="model-probe"]').trigger('click')
+    await flushPromises()
+
+    const select = wrapper.find<HTMLSelectElement>('[data-test="model-name"]')
+    expect(select.element.tagName).toBe('SELECT')
+    expect(select.findAll('option').map((o) => o.text())).toEqual(['llama3', 'qwen3:8b'])
+    expect(wrapper.find('[data-test="model-count"]').text()).toContain('2 个可选')
+  })
+
+  it('reports why a model probe failed instead of showing an empty list', async () => {
+    const { stub } = createStub({
+      listModels: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:9/v1',
+        models: [],
+        error: '列出模型返回 404 NotFound',
+      })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="model-probe"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="model-probe-error"]').text()).toContain('404')
+    // The field stays typeable: an endpoint without a listing is still a usable endpoint.
+    expect(wrapper.find('[data-test="model-name"]').element.tagName).toBe('INPUT')
   })
 
   it('loads the stored values and shows what the API kept', async () => {

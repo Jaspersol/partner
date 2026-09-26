@@ -174,6 +174,19 @@ export interface VoiceHalfState {
   count: number
 }
 
+/** Device names the runtime can actually see. */
+export interface DeviceList {
+  inputs: string[]
+  outputs: string[]
+}
+
+/** What a probe of the model endpoint found. An empty list with an error is a real answer. */
+export interface ModelProbe {
+  baseUrl: string
+  models: string[]
+  error?: string
+}
+
 export interface VoiceState {
   input: VoiceHalfState
   output: VoiceHalfState
@@ -235,6 +248,8 @@ export interface PartnerApiSurface {
   submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult>
   consumer(): Promise<ConsumerState>
   voice(): Promise<VoiceState>
+  devices(): Promise<DeviceList>
+  listModels(baseUrl?: string): Promise<ModelProbe>
   memory(tier?: string, scope?: string, take?: number): Promise<MemoryItem[]>
   recall(query: string, limit?: number): Promise<RecallHit[]>
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
@@ -303,6 +318,19 @@ export class PartnerApi implements PartnerApiSurface {
   /** Whether the two voice halves are up. Without this a disabled microphone looks like a broken one. */
   voice(): Promise<VoiceState> {
     return this.request<VoiceState>('GET', '/api/voice')
+  }
+
+  /** Proxied through the API: the device list is a runtime fact, not something the browser can ask for. */
+  devices(): Promise<DeviceList> {
+    return this.request<DeviceList>('GET', '/api/voice/devices')
+  }
+
+  /**
+   * Asks the API to probe the model endpoint's listing. Proxied because the endpoint will not allow the
+   * webview's origin and the API key must not travel to the browser.
+   */
+  listModels(baseUrl?: string): Promise<ModelProbe> {
+    return this.request<ModelProbe>('POST', '/api/models', { baseUrl: baseUrl ?? null })
   }
 
   // ---- memory ----------------------------------------------------------------------------------

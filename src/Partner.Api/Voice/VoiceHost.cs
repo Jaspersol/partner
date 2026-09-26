@@ -106,6 +106,11 @@ public interface IVoiceComponents
     IAsrClient CreateAsr(AsrOptions options);
 
     ITtsClient CreateTts(TtsOptions options);
+
+    /// <summary>Names of the capture devices, so a UI can offer them instead of asking the user to type one.</summary>
+    IReadOnlyList<string> ListInputDevices();
+
+    IReadOnlyList<string> ListOutputDevices();
 }
 
 /// <summary>The real components: WASAPI devices and HTTP clients.</summary>
@@ -118,6 +123,10 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
     public IAsrClient CreateAsr(AsrOptions options) => new HttpAsrClient(options);
 
     public ITtsClient CreateTts(TtsOptions options) => new HttpTtsClient(options);
+
+    public IReadOnlyList<string> ListInputDevices() => WasapiAudioSource.ListDevices();
+
+    public IReadOnlyList<string> ListOutputDevices() => WasapiAudioSink.ListDevices();
 }
 
 /// <summary>What one half is doing. The device and the reason are reported, never assumed.</summary>
@@ -175,6 +184,11 @@ public sealed class VoiceHost : IAsyncDisposable
     }
 
     public VoiceState State => new(_inputState, _outputState);
+
+    /// <summary>Device names as the host's components see them; empty when enumeration is unavailable.</summary>
+    public IReadOnlyList<string> InputDevices => _components.ListInputDevices();
+
+    public IReadOnlyList<string> OutputDevices => _components.ListOutputDevices();
 
     public static VoiceHost Create(ApiContext context, IVoiceComponents components)
     {

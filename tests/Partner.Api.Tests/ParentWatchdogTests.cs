@@ -103,7 +103,10 @@ public sealed class ParentWatchdogTests
         }
     }
 
-    /// <summary>Walks up to the solution root, because the test runs from its own output directory.</summary>
+    /// <summary>
+    /// Locates the built executable. The framework folder follows the project's target framework, and a stale
+    /// one can linger after a retarget, so the newest build wins rather than a hardcoded folder name.
+    /// </summary>
     private static string ApiExecutable()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -118,14 +121,23 @@ public sealed class ParentWatchdogTests
             throw new InvalidOperationException("could not locate the solution root from " + AppContext.BaseDirectory);
         }
 
-        var exe = Path.Combine(directory.FullName, "src", "Partner.Api", "bin", "Debug", "net8.0", "partner-api.exe");
+        var debugRoot = Path.Combine(directory.FullName, "src", "Partner.Api", "bin", "Debug");
 
-        if (!File.Exists(exe))
+        if (!Directory.Exists(debugRoot))
         {
-            throw new InvalidOperationException($"missing {exe} — build the solution first");
+            throw new InvalidOperationException($"missing {debugRoot} — build the solution first");
         }
 
-        return exe;
+        var candidates = Directory
+            .EnumerateDirectories(debugRoot)
+            .Select(folder => Path.Combine(folder, "partner-api.exe"))
+            .Where(File.Exists)
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .ToList();
+
+        return candidates.Count > 0
+            ? candidates[0]
+            : throw new InvalidOperationException($"no partner-api.exe under {debugRoot} — build the solution first");
     }
 
     /// <summary>Kills the child if a test leaves it running, and removes its workspace.</summary>

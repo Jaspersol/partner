@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**422 个 .NET 单测 + 43 个前端测试全绿 / 108 项 smoke 检查 / 52 项能力 `product-supported`**。
+当前基线：**428 个 .NET 单测 + 50 个前端测试全绿 / 110 项 smoke 检查 / 52 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -31,6 +31,8 @@ bash scripts/ci.sh
 | 项 | 要求 |
 |---|---|
 | OS | **Windows**。`Desktop`/`Voice`/`Api`/`Smoke` 都是 `net8.0-windows10.0.19041.0`——API 之所以也在其中，是因为输入队列只有一个**进程内**消费者且没有跨进程锁，语音必须和它同进程（见「消费者」与「语音」） |
+
+**体积代价**：`net8.0-windows10.0.19041.0` 会拉进 CsWinRT 投影（`Microsoft.Windows.SDK.NET.dll` 24 MB），自包含发布因此从 101 MB 涨到 214 MB、安装包 34.7 MB → 63 MB。这两个项目都没直接用 WinRT API，但去掉版本后缀就丢了 `SupportedOSPlatformVersion` 声明的系统下限（`NETSDK1135`），所以留着——**这是声明「需要 Win10 2004+」的正确方式**，不值得为 24 MB 和 SDK 较劲。想缩小就改成框架依赖发布（2.5 MB API，代价是要求目标机装 .NET 8 运行时）。
 | .NET | .NET 8 SDK（当前 8.0.423） |
 | Node | Node 22 + npm（前端；**不用 pnpm**，见「坑」） |
 | Rust | cargo 1.98+（仅壳需要；缺失时 CI 自动跳过该步） |
@@ -196,6 +198,19 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/consumer
 | `tts` | 服务地址、语言、采样率、克隆参考音频、超时、播放块 | TTS 客户端（**尚无宿主**） |
 | `model` | 服务地址、模型名、**API Key**、超时 | **消费者（已接线）** |
 
+### 名称是拉取的，不是手打的
+
+| 项 | 怎么来 | 为什么走代理 |
+|---|---|---|
+| 音频设备 | `GET /api/voice/devices`（`WasapiAudioSource/Sink.ListDevices()`） | 浏览器问不到本机设备 |
+| 模型名 | `POST /api/models` → `GET {base}/models`（OpenAI 兼容列表） | 模型端点不允许 webview 的 origin，且 **API Key 不能进浏览器** |
+
+两条纪律：
+
+- **探测失败必须给出原因**。端点不通、端点没实现 `/models`（404）、列表为空——三者要能区分。所以代理返回 `{ models, error }` 而不是空数组，界面也把原因显示出来。
+- **已选但当前枚举不到的值仍然可选**。设备拔了、模型下线了，下拉里仍保留那一项；否则下一次保存会把它悄悄改成"默认"。
+- 密钥只发给**已存的那个端点**：探测别的地址时不带密钥（有测试守着）。
+
 ### API Key 是只写的
 
 `GET` 只返回 `apiKeySet`，**永不回传密钥值**——这个端点只要持有 token 就能访问，回传即泄露。
@@ -275,12 +290,12 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（422） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、设置读写、语音宿主、进程生命周期） |
+| .NET 单测（428） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、设置读写、语音宿主、发现端点、进程生命周期） |
 | smoke（97 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
-| 前端契约测试（11） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落与密钥不回传 |
-| 前端视图测试（13） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态） |
+| 前端契约测试（13） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点 |
+| 前端视图测试（18） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉） |
 | 前端组件测试（18） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 |
-| **壳的端到端（21）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**看语音半为何未运行**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
+| **壳的端到端（23）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（49） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
@@ -421,7 +436,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 反射层真实节奏 | 未实测。单测与 smoke 都是受控节拍，真实游戏里的信号节奏仍需一次实测 |
 | 壳的交互验证 | ✅ 已覆盖：`node scripts/e2e-shell.mjs`（9 项，CDP 驱动真实 webview）。**不在 CI**——需要桌面会话，且 CI 无法断言窗口 |
 | WebView2 的 UI Automation | UIA 看不到 DOM（实测只暴露 16 个元素）；CDP 可以，e2e 就是走 CDP |
-| 生产打包 | ✅ 已跑：`Partner_0.1.0_x64-setup.exe` **34.7 MB**（含 101 MB 自包含 API，NSIS 压缩）。**未在干净机器上安装验证** |
+| 生产打包 | ✅ 已跑：`Partner_0.1.0_x64-setup.exe` **63 MB**（含 214 MB 自包含 API，NSIS 压缩）。**未在干净机器上安装验证** |
 | 记忆页签空态 | API 按设计没有「新建记忆」端点（写入来自 Agent），因此该页签在空工作区是空列表 |
 | 消费者里的工具 / MCP | **未接入**：宿主的消费者用空工具表跑回合，所以模型只能对话，不能调工具。MCP 客户端（`Core/Agent/Mcp/`）已在 smoke 里验证，但没接进宿主 |
 | 真实模型供应商往返 | **未验证**：`HttpLlmClient` 用桩 handler 验了线格式，用真 TCP 假端点验了完整往返；没有对真实供应商（OpenAI/Ollama 等）跑过 |

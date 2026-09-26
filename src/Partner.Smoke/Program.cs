@@ -1725,6 +1725,31 @@ internal static class Program
                     && settingsProvider.SawAuthorization == "Bearer smoke-key",
                     $"running={reconfigured.GetProperty("running").GetBoolean()} settled={settled} reply={assistant.FirstOrDefault()}");
 
+                // Discovery: the UI offers what the runtime can see rather than asking for names.
+                var deviceList = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/voice/devices");
+                var probe = await settingsHttp.PostAsJsonAsync("/api/models", new
+                {
+                    baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
+                });
+                var probeBody = await probe.Content.ReadFromJsonAsync<JsonElement>();
+                var probed = probeBody.GetProperty("models").EnumerateArray().Select(m => m.GetString()).ToList();
+
+                Check("settings: the model listing is pulled through the API",
+                    probed.SequenceEqual(new[] { "smoke-model-a", "smoke-model-b" })
+                    && !probeBody.TryGetProperty("error", out _),
+                    $"models={string.Join(",", probed)}");
+
+                var dead = await settingsHttp.PostAsJsonAsync("/api/models", new
+                {
+                    baseUrl = $"http://127.0.0.1:{FreePort()}/v1",
+                });
+                var deadBody = await dead.Content.ReadFromJsonAsync<JsonElement>();
+
+                Check("settings: an unreachable model endpoint returns a reason, not a silent empty list",
+                    deadBody.GetProperty("models").GetArrayLength() == 0
+                    && !string.IsNullOrWhiteSpace(deadBody.GetProperty("error").GetString()),
+                    deadBody.GetProperty("error").GetString() ?? "(no reason)");
+
                 // The key went out on the wire but must never come back through the settings endpoint.
                 var raw = await settingsHttp.GetStringAsync("/api/settings");
                 Check("settings: the API key is sent to the model but never echoed back",
@@ -1881,6 +1906,10 @@ internal static class Program
             return LastSink;
         }
 
+        public IReadOnlyList<string> ListInputDevices() => new[] { "synthetic-mic" };
+
+        public IReadOnlyList<string> ListOutputDevices() => new[] { "synthetic-speaker" };
+
         public IAsrClient CreateAsr(AsrOptions options) => new ScriptedAsr(transcript);
 
         public ITtsClient CreateTts(TtsOptions options) => new ScriptedTts(TtsRequests);
@@ -2006,17 +2035,20 @@ internal static class Program
                 read += chunk;
             }
 
-            var payload = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                choices = new[]
+            // One socket serves both the completion and the listing, so the proxy is exercised for real.
+            var payload = RequestPath?.Contains("/models", StringComparison.Ordinal) == true
+                ? "{\"data\":[{\"id\":\"smoke-model-a\"},{\"id\":\"smoke-model-b\"}]}"
+                : System.Text.Json.JsonSerializer.Serialize(new
                 {
-                    new
+                    choices = new[]
                     {
-                        message = new { role = "assistant", content = _reply },
-                        finish_reason = "stop",
+                        new
+                        {
+                            message = new { role = "assistant", content = _reply },
+                            finish_reason = "stop",
+                        },
                     },
-                },
-            });
+                });
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(payload);
             var head = System.Text.Encoding.ASCII.GetBytes(
@@ -2422,6 +2454,8 @@ internal static class Program
             "consumer: a real HTTP model call completes a turn end to end",
             "settings: pointing the model settings at an endpoint re-points the consumer",
             "settings: the API key is sent to the model but never echoed back",
+            "settings: the model listing is pulled through the API",
+            "settings: an unreachable model endpoint returns a reason, not a silent empty list",
         }),
         ("ui.composer", "M13", new[]
         {

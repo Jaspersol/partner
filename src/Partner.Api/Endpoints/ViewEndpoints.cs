@@ -1,3 +1,4 @@
+using Partner.Core.Agent.Llm;
 using Partner.Api.Settings;
 using Partner.Api.Voice;
 using Partner.Core.Contracts;
@@ -21,7 +22,63 @@ public static class ViewEndpoints
         MapMemory(app);
         MapSettings(app);
         MapProjections(app);
+        MapDiscovery(app);
     }
+
+    // ---- discovery: what can be picked instead of typed ---------------------------------------------
+    private static void MapDiscovery(WebApplication app)
+    {
+        app.MapGet("/api/voice/devices", (VoiceHost host) => Results.Ok(new
+        {
+            inputs = host.InputDevices,
+            outputs = host.OutputDevices,
+        }));
+
+        // Proxied rather than called from the browser: the model endpoint will not allow the UI's origin,
+        // and the API key must not travel to the webview. The key used is the stored one — a draft key is not
+        // accepted here, because that would mean a second place secrets arrive from.
+        app.MapPost("/api/models", async (
+            ModelProbeRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            var stored = ctx.Settings.Load();
+            var baseUrl = string.IsNullOrWhiteSpace(request.BaseUrl) ? stored.Model.BaseUrl : request.BaseUrl;
+
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                return Results.BadRequest(new { error = "没有可探测的模型地址：先填 model.baseUrl" });
+            }
+
+            // The stored key only travels to the stored endpoint; probing somewhere else must not leak it.
+            var apiKey = string.Equals(
+                baseUrl.TrimEnd('/'), stored.Model.BaseUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)
+                ? stored.Model.ApiKey
+                : null;
+
+            using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            var client = new HttpLlmClient(http, new HttpLlmOptions
+            {
+                BaseUrl = baseUrl.TrimEnd('/'),
+                // The model name is irrelevant for a listing, but the type requires one.
+                Model = stored.Model.Model ?? "listing",
+                ApiKey = apiKey,
+                Timeout = TimeSpan.FromSeconds(Math.Max(1, stored.Model.TimeoutSeconds)),
+            });
+
+            try
+            {
+                var models = await client.ListModelsAsync(ct).ConfigureAwait(false);
+                return Results.Ok(new { baseUrl, models });
+            }
+            catch (Exception error) when (error is HttpRequestException or InvalidOperationException or TaskCanceledException)
+            {
+                // The reason travels: "the endpoint says 404" and "the endpoint is unreachable" need
+                // different fixes, and an empty dropdown would say neither.
+                return Results.Ok(new { baseUrl, models = Array.Empty<string>(), error = error.Message });
+            }
+        });
+    }
+
+    public sealed record ModelProbeRequest(string? BaseUrl);
 
     // ---- input delivery (design doc §2.3.1: the UI's single entry point) --------------------------
     private static void MapInput(WebApplication app)
