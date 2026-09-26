@@ -80,6 +80,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     sessionRevisions: vi.fn(async (): Promise<SessionRevision[]> => [{ seq: 2, at: '2026-09-26T10:00:01+00:00', body: 'first (edited)' }]),
     queue: vi.fn(async () => queue),
+    consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
     submitInput: vi.fn(async (payload: string, source: string) => {
       calls.submits.push({ payload, source })
       return { itemId: 'in-test', seq: 9, status: 'Queued', deduplicated: false }

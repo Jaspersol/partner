@@ -74,6 +74,8 @@ internal sealed class RecordingQueue : IInputQueue
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
+    public CancellationToken RunningToken => CancellationToken.None;
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 

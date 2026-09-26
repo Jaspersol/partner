@@ -1,11 +1,12 @@
 import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import type { PartnerApiSurface, QueueSummary } from '../src/api'
+import type { ConsumerState, PartnerApiSurface, QueueSummary } from '../src/api'
 import Composer from '../src/components/Composer.vue'
 import Inspector from '../src/components/Inspector.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
 import SideBar from '../src/components/SideBar.vue'
+import StatusBar from '../src/components/StatusBar.vue'
 import TopBar from '../src/components/TopBar.vue'
 import SessionView from '../src/views/SessionView.vue'
 import { summarizeQueue } from '../src/api'
@@ -24,6 +25,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     queue: vi.fn(async () => ({ headSeq: 0, runningItemId: null, depth: 0, items: [] })),
     cancel: vi.fn(async () => true),
     submitInput: vi.fn(async () => ({ itemId: 'in-1', seq: 1, status: 'Queued', deduplicated: false })),
+    consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
     memory: vi.fn(async () => []),
     recall: vi.fn(async () => []),
     editMemory: vi.fn(async () => {}),
@@ -184,6 +186,21 @@ describe('composer', () => {
     expect(strip).toContain('执行中 q-0184')
   })
 
+  it('explains why a delivered message will not move', () => {
+    const consumer: ConsumerState = {
+      running: false,
+      reason: '未配置模型：缺少 PARTNER_LLM_BASE_URL',
+      model: null,
+      stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 },
+    }
+
+    const wrapper = mount(Composer, { props: { api: stubApi(), consumer } })
+
+    // A queue nothing executes looks exactly like a busy one without this.
+    expect(wrapper.find('[data-test="composer-consumer"]').text()).toContain('未配置模型')
+    expect(wrapper.find('[data-test="composer-strip"]').text()).toContain('未执行')
+  })
+
   it('surfaces a delivery failure instead of swallowing it', async () => {
     const api = stubApi({ submitInput: vi.fn(async () => Promise.reject(new Error('401'))) })
     const wrapper = mount(Composer, { props: { api } })
@@ -229,6 +246,50 @@ describe('inspector', () => {
 
     expect(session.find('[data-test="session-draft"]').exists()).toBe(true)
     expect(session.find('[data-test="memory-delete"]').exists()).toBe(false)
+  })
+})
+
+describe('status bar', () => {
+  it('names the model when the queue is being executed', () => {
+    const wrapper = mount(StatusBar, {
+      props: {
+        connected: true,
+        connectionError: '',
+        endpoint: 'http://127.0.0.1:5280',
+        summary: { depth: 0, pending: 0, failed: 0, runningItemId: null },
+        consumer: {
+          running: true,
+          reason: '运行中',
+          model: 'qwen3',
+          stats: { completed: 3, failed: 0, canceled: 0, skipped: 0, handled: 3 },
+        },
+        version: 'v0.1.0',
+      },
+    })
+
+    expect(wrapper.find('[data-test="status-consumer"]').text()).toBe('消费中 · qwen3')
+  })
+
+  it('says the queue is not being executed, and why', () => {
+    const wrapper = mount(StatusBar, {
+      props: {
+        connected: true,
+        connectionError: '',
+        endpoint: 'http://127.0.0.1:5280',
+        summary: null,
+        consumer: {
+          running: false,
+          reason: '未配置模型：缺少 PARTNER_LLM_BASE_URL',
+          model: null,
+          stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 },
+        },
+        version: 'v0.1.0',
+      },
+    })
+
+    const text = wrapper.find('[data-test="status-consumer"]').text()
+    expect(text).toContain('未执行')
+    expect(text).toContain('PARTNER_LLM_BASE_URL')
   })
 })
 

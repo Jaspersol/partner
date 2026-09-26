@@ -729,6 +729,33 @@
       ]
     },
     {
+      "id": "agent.queue_consumer",
+      "owner": "M3",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "consumer: without a model it is disabled, says why, and leaves work queued",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "consumer: with a model the delivered input becomes a turn in the session",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "consumer: the queue drains and the loop counts what it handled",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "consumer: a real HTTP model call completes a turn end to end",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
       "id": "ui.composer",
       "owner": "M13",
       "level": "product-supported",

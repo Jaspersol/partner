@@ -30,5 +30,7 @@ internal sealed class FailOnceQueue(IInputQueue inner) : IInputQueue
 
     public IAsyncEnumerable<InputItem> ReadLogAsync(CancellationToken ct = default) => inner.ReadLogAsync(ct);
 
+    public CancellationToken RunningToken => inner.RunningToken;
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

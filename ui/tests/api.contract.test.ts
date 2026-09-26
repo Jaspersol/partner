@@ -155,6 +155,17 @@ describe('the API contract the UI binds to', () => {
     expect(report.sessionLastSeq).toBeGreaterThan(0)
   })
 
+  it('reports whether anything is executing the queue', async () => {
+    const state = await api.consumer()
+
+    // The contract test starts the API without model configuration, so this is the disabled state — and the
+    // reason must name the missing variable rather than being an empty string.
+    expect(state.running).toBe(false)
+    expect(state.reason).toContain('PARTNER_LLM_BASE_URL')
+    expect(state.model).toBeNull()
+    expect(state.stats.handled).toBe(0)
+  })
+
   it('reports an unknown queue item as nothing to cancel', async () => {
     expect(await api.cancel('does-not-exist')).toBe(false)
   })

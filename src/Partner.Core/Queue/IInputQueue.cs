@@ -36,4 +36,10 @@ public interface IInputQueue : IAsyncDisposable
 
     /// <summary>按写入顺序读出持久化日志（每条状态变更一条记录，不做去重）。</summary>
     IAsyncEnumerable<InputItem> ReadLogAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// 最近一次 <see cref="TakeAsync"/> 交出的项所对应的取消令牌；尚未取出任何项时为 <see cref="CancellationToken.None"/>。
+    /// 消费者把它传给执行逻辑，<see cref="CancelAsync"/> 对 <c>Running</c> 项的取消才有落点。
+    /// </summary>
+    CancellationToken RunningToken { get; }
 }

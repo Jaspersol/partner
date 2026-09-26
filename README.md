@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**388 个 .NET 单测 + 33 个前端测试全绿 / 98 项 smoke 检查 / 50 项能力 `product-supported`**。
+当前基线：**408 个 .NET 单测 + 37 个前端测试全绿 / 102 项 smoke 检查 / 51 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -54,10 +54,12 @@ graph LR
     PARTS["组件：检视面板 / 输入区 / 列表 / Markdown"]
     SHELL --- VIEWS --- PARTS
   end
-  subgraph runtime["C# 运行时（22.3k 行）"]
+  subgraph runtime["C# 运行时（23k 行）"]
     API["Partner.Api<br/>Kestrel + Minimal API<br/>Bearer token + CORS 白名单"]
+    LOOP["TurnLoop<br/>单消费者：队列 → 回合 → 会话"]
     CORE["Core · Desktop · Voice · Game"]
     API --- CORE
+    LOOP -->|消费| API
   end
   SIDE -->|spawn + 读 token| API
   INJ --> VIEWS
@@ -153,6 +155,35 @@ CORS 白名单已包含 `http://localhost:5173`。
 
 ---
 
+## 消费者（队列 → 回合）
+
+`Core/Hosting/TurnLoop.cs` 是输入队列的**唯一消费者**（设计文档 §2.2）：一次取一项、按到达顺序、跑一个回合、把项落定为 `Done`/`Failed`/`Canceled`。没有它，投递只会停在队列里。
+
+| 不变量 | 实现 |
+|---|---|
+| 同一时刻只有一项在飞 | 循环体串行 await，从不重叠 |
+| 每个被认领的项都会落定 | 异常也走 `CompleteAsync`，不会留下卡在 `Running` 的项 |
+| UI 取消能打断执行中的项 | 回合观察队列的 `RunningToken` |
+| 停机不切断执行中的回合 | 停止只停「认领」；被打断的项由队列在下次启动时重投 |
+| 重投递不重复执行 | 回合已结束（日志里有该 `itemId` 的 `TurnEnd`）的项直接落定，不重跑 |
+
+**配置模型**（不配就没有消费者——不会起一个假回退）：
+
+```bash
+export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1   # OpenAI 兼容端点
+export PARTNER_LLM_MODEL=qwen3
+export PARTNER_LLM_API_KEY=...                          # 可选
+```
+
+未配置时 `GET /api/consumer` 返回 `running: false` 与**缺哪个变量**；界面在输入区与状态栏显示「未执行 · 未配置模型：缺少 …」，因为一个不动的队列和一个忙碌的队列在界面上没有区别。
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/consumer
+# {"running":true,"reason":"运行中","model":"qwen3","stats":{"completed":3,...}}
+```
+
+---
+
 ## 调试
 
 ### 分层命令
@@ -175,12 +206,12 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（388） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含投递口与 API 进程生命周期） |
+| .NET 单测（408） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、进程生命周期） |
 | smoke（97 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
-| 前端契约测试（9） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效 |
+| 前端契约测试（10） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态 |
 | 前端视图测试（8） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（挂载真实组件 + 桩 API） |
-| 前端组件测试（16） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 输入区 / 检视面板 / Markdown 渲染与转义 |
-| **壳的端到端（14）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
+| 前端组件测试（18） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 |
+| **壳的端到端（15）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、折叠侧栏、切主题、验鉴权、验 sidecar 回收、验消费者状态可见。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（49） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
@@ -261,7 +292,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 |---|---|
 | M1 会话 | `Core/Sessions/`（`JsonlSessionStore`、`SessionEvent`、`SessionView`）、`Core/Storage/` |
 | M2 队列 | `Core/Queue/`（`JsonlInputQueue`、`InputItem`） |
-| M3 Agent | `Core/Agent/`（`AgentTurnRunner`、`Hooks/`、`Llm/`、`Tools/`、`Governance/`、`Mcp/`、`Skills/`） |
+| M3 Agent | `Core/Agent/`（`AgentTurnRunner`、`Hooks/`、`Llm/`（含 `HttpLlmClient`）、`Tools/`、`Governance/`、`Mcp/`、`Skills/`）、`Core/Hosting/TurnLoop.cs` |
 | M4 调度 | `Core/Scheduler/`（`JsonlScheduler`、`CronExpression`） |
 | M5 记忆 | `Core/Memory/`（`MemoryStore`、`MemorySchema`、`MemoryScorer`、`Embeddings`、`TokenCounter`） |
 | M6 治理 | `Core/Agent/Governance/`、`Core/Agent/Tools/`（`ToolGovernance`、`InMemoryToolRegistry`） |
@@ -282,7 +313,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 |---|---|
 | M1 会话 | `session.append_only_log`(6)、`session.editable_projection`(5) |
 | M2 队列 | `queue.single_fifo`(5)、`queue.idempotent_restart`(3)、`queue.crash_recovery`(2) |
-| M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1) |
+| M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1)、`agent.queue_consumer`(4) |
 | M4 调度 | `scheduler.durable_delivery`(3)、`scheduler.receipt_dedup`(1)、`scheduler.failure_retention`(2)、`scheduler.schedule_to_turn`(3) |
 | M5 记忆 | `memory.recall_pipeline`(2)、`memory.offline_degradation`(1)、`memory.privacy_delete`(1)、`memory.promotion`(1)、`memory.injection_budget`(1)、`memory.scale_p99`(1) |
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
@@ -323,4 +354,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | WebView2 的 UI Automation | UIA 看不到 DOM（实测只暴露 16 个元素）；CDP 可以，e2e 就是走 CDP |
 | 生产打包 | ✅ 已跑：`Partner_0.1.0_x64-setup.exe` **34.7 MB**（含 101 MB 自包含 API，NSIS 压缩）。**未在干净机器上安装验证** |
 | 记忆页签空态 | API 按设计没有「新建记忆」端点（写入来自 Agent），因此该页签在空工作区是空列表 |
+| 消费者里的工具 / MCP | **未接入**：宿主的消费者用空工具表跑回合，所以模型只能对话，不能调工具。MCP 客户端（`Core/Agent/Mcp/`）已在 smoke 里验证，但没接进宿主 |
+| 真实模型供应商往返 | **未验证**：`HttpLlmClient` 用桩 handler 验了线格式，用真 TCP 假端点验了完整往返；没有对真实供应商（OpenAI/Ollama 等）跑过 |
+| 回合流式输出 | 未做：一次补全一次返回，界面不做逐字刷新 |
 | Phase 5c 帧级闭环 | 未做 |

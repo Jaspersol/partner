@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Net.Sockets;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Hooks;
 using Partner.Core.Agent.Governance;
@@ -1302,7 +1304,7 @@ internal static class Program
         var uiWorkspace = Path.Combine(root, "ui");
         var apiPort = FreePort();
         var uiToken = TokenAuth.Generate();
-        var (apiApp, apiContext) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
+        var (apiApp, apiContext, apiConsumer) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
         var apiRun = apiApp.RunAsync();
 
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{apiPort}") };
@@ -1502,8 +1504,307 @@ internal static class Program
         {
             await apiApp.StopAsync();
             await apiRun;
+            await apiConsumer.DisposeAsync();
             await apiContext.DisposeAsync();
         }
+
+        // ---- 15. consumer: the queue drains only when a model is configured ----------------
+        {
+            // Without a model the consumer must not run at all, and it must say so: work stays queued and the
+            // state is visible rather than silently stuck.
+            var disabledWorkspace = Path.Combine(root, "consumer-off");
+            var disabledPort = FreePort();
+            var disabledToken = TokenAuth.Generate();
+            var (offApp, offContext, offConsumer) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
+            var offRun = offApp.RunAsync();
+            using var offHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{disabledPort}") };
+            offHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", disabledToken);
+
+            try
+            {
+                await WaitForHostAsync(offHttp);
+                var offState = await offHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
+                await offHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "orphan work" });
+                var offQueue = await offHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+
+                Check("consumer: without a model it is disabled, says why, and leaves work queued",
+                    !offState.GetProperty("running").GetBoolean()
+                    && offState.GetProperty("reason").GetString()!.Contains("PARTNER_LLM", StringComparison.Ordinal)
+                    && offQueue.GetProperty("depth").GetInt32() == 1
+                    && offState.GetProperty("stats").GetProperty("handled").GetInt32() == 0,
+                    $"running={offState.GetProperty("running").GetBoolean()} depth={offQueue.GetProperty("depth").GetInt32()}");
+            }
+            finally
+            {
+                await offApp.StopAsync();
+                await offRun;
+                await offConsumer.DisposeAsync();
+                await offContext.DisposeAsync();
+            }
+
+            // With a model, the same delivery becomes a turn that lands in the session.
+            var onWorkspace = Path.Combine(root, "consumer-on");
+            var onPort = FreePort();
+            var onToken = TokenAuth.Generate();
+            var scripted = new ScriptedLlmClient(new[]
+            {
+                new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
+            });
+            var (onApp, onContext, onConsumer) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, scripted);
+            var onRun = onApp.RunAsync();
+            using var onHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{onPort}") };
+            onHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", onToken);
+
+            try
+            {
+                await WaitForHostAsync(onHttp);
+                var onState = await onHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
+                var delivered = await onHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "打开书房的灯" });
+                var deliveredId = (await delivered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+
+                var settled = false;
+                for (var attempt = 0; attempt < 200 && !settled; attempt++)
+                {
+                    var polled = await onHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                    settled = polled.GetProperty("items").EnumerateArray().Any(item =>
+                        item.GetProperty("itemId").GetString() == deliveredId
+                        && item.GetProperty("status").GetString() == "Done");
+                    await Task.Delay(25);
+                }
+
+                var session = await onHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var entries = session.GetProperty("items").EnumerateArray()
+                    .Select(item => (Kind: item.GetProperty("kind").GetString(), Body: item.GetProperty("body").GetString()))
+                    .ToList();
+
+                Check("consumer: with a model the delivered input becomes a turn in the session",
+                    onState.GetProperty("running").GetBoolean()
+                    && settled
+                    && entries.Any(e => e.Kind == "User" && e.Body == "打开书房的灯")
+                    && entries.Any(e => e.Kind == "Assistant" && e.Body == "书房的灯已经打开了。"),
+                    $"running={onState.GetProperty("running").GetBoolean()} settled={settled} entries={entries.Count}");
+
+                var afterState = await onHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
+                var queueAfter = await onHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                Check("consumer: the queue drains and the loop counts what it handled",
+                    queueAfter.GetProperty("depth").GetInt32() == 0
+                    && afterState.GetProperty("stats").GetProperty("completed").GetInt32() == 1,
+                    $"depth={queueAfter.GetProperty("depth").GetInt32()} completed={afterState.GetProperty("stats").GetProperty("completed").GetInt32()}");
+            }
+            finally
+            {
+                await onApp.StopAsync();
+                await onRun;
+                await onConsumer.DisposeAsync();
+                await onContext.DisposeAsync();
+            }
+
+            // The production client over a real socket: a minimal server that speaks the OpenAI shape stands in
+            // for a provider, so the whole chain (deliver → loop → HTTP → parse → session) is exercised for real.
+            var wireWorkspace = Path.Combine(root, "consumer-wire");
+            var wirePort = FreePort();
+            var wireToken = TokenAuth.Generate();
+            var modelPort = FreePort();
+
+            using var provider = new FakeChatProvider(modelPort, "通过真实 HTTP 返回。");
+            var httpClient = new HttpLlmClient(
+                new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
+                new HttpLlmOptions { BaseUrl = $"http://127.0.0.1:{modelPort}/v1", Model = "smoke-model" });
+
+            var (wireApp, wireContext, wireConsumer) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
+            var wireRun = wireApp.RunAsync();
+            using var wireHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{wirePort}") };
+            wireHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", wireToken);
+
+            try
+            {
+                await WaitForHostAsync(wireHttp);
+                var delivered = await wireHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "走一次真实 HTTP" });
+                var deliveredId = (await delivered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+
+                var settled = false;
+                for (var attempt = 0; attempt < 200 && !settled; attempt++)
+                {
+                    var polled = await wireHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                    settled = polled.GetProperty("items").EnumerateArray().Any(item =>
+                        item.GetProperty("itemId").GetString() == deliveredId
+                        && item.GetProperty("status").GetString() == "Done");
+                    await Task.Delay(25);
+                }
+
+                var session = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var assistant = session.GetProperty("items").EnumerateArray()
+                    .Where(item => item.GetProperty("kind").GetString() == "Assistant")
+                    .Select(item => item.GetProperty("body").GetString())
+                    .ToList();
+
+                Check("consumer: a real HTTP model call completes a turn end to end",
+                    settled
+                    && assistant.Count == 1
+                    && assistant[0] == "通过真实 HTTP 返回。"
+                    && provider.RequestPath?.Contains("/v1/chat/completions", StringComparison.Ordinal) == true
+                    // No key configured means no Authorization header, rather than an empty one.
+                    && provider.SawAuthorization is null,
+                    $"settled={settled} reply={assistant.FirstOrDefault()} path={provider.RequestPath} auth={provider.SawAuthorization ?? "(none)"}");
+            }
+            finally
+            {
+                await wireApp.StopAsync();
+                await wireRun;
+                await wireConsumer.DisposeAsync();
+                await wireContext.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// A minimal OpenAI-compatible endpoint over a raw socket: enough to prove the production client works
+    /// against a real HTTP hop, without depending on a provider being installed on this machine.
+    /// </summary>
+    private sealed class FakeChatProvider : IDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly string _reply;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Task _serving;
+
+        public FakeChatProvider(int port, string reply)
+        {
+            _reply = reply;
+            _listener = new TcpListener(System.Net.IPAddress.Loopback, port);
+            _listener.Start();
+            _serving = Task.Run(ServeAsync);
+        }
+
+        public string? RequestPath { get; private set; }
+
+        public string? SawAuthorization { get; private set; }
+
+        private async Task ServeAsync()
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                TcpClient client;
+                try
+                {
+                    client = await _listener.AcceptTcpClientAsync(_stop.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (SocketException)
+                {
+                    return;
+                }
+
+                using (client)
+                {
+                    await AnswerAsync(client).ConfigureAwait(false);
+                }
+            }
+        }
+
+        private async Task AnswerAsync(TcpClient client)
+        {
+            var stream = client.GetStream();
+            using var reader = new StreamReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+
+            RequestPath = await reader.ReadLineAsync();
+            var length = 0;
+
+            while (await reader.ReadLineAsync() is { } header)
+            {
+                if (header.Length == 0)
+                {
+                    break;
+                }
+
+                if (header.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+                {
+                    SawAuthorization = header["Authorization:".Length..].Trim();
+                }
+
+                if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    length = int.Parse(header["Content-Length:".Length..].Trim(), CultureInfo.InvariantCulture);
+                }
+            }
+
+            var body = new char[length];
+            var read = 0;
+            while (read < length)
+            {
+                var chunk = await reader.ReadAsync(body.AsMemory(read, length - read));
+                if (chunk == 0)
+                {
+                    break;
+                }
+
+                read += chunk;
+            }
+
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                choices = new[]
+                {
+                    new
+                    {
+                        message = new { role = "assistant", content = _reply },
+                        finish_reason = "stop",
+                    },
+                },
+            });
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(payload);
+            var head = System.Text.Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n");
+
+            await stream.WriteAsync(head);
+            await stream.WriteAsync(bytes);
+            await stream.FlushAsync();
+        }
+
+        public void Dispose()
+        {
+            _stop.Cancel();
+            _listener.Stop();
+
+            try
+            {
+                _serving.Wait(TimeSpan.FromSeconds(2));
+            }
+            catch (AggregateException)
+            {
+                // The listener was stopped mid-accept; nothing to report.
+            }
+
+            _stop.Dispose();
+        }
+    }
+
+    /// <summary>Waits until a host answers, so a probe is not a guess at a duration.</summary>
+    private static async Task WaitForHostAsync(HttpClient http)
+    {
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            try
+            {
+                using var probe = await http.GetAsync("/api/health");
+                if (probe.IsSuccessStatusCode)
+                {
+                    return;
+                }
+            }
+            catch (HttpRequestException)
+            {
+                // Not listening yet.
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new InvalidOperationException("the host never started listening");
     }
 
     /// <summary>Asks the OS for a free port (the API host must not collide with anything).</summary>
@@ -1843,6 +2144,13 @@ internal static class Program
         {
             "ui: an unauthenticated request is rejected on every endpoint",
             "ui: a wrong token is rejected and the right one is accepted",
+        }),
+        ("agent.queue_consumer", "M3", new[]
+        {
+            "consumer: without a model it is disabled, says why, and leaves work queued",
+            "consumer: with a model the delivered input becomes a turn in the session",
+            "consumer: the queue drains and the loop counts what it handled",
+            "consumer: a real HTTP model call completes a turn end to end",
         }),
         ("ui.composer", "M13", new[]
         {

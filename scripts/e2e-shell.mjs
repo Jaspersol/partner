@@ -148,6 +148,9 @@ async function main() {
       LOCALAPPDATA: workspaceRoot,
       // WebView2 does not expose its DOM to UI Automation; remote debugging is the way in.
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
+      // Cleared so the disabled-consumer assertions describe this machine, not the developer's environment.
+      PARTNER_LLM_BASE_URL: '',
+      PARTNER_LLM_MODEL: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -263,6 +266,11 @@ async function main() {
 
     const notice = await evaluate(cdp, 'document.querySelector(\'[data-test="session-notice"]\').textContent')
     check('the composer says the work is queued rather than done', notice.includes('等待执行'), notice.trim())
+
+    // The shell runs without model configuration, so the UI must say the queue is not being executed —
+    // otherwise a delivered message that never moves looks like a broken app.
+    const consumerNote = await evaluate(cdp, 'document.querySelector(\'[data-test="composer-consumer"]\')?.textContent ?? ""')
+    check('the UI explains that nothing is executing the queue', consumerNote.includes('未执行'), consumerNote.trim())
 
     // Sidebar collapse is shell state; the sidebar must actually leave the layout.
     await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')

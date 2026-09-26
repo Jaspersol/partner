@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import type { PartnerApiSurface, QueueSummary, SessionRevision, SessionView } from '../api'
+import type { ConsumerState, PartnerApiSurface, QueueSummary, SessionRevision, SessionView } from '../api'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
 import Inspector from '../components/Inspector.vue'
 
-const props = defineProps<{ api: PartnerApiSurface; summary?: QueueSummary | undefined }>()
+const props = defineProps<{
+  api: PartnerApiSurface
+  summary?: QueueSummary | undefined
+  consumer?: ConsumerState | undefined
+}>()
 const emit = defineEmits<{ context: [value: string]; changed: [] }>()
 
 const view = ref<SessionView | null>(null)
@@ -154,7 +158,14 @@ defineExpose({ refresh, focusComposer })
       />
     </div>
 
-    <Composer ref="composer" :api="api" :summary="summary" @sent="onSent" @failed="error = $event" />
+    <Composer
+      ref="composer"
+      :api="api"
+      :summary="summary"
+      :consumer="consumer"
+      @sent="onSent"
+      @failed="error = $event"
+    />
 
     <p v-if="notice" class="muted notice" data-test="session-notice">{{ notice }}</p>
     <p v-if="error" class="error notice" data-test="error">{{ error }}</p>

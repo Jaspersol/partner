@@ -5,6 +5,7 @@ import {
   PartnerApi,
   summarizeQueue,
   type PartnerApiSurface,
+  type ConsumerState,
   type QueueSummary,
   type RebuildReport,
 } from './api'
@@ -39,6 +40,7 @@ const active = ref('session')
 const sidebarCollapsed = ref(false)
 const inspectorCollapsed = ref(false)
 const summary = ref<QueueSummary | null>(null)
+const consumer = ref<ConsumerState | null>(null)
 const rebuildReport = ref<RebuildReport | null>(null)
 const context = ref('')
 const connectionError = ref('')
@@ -59,9 +61,11 @@ async function refreshSummary() {
 
   try {
     summary.value = summarizeQueue(await api.value.queue())
+    consumer.value = await api.value.consumer()
   } catch (failure) {
     // A stale badge is worse than none: it would claim the queue is empty when we simply do not know.
     summary.value = null
+    consumer.value = null
     if (failure instanceof ApiError && failure.status === 401) {
       connectionError.value = 'token 失效（401）——请重启壳以获取新令牌'
     }
@@ -153,6 +157,7 @@ onUnmounted(() => {
             ref="sessionView"
             :api="api"
             :summary="summary ?? undefined"
+            :consumer="consumer ?? undefined"
             @context="context = $event"
             @changed="refreshSummary"
           />
@@ -182,6 +187,7 @@ onUnmounted(() => {
       :connection-error="connectionError"
       :endpoint="endpoint"
       :summary="summary"
+      :consumer="consumer"
       :version="`v${version}`"
     />
   </div>

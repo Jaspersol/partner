@@ -101,6 +101,14 @@ export interface SubmitResult {
   deduplicated: boolean
 }
 
+/** Whether anything is executing the queue, and if not, why. */
+export interface ConsumerState {
+  running: boolean
+  reason: string
+  model: string | null
+  stats: { completed: number; failed: number; canceled: number; skipped: number; handled: number }
+}
+
 /** The queue's shape reduced to what the badge and the status bar show. */
 export interface QueueSummary {
   depth: number
@@ -148,6 +156,7 @@ export interface PartnerApiSurface {
   queue(): Promise<QueueView>
   cancel(itemId: string): Promise<boolean>
   submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult>
+  consumer(): Promise<ConsumerState>
   memory(tier?: string, scope?: string, take?: number): Promise<MemoryItem[]>
   recall(query: string, limit?: number): Promise<RecallHit[]>
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
@@ -206,6 +215,11 @@ export class PartnerApi implements PartnerApiSurface {
   /** Delivers to the queue. Nothing executes it here, so the answer says "queued", not "done". */
   submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult> {
     return this.request<SubmitResult>('POST', '/api/input', { source, payload, idempotencyKey })
+  }
+
+  /** Whether the queue is being executed at all. Without this the UI cannot explain a stuck queue. */
+  consumer(): Promise<ConsumerState> {
+    return this.request<ConsumerState>('GET', '/api/consumer')
   }
 
   // ---- memory ----------------------------------------------------------------------------------

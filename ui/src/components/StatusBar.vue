@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import type { QueueSummary } from '../api'
+import type { ConsumerState, QueueSummary } from '../api'
 
 defineProps<{
   connected: boolean
   connectionError: string
   endpoint: string
   summary: QueueSummary | null
+  consumer: ConsumerState | null
   version: string
 }>()
 </script>
@@ -15,6 +16,10 @@ defineProps<{
     <span data-test="status" :class="{ error: !connected }">
       <!-- 401 is worth naming: it means the token, not the network (ui.md §7). -->
       {{ connected ? `ok · ${endpoint}` : connectionError }}
+    </span>
+    <span class="consumer" data-test="status-consumer">
+      <template v-if="consumer?.running">消费中 · {{ consumer.model ?? "模型" }}</template>
+      <template v-else-if="consumer">未执行 · {{ consumer.reason }}</template>
     </span>
     <span v-if="summary" class="blocked" data-test="status-blocked">
       队列 {{ summary.pending }} · 失败 {{ summary.failed
@@ -39,5 +44,11 @@ defineProps<{
 
 .blocked {
   font-weight: 600;
+}
+
+.consumer {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>
