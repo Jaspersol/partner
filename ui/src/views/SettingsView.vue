@@ -29,7 +29,7 @@ const form = reactive<RuntimeSettings>({
   },
   asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
+  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
@@ -84,7 +84,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     baseUrl: settings.model.baseUrl,
     model: settings.model.model,
     timeoutSeconds: settings.model.timeoutSeconds,
-    contextItems: settings.model.contextItems,
+    contextTokens: settings.model.contextTokens,
     maxTokens: settings.model.maxTokens,
   })
 
@@ -118,7 +118,7 @@ async function persist() {
       baseUrl: form.model.baseUrl === '' ? null : form.model.baseUrl,
       model: form.model.model === '' ? null : form.model.model,
       timeoutSeconds: form.model.timeoutSeconds,
-      contextItems: form.model.contextItems,
+      contextTokens: form.model.contextTokens,
       maxTokens: form.model.maxTokens,
     },
   }
@@ -370,14 +370,14 @@ onMounted(refresh)
             <input type="number" v-model.number="form.model.timeoutSeconds" />
           </label>
           <label class="field">
-            <span>上下文长度（条）</span>
-            <input type="number" min="1" v-model.number="form.model.contextItems" data-test="model-context-items" />
-            <span class="source">每次发给模型的对话条数；改小后保存会立即压缩一次历史</span>
+            <span>上下文大小（token）</span>
+            <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
+            <span class="source">模型的上下文窗口；提示预算 = 它减去输出长度，改小后保存会立即压缩一次历史</span>
           </label>
           <label class="field">
             <span>输出长度（token）</span>
             <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
-            <span class="source">单次补全的上限</span>
+            <span class="source">单次补全的上限，必须小于上下文大小</span>
           </label>
 
           <p class="card-note" data-test="model-effect">

@@ -63,13 +63,13 @@ public sealed class ConsumerHost : IAsyncDisposable
     /// Folds history that no longer fits the window. Only possible while a model is configured, because the
     /// summary is produced by that model.
     /// </summary>
-    public Task<CompactionResult> CompactAsync(int keepRecent, CancellationToken ct = default)
+    public Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default)
     {
         var llm = _llm;
 
         return llm is null
             ? Task.FromResult(new CompactionResult(0, null, "未配置模型，无法压缩"))
-            : new SessionCompactor(_context.Session, llm).CompactAsync(keepRecent, ct);
+            : new SessionCompactor(_context.Session, llm).CompactAsync(promptBudget, ct);
     }
 
     /// <summary>
@@ -131,7 +131,7 @@ public sealed class ConsumerHost : IAsyncDisposable
             SkillHooks(_workspace),
             options: new AgentTurnOptions
             {
-                ContextWindowItems = config?.ContextItems ?? 20,
+                ContextWindowTokens = config?.ContextTokens ?? 32768,
                 MaxTokens = config?.MaxTokens ?? 4096,
             });
 

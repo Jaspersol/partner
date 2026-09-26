@@ -16,7 +16,7 @@ public sealed record ModelConfig(
     string? ApiKey,
     TimeSpan Timeout,
     string Origin,
-    int ContextItems = 20,
+    int ContextTokens = 32768,
     int MaxTokens = 4096)
 {
     public static (ModelConfig? Config, string Reason) Resolve(RuntimeSettings settings)
@@ -32,7 +32,7 @@ public sealed record ModelConfig(
                 fromSettings.ApiKey,
                 TimeSpan.FromSeconds(fromSettings.TimeoutSeconds),
                 "设置",
-                fromSettings.ContextItems,
+                fromSettings.ContextTokens,
                 fromSettings.MaxTokens), "运行中（设置）");
         }
 
@@ -53,6 +53,6 @@ public sealed record ModelConfig(
         || left.TimeoutSeconds != right.TimeoutSeconds
         // The turn window and output ceiling are part of the same configuration: changing either has to
         // reach the running runner, which only happens through a restart.
-        || left.ContextItems != right.ContextItems
+        || left.ContextTokens != right.ContextTokens
         || left.MaxTokens != right.MaxTokens;
 }

@@ -117,8 +117,8 @@ export interface ModelSettings {
   /** Absent keeps the stored key, empty clears it, a value replaces it. */
   apiKey?: string | null
   timeoutSeconds: number
-  /** How many content events feed a turn. */
-  contextItems: number
+  /** The model's context window in tokens. */
+  contextTokens: number
   /** Output ceiling for one completion. */
   maxTokens: number
 }
@@ -129,7 +129,7 @@ export interface ModelSettingsView {
   model: string | null
   apiKeySet: boolean
   timeoutSeconds: number
-  contextItems: number
+  contextTokens: number
   maxTokens: number
 }
 

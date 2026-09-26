@@ -19,7 +19,8 @@ public sealed record AgentTurnOptions
 
     public TimeSpan ToolTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
-    public int ContextWindowItems { get; init; } = 20;
+    /// <summary>The model's context window in tokens; the prompt budget is this minus <see cref="MaxTokens"/>.</summary>
+    public int ContextWindowTokens { get; init; } = 32768;
 
     public string? BaseSystemPrompt { get; init; }
 }
@@ -74,7 +75,7 @@ public sealed class AgentTurnRunner
         _hooks = hooks ?? throw new ArgumentNullException(nameof(hooks));
         _options = options ?? new AgentTurnOptions();
         _assembler = assembler ?? new SessionWindowContextAssembler(
-            session, _options.ContextWindowItems, _options.BaseSystemPrompt);
+            session, _options.ContextWindowTokens, _options.MaxTokens, baseSystemPrompt: _options.BaseSystemPrompt);
     }
 
     public async Task<TurnResult> RunAsync(InputItem item, CancellationToken ct = default)

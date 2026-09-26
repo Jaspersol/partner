@@ -1838,14 +1838,34 @@ internal static class Program
 
                 Check("session: events after a retraction stay visible", revived, $"revived={revived}");
 
-                // Shrinking the context folds history once, using the model that is already configured.
+                // Shrinking the context folds history once, using the model that is already configured. Enough
+                // history is needed first: folding one event is not compaction.
+                for (var i = 0; i < 3; i++)
+                {
+                    await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = $"填充 {i}" });
+                }
+
+                for (var attempt = 0; attempt < 200; attempt++)
+                {
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                    if (polled.GetProperty("depth").GetInt32() == 0)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                var beforeShrink = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var shrink = await settingsHttp.PutAsJsonAsync("/api/settings", new
                 {
                     model = new
                     {
                         baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
                         model = "settings-model",
-                        contextItems = 1,
+                        // ~5 tokens per short turn: a 16-token window with a 4-token reserve keeps two.
+                        contextTokens = 16,
+                        maxTokens = 4,
                     },
                 });
                 var shrinkBody = (await shrink.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
@@ -1853,15 +1873,18 @@ internal static class Program
                 Check("settings: shrinking the context compacts the history once",
                     shrinkBody.GetProperty("compacted").GetBoolean()
                     && shrinkBody.GetProperty("foldedEvents").GetInt32() > 0,
-                    shrinkBody.GetProperty("reason").GetString() ?? "(no reason)");
+                    $"items={beforeShrink.GetProperty("items").GetArrayLength()} "
+                    + $"{shrinkBody.GetProperty("reason").GetString() ?? "(no reason)"}");
 
                 var compacted = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var summaries = compacted.GetProperty("items").EnumerateArray()
                     .Count(i => i.GetProperty("kind").GetString() == "Summary");
 
                 Check("settings: the compaction leaves exactly one summary standing in for the history",
-                    summaries == 1 && compacted.GetProperty("items").GetArrayLength() <= 2,
-                    $"summaries={summaries} items={compacted.GetProperty("items").GetArrayLength()}");
+                    summaries == 1
+                    && compacted.GetProperty("items").GetArrayLength() < beforeShrink.GetProperty("items").GetArrayLength(),
+                    $"summaries={summaries} items={beforeShrink.GetProperty("items").GetArrayLength()}"
+                    + $"->{compacted.GetProperty("items").GetArrayLength()}");
             }
             finally
             {

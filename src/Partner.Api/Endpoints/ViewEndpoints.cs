@@ -1,5 +1,6 @@
 using Partner.Core.Agent.Llm;
 using Partner.Api.Settings;
+using Partner.Core.Agent;
 using Partner.Api.Voice;
 using Partner.Core.Contracts;
 using Partner.Core.Memory;
@@ -414,9 +415,10 @@ public static class ViewEndpoints
             // Shrinking the window leaves history that no longer fits, so it is folded once, right here:
             // waiting for the next turn would send an over-long conversation to the model first.
             CompactionResult? compaction = null;
-            if (stored.Model.ContextItems < before.Model.ContextItems)
+            if (stored.Model.ContextTokens < before.Model.ContextTokens)
             {
-                compaction = await consumer.CompactAsync(stored.Model.ContextItems, ct).ConfigureAwait(false);
+                var budget = ContextBudget.PromptBudget(stored.Model.ContextTokens, stored.Model.MaxTokens);
+                compaction = await consumer.CompactAsync(budget, ct).ConfigureAwait(false);
             }
 
             // Voice halves are restarted only when their own sections changed: reopening a device mid-utterance

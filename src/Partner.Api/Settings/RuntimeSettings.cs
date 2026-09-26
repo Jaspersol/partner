@@ -117,8 +117,8 @@ public sealed record ModelSettings
 
     public double TimeoutSeconds { get; init; } = 120;
 
-    /// <summary>How many content events feed a turn (the window the assembler trims to).</summary>
-    public int ContextItems { get; init; } = 20;
+    /// <summary>The model's context window in tokens. The prompt budget is this minus <see cref="MaxTokens"/>.</summary>
+    public int ContextTokens { get; init; } = 32768;
 
     /// <summary>Output ceiling for one completion.</summary>
     public int MaxTokens { get; init; } = 4096;
@@ -135,7 +135,7 @@ public sealed record ModelSettingsView
 
     public double TimeoutSeconds { get; init; } = 120;
 
-    public int ContextItems { get; init; } = 20;
+    public int ContextTokens { get; init; } = 32768;
 
     public int MaxTokens { get; init; } = 4096;
 }
@@ -164,7 +164,7 @@ public sealed record SettingsView
             Model = settings.Model.Model,
             ApiKeySet = !string.IsNullOrEmpty(settings.Model.ApiKey),
             TimeoutSeconds = settings.Model.TimeoutSeconds,
-            ContextItems = settings.Model.ContextItems,
+            ContextTokens = settings.Model.ContextTokens,
             MaxTokens = settings.Model.MaxTokens,
         },
     };

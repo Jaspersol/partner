@@ -82,7 +82,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     },
     asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
     tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-    model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
+    model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
   }
 
   const stub: PartnerApiSurface = {
@@ -342,7 +342,7 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
       })),
     })
 
@@ -362,7 +362,7 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
       })),
     })
 
@@ -436,7 +436,7 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
+        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -509,7 +509,7 @@ describe('settings view', () => {
             output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
             asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
             tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-            model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: patch.model.contextItems, maxTokens: patch.model.maxTokens },
+            model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
@@ -521,14 +521,14 @@ describe('settings view', () => {
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    expect(wrapper.find<HTMLInputElement>('[data-test=model-context-items]').element.value).toBe('20')
-    expect(wrapper.find<HTMLInputElement>('[data-test=model-max-tokens]').element.value).toBe('4096')
+    expect(wrapper.find<HTMLInputElement>('[data-test="model-context-tokens"]').element.value).toBe('32768')
+    expect(wrapper.find<HTMLInputElement>('[data-test="model-max-tokens"]').element.value).toBe('4096')
 
-    await wrapper.find<HTMLInputElement>('[data-test=model-context-items]').setValue('5')
+    await wrapper.find<HTMLInputElement>('[data-test="model-context-tokens"]').setValue('5')
     await wrapper.find('[data-test=settings-save]').trigger('click')
     await flushPromises()
 
-    expect(calls.saves[0]?.model).toHaveProperty('contextItems', 5)
+    expect(calls.saves[0]?.model).toHaveProperty('contextTokens', 5)
     // The shrink is reported: it changed what the next turn will be given, not just a number in a form.
     expect(wrapper.find('[data-test=settings-status]').text()).toContain('压缩')
   })

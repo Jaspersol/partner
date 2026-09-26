@@ -81,14 +81,20 @@ public static class SettingsValidation
             errors.Add("model.timeoutSeconds 必须为正");
         }
 
-        if (settings.Model.ContextItems <= 0)
+        if (settings.Model.ContextTokens <= 0)
         {
-            errors.Add("model.contextItems 必须为正");
+            errors.Add("model.contextTokens 必须为正");
         }
 
         if (settings.Model.MaxTokens <= 0)
         {
             errors.Add("model.maxTokens 必须为正");
+        }
+
+        // A completion that cannot fit alongside the prompt is not a configuration, it is a truncation.
+        if (settings.Model.ContextTokens > 0 && settings.Model.MaxTokens >= settings.Model.ContextTokens)
+        {
+            errors.Add("model.maxTokens 必须小于 model.contextTokens");
         }
 
         return errors;

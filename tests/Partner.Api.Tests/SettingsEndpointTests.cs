@@ -96,7 +96,7 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
         // rather than silently doing nothing.
         var put = await _http.PutAsJsonAsync("/api/settings", new
         {
-            model = new { contextItems = 3 },
+            model = new { contextTokens = 64, maxTokens = 8 },
         });
 
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
@@ -121,7 +121,7 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
             Body = "one",
         });
 
-        var put = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextItems = 50 } });
+        var put = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextTokens = 32768 } });
         var body = await put.Content.ReadFromJsonAsync<JsonElement>();
 
         Assert.Equal(JsonValueKind.Null, body.GetProperty("compaction").ValueKind);
@@ -132,21 +132,32 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
     {
         var saved = await _http.PutAsJsonAsync("/api/settings", new
         {
-            model = new { contextItems = 12, maxTokens = 2048 },
+            model = new { contextTokens = 8192, maxTokens = 2048 },
         });
         saved.EnsureSuccessStatusCode();
 
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
-        Assert.Equal(12, view.GetProperty("model").GetProperty("contextItems").GetInt32());
+        Assert.Equal(8192, view.GetProperty("model").GetProperty("contextTokens").GetInt32());
         Assert.Equal(2048, view.GetProperty("model").GetProperty("maxTokens").GetInt32());
 
-        var bad = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextItems = 0, maxTokens = -1 } });
+        var bad = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextTokens = 0, maxTokens = -1 } });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         var errors = (await bad.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("errors")
             .EnumerateArray().Select(e => e.GetString()!).ToList();
-        Assert.Contains(errors, e => e.Contains("contextItems", StringComparison.Ordinal));
+        Assert.Contains(errors, e => e.Contains("contextTokens", StringComparison.Ordinal));
         Assert.Contains(errors, e => e.Contains("maxTokens", StringComparison.Ordinal));
+
+        // A completion that cannot fit alongside its own prompt is a truncation, not a configuration.
+        var inverted = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { contextTokens = 4096, maxTokens = 4096 },
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, inverted.StatusCode);
+        Assert.Contains(
+            (await inverted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("errors")
+                .EnumerateArray().Select(e => e.GetString()!),
+            e => e.Contains("必须小于", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -198,7 +209,12 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
                 });
             }
 
-            var put = await http.PutAsJsonAsync("/api/settings", new { model = new { contextItems = 2 } });
+            // Five short turns cost ~5 tokens each. A 20-token window with an 8-token reserve leaves 12, which
+            // holds two turns — so the three oldest are folded and the two newest stay.
+            var put = await http.PutAsJsonAsync("/api/settings", new
+            {
+                model = new { contextTokens = 20, maxTokens = 8 },
+            });
             var compaction = (await put.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
 
             Assert.True(compaction.GetProperty("compacted").GetBoolean(), compaction.GetProperty("reason").GetString());

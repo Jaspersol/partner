@@ -1,5 +1,7 @@
 using System.Globalization;
+using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
+using Partner.Core.Memory;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Contracts;
 
@@ -24,20 +26,22 @@ public sealed class SessionCompactor
 {
     private readonly ISessionStore _session;
     private readonly ILlmClient _llm;
+    private readonly ITokenCounter _tokens;
 
-    public SessionCompactor(ISessionStore session, ILlmClient llm)
+    public SessionCompactor(ISessionStore session, ILlmClient llm, ITokenCounter? tokens = null)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _llm = llm ?? throw new ArgumentNullException(nameof(llm));
+        _tokens = tokens ?? new ApproximateTokenCounter();
     }
 
     /// <summary>
-    /// Summarises everything older than the newest <paramref name="keepRecent"/> visible events. Does nothing
-    /// when the history already fits, so calling it after every settings change is safe.
+    /// Summarises the history that no longer fits <paramref name="promptBudget"/> tokens. Does nothing when
+    /// the history already fits, so calling it after every settings change is safe.
     /// </summary>
-    public async Task<CompactionResult> CompactAsync(int keepRecent, CancellationToken ct = default)
+    public async Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(keepRecent);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(promptBudget);
 
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
 
@@ -47,12 +51,26 @@ public sealed class SessionCompactor
         var conversation = view.Items.Where(item => item.Kind != SessionEventKind.Summary).ToList();
         var summaries = view.Items.Where(item => item.Kind == SessionEventKind.Summary).ToList();
 
-        if (conversation.Count <= keepRecent)
+        // The same rule the assembler uses: the newest suffix that fits stays, the rest is folded. A
+        // disagreement between the two would either send more than the window allows or fold what fits.
+        var fits = ContextBudget.FitNewestFirst(
+            conversation,
+            entry => ContextBudget.Cost(_tokens, entry.Body),
+            promptBudget);
+
+        var keepFrom = fits.Count > 0 ? fits[0].Seq : long.MaxValue;
+        var older = conversation.Where(item => item.Seq < keepFrom).ToList();
+
+        // Nothing to fold means the history fits, and re-summarising an existing summary would spend a model
+        // call to make the context longer rather than shorter.
+        if (older.Count == 0)
         {
-            return new CompactionResult(0, null, $"无需压缩：{conversation.Count} 条对话 ≤ 窗口 {keepRecent}");
+            var used = fits.Sum(entry => ContextBudget.Cost(_tokens, entry.Body));
+            return new CompactionResult(0, null, $"无需压缩：历史约 {used} token ≤ 预算 {promptBudget}");
         }
 
-        var older = conversation.Take(conversation.Count - keepRecent);
+        // A previous summary describes history that is now even older, so it is folded in rather than kept:
+        // otherwise every pass would add context instead of removing it.
         var candidates = older.Concat(summaries).OrderBy(item => item.Seq).ToList();
 
         if (candidates.Count == 0)

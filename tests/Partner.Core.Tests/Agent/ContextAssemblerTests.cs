@@ -7,10 +7,9 @@ using Partner.Core.Sessions;
 namespace Partner.Core.Tests.Agent;
 
 /// <summary>
-/// The message sequence a turn starts with. Providers are strict about its shape: a chat-completions
-/// conversation is system content first, then the turns — llama.cpp's templates reject anything else with
-/// "System message must be at the beginning", which is exactly what a session window containing hook
-/// injections and tool results used to produce on the second turn and later.
+/// The message sequence a turn starts with. Two things are load-bearing: the shape (providers reject a
+/// `system` message anywhere but the front — llama.cpp raises "System message must be at the beginning") and
+/// the budget (what overflows a model is tokens, not turns).
 /// </summary>
 public sealed class ContextAssemblerTests : IDisposable
 {
@@ -61,7 +60,7 @@ public sealed class ContextAssemblerTests : IDisposable
             (SessionEventKind.Tool, "lamp.set(study, on)"),
             (SessionEventKind.Assistant, "done"));
 
-        var messages = await new SessionWindowContextAssembler(store, windowItems: 20)
+        var messages = await new SessionWindowContextAssembler(store)
             .AssembleInitialAsync(Input("and the curtains"), new[] { "Be concise." });
 
         Assert.Equal("system", messages[0].Role);
@@ -80,7 +79,7 @@ public sealed class ContextAssemblerTests : IDisposable
             (SessionEventKind.System, "Available skills: smoke"),
             (SessionEventKind.Tool, "lamp.set(study, on)"));
 
-        var messages = await new SessionWindowContextAssembler(store, windowItems: 20)
+        var messages = await new SessionWindowContextAssembler(store)
             .AssembleInitialAsync(Input("next"), Array.Empty<string>());
 
         var system = messages[0].Content!;
@@ -99,7 +98,7 @@ public sealed class ContextAssemblerTests : IDisposable
     {
         await using var store = await SessionAsync((SessionEventKind.User, "hi"));
 
-        var messages = await new SessionWindowContextAssembler(store, windowItems: 20)
+        var messages = await new SessionWindowContextAssembler(store)
             .AssembleInitialAsync(Input("again"), new[] { "Skill: do the thing.", "Memory: user likes tea." });
 
         Assert.Single(messages, m => m.Role == "system");
@@ -113,14 +112,14 @@ public sealed class ContextAssemblerTests : IDisposable
     {
         await using var store = await SessionAsync();
 
-        var messages = await new SessionWindowContextAssembler(store, windowItems: 20)
+        var messages = await new SessionWindowContextAssembler(store)
             .AssembleInitialAsync(Input("hello"), Array.Empty<string>());
 
         Assert.Equal(new[] { "system", "user" }, messages.Select(m => m.Role));
     }
 
     [Fact]
-    public async Task Only_the_last_window_items_are_sent()
+    public async Task The_window_is_a_token_budget_not_an_item_count()
     {
         await using var store = await SessionAsync(
             (SessionEventKind.User, "one"),
@@ -128,7 +127,9 @@ public sealed class ContextAssemblerTests : IDisposable
             (SessionEventKind.User, "three"),
             (SessionEventKind.Assistant, "four"));
 
-        var messages = await new SessionWindowContextAssembler(store, windowItems: 2)
+        // Budget: 40 − 8 reserve = 32, minus the system block (~14) and the input (~5) leaves ~13 — room for
+        // two short turns, so the two oldest fall out even though the count is small.
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 40, reserveForOutput: 8)
             .AssembleInitialAsync(Input("five"), Array.Empty<string>());
 
         var bodies = messages.Select(m => m.Content).ToList();
@@ -136,5 +137,65 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.DoesNotContain("two", bodies);
         Assert.Contains("three", bodies);
         Assert.Contains("four", bodies);
+    }
+
+    [Fact]
+    public async Task One_large_entry_costs_more_than_several_small_ones()
+    {
+        await using var store = await SessionAsync(
+            (SessionEventKind.User, "short"),
+            (SessionEventKind.User, new string('x', 400)));
+
+        // 400 characters is ~100 tokens: a 70-token window holds the short turn but not the long one, and the
+        // suffix rule means the long one takes the short one with it.
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 70, reserveForOutput: 8)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        var bodies = messages.Select(m => m.Content).ToList();
+        Assert.DoesNotContain(bodies, body => body is not null && body.Contains(new string('x', 400), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_system_block_and_the_current_input_are_always_sent()
+    {
+        await using var store = await SessionAsync((SessionEventKind.User, new string('y', 4000)));
+
+        // Far too small for the history — but dropping the instructions or the question would be worse than
+        // sending an over-long prompt, and a turn that answers nothing is not a turn.
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 32, reserveForOutput: 8)
+            .AssembleInitialAsync(Input("the question"), new[] { "Be concise." });
+
+        Assert.Equal("system", messages[0].Role);
+        Assert.Contains("Be concise.", messages[0].Content!, StringComparison.Ordinal);
+        Assert.Equal("the question", messages[^1].Content);
+        Assert.Equal(2, messages.Count);
+    }
+
+    [Fact]
+    public async Task A_summary_is_context_and_does_not_consume_the_turn_budget()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            await store.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.Summary,
+                Source = InputSource.Text,
+                Body = "earlier: the user asked about lamps",
+            });
+            await store.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.User,
+                Source = InputSource.Text,
+                Body = "and now?",
+            });
+
+            var messages = await new SessionWindowContextAssembler(store, contextTokens: 64, reserveForOutput: 8)
+                .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+            // The summary rides in the system block, so the turn budget is spent on turns.
+            Assert.Contains("earlier: the user asked about lamps", messages[0].Content!, StringComparison.Ordinal);
+            Assert.Contains(messages, m => m.Content == "and now?");
+        }
     }
 }

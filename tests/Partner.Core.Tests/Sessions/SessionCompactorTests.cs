@@ -47,7 +47,7 @@ public sealed class SessionCompactorTests : IDisposable
     {
         await using var store = await SeedAsync("one", "two");
 
-        var result = await new SessionCompactor(store, Summarizer("summary")).CompactAsync(keepRecent: 5);
+        var result = await new SessionCompactor(store, Summarizer("summary")).CompactAsync(promptBudget: 500);
 
         Assert.False(result.Compacted);
         Assert.Contains("无需压缩", result.Reason, StringComparison.Ordinal);
@@ -59,7 +59,7 @@ public sealed class SessionCompactorTests : IDisposable
     {
         await using var store = await SeedAsync("one", "two", "three", "four", "five");
 
-        var result = await new SessionCompactor(store, Summarizer("前四条：讨论了开灯与窗帘。")).CompactAsync(keepRecent: 1);
+        var result = await new SessionCompactor(store, Summarizer("前四条：讨论了开灯与窗帘。")).CompactAsync(promptBudget: 8);
 
         Assert.True(result.Compacted);
         Assert.Equal(4, result.FoldedEvents);
@@ -78,7 +78,7 @@ public sealed class SessionCompactorTests : IDisposable
     {
         await using var store = await SeedAsync("one", "two", "three");
 
-        await new SessionCompactor(store, Summarizer("前两条：摘要")).CompactAsync(keepRecent: 1);
+        await new SessionCompactor(store, Summarizer("前两条：摘要")).CompactAsync(promptBudget: 8);
 
         var visible = (await store.ProjectAsync()).Items.Select(i => i.Body).ToList();
         Assert.DoesNotContain("one", visible);
@@ -99,7 +99,7 @@ public sealed class SessionCompactorTests : IDisposable
     {
         await using var store = await SeedAsync("one", "two", "three");
 
-        await new SessionCompactor(store, Summarizer("第一行\n第二行\r\n第三行")).CompactAsync(keepRecent: 1);
+        await new SessionCompactor(store, Summarizer("第一行\n第二行\r\n第三行")).CompactAsync(promptBudget: 8);
 
         var summary = (await store.ProjectAsync()).Items.Single(i => i.Kind == SessionEventKind.Summary);
         Assert.DoesNotContain('\n', summary.Body);
@@ -120,7 +120,7 @@ public sealed class SessionCompactorTests : IDisposable
     {
         await using var store = await SeedAsync("one", "two", "three");
 
-        var result = await new SessionCompactor(store, Summarizer("   ")).CompactAsync(keepRecent: 1);
+        var result = await new SessionCompactor(store, Summarizer("   ")).CompactAsync(promptBudget: 8);
 
         Assert.False(result.Compacted);
         Assert.Contains("没有返回摘要", result.Reason, StringComparison.Ordinal);
@@ -132,7 +132,7 @@ public sealed class SessionCompactorTests : IDisposable
     {
         await using var store = await SeedAsync("one", "two", "three", "four", "five");
 
-        await new SessionCompactor(store, Summarizer("第一次摘要")).CompactAsync(keepRecent: 1);
+        await new SessionCompactor(store, Summarizer("第一次摘要")).CompactAsync(promptBudget: 8);
 
         // The same store keeps appending: the conversation continues after a compaction.
         await store.AppendAsync(new SessionEvent
@@ -142,7 +142,7 @@ public sealed class SessionCompactorTests : IDisposable
             Body = "six",
         });
 
-        var second = await new SessionCompactor(store, Summarizer("第二次摘要")).CompactAsync(keepRecent: 1);
+        var second = await new SessionCompactor(store, Summarizer("第二次摘要")).CompactAsync(promptBudget: 8);
 
         Assert.True(second.Compacted);
 

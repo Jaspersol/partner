@@ -277,6 +277,11 @@ async function main() {
 
     // Settings are the configuration surface: editing them must reach the running runtime, not just the file.
     const cards = await evaluate(cdp, `[...document.querySelectorAll('section.card h2')].map((h) => h.textContent.trim()).join('|')`)
+    const limits = await evaluate(
+      cdp,
+      `document.querySelector('[data-test="model-context-tokens"]')?.value + '/' + document.querySelector('[data-test="model-max-tokens"]')?.value`,
+    )
+    check('the model card exposes the context window and the output ceiling in tokens', limits === '32768/4096', limits)
     check(
       'the settings page covers every configurable subsystem',
       cards.includes('语音识别') && cards.includes('语音合成') && cards.includes('模型'),
