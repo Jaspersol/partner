@@ -14,12 +14,74 @@ public static class ViewEndpoints
 {
     public static void Map(WebApplication app)
     {
+        MapInput(app);
         MapSession(app);
         MapQueue(app);
         MapMemory(app);
         MapSettings(app);
         MapProjections(app);
     }
+
+    // ---- input delivery (design doc §2.3.1: the UI's single entry point) --------------------------
+    private static void MapInput(WebApplication app)
+    {
+        app.MapPost("/api/input", async (InputRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Payload))
+            {
+                return Results.BadRequest(new { error = "payload must not be empty" });
+            }
+
+            if (!Enum.TryParse<InputSource>(request.Source, ignoreCase: true, out var source))
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"source must be one of {string.Join(", ", Enum.GetNames<InputSource>())}",
+                });
+            }
+
+            var suppliedKey = !string.IsNullOrWhiteSpace(request.IdempotencyKey);
+            var itemId = "in-" + Guid.NewGuid().ToString("n");
+            var key = suppliedKey ? request.IdempotencyKey! : $"ui:{source}:{itemId}";
+
+            // A caller that supplies a key is asking for retry safety, so it is worth telling it whether this
+            // call was the one that created the item. Scanning is only done when a key was supplied.
+            var deduplicated = suppliedKey && await KeyExistsAsync(ctx, key, ct).ConfigureAwait(false);
+
+            var seq = await ctx.Queue.EnqueueAsync(new InputItem
+            {
+                ItemId = itemId,
+                Source = source,
+                Payload = request.Payload,
+                IdempotencyKey = key,
+            }, ct).ConfigureAwait(false);
+
+            // The queue is the only place this lands: no consumer runs in this process, so the item waits here
+            // until one does. Saying so is more useful than implying it was executed.
+            return Results.Ok(new
+            {
+                itemId,
+                seq,
+                status = InputItemStatus.Queued.ToString(),
+                deduplicated,
+            });
+        });
+    }
+
+    private static async Task<bool> KeyExistsAsync(ApiContext ctx, string key, CancellationToken ct)
+    {
+        await foreach (var item in ctx.Queue.ReadLogAsync(ct).ConfigureAwait(false))
+        {
+            if (string.Equals(item.IdempotencyKey, key, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public sealed record InputRequest(string? Source, string? Payload, string? IdempotencyKey);
 
     // ---- session view (查看 + 编辑 + 编辑历史) ----------------------------------------------------
     private static void MapSession(WebApplication app)

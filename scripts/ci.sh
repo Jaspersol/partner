@@ -52,7 +52,7 @@ fi
 if [ -z "${SKIP_SHELL:-}" ]; then
   echo "== shell (cargo build) =="
   if command -v cargo >/dev/null 2>&1; then
-    # The shell bundles the published API, so the publish output must exist before cargo validates resources.
+    # Same ordering as scripts/build-shell.sh: the shell bundles the published API, so publish first.
     "$DOTNET" publish src/Partner.Api -c Release -r win-x64 --self-contained true \
       -o src/Partner.Api/bin/Release/net8.0/win-x64/publish -v q --nologo
     cargo build --manifest-path src-tauri/Cargo.toml

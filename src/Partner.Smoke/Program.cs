@@ -1480,6 +1480,23 @@ internal static class Program
                 && queueView.GetProperty("depth").GetInt32() == 1
                 && canceledItem.GetProperty("status").GetString() == "Canceled",
                 $"seq={queuedSeq} depth={queueView.GetProperty("depth").GetInt32()} status={canceledItem.GetProperty("status").GetString()}");
+
+            // The composer's entry point: it delivers to the queue and nothing executes it here.
+            var sessionBefore = await http.GetFromJsonAsync<JsonElement>("/api/session");
+            var submitted = await http.PostAsJsonAsync("/api/input", new { source = "text", payload = "from the composer" });
+            var submittedBody = await submitted.Content.ReadFromJsonAsync<JsonElement>();
+            var queueAfterInput = await http.GetFromJsonAsync<JsonElement>("/api/queue");
+            var sessionAfter = await http.GetFromJsonAsync<JsonElement>("/api/session");
+            var composerItem = queueAfterInput.GetProperty("items").EnumerateArray()
+                .First(i => i.GetProperty("itemId").GetString() == submittedBody.GetProperty("itemId").GetString());
+
+            Check("ui: submitting from the composer queues work without executing it",
+                submitted.IsSuccessStatusCode
+                && submittedBody.GetProperty("status").GetString() == "Queued"
+                && composerItem.GetProperty("source").GetString() == "Text"
+                && sessionAfter.GetProperty("lastSeq").GetInt64() == sessionBefore.GetProperty("lastSeq").GetInt64(),
+                $"status={submittedBody.GetProperty("status").GetString()} source={composerItem.GetProperty("source").GetString()} "
+                + $"lastSeq {sessionBefore.GetProperty("lastSeq").GetInt64()}->{sessionAfter.GetProperty("lastSeq").GetInt64()}");
         }
         finally
         {
@@ -1826,6 +1843,10 @@ internal static class Program
         {
             "ui: an unauthenticated request is rejected on every endpoint",
             "ui: a wrong token is rejected and the right one is accepted",
+        }),
+        ("ui.composer", "M13", new[]
+        {
+            "ui: submitting from the composer queues work without executing it",
         }),
         ("ui.session_view", "M13", new[]
         {

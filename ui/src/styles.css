@@ -1,4 +1,16 @@
+/*
+ * Design tokens and layout primitives, per ui.md §8.
+ *
+ * Two rules run through this file:
+ *   1. Layout sizes are never absolute. Regions are sized by their content, by fractional tracks, or by
+ *      clamps with a ratio in the middle — so the same rules hold when the window, the panel, or the root
+ *      font size changes.
+ *   2. Only visual scalars (radius, spacing, type scale, shadow) live in :root, and only in rem. Nothing
+ *      here sets a width or height that a component should be deriving from its content.
+ */
+
 :root {
+  /* Surface colours (unchanged from the original palette) */
   --bg: #f7f7f8;
   --pane: #ffffff;
   --line: #d8d8dc;
@@ -7,83 +19,270 @@
   --accent: #0a6cff;
   --warn: #b06000;
   --error: #b00020;
-  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --ok: #0a7a3d;
+  --hover: #eef0f4;
+  --selected: #e8f0ff;
+
+  /* Visual scalars only */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --fs-body: 0.8125rem;
+  --fs-meta: 0.6875rem;
+  --fs-section: 0.75rem;
+  --fs-title: 0.875rem;
+  --lh-body: 1.6;
+  --shadow-pop: 0 0.25rem 1rem rgb(0 0 0 / 8%), 0 1px 2px rgb(0 0 0 / 6%);
+
+  /* Reading measure: constrains characters per line, not pixels of container */
+  --measure: 68ch;
+
+  /* Regions that need "how much of the window" rather than a fixed width */
+  --sidebar: clamp(11rem, 22vw, 20rem);
+  --inspector: clamp(16rem, 28vw, 26rem);
+}
+
+/* Dark mode is a token rewrite, never a component change (ui.md §8). It follows the OS unless the user
+   picked a side, which is what the two selectors below express. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #17171a;
+    --pane: #1f1f23;
+    --line: #33333a;
+    --text: #ececf1;
+    --muted: #9a9aa5;
+    --accent: #6aa6ff;
+    --warn: #e0a458;
+    --error: #ff7b8a;
+    --ok: #57c98b;
+    --hover: #26262c;
+    --selected: #26324a;
+    --shadow-pop: 0 0.25rem 1rem rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%);
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #17171a;
+  --pane: #1f1f23;
+  --line: #33333a;
+  --text: #ececf1;
+  --muted: #9a9aa5;
+  --accent: #6aa6ff;
+  --warn: #e0a458;
+  --error: #ff7b8a;
+  --ok: #57c98b;
+  --hover: #26262c;
+  --selected: #26324a;
+  --shadow-pop: 0 0.25rem 1rem rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%);
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
+  block-size: 100%;
+}
+
+body {
   background: var(--bg);
   color: var(--text);
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
 }
 
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-}
-
-nav {
-  display: flex;
-  gap: 4px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
+button {
+  font: inherit;
+  color: inherit;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--pane);
+  cursor: pointer;
 }
 
-nav button {
-  padding: 4px 14px;
+button:hover:not(:disabled) {
+  border-color: var(--accent);
 }
 
-nav button.active {
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-main {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+button.danger {
+  border-color: var(--error);
+  color: var(--error);
 }
 
-footer {
-  display: flex;
-  justify-content: space-between;
-  padding: 4px 10px;
-  border-top: 1px solid var(--line);
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--pane);
-  font-size: 12px;
-  color: var(--muted);
 }
 
-.blocked {
+textarea {
+  inline-size: 100%;
+  resize: vertical;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
   font-weight: 600;
 }
 
-.split {
+h2 {
+  font-size: var(--fs-title);
+}
+
+h3 {
+  font-size: var(--fs-section);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ---- shell ------------------------------------------------------------------------------------ */
+
+.app {
   display: grid;
-  grid-template-columns: 2fr 1.2fr;
-  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  block-size: 100dvb;
 }
 
-.pane {
-  padding: 8px 10px;
-  overflow: auto;
+/* The only scroll containers in the app are inside the content region. */
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, var(--sidebar)) minmax(0, 1fr);
+  min-block-size: 0;
+  container-type: inline-size;
+  container-name: body;
 }
 
-.pane.detail {
-  border-left: 1px solid var(--line);
+/* Collapsed sidebar: the track shrinks to the icons and the labels leave the flow (ui.md §2). The grid
+   belongs to .body, so the state has to be expressed there rather than on the sidebar itself. */
+.body.is-sidebar-collapsed {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.body.is-sidebar-collapsed .sidebar .label,
+.body.is-sidebar-collapsed .sidebar .section-title,
+.body.is-sidebar-collapsed .sidebar .sidebar-extra {
+  display: none;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+
+/* ---- shared bits ------------------------------------------------------------------------------ */
+
+.meta {
+  font-size: var(--fs-meta);
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--error);
+}
+
+.edited {
+  color: var(--warn);
+  font-size: var(--fs-meta);
+}
+
+.validity {
+  font-size: var(--fs-meta);
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  border-block-end: 1px solid var(--line);
   background: var(--pane);
 }
 
-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+.readable {
+  max-inline-size: var(--measure);
+  margin-inline: auto;
+  inline-size: 100%;
+}
+
+.scroll {
+  min-block-size: 0;
+  overflow: auto;
+}
+
+/* Long identifiers and payloads must never produce a horizontal scrollbar (ui.md §2). */
+.break {
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+}
+
+/* ---- master / detail -------------------------------------------------------------------------- */
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--inspector));
+  min-block-size: 0;
+  block-size: 100%;
+  position: relative;
+}
+
+/* The scrim is a sibling of the panes but must never be a grid item — otherwise it takes a column and
+   pushes the inspector onto a second row. It is invisible until a narrow container needs the overlay. */
+.inspector-scrim {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 25%);
+  z-index: 1;
+}
+
+.split.is-inspector-collapsed {
+  grid-template-columns: minmax(0, 1fr) 0;
 }
 
 .list {
@@ -92,102 +291,229 @@ header {
   padding: 0;
 }
 
-.list li {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line);
+.list > li {
+  padding: var(--space-2) var(--space-3);
+  border-block-end: 1px solid var(--line);
   cursor: pointer;
+  border-inline-start: 2px solid transparent;
 }
 
-.list li.selected {
-  background: #e8f0ff;
+.list > li:hover {
+  background: var(--hover);
 }
 
-.list.compact li {
-  cursor: default;
-  font-size: 12px;
+.list > li.selected {
+  background: var(--selected);
+  border-inline-start-color: var(--accent);
 }
 
-.meta {
-  font-size: 11px;
-  color: var(--muted);
-}
+/* ---- inspector -------------------------------------------------------------------------------- */
 
-.muted {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.edited {
-  color: var(--warn);
-  font-size: 12px;
-}
-
-.validity {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.error {
-  color: var(--error);
-}
-
-textarea,
-input[type='number'],
-input[type='text'] {
-  width: 100%;
-  margin: 6px 0;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  font: inherit;
-}
-
-header input {
-  width: 180px;
-  margin: 0;
-}
-
-.form label {
-  display: block;
-  margin: 6px 0;
-  font-size: 13px;
-}
-
-.form label input[type='number'] {
-  width: 120px;
-  margin-left: 6px;
-}
-
-.form label input[type='checkbox'] {
-  margin-right: 6px;
-}
-
-.row {
+.inspector {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-top: 10px;
-}
-
-button {
-  padding: 3px 12px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  border-inline-start: 1px solid var(--line);
   background: var(--pane);
-  cursor: pointer;
-  font: inherit;
 }
 
-button:hover {
-  border-color: var(--accent);
+.inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-block-end: 1px solid var(--line);
 }
 
-h2 {
-  font-size: 14px;
-  margin: 0 0 6px;
+.inspector-body {
+  padding: var(--space-3);
+  overflow: auto;
+  min-block-size: 0;
 }
 
-h3 {
-  font-size: 13px;
-  margin: 14px 0 4px;
+.inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+/* ---- composer --------------------------------------------------------------------------------- */
+
+.composer {
+  border-block-start: 1px solid var(--line);
+  background: color-mix(in srgb, var(--pane) 88%, transparent);
+  backdrop-filter: blur(0.5rem);
+}
+
+.composer-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-block-end: 1px solid var(--line);
+  font-size: var(--fs-meta);
+  color: var(--muted);
+}
+
+.composer-input {
+  padding: var(--space-2) var(--space-3);
+}
+
+.composer-input textarea {
+  min-block-size: 2.5lh;
+  border: none;
+  background: transparent;
+  outline: none;
+  resize: vertical;
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3) var(--space-2);
+}
+
+.composer-tools .spacer {
+  flex: 1;
+}
+
+/* ---- queue status stripe ---------------------------------------------------------------------- */
+
+.queue-item {
+  border-inline-start-width: 0.25em;
+  border-inline-start-style: solid;
+}
+
+.queue-item[data-status='Queued'] {
+  border-inline-start-color: var(--muted);
+}
+
+.queue-item[data-status='Running'] {
+  border-inline-start-color: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.queue-item[data-status='Failed'] {
+  border-inline-start-color: var(--error);
+}
+
+.queue-item[data-status='Done'] {
+  border-inline-start-color: var(--ok);
+}
+
+.queue-item[data-status='Canceled'] {
+  border-inline-start-color: var(--line);
+}
+
+@keyframes pulse {
+  50% {
+    border-inline-start-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-item[data-status='Running'] {
+    animation: none;
+  }
+}
+
+/* ---- settings --------------------------------------------------------------------------------- */
+
+.cards {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--pane);
+  padding: var(--space-3);
+}
+
+.card > h2 {
+  margin-block-end: var(--space-1);
+}
+
+.card-note {
+  font-size: var(--fs-meta);
+  color: var(--muted);
+  margin-block: 0 var(--space-3);
+}
+
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block: var(--space-1);
+}
+
+.field > input[type='number'] {
+  inline-size: 7rem;
+}
+
+.field .source {
+  grid-column: 1 / -1;
+  font-size: var(--fs-meta);
+  color: var(--muted);
+}
+
+/* ---- responsive: container queries, no fixed breakpoints in px --------------------------------- */
+
+/* Narrow: the inspector becomes an overlay instead of a column. */
+@container body (max-width: 64rem) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+    position: relative;
+  }
+
+  .split.is-inspector-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inspector {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: 0;
+    inline-size: min(var(--inspector), 90%);
+    border-inline-start: 1px solid var(--line);
+    box-shadow: var(--shadow-pop);
+    z-index: 2;
+  }
+
+  .split.is-inspector-collapsed .inspector {
+    display: none;
+  }
+
+  .inspector-scrim {
+    display: block;
+  }
+}
+
+/* Narrower still: the sidebar keeps only its icons. */
+@container body (max-width: 52rem) {
+  .body {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .sidebar .label,
+  .sidebar .section-title,
+  .sidebar .sidebar-extra {
+    display: none;
+  }
+}
+
+/* Narrowest: the top bar drops its secondary items. */
+@container body (max-width: 40rem) {
+  .topbar .breadcrumb,
+  .topbar .brand-scope {
+    display: none;
+  }
 }

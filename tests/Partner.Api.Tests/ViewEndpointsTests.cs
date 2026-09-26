@@ -19,7 +19,7 @@ namespace Partner.Api.Tests;
 /// The UI data layer, exercised over a real HTTP socket. Each test owns its workspace and its host, so the
 /// suite is isolated and order-independent.
 /// </summary>
-public sealed class ViewEndpointsTests : IAsyncLifetime
+public sealed partial class ViewEndpointsTests : IAsyncLifetime
 {
     private string _workspace = string.Empty;
     private ApiContext _context = null!;

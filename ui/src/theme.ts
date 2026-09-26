@@ -1,0 +1,40 @@
+/**
+ * Theme is pure frontend (ui.md §3): it never reaches the API. The choice is remembered per machine, and
+ * `auto` leaves the decision to the OS via the token selectors in styles.css.
+ */
+
+export type Theme = 'auto' | 'light' | 'dark'
+
+const THEME_KEY = 'partner.theme'
+const ORDER: Theme[] = ['auto', 'light', 'dark']
+
+export function readTheme(): Theme {
+  try {
+    const stored = window.localStorage.getItem(THEME_KEY)
+    return ORDER.find((candidate) => candidate === stored) ?? 'auto'
+  } catch {
+    return 'auto'
+  }
+}
+
+export function applyTheme(theme: Theme): void {
+  if (theme === 'auto') {
+    document.documentElement.removeAttribute('data-theme')
+  } else {
+    document.documentElement.setAttribute('data-theme', theme)
+  }
+
+  try {
+    window.localStorage.setItem(THEME_KEY, theme)
+  } catch {
+    // A sandboxed context without storage still gets the theme for this session.
+  }
+}
+
+export function nextTheme(theme: Theme): Theme {
+  return ORDER[(ORDER.indexOf(theme) + 1) % ORDER.length] ?? 'auto'
+}
+
+export function themeLabel(theme: Theme): string {
+  return theme === 'auto' ? '跟随系统' : theme === 'light' ? '浅色' : '深色'
+}

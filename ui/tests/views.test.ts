@@ -29,10 +29,11 @@ interface Calls {
   cancels: string[]
   saves: Partial<VoiceSettings>[]
   recalls: string[]
+  submits: { payload: string; source: string }[]
 }
 
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
-  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [] }
+  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [] }
 
   const session: SessionViewData = {
     lastSeq: 3,
@@ -79,6 +80,10 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     sessionRevisions: vi.fn(async (): Promise<SessionRevision[]> => [{ seq: 2, at: '2026-09-26T10:00:01+00:00', body: 'first (edited)' }]),
     queue: vi.fn(async () => queue),
+    submitInput: vi.fn(async (payload: string, source: string) => {
+      calls.submits.push({ payload, source })
+      return { itemId: 'in-test', seq: 9, status: 'Queued', deduplicated: false }
+    }),
     cancel: vi.fn(async (itemId: string) => {
       calls.cancels.push(itemId)
       return itemId !== 'finished'
@@ -232,6 +237,9 @@ describe('settings view', () => {
     await flushPromises()
 
     expect(calls.saves).toEqual([expect.objectContaining({ utteranceGapMs: 750 })])
-    expect(wrapper.find('[data-test="settings-status"]').text()).toBe('已保存')
+    // ui.md §5.6: the status carries a timestamp, so the exact wording is no longer a fixed string.
+    const status = wrapper.find('[data-test="settings-status"]').text()
+    expect(status).toContain('已保存')
+    expect(status).toMatch(/\d{2}:\d{2}:\d{2}/)
   })
 })

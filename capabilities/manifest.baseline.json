@@ -729,6 +729,18 @@
       ]
     },
     {
+      "id": "ui.composer",
+      "owner": "M13",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "ui: submitting from the composer queues work without executing it",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
       "id": "ui.session_view",
       "owner": "M13",
       "level": "product-supported",

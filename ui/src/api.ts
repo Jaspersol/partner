@@ -93,6 +93,32 @@ export interface RebuildReport {
   queueLogEntries: number
 }
 
+/** What a delivery lands as: a queue item, not an executed turn. */
+export interface SubmitResult {
+  itemId: string
+  seq: number
+  status: string
+  deduplicated: boolean
+}
+
+/** The queue's shape reduced to what the badge and the status bar show. */
+export interface QueueSummary {
+  depth: number
+  pending: number
+  failed: number
+  runningItemId: string | null
+}
+
+/** One definition, used by the top bar badge, the status bar and the composer's strip — they must agree. */
+export function summarizeQueue(view: QueueView): QueueSummary {
+  return {
+    depth: view.depth,
+    pending: view.items.filter((item) => item.status === 'Queued' || item.status === 'Running').length,
+    failed: view.items.filter((item) => item.status === 'Failed').length,
+    runningItemId: view.runningItemId,
+  }
+}
+
 /** A non-2xx answer, carrying the API's own error text so the UI can show the real reason. */
 export class ApiError extends Error {
   constructor(
@@ -121,6 +147,7 @@ export interface PartnerApiSurface {
   sessionRevisions(seq: number): Promise<SessionRevision[]>
   queue(): Promise<QueueView>
   cancel(itemId: string): Promise<boolean>
+  submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult>
   memory(tier?: string, scope?: string, take?: number): Promise<MemoryItem[]>
   recall(query: string, limit?: number): Promise<RecallHit[]>
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
@@ -172,6 +199,13 @@ export class PartnerApi implements PartnerApiSurface {
 
     await this.assertOk(response)
     return true
+  }
+
+  // ---- input delivery --------------------------------------------------------------------------
+
+  /** Delivers to the queue. Nothing executes it here, so the answer says "queued", not "done". */
+  submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult> {
+    return this.request<SubmitResult>('POST', '/api/input', { source, payload, idempotencyKey })
   }
 
   // ---- memory ----------------------------------------------------------------------------------

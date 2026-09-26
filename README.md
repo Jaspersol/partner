@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**381 个 .NET 单测 + 17 个前端测试全绿 / 97 项 smoke 检查 / 49 项能力 `product-supported`**。
+当前基线：**388 个 .NET 单测 + 33 个前端测试全绿 / 98 项 smoke 检查 / 50 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -48,8 +48,11 @@ graph LR
     SIDE["拉起 partner-api<br/>从 stdout 读 token"]
     INJ["注入 window.__PARTNER_TOKEN__"]
   end
-  subgraph web["Vue 3 前端（ui/）"]
+  subgraph web["Vue 3 前端（ui/，2.1k 行）"]
+    SHELL["骨架：顶栏 / 侧栏 / 状态栏"]
     VIEWS["会话 / 队列 / 记忆 / 设置"]
+    PARTS["组件：检视面板 / 输入区 / 列表 / Markdown"]
+    SHELL --- VIEWS --- PARTS
   end
   subgraph runtime["C# 运行时（22.3k 行）"]
     API["Partner.Api<br/>Kestrel + Minimal API<br/>Bearer token + CORS 白名单"]
@@ -103,12 +106,11 @@ graph LR
 npm --prefix ui install                 # 首次
 npx --prefix ui tauri dev               # 起 vite + 壳，壳自动拉起 API
 
-# 生产打包（会先 dotnet publish API，再打 NSIS 安装包）
-dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \
-  -o src/Partner.Api/bin/Release/net8.0/win-x64/publish
-npm --prefix ui run build
-npx --prefix ui tauri build
+# 生产打包（发布 API → 构建前端 → 编译壳 → 打 NSIS 安装包）
+bash scripts/build-shell.sh             # SKIP_INSTALLER=1 则只编译壳
 ```
+
+**顺序不能颠倒**：壳打包的是 API 的 `publish` 快照，跳过发布就会把上一次的 API 装进去（新端点会在应用里 404）。这条已经封进 `scripts/build-shell.sh`，不要手敲那四步。
 
 壳自己挑空闲端口、自己起 `partner-api`、自己把 token 注入 webview —— **没有需要手填的配置**。
 
@@ -173,11 +175,12 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（381） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含 API 进程生命周期） |
+| .NET 单测（388） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含投递口与 API 进程生命周期） |
 | smoke（97 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
 | 前端契约测试（9） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效 |
 | 前端视图测试（8） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（挂载真实组件 + 桩 API） |
-| **壳的端到端（9）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
+| 前端组件测试（16） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 输入区 / 检视面板 / Markdown 渲染与转义 |
+| **壳的端到端（14）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（49） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
@@ -200,6 +203,39 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | Game | smoke 自动拉起 `Partner.GameTestServer`；也可单独跑它喂 JSON 协议 | 无 |
 | Api | curl（记得带 token） | 无 |
 | 前端 | `npm --prefix ui run dev` + 浏览器 | token 放进 localStorage |
+
+---
+
+## 界面（M13）
+
+规格见 `ui.md`（布局语言、令牌、尺寸策略、验收对照）。实现落在 `ui/src`：
+
+| 区域 | 组件 | 关键约束 |
+|---|---|---|
+| ① 顶栏 | `components/TopBar.vue` | 品牌 / 视图名 / 面包屑 / **队列徽标** / 主题 / 侧栏折叠。内容撑高，无固定高度 |
+| ② 侧栏 | `components/SideBar.vue` | 新建查询 / 视图导航 / 重建投影。轨道 `minmax(0,var(--sidebar))`，折叠后只剩图标 |
+| ③ 内容区 | `views/*.vue` + `components/{EventList,QueueList,MemoryList,Inspector}.vue` | 主区用 `--measure`（68ch）限行宽；会话与记忆是 master–detail |
+| ④ 输入区 | `components/Composer.vue` | 仅会话视图；状态条 + 输入 + 来源选择。状态条与顶栏徽标**同源** |
+| ⑤ 状态栏 | `components/StatusBar.vue` | 连接态（401 单独措辞）+ 阻塞态 + 版本 |
+
+**三条规范怎么在画面上成立**：
+
+| 规范 | 视觉证据 |
+|---|---|
+| UI 不持状态 | 每个视图都有显式「刷新」；写操作后重新拉取，界面上没有乐观更新 |
+| 编辑可撤销 | 列表行**常显** `已编辑 N 次 · 原文：…`；检视面板常驻修订历史，每条带「恢复此版本」 |
+| 阻塞可见 | 顶栏徽标 `队列 N · 失败 M · 执行中 X`（失败转 error 色），不切页也看得到；5s 轮询 |
+
+**尺寸纪律**：令牌里只有视觉标量（圆角/间距/字号/阴影，全 `rem`）。布局尺寸一律就地算——内容撑高、`minmax(0,1fr)` 弹性轨道、`clamp()` 比例。自适应用 `@container`（`.body` 为容器），**不写 px 断点**：窄容器检视面板转浮层、再窄侧栏只剩图标、最窄顶栏丢次要元素。暗色只重写令牌，组件不改。
+
+### 与 `ui.md` 的偏差（实现按真实后端能力落地）
+
+| 规格处 | 偏差 | 原因 |
+|---|---|---|
+| §6 输入区「角色：用户 ▾」 | **未实现** | `InputItem` 只有 `Source`（voice/text/schedule）与 `Payload`，没有「角色」字段。造一个纯前端下拉就是假控件 |
+| §6「发送后事件流顶部出现新行」 | 改为「已入队 · 等待执行」 | **队列没有消费者宿主**（`TakeAsync` 只被 smoke 调用）。投递的真实效果是入队，会话要等消费者跑完才有新行 |
+| §5.6 设置第四组「记忆」 | 未实现 | `VoiceSettings` 里没有记忆相关字段（`injectionTokenLimit` 只在设计文档里，未进 API） |
+| §4 侧栏「用量 / 配额」 | 未实现 | 没有用量接口。宁可少一项，也不放一个永远显示「—」的标签 |
 
 ---
 
@@ -234,7 +270,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M9 桌面 | `Desktop/`（`Windows/`、`Capture/`、`Input/`、`Interop/`、`Perception/`、`DesktopAutomation`） |
 | M10/M11 语音 | `Voice/`（`Audio/`、`Asr/`、`Perception/`、`Tts/`、`Playback/`、`Settings/`） |
 | M12 游戏 | `Game/`（`Reflex/`、`Perception/`、`Adapter/`） |
-| M13 UI | `Api/ApiHost.cs`、`Api/Auth/TokenAuth.cs`、`Api/Endpoints/ViewEndpoints.cs`、`ui/src/`、`src-tauri/src/lib.rs` |
+| M13 UI | `Api/ApiHost.cs`、`Api/Auth/TokenAuth.cs`、`Api/Endpoints/ViewEndpoints.cs`、`ui/src/`（骨架 + `components/` + `views/`）、`src-tauri/src/lib.rs` |
 
 ---
 
@@ -255,7 +291,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
-| M13 UI | `ui.auth`(2)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |
+| M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |
 
 ---
 

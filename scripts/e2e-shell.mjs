@@ -222,16 +222,69 @@ async function main() {
     const unauthorized = await fetch(`http://127.0.0.1:${port}/api/session`)
     check('the running shell API still rejects an unauthenticated call', unauthorized.status === 401, `status=${unauthorized.status}`)
 
-    // Tab switching: every view must render against the same live API.
-    await evaluate(cdp, `[...document.querySelectorAll('nav button')].find((b) => b.textContent.trim() === '队列').click()`)
+    // Tab switching now goes through the sidebar; every view must render against the same live API.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-队列"]\').click()')
     await waitFor(cdp, 'document.querySelector(\'[data-test="queue-list"] li\') !== null', 'the queue view')
     const queueSummary = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-summary"]\').textContent')
     check('the queue view renders the live queue', queueSummary.includes('失败 1'), queueSummary.trim())
 
-    await evaluate(cdp, `[...document.querySelectorAll('nav button')].find((b) => b.textContent.trim() === '设置').click()`)
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-设置"]\').click()')
     await waitFor(cdp, 'document.querySelector(\'[data-test="utterance-gap"]\') !== null', 'the settings view')
     const gap = await evaluate(cdp, 'document.querySelector(\'[data-test="utterance-gap"]\').value')
     check('the settings view loads the stored value', Number(gap) === 1200, `utteranceGapMs=${gap}`)
+
+    // The top bar must carry blocked work, since the status bar is no longer where it lives.
+    const badge = await evaluate(cdp, 'document.querySelector(\'[data-test="blocked"]\').textContent')
+    check('the top bar badge shows the queue without opening the queue view', badge.includes('失败 1'), badge.trim())
+
+    // Delivering from the composer: it lands in the queue, and the session is untouched.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
+    await waitFor(cdp, 'document.querySelector(\'[data-test="composer-input"]\') !== null', 'the composer')
+    await evaluate(
+      cdp,
+      `(() => {
+        const box = document.querySelector('[data-test="composer-input"]')
+        box.value = 'delivered from the shell'
+        box.dispatchEvent(new Event('input', { bubbles: true }))
+        return box.value
+      })()`,
+    )
+    await evaluate(cdp, 'document.querySelector(\'[data-test="composer-send"]\').click()')
+    await waitFor(cdp, 'document.querySelector(\'[data-test="session-notice"]\') !== null', 'the delivery notice')
+
+    const queueAfterSend = await (await fetch(`http://127.0.0.1:${port}/api/queue`, { headers: { Authorization: `Bearer ${token}` } })).json()
+    const delivered = queueAfterSend.items.find((item) => item.payload === 'delivered from the shell')
+    const sessionAfterSend = await (await fetch(`http://127.0.0.1:${port}/api/session`, { headers: { Authorization: `Bearer ${token}` } })).json()
+    check(
+      'delivering from the composer queues the text without touching the session',
+      delivered?.status === 'Queued' && sessionAfterSend.lastSeq === session.lastSeq,
+      `status=${delivered?.status} lastSeq=${sessionAfterSend.lastSeq}`,
+    )
+
+    const notice = await evaluate(cdp, 'document.querySelector(\'[data-test="session-notice"]\').textContent')
+    check('the composer says the work is queued rather than done', notice.includes('等待执行'), notice.trim())
+
+    // Sidebar collapse is shell state; the sidebar must actually leave the layout.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')
+    const sidebarHidden = await evaluate(
+      cdp,
+      `(() => {
+        const sidebar = document.querySelector('[data-test="sidebar"]')
+        return sidebar.getBoundingClientRect().width
+      })()`,
+    )
+    await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')
+    const sidebarShown = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="sidebar"]\').getBoundingClientRect().width',
+    )
+    check('collapsing the sidebar changes the layout', sidebarShown > sidebarHidden, `${sidebarHidden} -> ${sidebarShown}`)
+
+    // Theme is pure frontend: it must apply without a round trip.
+    const themeBefore = await evaluate(cdp, 'document.documentElement.dataset.theme ?? "auto"')
+    await evaluate(cdp, 'document.querySelector(\'[data-test="theme-toggle"]\').click()')
+    const themeAfter = await evaluate(cdp, 'document.documentElement.dataset.theme ?? "auto"')
+    check('the theme toggle applies immediately', themeBefore !== themeAfter, `${themeBefore} -> ${themeAfter}`)
   } catch (error) {
     // The page's own state is the only thing that explains a render failure.
     try {
