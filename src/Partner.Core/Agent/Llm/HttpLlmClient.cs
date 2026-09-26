@@ -163,10 +163,19 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     }
 
     /// <summary>
-    /// The local estimate. The synchronous path cannot do I/O, so a caller that wants the model's own count
-    /// must use <see cref="CountAsync"/>; the pair is what <c>DualArmTokenCounter</c> combines.
+    /// What is already known about this text, without touching the network. The session view reports occupancy
+    /// on every load, and a view must not wait on — or fail because of — a model endpoint: this answers from
+    /// what the turns have already counted, and from the local estimate for anything new.
     /// </summary>
-    public int Count(string text) => _local.Count(text);
+    public int Count(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        return _tokenCounts.TryGet(text, out var known) ? known : _local.Count(text);
+    }
 
     /// <summary>
     /// The model's own count via <c>POST {base}/tokenize</c> (the llama.cpp-compatible endpoint), memoised.
@@ -204,6 +213,12 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             // The endpoint does not exist on this server: that is a permanent answer, not a transient failure.
             _tokenizeUnavailable = true;
             return _local.Count(text);
+        }
+        catch (TaskCanceledException) when (ct.IsCancellationRequested)
+        {
+            // A canceled turn must stop, not quietly continue with an estimate. A timeout looks the same by
+            // type, which is why the caller's token is what decides.
+            throw;
         }
         catch (Exception error) when (error is HttpRequestException or JsonException or TaskCanceledException)
         {

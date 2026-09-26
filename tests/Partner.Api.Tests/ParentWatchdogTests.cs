@@ -155,9 +155,28 @@ public sealed class ParentWatchdogTests
 
             Process.Dispose();
 
-            if (Directory.Exists(workspace))
+            if (!Directory.Exists(workspace))
             {
-                Directory.Delete(workspace, recursive: true);
+                return;
+            }
+
+            // Windows can hold the SQLite handle (memory.db-shm) for a moment after the process is gone, so a
+            // single delete is a race: it fails the test in its own cleanup, which says nothing about the code.
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                try
+                {
+                    Directory.Delete(workspace, recursive: true);
+                    return;
+                }
+                catch (IOException) when (attempt < 19)
+                {
+                    await Task.Delay(100);
+                }
+                catch (UnauthorizedAccessException) when (attempt < 19)
+                {
+                    await Task.Delay(100);
+                }
             }
         }
     }

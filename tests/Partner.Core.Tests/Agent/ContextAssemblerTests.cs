@@ -1,3 +1,4 @@
+using Partner.Core.Memory;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
@@ -15,8 +16,13 @@ public sealed class ContextAssemblerTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-context-tests", Guid.NewGuid().ToString("n"));
 
+    /// <summary>Kept so the fixture can close the sink: on Windows a leaked handle makes the cleanup throw.</summary>
+    private JsonlSessionStore? _opened;
+
     public void Dispose()
     {
+        _opened?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
         if (Directory.Exists(_dir))
         {
             Directory.Delete(_dir, recursive: true);
@@ -36,6 +42,7 @@ public sealed class ContextAssemblerTests : IDisposable
     private async Task<ISessionStore> SessionAsync(params (SessionEventKind Kind, string Body)[] events)
     {
         var (store, _) = JsonlSessionStore.Open(_dir);
+        _opened = store;
 
         foreach (var (kind, body) in events)
         {
@@ -48,6 +55,52 @@ public sealed class ContextAssemblerTests : IDisposable
         }
 
         return store;
+    }
+
+    /// <summary>Counts, and refuses to be counted asynchronously: the measurement must not reach the network.</summary>
+    private sealed class SyncOnlyCounter : ITokenCounter
+    {
+        public int Calls { get; private set; }
+
+        public int Count(string text)
+        {
+            Calls++;
+            return Math.Max(1, text.Length / 4);
+        }
+
+        public ValueTask<int> CountAsync(string text, CancellationToken ct = default) =>
+            throw new InvalidOperationException("the measurement must not ask a model for a count");
+    }
+
+    [Fact]
+    public async Task Measuring_occupancy_never_reaches_the_model()
+    {
+        // The session view reports occupancy on every load. If that path could do I/O, a slow or dead model
+        // endpoint would hang the view — which is exactly what it did before this split.
+        var store = await SessionAsync(
+            (SessionEventKind.User, "turn on the lamp"),
+            (SessionEventKind.Assistant, "done"));
+
+        var counter = new SyncOnlyCounter();
+        var usage = await new SessionWindowContextAssembler(store, contextTokens: 512, reserveForOutput: 64, tokens: counter)
+            .MeasureAsync();
+
+        Assert.True(counter.Calls > 0);
+        Assert.True(usage.UsedTokens > 0);
+        Assert.Equal(512 - 64, usage.BudgetTokens);
+        Assert.Equal(2, usage.KeptItems);
+    }
+
+    [Fact]
+    public async Task A_turn_may_still_ask_the_model_for_a_count()
+    {
+        // The other half of the split: the assembler that decides what to send keeps using the native counter.
+        var store = await SessionAsync((SessionEventKind.User, "turn on the lamp"));
+        var counter = new SyncOnlyCounter();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new SessionWindowContextAssembler(store, contextTokens: 512, reserveForOutput: 64, tokens: counter)
+                .AssembleInitialAsync(Input("next"), Array.Empty<string>()));
     }
 
     [Fact]

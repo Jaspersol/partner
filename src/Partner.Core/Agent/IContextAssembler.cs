@@ -74,7 +74,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     public async Task<ContextUsage> MeasureAsync(CancellationToken ct = default)
     {
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
-        var plan = await PlanAsync(view, injectedPrompts: Array.Empty<string>(), currentInput: null, ct)
+        var plan = await PlanAsync(view, injectedPrompts: Array.Empty<string>(), currentInput: null, fromMemory: true, ct)
             .ConfigureAwait(false);
 
         return new ContextUsage(
@@ -95,7 +95,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         ArgumentNullException.ThrowIfNull(injectedPrompts);
 
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
-        var plan = await PlanAsync(view, injectedPrompts, item.Payload, ct).ConfigureAwait(false);
+        var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct).ConfigureAwait(false);
 
         var messages = new List<LlmMessage>
         {
@@ -109,41 +109,53 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         return messages;
     }
 
-    /// <summary>Everything the two public entry points share: what fits, and what it costs.</summary>
+    /// <summary>
+    /// Everything the two public entry points share: what fits, and what it costs.
+    /// <para>
+    /// <paramref name="fromMemory"/> is how the read-only measurement stays read-only: a turn may ask the model
+    /// for a token count, but reporting occupancy must not, because the session view would then wait on — or
+    /// fail because of — a model endpoint that is slow, dead, or not configured yet.
+    /// </para>
+    /// </summary>
     private async Task<Plan> PlanAsync(
         SessionView view,
         IReadOnlyList<string> injectedPrompts,
         string? currentInput,
+        bool fromMemory,
         CancellationToken ct)
     {
         // A summary stands in for history that was folded away, so it is context rather than a turn.
         var summaries = view.Items.Where(entry => entry.Kind == SessionEventKind.Summary).ToList();
         var conversation = view.Items.Where(entry => entry.Kind != SessionEventKind.Summary).ToList();
 
+        ValueTask<int> Cost(string? text, CancellationToken token) => fromMemory
+            ? ValueTask.FromResult(_tokens.Count(text ?? string.Empty) + ContextBudget.MessageOverheadTokens)
+            : ContextBudget.CostAsync(_tokens, text, token);
+
         var context = summaries.Select(summary => $"summary of earlier history: {summary.Body}").ToList();
 
         // The system block is always sent: dropping it would remove the instructions the turn runs under.
-        var systemTokens = await ContextBudget.CostAsync(_tokens, _baseSystemPrompt, ct).ConfigureAwait(false);
+        var systemTokens = await Cost(_baseSystemPrompt, ct).ConfigureAwait(false);
 
         foreach (var prompt in injectedPrompts)
         {
-            systemTokens += await ContextBudget.CostAsync(_tokens, prompt, ct).ConfigureAwait(false);
+            systemTokens += await Cost(prompt, ct).ConfigureAwait(false);
         }
 
         foreach (var entry in context)
         {
-            systemTokens += await ContextBudget.CostAsync(_tokens, entry, ct).ConfigureAwait(false);
+            systemTokens += await Cost(entry, ct).ConfigureAwait(false);
         }
 
         var inputTokens = currentInput is null
             ? 0
-            : await ContextBudget.CostAsync(_tokens, currentInput, ct).ConfigureAwait(false);
+            : await Cost(currentInput, ct).ConfigureAwait(false);
 
         var budget = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput) - systemTokens - inputTokens;
 
         var kept = await ContextBudget.FitNewestFirstAsync(
             conversation,
-            (entry, token) => ContextBudget.CostAsync(_tokens, entry.Body, token),
+            (entry, token) => Cost(entry.Body, token),
             Math.Max(0, budget),
             ct).ConfigureAwait(false);
 
@@ -163,7 +175,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         var turnTokens = 0;
         foreach (var entry in kept)
         {
-            turnTokens += await ContextBudget.CostAsync(_tokens, entry.Body, ct).ConfigureAwait(false);
+            turnTokens += await Cost(entry.Body, ct).ConfigureAwait(false);
         }
 
         return new Plan(

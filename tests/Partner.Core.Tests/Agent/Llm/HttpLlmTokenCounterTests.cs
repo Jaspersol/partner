@@ -17,6 +17,19 @@ public sealed class HttpLlmTokenCounterTests
         });
 
     [Fact]
+    public async Task A_canceled_turn_is_not_answered_from_the_estimate()
+    {
+        // A timeout and a cancellation are the same exception type; only the caller's token tells them apart,
+        // and swallowing a cancellation would let a stopped turn keep working.
+        using var cts = new CancellationTokenSource();
+        var pending = Build(new HangingHandler()).CountAsync("你好", cts.Token).AsTask();
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+    }
+
+    [Fact]
     public async Task It_counts_with_the_tokenizer_endpoint()
     {
         var handler = new StubHandler(HttpStatusCode.OK, """{"tokens":[1,2,3,4,5]}""");
@@ -35,9 +48,25 @@ public sealed class HttpLlmTokenCounterTests
         var handler = new StubHandler(HttpStatusCode.OK, """{"tokens":[1,2,3,4,5]}""");
         var client = Build(handler);
 
-        // 12 characters / 4 — the sync path cannot do I/O, and the dual-arm counter takes the larger answer.
+        // 12 characters / 4: the sync path cannot do I/O, so unknown text falls back to the local estimate.
         Assert.Equal(3, client.Count("abcdefghijkl"));
         Assert.Null(handler.Request);
+    }
+
+    [Fact]
+    public async Task The_synchronous_path_answers_from_what_was_already_counted()
+    {
+        // The session view reports occupancy on every load. It must answer from the memo the turns filled, not
+        // from a fresh round trip — a dead endpoint would otherwise hang the view.
+        var handler = new StubHandler(HttpStatusCode.OK, """{"tokens":[1,2,3,4,5,6,7]}""");
+        var client = Build(handler);
+
+        Assert.Equal(7, await client.CountAsync("你好，世界"));
+        Assert.Equal(1, handler.Requests);
+
+        // Known text: answered from memory, with no second request — and the model's number, not the estimate.
+        Assert.Equal(7, client.Count("你好，世界"));
+        Assert.Equal(1, handler.Requests);
     }
 
     [Fact]
