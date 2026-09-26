@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Partner.Api.Auth;
+using Partner.Api.Voice;
 using Partner.Core.Agent.Llm;
 
 namespace Partner.Api.Tests;
@@ -19,6 +20,7 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
     private string _workspace = string.Empty;
     private ApiContext _context = null!;
     private ConsumerHost _consumer = null!;
+    private VoiceHost _voice = null!;
     private WebApplication _app = null!;
     private Task _run = null!;
     private HttpClient _http = null!;
@@ -41,10 +43,11 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
             new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
         });
 
-        var (app, context, consumer) = await ApiHost.BuildAsync(_workspace, _port, _token, clock: null, llm: llm);
+        var (app, context, consumer, voice) = await ApiHost.BuildAsync(_workspace, _port, _token, clock: null, llm: llm);
         _app = app;
         _context = context;
         _consumer = consumer;
+        _voice = voice;
         _run = _app.RunAsync();
 
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
@@ -74,6 +77,7 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
         _http.Dispose();
         await _app.StopAsync();
         await _run;
+        await _voice.DisposeAsync();
         await _consumer.DisposeAsync();
         await _context.DisposeAsync();
 
@@ -185,7 +189,7 @@ public sealed class UnconfiguredConsumerTests
             Environment.SetEnvironmentVariable(HttpLlmClient.BaseUrlVariable, null);
             Environment.SetEnvironmentVariable(HttpLlmClient.ModelVariable, null);
 
-            var (app, context, consumer) = await ApiHost.BuildAsync(workspace, port, token);
+            var (app, context, consumer, voice) = await ApiHost.BuildAsync(workspace, port, token);
             var run = app.RunAsync();
 
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -225,6 +229,7 @@ public sealed class UnconfiguredConsumerTests
 
             await app.StopAsync();
             await run;
+            await voice.DisposeAsync();
             await consumer.DisposeAsync();
             await context.DisposeAsync();
         }

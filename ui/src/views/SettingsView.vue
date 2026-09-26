@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import type { ConsumerState, PartnerApiSurface, RuntimeSettings } from '../api'
+import type { ConsumerState, PartnerApiSurface, RuntimeSettings, VoiceState } from '../api'
 
 const props = defineProps<{ api: PartnerApiSurface }>()
 const emit = defineEmits<{ context: [value: string] }>()
@@ -40,6 +40,7 @@ const apiKeyEdited = ref(false)
 const status = ref('')
 const error = ref('')
 const consumer = ref<ConsumerState | null>(null)
+const voice = ref<VoiceState | null>(null)
 
 const modelConfigured = computed(() => (form.model.baseUrl ?? '') !== '' && (form.model.model ?? '') !== '')
 const keyHint = computed(() =>
@@ -66,6 +67,7 @@ async function refresh() {
   error.value = ''
   try {
     apply(await props.api.settings())
+    voice.value = await props.api.voice()
     emit('context', '设置 · 运行时')
   } catch (failure) {
     error.value = String(failure)
@@ -98,6 +100,7 @@ async function persist() {
     const saved = await props.api.saveSettings(payload)
     apply(saved.settings as RuntimeSettings & { model: { apiKeySet: boolean } })
     consumer.value = saved.consumer
+    voice.value = saved.voice
     status.value = `已保存 · ${new Date().toLocaleTimeString()}`
   } catch (failure) {
     error.value = String(failure)
@@ -160,6 +163,12 @@ onMounted(refresh)
             <span>输入设备 ID</span>
             <input type="text" v-model="form.input.deviceId" placeholder="（默认设备）" />
           </label>
+
+          <p class="card-note" data-test="input-effect">
+            <template v-if="voice?.input.running">运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段</template>
+            <template v-else-if="voice">未运行 · {{ voice.input.reason }}</template>
+            <template v-else>（保存后查看运行状态）</template>
+          </p>
         </section>
 
         <section class="card">
@@ -199,6 +208,12 @@ onMounted(refresh)
             <span>输出设备 ID</span>
             <input type="text" v-model="form.output.deviceId" placeholder="（默认设备）" />
           </label>
+
+          <p class="card-note" data-test="output-effect">
+            <template v-if="voice?.output.running">运行中 · {{ voice.output.device }} · 已朗读 {{ voice.output.count }} 句</template>
+            <template v-else-if="voice">未运行 · {{ voice.output.reason }}</template>
+            <template v-else>（保存后查看运行状态）</template>
+          </p>
         </section>
 
         <section class="card">

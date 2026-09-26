@@ -26,6 +26,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     cancel: vi.fn(async () => true),
     submitInput: vi.fn(async () => ({ itemId: 'in-1', seq: 1, status: 'Queued', deduplicated: false })),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
+    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
     memory: vi.fn(async () => []),
     recall: vi.fn(async () => []),
     editMemory: vi.fn(async () => {}),
@@ -41,6 +42,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
       settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
       consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
+      voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
     })),
     rebuild: vi.fn(async () => ({ sessionItems: 0, sessionLastSeq: 0, memoryIndexed: 0, queueLogEntries: 0 })),
     ...overrides,

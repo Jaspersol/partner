@@ -1,4 +1,5 @@
 using Partner.Api.Settings;
+using Partner.Api.Voice;
 using Partner.Core.Agent.Llm;
 using Partner.Api.Auth;
 using Partner.Api.Endpoints;
@@ -13,18 +14,20 @@ namespace Partner.Api;
 /// </summary>
 public static class ApiHost
 {
-    public static async Task<(WebApplication App, ApiContext Context, ConsumerHost Consumer)> BuildAsync(
+    public static async Task<(WebApplication App, ApiContext Context, ConsumerHost Consumer, VoiceHost Voice)> BuildAsync(
         string workspace,
         int port,
         string token,
         TimeProvider? clock = null,
-        ILlmClient? llm = null)
+        ILlmClient? llm = null,
+        IVoiceComponents? components = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
 
         var context = await ApiContext.OpenAsync(workspace, clock).ConfigureAwait(false);
         var consumer = ConsumerHost.Create(context, workspace);
+        var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents());
 
         if (llm is not null)
         {
@@ -38,10 +41,13 @@ public static class ApiHost
             await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
         }
 
+        await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);
+
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseSetting("urls", $"http://127.0.0.1:{port}");
         builder.Services.AddSingleton(context);
         builder.Services.AddSingleton(consumer);
+        builder.Services.AddSingleton(voice);
 
         // The shell serves the UI from its own origin, so every API call is cross-origin. CORS here is a
         // browser-enforced allowlist, not the security boundary — the bearer token is (and CORS never grants
@@ -63,8 +69,9 @@ public static class ApiHost
         app.UseTokenAuth(token);
         app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
         app.MapGet("/api/consumer", (ConsumerHost host) => Results.Ok(host.State));
+        app.MapGet("/api/voice", (VoiceHost host) => Results.Ok(host.State));
         ViewEndpoints.Map(app);
 
-        return (app, context, consumer);
+        return (app, context, consumer, voice);
     }
 }

@@ -92,6 +92,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     sessionRevisions: vi.fn(async (): Promise<SessionRevision[]> => [{ seq: 2, at: '2026-09-26T10:00:01+00:00', body: 'first (edited)' }]),
     queue: vi.fn(async () => queue),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
+    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
     submitInput: vi.fn(async (payload: string, source: string) => {
       calls.submits.push({ payload, source })
       return { itemId: 'in-test', seq: 9, status: 'Queued', deduplicated: false }
@@ -115,7 +116,11 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     settings: vi.fn(async () => settings),
     saveSettings: vi.fn(async (patch: RuntimeSettings) => {
       calls.saves.push(patch)
-      return { settings: settings as unknown as SettingsView, consumer: { running: false, reason: "未配置模型", model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } } }
+      return {
+        settings: settings as unknown as SettingsView,
+        consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
+        voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+      }
     }),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
     ...overrides,
@@ -305,6 +310,23 @@ describe('settings view', () => {
 
     // No endpoint filled in, no consumer running: the page must not imply the settings took effect.
     expect(wrapper.find('[data-test="model-effect"]').text()).toContain('未配置模型')
+  })
+
+  it('reports each voice half, so an enabled-but-dead one is visible', async () => {
+    const { stub } = createStub({
+      voice: vi.fn(async () => ({
+        input: { running: true, reason: '运行中', device: 'synthetic-mic', count: 3 },
+        output: { running: false, reason: '未配置 TTS 服务地址', device: null, count: 0 },
+      })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="input-effect"]').text()).toContain('synthetic-mic')
+    expect(wrapper.find('[data-test="input-effect"]').text()).toContain('已识别 3 段')
+    // Enabled but not running: the reason must be on screen, not in a log.
+    expect(wrapper.find('[data-test="output-effect"]').text()).toContain('未配置 TTS')
   })
 
   it('loads the stored values and shows what the API kept', async () => {

@@ -1,4 +1,5 @@
 using Partner.Api.Settings;
+using Partner.Api.Voice;
 using Partner.Core.Contracts;
 using Partner.Core.Memory;
 using Partner.Core.Queue;
@@ -285,7 +286,7 @@ public static class ViewEndpoints
         app.MapGet("/api/settings", (ApiContext ctx) => Results.Ok(SettingsView.From(ctx.Settings.Load())));
 
         app.MapPut("/api/settings", async (
-            RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, CancellationToken ct) =>
+            RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, VoiceHost voice, CancellationToken ct) =>
         {
             var before = ctx.Settings.Load();
 
@@ -307,7 +308,20 @@ public static class ViewEndpoints
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
             }
 
-            return Results.Ok(new { settings = SettingsView.From(stored), consumer = consumer.State });
+            // Voice halves are restarted only when their own sections changed: reopening a device mid-utterance
+            // loses the utterance.
+            if (before.Input != stored.Input || before.Output != stored.Output
+                || before.Asr != stored.Asr || before.Tts != stored.Tts)
+            {
+                await voice.ReconfigureAsync(stored).ConfigureAwait(false);
+            }
+
+            return Results.Ok(new
+            {
+                settings = SettingsView.From(stored),
+                consumer = consumer.State,
+                voice = voice.State,
+            });
         });
     }
 

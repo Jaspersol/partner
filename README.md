@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**416 个 .NET 单测 + 42 个前端测试全绿 / 104 项 smoke 检查 / 51 项能力 `product-supported`**。
+当前基线：**422 个 .NET 单测 + 43 个前端测试全绿 / 108 项 smoke 检查 / 52 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -30,7 +30,7 @@ bash scripts/ci.sh
 
 | 项 | 要求 |
 |---|---|
-| OS | **Windows**（`Partner.Smoke`/`Desktop`/`Voice` 是 `net8.0-windows10.0.19041.0`） |
+| OS | **Windows**。`Desktop`/`Voice`/`Api`/`Smoke` 都是 `net8.0-windows10.0.19041.0`——API 之所以也在其中，是因为输入队列只有一个**进程内**消费者且没有跨进程锁，语音必须和它同进程（见「消费者」与「语音」） |
 | .NET | .NET 8 SDK（当前 8.0.423） |
 | Node | Node 22 + npm（前端；**不用 pnpm**，见「坑」） |
 | Rust | cargo 1.98+（仅壳需要；缺失时 CI 自动跳过该步） |
@@ -76,7 +76,7 @@ graph LR
 | `src/Partner.Desktop` | net8.0-windows | 窗口枚举、GDI 抓帧、输入编组、动作后校验、租约门控 |
 | `src/Partner.Voice` | net8.0-windows | 麦克风输入（VAD/分句/流式）、TTS 输出、播放期停听 |
 | `src/Partner.Game` | net8.0 | 游戏通用层：反射引擎（槽位锁）、六域上下文、感知去抖分级、进程适配器 |
-| `src/Partner.Api` | net8.0 | **UI 的唯一数据源**。Kestrel + Minimal API |
+| `src/Partner.Api` | net8.0-windows | **UI 的唯一数据源** + 两个宿主的家：Kestrel + Minimal API、队列消费者、语音宿主 |
 | `src/Partner.Smoke` | net8.0-windows | 端到端 smoke + 能力清单生成 + 门禁 |
 | `ui/` | — | Vue 3 + Vite + TS 前端（四视图 + 契约类型 + 测试） |
 | `src-tauri/` | Rust | 桌面壳：窗口、sidecar 生命周期、token 注入 |
@@ -223,6 +223,36 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json
 
 ---
 
+## 语音（麦克风 ↔ 会话）
+
+`Api/Voice/VoiceHost.cs` 把两个半区接进运行时（设计文档 §2.8）：
+
+```
+麦克风 → 环形缓冲 → 停顿切句 → ASR → 队列 → 消费者跑回合 → 会话
+                                                              ↓
+扬声器 ← 顺序播放 ← TTS ← 切句 ← 新出现的 assistant 事件
+```
+
+| 设计点 | 为什么 |
+|---|---|
+| **与队列消费者同进程** | 队列只有一个**进程内**消费者、没有跨进程锁。另起一个语音进程会和消费者抢同一个日志 |
+| 半个启动失败只影响自己 | 打不开麦克风不该让扬声器也停：两个半区各自报告 `running` / `reason` / `device` / `count` |
+| 捕获按 20ms 帧节奏 tick | 停顿判定依赖到达节奏；输出半只等新文本，200ms 轮询足够 |
+| 只朗读启动后新出现的事件 | 否则一开机就把整个历史读出来 |
+| 幂等键带 boot id | `voice:{device}:{boot}:{startMs}`——流时钟重启后会归零，键必须含 boot |
+
+**测试注入点**：`IVoiceComponents` 一处封住设备与两个客户端（`OpenSource`/`OpenSink`/`CreateAsr`/`CreateTts`），所以整条链可以在**没有麦克风、扬声器和服务**的情况下驱动——停顿边界与播放顺序本来也只能这样测。
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
+# {"input":{"running":true,"reason":"运行中","device":"synthetic-mic","count":3},
+#  "output":{"running":false,"reason":"未配置 TTS 服务地址","device":null,"count":0}}
+```
+
+设置里改 `input`/`output`/`asr`/`tts` 任一段会**重启语音宿主**（重开设备）；只改 `model` 段不会——避免打断一次正在进行的识别。
+
+---
+
 ## 调试
 
 ### 分层命令
@@ -245,12 +275,12 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（416） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、设置读写、进程生命周期） |
+| .NET 单测（422） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、设置读写、语音宿主、进程生命周期） |
 | smoke（97 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
 | 前端契约测试（11） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落与密钥不回传 |
-| 前端视图测试（12） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示） |
+| 前端视图测试（13） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态） |
 | 前端组件测试（18） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 |
-| **壳的端到端（20）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、**在设置页改模型并看消费者起来**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
+| **壳的端到端（21）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**看语音半为何未运行**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（49） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
@@ -338,7 +368,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M7 MCP | `Core/Agent/Mcp/` |
 | M8 Skills | `Core/Agent/Skills/` |
 | M9 桌面 | `Desktop/`（`Windows/`、`Capture/`、`Input/`、`Interop/`、`Perception/`、`DesktopAutomation`） |
-| M10/M11 语音 | `Voice/`（`Audio/`、`Asr/`、`Perception/`、`Tts/`、`Playback/`、`Settings/`） |
+| M10/M11 语音 | `Voice/`（`Audio/`、`Asr/`、`Perception/`、`Tts/`、`Playback/`、`Settings/`）、`Api/Voice/VoiceHost.cs` |
 | M12 游戏 | `Game/`（`Reflex/`、`Perception/`、`Adapter/`） |
 | M13 UI | `Api/ApiHost.cs`、`Api/Auth/TokenAuth.cs`、`Api/Endpoints/ViewEndpoints.cs`、`ui/src/`（骨架 + `components/` + `views/`）、`src-tauri/src/lib.rs` |
 
@@ -359,7 +389,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
 | M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1) |
-| M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1) |
+| M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1)、`settings.*`(2) |
 
@@ -395,6 +425,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 记忆页签空态 | API 按设计没有「新建记忆」端点（写入来自 Agent），因此该页签在空工作区是空列表 |
 | 消费者里的工具 / MCP | **未接入**：宿主的消费者用空工具表跑回合，所以模型只能对话，不能调工具。MCP 客户端（`Core/Agent/Mcp/`）已在 smoke 里验证，但没接进宿主 |
 | 真实模型供应商往返 | **未验证**：`HttpLlmClient` 用桩 handler 验了线格式，用真 TCP 假端点验了完整往返；没有对真实供应商（OpenAI/Ollama 等）跑过 |
-| ASR / TTS 设置没有消费者 | **未接线**：设置能存、能校验、能回读，但**没有语音宿主**在读它们（`VoiceInputHalf`/`VoiceOutputHalf` 只在 smoke 里被驱动）。`model` 段是真接线的，其余三段目前只是配置面 |
+| 真实音频设备 | 部分验证：e2e 里语音宿主**真的打开了系统麦克风**（报出 `麦克风 (NVIDIA Broadcast)`）；但完整回路（说话→入队→回合→朗读）用的是合成声源/扬声器，**没有对着真麦克风说完一整句** |
+| 真实 ASR / TTS 服务 | **未验证**：本机没有部署 ASR/TTS 服务，识别与合成走脚本实现；`HttpAsrClient`/`HttpTtsClient` 各有契约测试，但没对真实服务跑过 |
 | 回合流式输出 | 未做：一次补全一次返回，界面不做逐字刷新 |
 | Phase 5c 帧级闭环 | 未做 |

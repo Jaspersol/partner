@@ -649,6 +649,33 @@
       ]
     },
     {
+      "id": "voice.hosted_loop",
+      "owner": "M10/M11",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: enabling the halves starts them on the configured devices",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: an utterance is answered by a turn and the answer is spoken",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: the utterance is consumed and the halves stay up",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "voice: a device that will not open is reported without stopping the other half",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
       "id": "game.process_adapter",
       "owner": "M12",
       "level": "product-supported",

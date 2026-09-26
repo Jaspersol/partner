@@ -147,6 +147,7 @@ export interface SettingsView {
 export interface SettingsSaved {
   settings: SettingsView
   consumer: ConsumerState
+  voice: VoiceState
 }
 
 /** What a delivery lands as: a queue item, not an executed turn. */
@@ -163,6 +164,19 @@ export interface ConsumerState {
   reason: string
   model: string | null
   stats: { completed: number; failed: number; canceled: number; skipped: number; handled: number }
+}
+
+/** One voice half: whether it is up, on which device, and why not. */
+export interface VoiceHalfState {
+  running: boolean
+  reason: string
+  device: string | null
+  count: number
+}
+
+export interface VoiceState {
+  input: VoiceHalfState
+  output: VoiceHalfState
 }
 
 export interface RebuildReport {
@@ -220,6 +234,7 @@ export interface PartnerApiSurface {
   cancel(itemId: string): Promise<boolean>
   submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult>
   consumer(): Promise<ConsumerState>
+  voice(): Promise<VoiceState>
   memory(tier?: string, scope?: string, take?: number): Promise<MemoryItem[]>
   recall(query: string, limit?: number): Promise<RecallHit[]>
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
@@ -283,6 +298,11 @@ export class PartnerApi implements PartnerApiSurface {
   /** Whether the queue is being executed at all. Without this the UI cannot explain a stuck queue. */
   consumer(): Promise<ConsumerState> {
     return this.request<ConsumerState>('GET', '/api/consumer')
+  }
+
+  /** Whether the two voice halves are up. Without this a disabled microphone looks like a broken one. */
+  voice(): Promise<VoiceState> {
+    return this.request<VoiceState>('GET', '/api/voice')
   }
 
   // ---- memory ----------------------------------------------------------------------------------

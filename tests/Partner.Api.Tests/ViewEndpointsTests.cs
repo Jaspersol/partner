@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Partner.Api;
 using Partner.Api.Auth;
+using Partner.Api.Voice;
 using Partner.Api.Endpoints;
 using Partner.Api.Settings;
 using Partner.Core.Contracts;
@@ -24,6 +25,7 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
     private string _workspace = string.Empty;
     private ApiContext _context = null!;
     private ConsumerHost _consumer = null!;
+    private VoiceHost _voice = null!;
     private WebApplication _app = null!;
     private Task _run = null!;
     private HttpClient _http = null!;
@@ -39,10 +41,11 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
 
         // Same composition root as the executable: auth middleware included, so these tests cannot pass
         // against a host that is wired differently from production.
-        var (app, context, consumer) = await ApiHost.BuildAsync(_workspace, _port, _token);
+        var (app, context, consumer, voice) = await ApiHost.BuildAsync(_workspace, _port, _token);
         _app = app;
         _context = context;
         _consumer = consumer;
+        _voice = voice;
         _run = _app.RunAsync();
 
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
@@ -55,6 +58,7 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
         _http.Dispose();
         await _app.StopAsync();
         await _run;
+        await _voice.DisposeAsync();
         await _consumer.DisposeAsync();
         await _context.DisposeAsync();
         if (Directory.Exists(_workspace))

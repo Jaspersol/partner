@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using Partner.Api.Voice;
 using System.Globalization;
 using System.Net.Sockets;
 using Partner.Core.Agent;
@@ -1304,7 +1306,7 @@ internal static class Program
         var uiWorkspace = Path.Combine(root, "ui");
         var apiPort = FreePort();
         var uiToken = TokenAuth.Generate();
-        var (apiApp, apiContext, apiConsumer) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
+        var (apiApp, apiContext, apiConsumer, apiVoice) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
         var apiRun = apiApp.RunAsync();
 
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{apiPort}") };
@@ -1509,6 +1511,7 @@ internal static class Program
         {
             await apiApp.StopAsync();
             await apiRun;
+            await apiVoice.DisposeAsync();
             await apiConsumer.DisposeAsync();
             await apiContext.DisposeAsync();
         }
@@ -1520,7 +1523,7 @@ internal static class Program
             var disabledWorkspace = Path.Combine(root, "consumer-off");
             var disabledPort = FreePort();
             var disabledToken = TokenAuth.Generate();
-            var (offApp, offContext, offConsumer) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
+            var (offApp, offContext, offConsumer, offVoice) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
             var offRun = offApp.RunAsync();
             using var offHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{disabledPort}") };
             offHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", disabledToken);
@@ -1543,6 +1546,7 @@ internal static class Program
             {
                 await offApp.StopAsync();
                 await offRun;
+                await offVoice.DisposeAsync();
                 await offConsumer.DisposeAsync();
                 await offContext.DisposeAsync();
             }
@@ -1555,7 +1559,7 @@ internal static class Program
             {
                 new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
             });
-            var (onApp, onContext, onConsumer) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, scripted);
+            var (onApp, onContext, onConsumer, onVoice) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, scripted);
             var onRun = onApp.RunAsync();
             using var onHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{onPort}") };
             onHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", onToken);
@@ -1600,6 +1604,7 @@ internal static class Program
             {
                 await onApp.StopAsync();
                 await onRun;
+                await onVoice.DisposeAsync();
                 await onConsumer.DisposeAsync();
                 await onContext.DisposeAsync();
             }
@@ -1616,7 +1621,7 @@ internal static class Program
                 new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
                 new HttpLlmOptions { BaseUrl = $"http://127.0.0.1:{modelPort}/v1", Model = "smoke-model" });
 
-            var (wireApp, wireContext, wireConsumer) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
+            var (wireApp, wireContext, wireConsumer, wireVoice) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
             var wireRun = wireApp.RunAsync();
             using var wireHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{wirePort}") };
             wireHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", wireToken);
@@ -1656,6 +1661,7 @@ internal static class Program
             {
                 await wireApp.StopAsync();
                 await wireRun;
+                await wireVoice.DisposeAsync();
                 await wireConsumer.DisposeAsync();
                 await wireContext.DisposeAsync();
             }
@@ -1668,7 +1674,7 @@ internal static class Program
             var settingsModelPort = FreePort();
 
             using var settingsProvider = new FakeChatProvider(settingsModelPort, "由设置驱动的回复。");
-            var (settingsApp, settingsContext, settingsConsumer) =
+            var (settingsApp, settingsContext, settingsConsumer, settingsVoice) =
                 await ApiHost.BuildAsync(settingsWorkspace, settingsPort, settingsToken, clock);
             var settingsRun = settingsApp.RunAsync();
             using var settingsHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{settingsPort}") };
@@ -1730,8 +1736,185 @@ internal static class Program
             {
                 await settingsApp.StopAsync();
                 await settingsRun;
+                await settingsVoice.DisposeAsync();
                 await settingsConsumer.DisposeAsync();
                 await settingsContext.DisposeAsync();
+            }
+
+            // The whole product loop in one place: speak → queue → turn → session → speech.
+            var loopWorkspace = Path.Combine(root, "voice-loop");
+            var loopPort = FreePort();
+            var loopToken = TokenAuth.Generate();
+            var components = new SyntheticVoiceComponents("打开书房的灯");
+
+            var loopLlm = new ScriptedLlmClient(new[]
+            {
+                new LlmResponse("书房的灯已经打开了。窗帘也拉上了。", Array.Empty<LlmToolCall>(), "stop"),
+            });
+
+            var (loopApp, loopContext, loopConsumer, loopVoice) =
+                await ApiHost.BuildAsync(loopWorkspace, loopPort, loopToken, clock, loopLlm, components);
+            var loopRun = loopApp.RunAsync();
+            using var loopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{loopPort}") };
+            loopHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", loopToken);
+
+            try
+            {
+                await WaitForHostAsync(loopHttp);
+
+                var enable = await loopHttp.PutAsJsonAsync("/api/settings", new
+                {
+                    input = new { enabled = true, utteranceGapMs = 200, silenceThreshold = 0.03 },
+                    output = new { enabled = true },
+                    asr = new { baseUrl = "http://127.0.0.1:45101", model = "smoke-asr" },
+                    tts = new { baseUrl = "http://127.0.0.1:45102", lang = "zh" },
+                });
+                enable.EnsureSuccessStatusCode();
+                var voiceState = (await enable.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("voice");
+
+                Check("voice: enabling the halves starts them on the configured devices",
+                    voiceState.GetProperty("input").GetProperty("running").GetBoolean()
+                    && voiceState.GetProperty("output").GetProperty("running").GetBoolean()
+                    && voiceState.GetProperty("input").GetProperty("device").GetString() == "synthetic-mic",
+                    $"in={voiceState.GetProperty("input").GetProperty("device").GetString()} "
+                    + $"out={voiceState.GetProperty("output").GetProperty("device").GetString()}");
+
+                // Speak 0.6 s, then 1.4 s of silence: one utterance, on a stream-like cadence.
+                var source = components.LastSource!;
+                for (var i = 0; i < 30; i++)
+                {
+                    source.Emit(0.5f, 320);
+                    await Task.Delay(25);
+                }
+
+                for (var i = 0; i < 70; i++)
+                {
+                    source.Emit(0f, 320);
+                    await Task.Delay(25);
+                }
+
+                // Capture → queue → turn → session → speech.
+                var answered = false;
+                var spoken = false;
+                for (var attempt = 0; attempt < 400 && !(answered && spoken); attempt++)
+                {
+                    if (!answered)
+                    {
+                        var session = await loopHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                        answered = session.GetProperty("items").EnumerateArray().Any(item =>
+                            item.GetProperty("kind").GetString() == "Assistant"
+                            && item.GetProperty("body").GetString()!.Contains("书房的灯", StringComparison.Ordinal));
+                    }
+
+                    spoken = components.TtsRequests.Count >= 2;
+                    await Task.Delay(25);
+                }
+
+                Check("voice: an utterance is answered by a turn and the answer is spoken",
+                    answered && spoken && components.LastSink!.Segments.Count > 0,
+                    $"answered={answered} sentences={components.TtsRequests.Count} segments={components.LastSink?.Segments.Count ?? 0}");
+
+                var loopQueue = await loopHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                var inputState = await loopHttp.GetFromJsonAsync<JsonElement>("/api/voice");
+                Check("voice: the utterance is consumed and the halves stay up",
+                    loopQueue.GetProperty("depth").GetInt32() == 0
+                    && inputState.GetProperty("input").GetProperty("count").GetInt32() == 1
+                    && inputState.GetProperty("output").GetProperty("count").GetInt32() >= 2,
+                    $"depth={loopQueue.GetProperty("depth").GetInt32()} "
+                    + $"utterances={inputState.GetProperty("input").GetProperty("count").GetInt32()} "
+                    + $"spoken={inputState.GetProperty("output").GetProperty("count").GetInt32()}");
+
+                // A device that refuses to open must not take the other half down with it. The output section
+                // changes (drainMs), because an unchanged section is deliberately not restarted.
+                components.FailToOpenSink = true;
+                var reenable = await loopHttp.PutAsJsonAsync("/api/settings", new
+                {
+                    input = new { enabled = true, utteranceGapMs = 200 },
+                    output = new { enabled = true, drainMs = 123 },
+                    asr = new { baseUrl = "http://127.0.0.1:45101", model = "smoke-asr" },
+                    tts = new { baseUrl = "http://127.0.0.1:45102", lang = "zh" },
+                });
+                var afterFailure = (await reenable.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("voice");
+
+                Check("voice: a device that will not open is reported without stopping the other half",
+                    afterFailure.GetProperty("input").GetProperty("running").GetBoolean()
+                    && !afterFailure.GetProperty("output").GetProperty("running").GetBoolean()
+                    && afterFailure.GetProperty("output").GetProperty("reason").GetString()!.Contains("打开输出设备失败", StringComparison.Ordinal),
+                    afterFailure.GetProperty("output").GetProperty("reason").GetString() ?? "(none)");
+            }
+            finally
+            {
+                await loopApp.StopAsync();
+                await loopRun;
+                await loopVoice.DisposeAsync();
+                await loopConsumer.DisposeAsync();
+                await loopContext.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>Synthetic voice components: the whole pipeline without a microphone, a speaker or a service.</summary>
+    private sealed class SyntheticVoiceComponents(string transcript) : IVoiceComponents
+    {
+        public SyntheticAudioSource? LastSource { get; private set; }
+
+        public SyntheticAudioSink? LastSink { get; private set; }
+
+        public List<string> TtsRequests { get; } = new();
+
+        public bool FailToOpenSink { get; set; }
+
+        public IAudioSource OpenSource(VoiceInputSetting setting)
+        {
+            LastSource = new SyntheticAudioSource(16_000, "synthetic-mic");
+            return LastSource;
+        }
+
+        public IAudioSink OpenSink(VoiceOutputSetting setting)
+        {
+            if (FailToOpenSink)
+            {
+                throw new InvalidOperationException("smoke: simulated device failure");
+            }
+
+            LastSink = new SyntheticAudioSink(setting.SampleRate, "synthetic-speaker");
+            return LastSink;
+        }
+
+        public IAsrClient CreateAsr(AsrOptions options) => new ScriptedAsr(transcript);
+
+        public ITtsClient CreateTts(TtsOptions options) => new ScriptedTts(TtsRequests);
+
+        private sealed class ScriptedAsr(string text) : IAsrClient
+        {
+            public Task<string> TranscribeAsync(float[] pcm, CancellationToken ct = default) => Task.FromResult(text);
+
+            public async IAsyncEnumerable<string> TranscribeStreamAsync(
+                float[] pcm,
+                [EnumeratorCancellation] CancellationToken ct = default)
+            {
+                yield return text;
+                await Task.CompletedTask;
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+
+        private sealed class ScriptedTts(List<string> requests) : ITtsClient
+        {
+            public async IAsyncEnumerable<float[]> SynthesizeAsync(
+                string text,
+                [EnumeratorCancellation] CancellationToken ct = default)
+            {
+                requests.Add(text);
+                yield return new float[2400];
+                await Task.CompletedTask;
+            }
+
+            public void Dispose()
+            {
             }
         }
     }
@@ -2199,6 +2382,13 @@ internal static class Program
         ("voice.output_switch", "M11", new[]
         {
             "voice: output disabled means no synthesis and no playback",
+        }),
+        ("voice.hosted_loop", "M10/M11", new[]
+        {
+            "voice: enabling the halves starts them on the configured devices",
+            "voice: an utterance is answered by a turn and the answer is spoken",
+            "voice: the utterance is consumed and the halves stay up",
+            "voice: a device that will not open is reported without stopping the other half",
         }),
         ("game.process_adapter", "M12", new[]
         {

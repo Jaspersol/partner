@@ -332,6 +332,31 @@ async function main() {
     const settingsRaw = await (await fetch(`http://127.0.0.1:${port}/api/settings`, { headers: { Authorization: `Bearer ${token}` } })).text()
     check('the API never returns the stored key', !settingsRaw.includes('e2e-secret'), 'value absent from the response')
 
+    // Voice: the shell has no devices in this environment, so the halves must report why rather than look dead.
+    await evaluate(
+      cdp,
+      `(() => {
+        const field = document.querySelector('[data-test="asr-base-url"]')
+        field.value = 'http://127.0.0.1:9'
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+        const enabled = document.querySelector('[data-test="input-enabled"]')
+        if (!enabled.checked) enabled.click()
+        return true
+      })()`,
+    )
+    await waitFor(
+      cdp,
+      `!document.querySelector('[data-test="input-effect"]').textContent.includes('未启用')`,
+      'the voice half to reflect the enabled setting',
+    )
+    const inputEffect = await evaluate(cdp, `document.querySelector('[data-test="input-effect"]').textContent`)
+    // Either it opened a real device or it reports why it could not — both mean the setting reached the host.
+    check(
+      'the voice card reports what the half actually did with the enabled setting',
+      /运行中|打开输入设备失败|未配置 ASR/.test(inputEffect),
+      inputEffect.trim(),
+    )
+
     // Sidebar collapse is shell state; the sidebar must actually leave the layout.
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
     await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')
