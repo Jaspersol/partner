@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**428 个 .NET 单测 + 50 个前端测试全绿 / 110 项 smoke 检查 / 52 项能力 `product-supported`**。
+当前基线：**453 个 .NET 单测 + 55 个前端测试全绿 / 116 项 smoke 检查 / 53 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -238,6 +238,35 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json
 
 ---
 
+## 历史：删除、撤回、压缩
+
+日志是**追加式**的：删除和撤回都只是再追加一条 `Retract` 事件，投影不再渲染它覆盖的区间。原始日志保留全部内容，**seq 永不复用**，删除本身也可审计。
+
+| 操作 | 语义 | 界面上 |
+|---|---|---|
+| **删除此条** | 只移除选中事件 | 一次点击 |
+| **撤回此条及之后** | 移除选中事件及之后**当时存在**的全部事件 | **二次确认**（内联两段式，不用原生弹窗——原生弹窗会阻塞 webview，也没法在测试里驱动） |
+
+**撤回是闭区间**：范围在追加时就被钉住（`toSeq` = 追加前的最后一条）。写成开区间会把之后新发的事件也一并隐藏——用户撤回后发的第一条消息就再也看不见了。
+
+### 上下文压缩
+
+「上下文长度」是每次发给模型的**对话条数**（`model.contextItems`），「输出长度」是单次补全上限（`model.maxTokens`）。两者都在模型卡片里，保存后**立即重启消费者**生效。
+
+把上下文改小后，若历史超出新窗口，**保存时立刻压缩一次**（不等下一轮，否则下一轮会先把超长对话发给模型）：
+
+```
+窗口外的对话 + 旧摘要 → 模型生成一段摘要 → 追加 Summary 事件 + 按连续区间追加 Retract
+```
+
+三条规则：
+
+- **摘要是上下文，不占窗口额度**：否则摘要会把最新的真实回合挤出窗口。
+- **新摘要覆盖旧摘要**：每次压缩只留一条，否则每压一次上下文反而更长。
+- **失败不丢历史**：模型没返回摘要就什么都不写，并如实报告原因（「未配置模型，无法压缩」）。
+
+---
+
 ## 语音（麦克风 ↔ 会话）
 
 `Api/Voice/VoiceHost.cs` 把两个半区接进运行时（设计文档 §2.8）：
@@ -290,12 +319,12 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（428） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、设置读写、语音宿主、发现端点、进程生命周期） |
+| .NET 单测（453） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端、设置读写、语音宿主、发现端点、历史删除与压缩、进程生命周期） |
 | smoke（97 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
 | 前端契约测试（13） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点 |
-| 前端视图测试（18） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉） |
+| 前端视图测试（22） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文长度） |
 | 前端组件测试（18） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 |
-| **壳的端到端（23）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
+| **壳的端到端（25）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（49） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
@@ -395,7 +424,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 模块 | 能力 |
 |---|---|
-| M1 会话 | `session.append_only_log`(6)、`session.editable_projection`(5) |
+| M1 会话 | `session.append_only_log`(6)、`session.editable_projection`(5)、`session.removal`(3) |
 | M2 队列 | `queue.single_fifo`(5)、`queue.idempotent_restart`(3)、`queue.crash_recovery`(2) |
 | M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1)、`agent.queue_consumer`(4) |
 | M4 调度 | `scheduler.durable_delivery`(3)、`scheduler.receipt_dedup`(1)、`scheduler.failure_retention`(2)、`scheduler.schedule_to_turn`(3) |

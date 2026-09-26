@@ -81,6 +81,16 @@ public static class SettingsValidation
             errors.Add("model.timeoutSeconds 必须为正");
         }
 
+        if (settings.Model.ContextItems <= 0)
+        {
+            errors.Add("model.contextItems 必须为正");
+        }
+
+        if (settings.Model.MaxTokens <= 0)
+        {
+            errors.Add("model.maxTokens 必须为正");
+        }
+
         return errors;
     }
 

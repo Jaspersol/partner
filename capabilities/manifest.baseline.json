@@ -799,6 +799,38 @@
           "check": "settings: an unreachable model endpoint returns a reason, not a silent empty list",
           "ran": true,
           "passed": true
+        },
+        {
+          "check": "settings: shrinking the context compacts the history once",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "settings: the compaction leaves exactly one summary standing in for the history",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "session.removal",
+      "owner": "M1",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "session: deleting one event removes it from the view but not from the log",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "session: retracting removes the selected event and everything after it",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "session: events after a retraction stay visible",
+          "ran": true,
+          "passed": true
         }
       ]
     },

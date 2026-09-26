@@ -1,0 +1,149 @@
+using System.Globalization;
+using Partner.Core.Agent.Llm;
+using Partner.Core.Agent.Tools;
+using Partner.Core.Contracts;
+
+namespace Partner.Core.Sessions;
+
+/// <summary>What one compaction pass did.</summary>
+public sealed record CompactionResult(int FoldedEvents, long? SummarySeq, string Reason)
+{
+    public bool Compacted => SummarySeq is not null;
+}
+
+/// <summary>
+/// Folds history that no longer fits the context window into one summary (design doc §2.5 short-term
+/// memory: "窗口内上下文 + 压缩").
+/// <para>
+/// Both halves are append-only, so the raw log keeps everything: a <see cref="SessionEventKind.Summary"/>
+/// carries the text and a <see cref="SessionEventKind.Retract"/> hides the events it replaced. Without the
+/// retraction the summarized events would still be sent, and the window would not have shrunk at all.
+/// </para>
+/// </summary>
+public sealed class SessionCompactor
+{
+    private readonly ISessionStore _session;
+    private readonly ILlmClient _llm;
+
+    public SessionCompactor(ISessionStore session, ILlmClient llm)
+    {
+        _session = session ?? throw new ArgumentNullException(nameof(session));
+        _llm = llm ?? throw new ArgumentNullException(nameof(llm));
+    }
+
+    /// <summary>
+    /// Summarises everything older than the newest <paramref name="keepRecent"/> visible events. Does nothing
+    /// when the history already fits, so calling it after every settings change is safe.
+    /// </summary>
+    public async Task<CompactionResult> CompactAsync(int keepRecent, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(keepRecent);
+
+        var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
+
+        // A summary is context, not a turn: it does not count against the window, so the window keeps
+        // bounding the raw conversation. Previous summaries are folded into the new one — otherwise every
+        // compaction would add another summary and the context would grow instead of shrinking.
+        var conversation = view.Items.Where(item => item.Kind != SessionEventKind.Summary).ToList();
+        var summaries = view.Items.Where(item => item.Kind == SessionEventKind.Summary).ToList();
+
+        if (conversation.Count <= keepRecent)
+        {
+            return new CompactionResult(0, null, $"无需压缩：{conversation.Count} 条对话 ≤ 窗口 {keepRecent}");
+        }
+
+        var older = conversation.Take(conversation.Count - keepRecent);
+        var candidates = older.Concat(summaries).OrderBy(item => item.Seq).ToList();
+
+        if (candidates.Count == 0)
+        {
+            return new CompactionResult(0, null, "无需压缩：窗口外没有可摘要的内容");
+        }
+
+        var transcript = string.Join(
+            "\n",
+            candidates.Select(item => $"{item.Kind}: {item.Body}"));
+
+        var response = await _llm.CompleteAsync(new LlmRequest(
+            new[]
+            {
+                new LlmMessage(
+                    "system",
+                    "Summarise the conversation history below. Keep decisions, facts, names and open questions. "
+                    + "Reply with the summary only, in the same language as the history, and in a single paragraph."),
+                new LlmMessage("user", transcript),
+            },
+            Array.Empty<ToolSpec>(),
+            MaxTokens: 512), ct).ConfigureAwait(false);
+
+        var text = (response.Text ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return new CompactionResult(0, null, "压缩失败：模型没有返回摘要");
+        }
+
+        // The log is line-framed, so a multi-line summary would corrupt it.
+        var single = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+
+        var summarySeq = await _session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Summary,
+            Source = InputSource.Text,
+            Body = single,
+            Meta = new Dictionary<string, string>
+            {
+                ["folded"] = candidates.Count.ToString(CultureInfo.InvariantCulture),
+                ["coveredFrom"] = candidates[0].Seq.ToString(CultureInfo.InvariantCulture),
+                ["coveredTo"] = candidates[candidates.Count - 1].Seq.ToString(CultureInfo.InvariantCulture),
+            },
+        }, ct).ConfigureAwait(false);
+
+        // One retraction per contiguous run: the candidates are usually adjacent, but a previous summary sits
+        // after the turns it covers, so the covered seqs are not necessarily one range.
+        var hidden = 0;
+        foreach (var (from, to) in ContiguousRuns(candidates.Select(item => item.Seq)))
+        {
+            await _session.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.Retract,
+                Source = InputSource.Text,
+                Body = $"compacted #{from}..{to} into #{summarySeq}",
+                Meta = new Dictionary<string, string>
+                {
+                    [SessionRetraction.FromKey] = from.ToString(CultureInfo.InvariantCulture),
+                    [SessionRetraction.ToKey] = to.ToString(CultureInfo.InvariantCulture),
+                },
+            }, ct).ConfigureAwait(false);
+
+            hidden += (int)(to - from + 1);
+        }
+
+        return new CompactionResult(candidates.Count, summarySeq, $"已压缩 {candidates.Count} 条 → #{summarySeq}（隐藏 {hidden} 条）");
+    }
+
+    /// <summary>Groups sorted seqs into the ranges a retraction can express.</summary>
+    private static IEnumerable<(long From, long To)> ContiguousRuns(IEnumerable<long> seqs)
+    {
+        var ordered = seqs.Distinct().OrderBy(seq => seq).ToList();
+        if (ordered.Count == 0)
+        {
+            yield break;
+        }
+
+        var from = ordered[0];
+        var previous = ordered[0];
+
+        for (var i = 1; i < ordered.Count; i++)
+        {
+            if (ordered[i] != previous + 1)
+            {
+                yield return (from, previous);
+                from = ordered[i];
+            }
+
+            previous = ordered[i];
+        }
+
+        yield return (from, previous);
+    }
+}

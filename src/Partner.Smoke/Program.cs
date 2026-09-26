@@ -1750,12 +1750,118 @@ internal static class Program
                     && !string.IsNullOrWhiteSpace(deadBody.GetProperty("error").GetString()),
                     deadBody.GetProperty("error").GetString() ?? "(no reason)");
 
+                // The failure this guards: a window containing hook injections and tool results used to be sent
+                // as system messages in the middle of the conversation, which providers reject outright. The
+                // first turn has an empty window, so only a second turn can catch it.
+                var second = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "第二轮" });
+                var secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+
+                var secondSettled = false;
+                for (var attempt = 0; attempt < 200 && !secondSettled; attempt++)
+                {
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                    secondSettled = polled.GetProperty("items").EnumerateArray().Any(item =>
+                        item.GetProperty("itemId").GetString() == secondId
+                        && item.GetProperty("status").GetString() == "Done");
+                    await Task.Delay(25);
+                }
+
+                var sent = settingsProvider.LastRequestBody ?? string.Empty;
+                using var sentJson = JsonDocument.Parse(sent.Length == 0 ? "{}" : sent);
+                var roles = sentJson.RootElement.TryGetProperty("messages", out var messages)
+                    ? messages.EnumerateArray().Select(m => m.GetProperty("role").GetString()!).ToList()
+                    : new List<string>();
+
+                Check("consumer: a second turn sends no system message after the first",
+                    secondSettled && roles.Count > 0 && roles[0] == "system" && !roles.Skip(1).Contains("system"),
+                    $"settled={secondSettled} bodyLen={sent.Length} path={settingsProvider.RequestPath} roles={string.Join(",", roles)}");
+
                 // The key went out on the wire but must never come back through the settings endpoint.
                 var raw = await settingsHttp.GetStringAsync("/api/settings");
                 Check("settings: the API key is sent to the model but never echoed back",
                     !raw.Contains("smoke-key", StringComparison.Ordinal)
                     && JsonDocument.Parse(raw).RootElement.GetProperty("model").GetProperty("apiKeySet").GetBoolean(),
                     "apiKeySet=true, value absent");
+
+                // Removing history: the view loses it, the raw log keeps it, and the conversation continues.
+                var doomed = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "要删掉的" });
+                var doomedId = (await doomed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+                for (var attempt = 0; attempt < 200; attempt++)
+                {
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
+                    if (polled.GetProperty("items").EnumerateArray().Any(item =>
+                        item.GetProperty("itemId").GetString() == doomedId
+                        && item.GetProperty("status").GetString() == "Done"))
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                var beforeRemoval = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var target = beforeRemoval.GetProperty("items").EnumerateArray()
+                    .First(i => i.GetProperty("body").GetString() == "要删掉的")
+                    .GetProperty("seq").GetInt64();
+
+                var delete = await settingsHttp.PostAsync($"/api/session/{target}/delete", content: null);
+                var afterDelete = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var stillThere = afterDelete.GetProperty("items").EnumerateArray()
+                    .Any(i => i.GetProperty("seq").GetInt64() == target);
+
+                Check("session: deleting one event removes it from the view but not from the log",
+                    delete.IsSuccessStatusCode
+                    && !stillThere
+                    && afterDelete.GetProperty("lastSeq").GetInt64() > beforeRemoval.GetProperty("lastSeq").GetInt64(),
+                    $"deleted={delete.IsSuccessStatusCode} visible={stillThere} "
+                    + $"lastSeq {beforeRemoval.GetProperty("lastSeq").GetInt64()}->{afterDelete.GetProperty("lastSeq").GetInt64()}");
+
+                // Retraction takes everything from the selected event onward, as of now.
+                var kept = afterDelete.GetProperty("items").EnumerateArray().First().GetProperty("seq").GetInt64();
+                var retract = await settingsHttp.PostAsync($"/api/session/{kept}/retract", content: null);
+                var afterRetract = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+
+                Check("session: retracting removes the selected event and everything after it",
+                    retract.IsSuccessStatusCode && afterRetract.GetProperty("items").GetArrayLength() == 0,
+                    $"retracted={retract.IsSuccessStatusCode} remaining={afterRetract.GetProperty("items").GetArrayLength()}");
+
+                // And the conversation continues: a closed range must not swallow what comes next.
+                await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "撤回之后" });
+                var revived = false;
+                for (var attempt = 0; attempt < 200 && !revived; attempt++)
+                {
+                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    revived = polled.GetProperty("items").EnumerateArray().Any(i =>
+                        i.GetProperty("body").GetString() == "撤回之后");
+                    await Task.Delay(25);
+                }
+
+                Check("session: events after a retraction stay visible", revived, $"revived={revived}");
+
+                // Shrinking the context folds history once, using the model that is already configured.
+                var shrink = await settingsHttp.PutAsJsonAsync("/api/settings", new
+                {
+                    model = new
+                    {
+                        baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
+                        model = "settings-model",
+                        contextItems = 1,
+                    },
+                });
+                var shrinkBody = (await shrink.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
+
+                Check("settings: shrinking the context compacts the history once",
+                    shrinkBody.GetProperty("compacted").GetBoolean()
+                    && shrinkBody.GetProperty("foldedEvents").GetInt32() > 0,
+                    shrinkBody.GetProperty("reason").GetString() ?? "(no reason)");
+
+                var compacted = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var summaries = compacted.GetProperty("items").EnumerateArray()
+                    .Count(i => i.GetProperty("kind").GetString() == "Summary");
+
+                Check("settings: the compaction leaves exactly one summary standing in for the history",
+                    summaries == 1 && compacted.GetProperty("items").GetArrayLength() <= 2,
+                    $"summaries={summaries} items={compacted.GetProperty("items").GetArrayLength()}");
             }
             finally
             {
@@ -1971,6 +2077,9 @@ internal static class Program
 
         public string? SawAuthorization { get; private set; }
 
+        /// <summary>The last request body, so the message shape sent to a provider can be asserted.</summary>
+        public string? LastRequestBody { get; private set; }
+
         private async Task ServeAsync()
         {
             while (!_stop.IsCancellationRequested)
@@ -2049,6 +2158,8 @@ internal static class Program
                         },
                     },
                 });
+
+            LastRequestBody = new string(body, 0, read);
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(payload);
             var head = System.Text.Encoding.ASCII.GetBytes(
@@ -2456,6 +2567,14 @@ internal static class Program
             "settings: the API key is sent to the model but never echoed back",
             "settings: the model listing is pulled through the API",
             "settings: an unreachable model endpoint returns a reason, not a silent empty list",
+            "settings: shrinking the context compacts the history once",
+            "settings: the compaction leaves exactly one summary standing in for the history",
+        }),
+        ("session.removal", "M1", new[]
+        {
+            "session: deleting one event removes it from the view but not from the log",
+            "session: retracting removes the selected event and everything after it",
+            "session: events after a retraction stay visible",
         }),
         ("ui.composer", "M13", new[]
         {

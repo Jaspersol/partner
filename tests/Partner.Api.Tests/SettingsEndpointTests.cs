@@ -1,3 +1,6 @@
+using Partner.Core.Contracts;
+using Partner.Core.Sessions;
+using Partner.Core.Agent.Llm;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -7,7 +10,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Partner.Api.Auth;
 using Partner.Api.Settings;
 using Partner.Api.Voice;
-using Partner.Core.Agent.Llm;
 
 namespace Partner.Api.Tests;
 
@@ -74,6 +76,157 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
         if (Directory.Exists(_workspace))
         {
             Directory.Delete(_workspace, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Shrinking_the_context_folds_the_history_once()
+    {
+        for (var i = 1; i <= 6; i++)
+        {
+            await _context.Session.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.User,
+                Source = InputSource.Text,
+                Body = $"turn {i}",
+            });
+        }
+
+        // The consumer is disabled in this fixture (no model), so compaction reports that it cannot summarise
+        // rather than silently doing nothing.
+        var put = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { contextItems = 3 },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var body = await put.Content.ReadFromJsonAsync<JsonElement>();
+
+        var compaction = body.GetProperty("compaction");
+        Assert.False(compaction.GetProperty("compacted").GetBoolean());
+        Assert.Contains("未配置模型", compaction.GetProperty("reason").GetString()!, StringComparison.Ordinal);
+
+        // Nothing was removed: a failed compaction must not lose history.
+        var view = await _http.GetFromJsonAsync<JsonElement>("/api/session");
+        Assert.Equal(6, view.GetProperty("items").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Growing_the_context_does_not_compact()
+    {
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User,
+            Source = InputSource.Text,
+            Body = "one",
+        });
+
+        var put = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextItems = 50 } });
+        var body = await put.Content.ReadFromJsonAsync<JsonElement>();
+
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("compaction").ValueKind);
+    }
+
+    [Fact]
+    public async Task The_context_and_output_limits_round_trip_and_are_validated()
+    {
+        var saved = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { contextItems = 12, maxTokens = 2048 },
+        });
+        saved.EnsureSuccessStatusCode();
+
+        var view = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        Assert.Equal(12, view.GetProperty("model").GetProperty("contextItems").GetInt32());
+        Assert.Equal(2048, view.GetProperty("model").GetProperty("maxTokens").GetInt32());
+
+        var bad = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextItems = 0, maxTokens = -1 } });
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+        var errors = (await bad.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("errors")
+            .EnumerateArray().Select(e => e.GetString()!).ToList();
+        Assert.Contains(errors, e => e.Contains("contextItems", StringComparison.Ordinal));
+        Assert.Contains(errors, e => e.Contains("maxTokens", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_configured_model_makes_compaction_actually_fold_history()
+    {
+        // Same host, but with a scripted model so the summary has a producer.
+        var workspace = Path.Combine(Path.GetTempPath(), "partner-compaction-tests", Guid.NewGuid().ToString("N"));
+        var port = FreePort();
+        var token = TokenAuth.Generate();
+
+        var llm = new ScriptedLlmClient(new[]
+        {
+            new LlmResponse("前几条：用户依次打了招呼。", Array.Empty<LlmToolCall>(), "stop"),
+        });
+
+        var (app, context, consumer, voice) = await ApiHost.BuildAsync(workspace, port, token, clock: null, llm: llm);
+        var run = app.RunAsync();
+
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        try
+        {
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                try
+                {
+                    using var probe = await http.GetAsync("/api/session");
+                    if (probe.IsSuccessStatusCode)
+                    {
+                        break;
+                    }
+                }
+                catch (HttpRequestException)
+                {
+                    // Not listening yet.
+                }
+
+                await Task.Delay(50);
+            }
+
+            for (var i = 1; i <= 5; i++)
+            {
+                await context.Session.AppendAsync(new SessionEvent
+                {
+                    Kind = SessionEventKind.User,
+                    Source = InputSource.Text,
+                    Body = $"turn {i}",
+                });
+            }
+
+            var put = await http.PutAsJsonAsync("/api/settings", new { model = new { contextItems = 2 } });
+            var compaction = (await put.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
+
+            Assert.True(compaction.GetProperty("compacted").GetBoolean(), compaction.GetProperty("reason").GetString());
+            Assert.Equal(3, compaction.GetProperty("foldedEvents").GetInt32());
+
+            // The view is now the summary plus the two turns the window kept.
+            var view = await http.GetFromJsonAsync<JsonElement>("/api/session");
+            var bodies = view.GetProperty("items").EnumerateArray()
+                .Select(i => (Kind: i.GetProperty("kind").GetString(), Body: i.GetProperty("body").GetString()))
+                .ToList();
+
+            Assert.Equal(3, bodies.Count);
+            Assert.Contains(bodies, b => b.Kind == "Summary" && b.Body == "前几条：用户依次打了招呼。");
+            Assert.Contains(bodies, b => b.Body == "turn 4");
+            Assert.Contains(bodies, b => b.Body == "turn 5");
+        }
+        finally
+        {
+            await app.StopAsync();
+            await run;
+            await voice.DisposeAsync();
+            await consumer.DisposeAsync();
+            await context.DisposeAsync();
+
+            if (Directory.Exists(workspace))
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
         }
     }
 

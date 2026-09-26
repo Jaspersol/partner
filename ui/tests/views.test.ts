@@ -31,10 +31,11 @@ interface Calls {
   saves: RuntimeSettings[]
   recalls: string[]
   submits: { payload: string; source: string }[]
+  removals: { seq: number; kind: string }[]
 }
 
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
-  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [] }
+  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [] }
 
   const session: SessionViewData = {
     lastSeq: 3,
@@ -81,11 +82,13 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     },
     asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
     tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-    model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120 },
+    model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
   }
 
   const stub: PartnerApiSurface = {
     session: vi.fn(async () => session),
+    deleteEvent: vi.fn(async (seq: number) => { calls.removals.push({ seq, kind: 'delete' }) }),
+    retractFrom: vi.fn(async (seq: number) => { calls.removals.push({ seq, kind: 'retract' }) }),
     editSession: vi.fn(async (seq: number, body: string) => {
       calls.edits.push({ seq, body })
     }),
@@ -121,6 +124,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
         settings: settings as unknown as SettingsView,
         consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
         voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+        compaction: null,
       }
     }),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
@@ -175,6 +179,80 @@ describe('session view', () => {
 
     expect(calls.edits).toEqual([])
     expect(wrapper.find('[data-test="error"]').text()).toContain('正文不能为空')
+  })
+})
+
+describe('session removal', () => {
+  it('deletes the selected event and clears the selection', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-test="session-delete"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([{ seq: 3, kind: 'delete' }])
+    expect(wrapper.find('[data-test="session-target"]').text()).toBe('未选中')
+    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已删除 #3')
+  })
+
+  it('asks twice before retracting, and does nothing until confirmed', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
+    await flushPromises()
+
+    // The first click only arms it: retraction removes everything after the selection too.
+    await wrapper.find('[data-test="session-retract"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([])
+    expect(wrapper.find('[data-test="session-retract-confirm"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="session-retract-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([{ seq: 3, kind: 'retract' }])
+    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已撤回 #3')
+  })
+
+  it('can be backed out of', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="session-retract"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="session-retract-cancel"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([])
+    expect(wrapper.find('[data-test="session-retract"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="session-retract-confirm"]').exists()).toBe(false)
+  })
+
+  it('surfaces a refusal instead of pretending it worked', async () => {
+    const { stub } = createStub({
+      deleteEvent: vi.fn(async () => {
+        throw new Error('404: #3 不在当前视图里')
+      }),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="session-delete"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="error"]').text()).toContain('404')
   })
 })
 
@@ -264,7 +342,7 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120 },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
       })),
     })
 
@@ -284,7 +362,7 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120 },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
       })),
     })
 
@@ -358,7 +436,7 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120 },
+        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -419,6 +497,40 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="model-probe-error"]').text()).toContain('404')
     // The field stays typeable: an endpoint without a listing is still a usable endpoint.
     expect(wrapper.find('[data-test="model-name"]').element.tagName).toBe('INPUT')
+  })
+
+  it('shows the context and output limits, and reports what a shrink did', async () => {
+    const { stub, calls } = createStub({
+      saveSettings: vi.fn(async (patch: RuntimeSettings) => {
+        calls.saves.push(patch)
+        return {
+          settings: {
+            input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40 },
+            output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
+            asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+            tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+            model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: patch.model.contextItems, maxTokens: patch.model.maxTokens },
+          },
+          consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
+          voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+          compaction: { foldedEvents: 3, summarySeq: 9, reason: '已压缩 3 条 → #9', compacted: true },
+        }
+      }),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find<HTMLInputElement>('[data-test=model-context-items]').element.value).toBe('20')
+    expect(wrapper.find<HTMLInputElement>('[data-test=model-max-tokens]').element.value).toBe('4096')
+
+    await wrapper.find<HTMLInputElement>('[data-test=model-context-items]').setValue('5')
+    await wrapper.find('[data-test=settings-save]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[0]?.model).toHaveProperty('contextItems', 5)
+    // The shrink is reported: it changed what the next turn will be given, not just a number in a form.
+    expect(wrapper.find('[data-test=settings-status]').text()).toContain('压缩')
   })
 
   it('loads the stored values and shows what the API kept', async () => {

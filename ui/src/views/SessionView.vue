@@ -102,6 +102,51 @@ async function save(body: string) {
   }
 }
 
+async function removeEvent() {
+  const seq = selectedSeq.value
+  if (seq === null) {
+    error.value = '先选中一条事件'
+    return
+  }
+
+  error.value = ''
+  notice.value = ''
+  try {
+    await props.api.deleteEvent(seq)
+    // The selection is gone from the view, so the panel must not keep pointing at it.
+    selectedSeq.value = null
+    draft.value = ''
+    revisions.value = []
+    await refresh()
+    notice.value = `已删除 #${seq}（原始日志保留）`
+    emit('changed')
+  } catch (failure) {
+    error.value = String(failure)
+  }
+}
+
+async function retractFromSelected() {
+  const seq = selectedSeq.value
+  if (seq === null) {
+    error.value = '先选中一条事件'
+    return
+  }
+
+  error.value = ''
+  notice.value = ''
+  try {
+    await props.api.retractFrom(seq)
+    selectedSeq.value = null
+    draft.value = ''
+    revisions.value = []
+    await refresh()
+    notice.value = `已撤回 #${seq} 及之后的事件（原始日志保留）`
+    emit('changed')
+  } catch (failure) {
+    error.value = String(failure)
+  }
+}
+
 async function onSent(result: { itemId: string; deduplicated: boolean }) {
   notice.value = result.deduplicated
     ? `已入队 ${result.itemId}（重复提交，未新增）`
@@ -155,6 +200,8 @@ defineExpose({ refresh, focusComposer })
         :revisions="revisions"
         :note="revisionNote"
         @save="save"
+        @delete="removeEvent"
+        @retract="retractFromSelected"
       />
     </div>
 

@@ -26,7 +26,14 @@ const emit = defineEmits<{
   save: [body: string]
   remove: []
   restore: [body: string]
+  /** Removes this event only. */
+  delete: []
+  /** Removes this event and everything after it — destructive, so it needs a second click. */
+  retract: []
 }>()
+
+/** Inline two-step confirmation: a native dialog would block the webview and cannot be driven in tests. */
+const confirmingRetract = ref(false)
 
 const draft = ref(props.draft)
 
@@ -59,6 +66,25 @@ watch(
         <button v-if="deleteLabel" class="danger" :data-test="`${testPrefix}-delete`" @click="emit('remove')">
           {{ deleteLabel }}
         </button>
+      </div>
+
+      <h3>历史</h3>
+      <div v-if="testPrefix === 'session'" class="inspector-actions">
+        <button class="ghost" data-test="session-delete" @click="emit('delete')">删除此条</button>
+        <button
+          v-if="!confirmingRetract"
+          class="ghost danger"
+          data-test="session-retract"
+          @click="confirmingRetract = true"
+        >
+          撤回此条及之后
+        </button>
+        <template v-else>
+          <button class="danger" data-test="session-retract-confirm" @click="emit('retract')">
+            确认撤回（含此条之后全部）
+          </button>
+          <button class="ghost" data-test="session-retract-cancel" @click="confirmingRetract = false">取消</button>
+        </template>
       </div>
 
       <h3>修订历史</h3>

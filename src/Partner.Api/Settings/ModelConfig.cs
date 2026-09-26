@@ -10,7 +10,14 @@ namespace Partner.Api.Settings;
 /// which one is in effect instead of leaving the user guessing why an edit did nothing.
 /// </para>
 /// </summary>
-public sealed record ModelConfig(string BaseUrl, string Model, string? ApiKey, TimeSpan Timeout, string Origin)
+public sealed record ModelConfig(
+    string BaseUrl,
+    string Model,
+    string? ApiKey,
+    TimeSpan Timeout,
+    string Origin,
+    int ContextItems = 20,
+    int MaxTokens = 4096)
 {
     public static (ModelConfig? Config, string Reason) Resolve(RuntimeSettings settings)
     {
@@ -24,7 +31,9 @@ public sealed record ModelConfig(string BaseUrl, string Model, string? ApiKey, T
                 fromSettings.Model,
                 fromSettings.ApiKey,
                 TimeSpan.FromSeconds(fromSettings.TimeoutSeconds),
-                "设置"), "运行中（设置）");
+                "设置",
+                fromSettings.ContextItems,
+                fromSettings.MaxTokens), "运行中（设置）");
         }
 
         var (options, reason) = HttpLlmClient.OptionsFromEnvironment();
@@ -41,5 +50,9 @@ public sealed record ModelConfig(string BaseUrl, string Model, string? ApiKey, T
         !string.Equals(left.BaseUrl, right.BaseUrl, StringComparison.Ordinal)
         || !string.Equals(left.Model, right.Model, StringComparison.Ordinal)
         || !string.Equals(left.ApiKey, right.ApiKey, StringComparison.Ordinal)
-        || left.TimeoutSeconds != right.TimeoutSeconds;
+        || left.TimeoutSeconds != right.TimeoutSeconds
+        // The turn window and output ceiling are part of the same configuration: changing either has to
+        // reach the running runner, which only happens through a restart.
+        || left.ContextItems != right.ContextItems
+        || left.MaxTokens != right.MaxTokens;
 }

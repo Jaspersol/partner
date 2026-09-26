@@ -21,6 +21,8 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
   return {
     session: vi.fn(async () => ({ lastSeq: 0, items: [] })),
     editSession: vi.fn(async () => {}),
+    deleteEvent: vi.fn(async () => {}),
+    retractFrom: vi.fn(async () => {}),
     sessionRevisions: vi.fn(async () => []),
     queue: vi.fn(async () => ({ headSeq: 0, runningItemId: null, depth: 0, items: [] })),
     cancel: vi.fn(async () => true),
@@ -38,12 +40,13 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
       asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
       tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-      model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120 },
+      model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextItems: 20, maxTokens: 4096 },
     })),
     saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
       settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
       consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
       voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+      compaction: null,
     })),
     rebuild: vi.fn(async () => ({ sessionItems: 0, sessionLastSeq: 0, memoryIndexed: 0, queueLogEntries: 0 })),
     ...overrides,

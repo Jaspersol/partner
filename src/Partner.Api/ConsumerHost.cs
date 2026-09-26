@@ -5,6 +5,7 @@ using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Skills;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Hosting;
+using Partner.Core.Sessions;
 
 namespace Partner.Api;
 
@@ -34,6 +35,7 @@ public sealed class ConsumerHost : IAsyncDisposable
     private CancellationTokenSource? _stop;
     private Task? _running;
     private HttpClient? _http;
+    private ILlmClient? _llm;
     private string _reason = "未启动";
     private string? _model;
 
@@ -55,6 +57,19 @@ public sealed class ConsumerHost : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
 
         return new ConsumerHost(context, workspace);
+    }
+
+    /// <summary>
+    /// Folds history that no longer fits the window. Only possible while a model is configured, because the
+    /// summary is produced by that model.
+    /// </summary>
+    public Task<CompactionResult> CompactAsync(int keepRecent, CancellationToken ct = default)
+    {
+        var llm = _llm;
+
+        return llm is null
+            ? Task.FromResult(new CompactionResult(0, null, "未配置模型，无法压缩"))
+            : new SessionCompactor(_context.Session, llm).CompactAsync(keepRecent, ct);
     }
 
     /// <summary>
@@ -113,11 +128,17 @@ public sealed class ConsumerHost : IAsyncDisposable
             // fail-closed default: a tool must be registered *and* allowed before it can run.
             new AllowListGovernance(Array.Empty<string>()),
             new DenyAllApprovalHandler(),
-            SkillHooks(_workspace));
+            SkillHooks(_workspace),
+            options: new AgentTurnOptions
+            {
+                ContextWindowItems = config?.ContextItems ?? 20,
+                MaxTokens = config?.MaxTokens ?? 4096,
+            });
 
         _loop = new TurnLoop(_context.Queue, runner, _context.Session);
         _stop = new CancellationTokenSource();
         _running = _loop.RunAsync(_stop.Token);
+        _llm = llm;
         _model = injected is not null ? injected.GetType().Name : config!.Model;
         _reason = reason;
     }

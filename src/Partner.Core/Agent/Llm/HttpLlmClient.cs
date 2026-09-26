@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -153,9 +154,13 @@ public sealed class HttpLlmClient : ILlmClient
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // Buffered rather than JsonContent: a non-buffered content makes HttpClient use chunked encoding, and a
+        // request with a declared length is friendlier to the proxies and local servers this talks to.
+        var json = JsonSerializer.Serialize(BuildBody(request), Json);
+
         using var message = new HttpRequestMessage(HttpMethod.Post, $"{_options.BaseUrl}/chat/completions")
         {
-            Content = JsonContent.Create(BuildBody(request), options: Json),
+            Content = new StringContent(json, Encoding.UTF8, new MediaTypeHeaderValue("application/json")),
         };
 
         if (!string.IsNullOrWhiteSpace(_options.ApiKey))

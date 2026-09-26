@@ -25,6 +25,13 @@ public enum SessionEventKind
     /// <summary>A revision of an earlier event. Carries <c>EditedFromSeq</c>; never rendered as its own content.</summary>
     Edit,
 
+    /// <summary>
+    /// Removes history from the projection: <c>Meta["fromSeq"]</c>..<c>Meta["toSeq"]</c> (inclusive, an absent
+    /// <c>toSeq</c> meaning "to the end") stops being rendered. The raw log keeps every event — this is a
+    /// projection, not a rewrite, so seqs are never reused and the removal is itself auditable.
+    /// </summary>
+    Retract,
+
     // ---- control (design doc §2.9.1) ------------------------------------------------------------
     TurnStart,
     StepStart,

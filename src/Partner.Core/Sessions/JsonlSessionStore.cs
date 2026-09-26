@@ -1,3 +1,4 @@
+using System.Globalization;
 using Partner.Core.Contracts;
 using Partner.Core.Storage;
 
@@ -70,6 +71,7 @@ public sealed class JsonlSessionStore : ISessionStore
                     $"Seq is assigned by the store: expected {next} but got {sessionEvent.Seq}.");
             }
 
+            sessionEvent = CloseRetractionRange(sessionEvent, next);
             Validate(sessionEvent, next);
 
             var record = sessionEvent with { Seq = next, At = sessionEvent.At == default ? _clock.GetUtcNow() : sessionEvent.At };
@@ -225,6 +227,36 @@ public sealed class JsonlSessionStore : ISessionStore
         return max;
     }
 
+    /// <summary>
+    /// Resolves an open-ended retraction to the range that exists right now. An open range would also hide
+    /// every event appended afterwards, so a "retract from here" would silently swallow the next message the
+    /// user sends. The persisted event therefore always carries a closed range.
+    /// </summary>
+    private static SessionEvent CloseRetractionRange(SessionEvent e, long next)
+    {
+        if (e.Kind != SessionEventKind.Retract || e.Meta is null)
+        {
+            return e;
+        }
+
+        if (e.Meta.TryGetValue(SessionRetraction.ToKey, out var existing) && !string.IsNullOrWhiteSpace(existing))
+        {
+            return e;
+        }
+
+        if (!e.Meta.ContainsKey(SessionRetraction.FromKey))
+        {
+            return e;
+        }
+
+        var closed = new Dictionary<string, string>(e.Meta)
+        {
+            [SessionRetraction.ToKey] = (next - 1).ToString(CultureInfo.InvariantCulture),
+        };
+
+        return e with { Meta = closed };
+    }
+
     private static void Validate(SessionEvent e, long seq)
     {
         if (string.IsNullOrEmpty(e.Body))
@@ -253,6 +285,24 @@ public sealed class JsonlSessionStore : ISessionStore
         else if (e.EditedFromSeq is not null)
         {
             throw new ArgumentException("Only Edit events may set EditedFromSeq.", nameof(e));
+        }
+
+        // A retraction without a parsable range would silently do nothing, which is worse than a refusal.
+        if (e.Kind == SessionEventKind.Retract)
+        {
+            if (!SessionRetraction.TryRead(e, out var from, out _))
+            {
+                throw new ArgumentException(
+                    $"Retract events must set Meta[\"{SessionRetraction.FromKey}\"] to a positive seq, and "
+                    + $"Meta[\"{SessionRetraction.ToKey}\"] (when present) must not precede it.",
+                    nameof(e));
+            }
+
+            if (from >= seq)
+            {
+                throw new ArgumentException(
+                    $"A retraction must reference earlier seqs (got from={from}, current {seq}).", nameof(e));
+            }
         }
 
         // A turn boundary without a reason is not auditable (design doc §2.9.1 rule 2).
@@ -301,6 +351,60 @@ public sealed class JsonlSessionStore : ISessionStore
     }
 }
 
+/// <summary>
+/// The range a <see cref="SessionEventKind.Retract"/> event removes. Parsing lives here so the store's
+/// validation and the projection's filtering cannot disagree about what a malformed range means.
+/// </summary>
+public static class SessionRetraction
+{
+    public const string FromKey = "fromSeq";
+    public const string ToKey = "toSeq";
+
+    /// <summary>Reads the range; false when the event is not a well-formed retraction.</summary>
+    public static bool TryRead(SessionEvent e, out long from, out long to)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+
+        from = 0;
+        to = long.MaxValue;
+
+        if (e.Kind != SessionEventKind.Retract || e.Meta is null)
+        {
+            return false;
+        }
+
+        if (!e.Meta.TryGetValue(FromKey, out var fromText)
+            || !long.TryParse(fromText, CultureInfo.InvariantCulture, out from)
+            || from < 1)
+        {
+            return false;
+        }
+
+        if (e.Meta.TryGetValue(ToKey, out var toText) && !string.IsNullOrWhiteSpace(toText))
+        {
+            if (!long.TryParse(toText, CultureInfo.InvariantCulture, out to) || to < from)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>A retraction covering exactly one seq.</summary>
+    public static IReadOnlyDictionary<string, string> Single(long seq) => new Dictionary<string, string>
+    {
+        [FromKey] = seq.ToString(CultureInfo.InvariantCulture),
+        [ToKey] = seq.ToString(CultureInfo.InvariantCulture),
+    };
+
+    /// <summary>A retraction covering everything from <paramref name="fromSeq"/> onward.</summary>
+    public static IReadOnlyDictionary<string, string> From(long fromSeq) => new Dictionary<string, string>
+    {
+        [FromKey] = fromSeq.ToString(CultureInfo.InvariantCulture),
+    };
+}
+
 /// <summary>Builds the projected view from raw log events.</summary>
 public static class SessionProjection
 {
@@ -311,12 +415,20 @@ public static class SessionProjection
         var ordered = events.OrderBy(e => e.Seq).ToList();
         var effective = new Dictionary<long, string>();
         var revisions = new Dictionary<long, int>();
+        var retractions = new List<(long From, long To)>();
         var lastSeq = 0L;
 
-        // Pass 1: collect revisions (last edit wins) so the view can be built in seq order.
+        // Pass 1: collect revisions (last edit wins) and retractions so the view can be built in seq order.
         foreach (var e in ordered)
         {
             lastSeq = Math.Max(lastSeq, e.Seq);
+
+            if (SessionRetraction.TryRead(e, out var from, out var to))
+            {
+                retractions.Add((from, to));
+                continue;
+            }
+
             if (e.Kind != SessionEventKind.Edit)
             {
                 continue;
@@ -327,12 +439,17 @@ public static class SessionProjection
             revisions[target] = revisions.TryGetValue(target, out var n) ? n + 1 : 1;
         }
 
-        // Pass 2: emit content entries. Revisions and turn/step control markers are not content —
-        // they stay in the raw log for auditability but never render as conversation.
+        // Pass 2: emit content entries. Revisions, retractions and turn/step control markers are not
+        // content — they stay in the raw log for auditability but never render as conversation.
         var items = new List<SessionViewItem>();
         foreach (var e in ordered)
         {
-            if (e.Kind == SessionEventKind.Edit || !e.Kind.IsContent())
+            if (e.Kind == SessionEventKind.Edit || e.Kind == SessionEventKind.Retract || !e.Kind.IsContent())
+            {
+                continue;
+            }
+
+            if (retractions.Any(range => e.Seq >= range.From && e.Seq <= range.To))
             {
                 continue;
             }

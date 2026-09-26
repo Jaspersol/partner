@@ -198,6 +198,52 @@ public static class ViewEndpoints
 
             return Results.Ok(events.Select(e => new { seq = e.Seq, at = e.At, body = e.Body, meta = e.Meta }));
         });
+
+        // Both removals are appended as a Retract event: the raw log keeps the history, the projection stops
+        // rendering it, and seqs are never reused.
+        app.MapPost("/api/session/{seq:long}/delete", async (long seq, ApiContext ctx, CancellationToken ct) =>
+        {
+            if (!await ExistsAsync(ctx, seq, ct).ConfigureAwait(false))
+            {
+                return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
+            }
+
+            var appended = await ctx.Session.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.Retract,
+                Source = InputSource.Text,
+                Body = $"delete #{seq}",
+                Meta = SessionRetraction.Single(seq),
+            }, ct).ConfigureAwait(false);
+
+            return Results.Ok(new { removedFrom = seq, removedTo = seq, eventSeq = appended });
+        });
+
+        app.MapPost("/api/session/{seq:long}/retract", async (long seq, ApiContext ctx, CancellationToken ct) =>
+        {
+            if (!await ExistsAsync(ctx, seq, ct).ConfigureAwait(false))
+            {
+                return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
+            }
+
+            // The range is closed at append time by the store, so events added afterwards stay visible.
+            var appended = await ctx.Session.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.Retract,
+                Source = InputSource.Text,
+                Body = $"retract from #{seq}",
+                Meta = SessionRetraction.From(seq),
+            }, ct).ConfigureAwait(false);
+
+            return Results.Ok(new { removedFrom = seq, removedTo = appended - 1, eventSeq = appended });
+        });
+    }
+
+    /// <summary>Only events the caller can currently see may be removed; removing a hidden seq is a mistake.</summary>
+    private static async Task<bool> ExistsAsync(ApiContext ctx, long seq, CancellationToken ct)
+    {
+        var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
+        return view.Items.Any(item => item.Seq == seq);
     }
 
     // ---- queue view (查看 + 取消) ------------------------------------------------------------------
@@ -365,6 +411,14 @@ public static class ViewEndpoints
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
             }
 
+            // Shrinking the window leaves history that no longer fits, so it is folded once, right here:
+            // waiting for the next turn would send an over-long conversation to the model first.
+            CompactionResult? compaction = null;
+            if (stored.Model.ContextItems < before.Model.ContextItems)
+            {
+                compaction = await consumer.CompactAsync(stored.Model.ContextItems, ct).ConfigureAwait(false);
+            }
+
             // Voice halves are restarted only when their own sections changed: reopening a device mid-utterance
             // loses the utterance.
             if (before.Input != stored.Input || before.Output != stored.Output
@@ -378,6 +432,7 @@ public static class ViewEndpoints
                 settings = SettingsView.From(stored),
                 consumer = consumer.State,
                 voice = voice.State,
+                compaction,
             });
         });
     }

@@ -117,6 +117,10 @@ export interface ModelSettings {
   /** Absent keeps the stored key, empty clears it, a value replaces it. */
   apiKey?: string | null
   timeoutSeconds: number
+  /** How many content events feed a turn. */
+  contextItems: number
+  /** Output ceiling for one completion. */
+  maxTokens: number
 }
 
 /** What the API returns: no key, only whether one is stored. */
@@ -125,6 +129,8 @@ export interface ModelSettingsView {
   model: string | null
   apiKeySet: boolean
   timeoutSeconds: number
+  contextItems: number
+  maxTokens: number
 }
 
 export interface RuntimeSettings {
@@ -144,10 +150,19 @@ export interface SettingsView {
 }
 
 /** Saving returns what was stored plus the consumer state it produced. */
+/** What one compaction pass did; null when the context was not shrunk. */
+export interface CompactionReport {
+  foldedEvents: number
+  summarySeq: number | null
+  reason: string
+  compacted: boolean
+}
+
 export interface SettingsSaved {
   settings: SettingsView
   consumer: ConsumerState
   voice: VoiceState
+  compaction: CompactionReport | null
 }
 
 /** What a delivery lands as: a queue item, not an executed turn. */
@@ -242,6 +257,8 @@ export interface ApiOptions {
 export interface PartnerApiSurface {
   session(from?: number, take?: number): Promise<SessionView>
   editSession(seq: number, body: string, actor?: string): Promise<void>
+  deleteEvent(seq: number): Promise<void>
+  retractFrom(seq: number): Promise<void>
   sessionRevisions(seq: number): Promise<SessionRevision[]>
   queue(): Promise<QueueView>
   cancel(itemId: string): Promise<boolean>
@@ -279,6 +296,16 @@ export class PartnerApi implements PartnerApiSurface {
 
   async editSession(seq: number, body: string, actor = 'human'): Promise<void> {
     await this.request('POST', `/api/session/${seq}/edit`, { body, actor })
+  }
+
+  /** Removes one event from the view; the raw log keeps it and seqs are never reused. */
+  async deleteEvent(seq: number): Promise<void> {
+    await this.request('POST', `/api/session/${seq}/delete`)
+  }
+
+  /** Removes the selected event and everything after it, as of now. */
+  async retractFrom(seq: number): Promise<void> {
+    await this.request('POST', `/api/session/${seq}/retract`)
   }
 
   sessionRevisions(seq: number): Promise<SessionRevision[]> {

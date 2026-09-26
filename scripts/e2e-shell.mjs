@@ -329,7 +329,49 @@ async function main() {
     const keyState = await evaluate(cdp, 'document.querySelector(\'[data-test="model-api-key-state"]\').textContent')
     check('the API key is stored without being echoed back into the form', keyField === '' && keyState.includes('已设置'), `field="${keyField}" state=${keyState.trim()}`)
 
+    // Removing history from the UI: delete one event, and retract from an event onward (two-step).
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
+    await waitFor(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length >= 2', 'the session list')
+
+    const beforeDelete = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
+    await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\')[0].click()')
+    await evaluate(cdp, 'document.querySelector(\'[data-test="session-delete"]\').click()')
+    await waitFor(
+      cdp,
+      `document.querySelectorAll('[data-test=session-list] li').length === ${beforeDelete - 1}`,
+      'the deleted event to leave the list',
+    )
+    const afterDelete = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
+    check('deleting from the UI removes one event', afterDelete === beforeDelete - 1, `${beforeDelete} -> ${afterDelete}`)
+
+    // The retraction asks twice: the first click only arms it.
+    const beforeRetract = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
+    await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\')[0].click()')
+    await evaluate(cdp, 'document.querySelector(\'[data-test="session-retract"]\').click()')
+    const armed = await evaluate(cdp, 'document.querySelector(\'[data-test="session-retract-confirm"]\') !== null')
+    const stillThere = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
+    check(
+      'retracting asks for a second confirmation before removing anything',
+      armed && stillThere === beforeRetract,
+      `armed=${armed} rows=${stillThere}`,
+    )
+
+    await evaluate(cdp, 'document.querySelector(\'[data-test="session-retract-confirm"]\').click()')
+    await waitFor(
+      cdp,
+      'document.querySelector(\'[data-test="session-list"] li\') === null',
+      'the retracted events to leave the list',
+    )
+    check('confirming the retraction empties the tail of the session', true, `removed from ${beforeRetract}`)
+
     // Discovery: the device pickers must offer the machine's real endpoints, not a text box.
+    await evaluate(cdp, `document.querySelector('[data-test="tab-设置"]').click()`)
+    // The text-input fallback carries the same test id, so the wait has to require the select specifically.
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-test="input-device"]')?.tagName === 'SELECT'`,
+      'the device picker to be populated',
+    )
     const inputDeviceTag = await evaluate(cdp, `document.querySelector('[data-test="input-device"]').tagName`)
     const inputDeviceOptions = await evaluate(
       cdp,
