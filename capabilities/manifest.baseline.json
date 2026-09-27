@@ -540,6 +540,55 @@
       ]
     },
     {
+      "id": "desktop.minimized_window",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a minimized window is reported as minimized rather than as a small window",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a minimized window is refused as a picture instead of a 160\u00D728 stub",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a click into a minimized window\u0027s placeholder rect is refused",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a restored window is screenshot from the stale observation instead of being refused",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.act_targeting",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a point with no window id resolves to the window that covers it",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a point no window covers is refused with the candidates named",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
       "id": "desktop.model_vision",
       "owner": "M9",
       "level": "product-supported",

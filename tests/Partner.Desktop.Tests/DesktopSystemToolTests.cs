@@ -1,4 +1,6 @@
 using Partner.Core.Agent.Tools;
+using Partner.Core.Media;
+using Partner.Desktop.Capture;
 using Partner.Desktop.Tools;
 
 namespace Partner.Desktop.Tests;
@@ -9,6 +11,45 @@ namespace Partner.Desktop.Tests;
 /// </summary>
 public sealed class DesktopSystemToolTests
 {
+    [Fact]
+    public async Task The_screenshot_result_names_the_window_the_mapping_and_the_call_to_make()
+    {
+        // What the model has to act on. The old message said "coordinates are relative to the window" and never
+        // named the window — so the model sent coordinates alone and every click was refused, four times, until
+        // the turn died on the step limit.
+        var workspace = Directory.CreateTempSubdirectory("partner-screenshot-");
+        try
+        {
+            var automation = new DesktopAutomation(capture: new GdiScreenCapture());
+            var tool = new DesktopScreenshotTool(automation, new FileMediaStore(workspace.FullName));
+
+            var observation = automation.Observe();
+            var target = observation.Entities.First(entity => entity.IsForeground);
+
+            var result = await tool.InvokeAsync($$"""{"entityId":"{{target.EntityId}}"}""");
+
+            Assert.True(result.Ok, result.Content);
+
+            // Which window, where it is, and how the picture maps onto it.
+            Assert.Contains($"窗口 {target.EntityId} @ 屏幕 ({target.Rect.X},{target.Rect.Y})", result.Content);
+            Assert.Contains($"({target.Rect.X}+px", result.Content);
+
+            // And the call itself, so there is nothing left to guess.
+            Assert.Contains($"\"entityId\":\"{target.EntityId}\"", result.Content);
+            Assert.Contains("\"kind\":\"LeftClick\"", result.Content);
+            Assert.Contains("屏幕坐标", result.Content);
+
+            var image = Assert.Single(result.Images!);
+            Assert.StartsWith("data:image/png;base64,", image);
+
+            // The referent for a later bare-point click is the window that was shown.
+            Assert.Equal(target.EntityId, automation.LastShownEntityId);
+        }
+        finally
+        {
+            workspace.Delete(recursive: true);
+        }
+    }
     [Fact]
     public async Task Exec_runs_a_command_and_reports_its_output_and_exit_code()
     {

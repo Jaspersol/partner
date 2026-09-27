@@ -75,7 +75,10 @@ public sealed class InputInjector
         }
 
         var foreground = NativeMethods.GetForegroundWindow();
-        if (foreground == handle)
+
+        // A minimized window can still be the foreground window — Windows keeps the handle after minimizing —
+        // so "already foreground" must not short-circuit before the restore, or focusing it does nothing at all.
+        if (foreground == handle && !NativeMethods.IsIconic(handle))
         {
             return new InjectionResult(true, 0, "already foreground");
         }
@@ -88,13 +91,20 @@ public sealed class InputInjector
 
         try
         {
+            // A minimized window cannot be focused: SetForegroundWindow only lights up its taskbar button. And
+            // while it is minimized its rect is a 160×28 stub at -32000,-32000, so every coordinate the model
+            // derived from it would land in the void. Restoring is what "focus this window" means to a person.
+            var restored = !NativeMethods.IsIconic(handle) || NativeMethods.ShowWindow(handle, NativeMethods.SwRestore);
+
             NativeMethods.BringWindowToTop(handle);
             var ok = NativeMethods.SetForegroundWindow(handle);
 
             return new InjectionResult(
                 ok,
                 (uint)Marshal.GetLastWin32Error(),
-                ok ? (attached ? "foreground set (attached)" : "foreground set") : "SetForegroundWindow refused");
+                ok
+                    ? $"foreground set{(attached ? " (attached)" : string.Empty)}{(restored ? string.Empty : ", restore failed")}"
+                    : "SetForegroundWindow refused");
         }
         finally
         {

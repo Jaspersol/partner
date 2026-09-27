@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**547 个 .NET 单测 + 85 个前端测试全绿 / 142 项 smoke 检查 / 54 项能力 `product-supported`**。
+当前基线：**553 个 .NET 单测 + 85 个前端测试全绿 / 149 项 smoke 检查 / 56 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -334,6 +334,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 | 两次动作 120s 无人应答被拒 | 审批横幅只在**会话页**挂载（`v-if="active === 'session'"`），人不在那页就没人看 | 横幅提到 **App 层**，任何页签都看得到；有请求在等时按 500ms 轮询（徽标仍是 5s） |
 | 批准后仍被拒（Expired） | 租约 TTL（15s）远短于审批窗口（120s），而租约只在观察时写一次 | **不再信任那张租约**：动作前重新观察，内容一致就继续（`Revalidate`），不一致就要求重新观察。人慢不再是失败 |
 | `校验=NoChange` 读起来像没生效 | 结果串把「注入成功」和「画面没变」挤在一行 | 拆开说：`KeyPress · 注入成功 · 校验：画面无变化（效果未被确认） · 目标 X` |
+| 最小化窗口被当成可点的小窗口 | 最小化窗口的矩形是 -32000 处的 160×28 占位值；截图只能得到一条空白，点击落在虚空 | 观察标记 `minimized`、截图与点击都拒绝并提示先 focus，`focus` 负责还原 |
 | 对着错误的窗口盲打 | `KeyPress` 是**全局**输入（打到前台窗口），坐标也是屏幕坐标；窗口白名单空 = 不限 | 加护栏：按键要求目标**已在前台**（否则先 focus）、坐标必须落在目标矩形内；结果里写出**目标窗口标题**，approval 横幅也显示它 |
 
 护栏是**在注入之前**拒绝的（refusals 不碰输入），所以 smoke 能验证它们而不动用户的鼠标。
@@ -370,6 +371,10 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 | `desktop_clipboard_set` | 写剪贴板 | 危险 |
 | `desktop_launch` | 启动程序 / 打开 URI；**裸名字先查开始菜单** | 危险 |
 | `desktop_exec` | 执行命令并回传输出（30s 超时、输出截断） | 危险 |
+
+**坐标是屏幕坐标，窗口可以不给。** `desktop_observe` 的 `clickAt` 是屏幕坐标，`desktop_act` 的 `x/y` 也是——同一套约定。模型最自然的调用是「看图 → 算坐标 → 点」，**不带窗口 id**：这时按坐标落在哪个已观察窗口里定目标（绝对坐标点击本来就落到那个点上，不是猜）；跨多个窗口有歧义时**拒绝并列出候选**，而「最后给模型看过的那张图所属窗口」用于打破平局。这条是被日志逼出来的：模型连发四次 `{kind:LeftClick,x:…,y:…}`，每次都被「缺少 entityId」拒掉，最后一步耗尽步数，窗口一动没动。
+
+**最小化的窗口是一个陷阱。** Windows 把最小化的窗口报成 -32000 处的 160×28 占位矩形：它看起来像一个能点的窗口，点下去落在虚空里；截图也只是一条空白。所以：观察里标 `minimized:true`；截图**拒绝**（先 focus 还原）；指向它的点击**拒绝**；而 `focus` 会**还原**它（`SetForegroundWindow` 只会点亮任务栏按钮）。判断用的是 `IsIconic` 而不是矩形——同一个最小化窗口，位置可能是 -32000，也可能是它原来的位置，只有状态是可靠的。
 
 **为什么是元素而不是坐标。** 一次实测里模型想操作一个没在运行的程序，于是对着别的窗口盲打了按键。窗口级的坐标方案无法阻止这件事；元素级可以：`desktop_observe` 返回「播放」这个按钮及其点击点，`desktop_act` 用 `elementId` 寻址，点击点由服务端算（落在该窗口内是构造保证）。
 
@@ -490,13 +495,13 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（547） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
-| smoke（142 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
+| .NET 单测（553） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
+| smoke（149 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
 | 前端契约测试（15） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点、上下文占用 |
 | 前端视图测试（36） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随） |
 | 前端组件测试（34） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（工具卡配对与状态、流式行与它的 Markdown 渲染） |
 | **壳的端到端（34）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、**桌面卡片默认关闭且写明需批准**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、**「支持图片」开关落盘并让运行中的消费者注册截图工具**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
-| 能力门禁（54） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
+| 能力门禁（56） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
 
@@ -603,7 +608,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.tool_path`(7：模型经工具观察、动作被审批拦住并拒绝、拒绝写进日志) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_targeting`(2：无 id 的点按坐标定窗口、无窗口覆盖时列出候选)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图)、`desktop.tool_path`(7：模型经工具观察、动作被审批拦住并拒绝、拒绝写进日志) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1)、`settings.*`(2) |

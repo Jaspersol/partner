@@ -24,6 +24,12 @@ public sealed record DesktopWindow
 
     public required bool IsForeground { get; init; }
 
+    /// <summary>
+    /// Whether the window is minimized. Its rect is then a 160×28 stub at -32000,-32000, which is a real trap:
+    /// it looks like a window you can click, and clicking it lands in the void.
+    /// </summary>
+    public bool IsMinimized { get; init; }
+
     public override string ToString() => $"{Title} [{ProcessName ?? ProcessId.ToString()}] {Width}x{Height}";
 }
 
@@ -67,6 +73,7 @@ public static class WindowEnumerator
                 Width = bounds.Width,
                 Height = bounds.Height,
                 IsForeground = handle == foreground,
+                IsMinimized = NativeMethods.IsIconic(handle),
             });
 
             return true;

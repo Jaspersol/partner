@@ -78,6 +78,20 @@ public sealed class DesktopAutomation : IDisposable
     /// </summary>
     public DesktopObservation? LastObservation => _lastObservation;
 
+    /// <summary>
+    /// The window whose picture the model was last shown, if any. It is the referent for a click that names no
+    /// window: the model worked its coordinates out from that picture, so when several windows overlap the
+    /// point, that is the one it meant.
+    /// </summary>
+    public string? LastShownEntityId { get; private set; }
+
+    /// <summary>Records which window was just shown to the model. Called by the screenshot tool.</summary>
+    public void MarkShown(string entityId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityId);
+        LastShownEntityId = entityId;
+    }
+
     public LeaseStore Leases => _leases;
 
     /// <summary>Observes the current windows and issues a fresh generation.</summary>
@@ -104,6 +118,7 @@ public sealed class DesktopAutomation : IDisposable
                 Label = w.Title,
                 Value = w.ProcessName,
                 IsForeground = w.IsForeground,
+                IsMinimized = w.IsMinimized,
                 Rect = new PixelRect(w.X, w.Y, w.Width, w.Height),
                 Confidence = 1.0,
                 EvidenceDigest = DesktopObservation.Digest(w.Title, w.ProcessName, new PixelRect(w.X, w.Y, w.Width, w.Height)),
@@ -159,6 +174,17 @@ public sealed class DesktopAutomation : IDisposable
     }
 
     /// <summary>
+    /// Puts the pointer on the point first, then wheels. A wheel goes to whatever window is under the cursor,
+    /// so scrolling without moving is scrolling whatever the user's pointer happened to be over — the very
+    /// thing the guard exists to prevent.
+    /// </summary>
+    private InjectionResult ScrollIn(ActionParams parameters)
+    {
+        var moved = _injector.MovePointer(parameters.X, parameters.Y);
+        return moved.Ok ? _injector.Scroll(parameters.ScrollDelta) : moved;
+    }
+
+    /// <summary>
     /// Performs one action against <paramref name="entityId"/> using the <b>most recent observation</b>.
     /// <para>
     /// Deliberately does <b>not</b> re-observe: re-observing would mint a fresh lease and make the whole
@@ -211,7 +237,7 @@ public sealed class DesktopAutomation : IDisposable
             ActionKind.RightClick => _injector.RightClick(parameters.X, parameters.Y),
             ActionKind.KeyPress => _injector.KeyPress(parameters.VirtualKey),
             ActionKind.TypeText => _injector.TypeText(parameters.Text ?? string.Empty),
-            ActionKind.Scroll => _injector.Scroll(parameters.ScrollDelta),
+            ActionKind.Scroll => ScrollIn(parameters),
             ActionKind.Drag => _injector.Drag(parameters.X, parameters.Y, parameters.ToX, parameters.ToY),
             _ => new InjectionResult(false, 0, $"unsupported action {kind}"),
         };

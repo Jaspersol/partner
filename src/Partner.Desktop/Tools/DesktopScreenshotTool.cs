@@ -4,6 +4,7 @@ using System.Windows.Media.Imaging;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Media;
 using Partner.Desktop.Capture;
+using Partner.Desktop.Interop;
 using Partner.Desktop.Perception;
 
 namespace Partner.Desktop.Tools;
@@ -31,7 +32,8 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     public ToolSpec Spec { get; } = new(
         "desktop_screenshot",
         "把一个窗口的截图发给模型看（UIA 看不见的应用——Electron、游戏、画布——靠这个）。"
-        + "不传 entityId 就截当前前台窗口。图片会随下一次请求作为图像提供；坐标可以据此估算，但点击仍受窗口矩形约束。",
+        + "不传 entityId 就截当前前台窗口。结果里带窗口 id、窗口在屏幕上的矩形、图与窗口的比例，以及可直接照抄的 desktop_act 调用"
+        + "（desktop_act 的 x/y 是**屏幕坐标**，不是图内坐标）。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id，来自 desktop_observe；省略则截前台窗口"},
@@ -61,6 +63,18 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         }
 
         var handle = ParseHandle(entity.EntityId);
+
+        // Asked of the window, not of the observation: a focus that restored it may have happened after the
+        // observation was taken, and the log showed exactly that — restored at one step, still "minimized" at
+        // the next, because the picture was refused from a stale snapshot.
+        if (NativeMethods.IsIconic(handle))
+        {
+            // Windows reports a minimized window as a 160×28 stub at -32000,-32000. Capturing that returns a
+            // blank sliver, and the model then reasons about — and clicks — coordinates in the void.
+            return new ToolResult(false, $"'{entity.Label}' 已最小化（只有 160×28 的占位矩形，截不到内容）："
+                + "先 desktop_act focus 把它还原，再截图");
+        }
+
         var frame = await automation.Capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false);
 
         if (!frame.Ok)
@@ -101,11 +115,32 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
             return new ToolResult(false, "截图已保存但读不回来");
         }
 
-        return new ToolResult(
-            true,
-            $"{entity.Label}（{entity.Value ?? "?"}）{width}×{height} 截图（媒体 {mediaId}）；"
-            + "坐标以该窗口矩形为参照，点击仍须落在矩形内。",
-            new[] { dataUri });
+        // A bare point is resolvable to this window, because this is the picture the coordinates came from.
+        automation.MarkShown(entity.EntityId);
+
+        return new ToolResult(true, Describe(entity, width, height, mediaId), new[] { dataUri });
+    }
+
+    /// <summary>
+    /// What the model needs in order to act on what it just saw: which window, where that window is on screen,
+    /// how the picture maps onto it, and the call to make. Without the window id the model has to guess, and a
+    /// click with coordinates but no window is exactly what it will send.
+    /// </summary>
+    private static string Describe(UiEntity entity, int width, int height, string mediaId)
+    {
+        var rect = entity.Rect;
+        var perPicturePixel = width > 0 ? (double)rect.Width / width : 1;
+
+        var mapping = Math.Abs(perPicturePixel - 1) < 0.001
+            ? $"图与窗口同尺寸：图内 (px,py) → 屏幕 ({rect.X}+px, {rect.Y}+py)"
+            : $"图是缩小的 {1 / perPicturePixel:0.###}×：图内 (px,py) → 屏幕 "
+                + $"({rect.X}+px×{perPicturePixel:0.###}, {rect.Y}+py×{perPicturePixel:0.###})";
+
+        var template = "{\"entityId\":\"" + entity.EntityId + "\",\"kind\":\"LeftClick\",\"x\":<屏幕x>,\"y\":<屏幕y>}";
+
+        return $"{entity.Label}（{entity.Value ?? "?"}）窗口 {entity.EntityId} @ 屏幕 ({rect.X},{rect.Y}) "
+            + $"{rect.Width}×{rect.Height}，截图 {width}×{height}（媒体 {mediaId}）。{mapping}。"
+            + $"点击用 desktop_act（x/y 是屏幕坐标）：{template}";
     }
 
     private static (byte[] Png, int Width, int Height) Encode(CaptureResult frame, int maxDimension)

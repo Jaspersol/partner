@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using Partner.Api.Voice;
 using System.Globalization;
@@ -13,10 +14,12 @@ using System.Text.Json;
 using Partner.Core.Contracts;
 using Partner.Core.Manifest;
 using Partner.Core.Memory;
+using Partner.Core.Media;
 using Partner.Desktop;
 using Partner.Desktop.Capture;
 using Partner.Desktop.Input;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Tools;
 using Partner.Desktop.Windows;
 using Partner.Voice;
 using Partner.Voice.Asr;
@@ -968,6 +971,79 @@ internal static class Program
             InputInjector.InputSize == (IntPtr.Size == 8 ? 40 : 28),
             $"INPUT size = {InputInjector.InputSize}");
 
+        // A minimized window is a trap the observation used to hide: Windows reports it as a 160×28 stub at
+        // -32000,-32000, so a click "inside" it passed every containment check and landed in the void, and a
+        // screenshot of it was a blank sliver the model then reasoned about. This is the state the music app
+        // was in when every click went nowhere.
+        // The state has to be produced — nothing in the product minimizes a window — and it is produced on the
+        // foreground window, so the focus at the end puts the desktop back the way it was.
+        using (var shotAutomation = new DesktopAutomation())
+        {
+            var all = shotAutomation.Observe().Entities;
+
+            // Never the shell's desktop window: it cannot be minimized, and the check would then be about
+            // nothing. A background window is preferred so the minimize is invisible, and the focus at the
+            // end is put back where it was.
+            var original = all.FirstOrDefault(entity => entity.IsForeground && entity.Label != "Program Manager");
+            var target = original
+                ?? all.First(entity => !entity.IsMinimized && entity.Label != "Program Manager");
+            var handle = nint.Parse(target.EntityId, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+            WindowProbe.Minimize(handle);
+            await Task.Delay(700);
+
+            var minimized = shotAutomation.Observe().Find(target.EntityId);
+
+            Check("desktop: a minimized window is reported as minimized rather than as a small window",
+                minimized is { IsMinimized: true },
+                $"minimized={minimized?.IsMinimized} rect={minimized?.Rect.X},{minimized?.Rect.Y} {minimized?.Rect.Width}×{minimized?.Rect.Height}");
+
+            if (minimized is not null)
+            {
+                var refused = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
+                    .InvokeAsync($"{{\"entityId\":\"{minimized.EntityId}\"}}");
+
+                Check("desktop: a minimized window is refused as a picture instead of a 160×28 stub",
+                    !refused.Ok && refused.Content.Contains("已最小化", StringComparison.Ordinal),
+                    refused.Content);
+
+                var blocked = DesktopActTool.Guard(
+                    ActionKind.LeftClick,
+                    minimized,
+                    (minimized.Rect.X + 5, minimized.Rect.Y + 5),
+                    new DesktopActTool.DesktopActArguments(
+                        null, null, "LeftClick", minimized.Rect.X + 5, minimized.Rect.Y + 5, null, null, null, null, null));
+
+                Check("desktop: a click into a minimized window's placeholder rect is refused",
+                    blocked is not null && blocked.Contains("已最小化", StringComparison.Ordinal),
+                    blocked ?? "(none)");
+
+                // Focus is what a person does to a minimized window, and it has to mean the same thing here.
+                var focused = await shotAutomation.ActAsync(minimized.EntityId, ActionKind.Focus, new ActionParams());
+                await Task.Delay(700);
+
+                var restored = shotAutomation.Observe().Find(minimized.EntityId);
+
+                Check("desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
+                    focused.Injection?.Ok == true && restored is { IsMinimized: false } && restored.Rect.Y > -32000,
+                    $"injection={focused.Injection?.Detail} minimized={restored?.IsMinimized} rect={restored?.Rect.X},{restored?.Rect.Y}");
+
+                // The log's next trap: the picture was refused from the observation taken *before* the focus,
+                // so a restore that had already happened looked like it had not. The tool has to ask the window.
+                var afterRestore = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
+                    .InvokeAsync($"{{\"entityId\":\"{minimized.EntityId}\"}}");
+
+                Check("desktop: a restored window is screenshot from the stale observation instead of being refused",
+                    afterRestore.Ok && afterRestore.Images is { Count: 1 },
+                    afterRestore.Content[..Math.Min(80, afterRestore.Content.Length)]);
+
+                if (original is not null)
+                {
+                    await shotAutomation.ActAsync(original.EntityId, ActionKind.Focus, new ActionParams());
+                }
+            }
+        }
+
         // ---- 12. M10/M11: voice, driven by synthetic audio + a fake ASR/TTS server ------
         using (var server = new FakeVoiceServer(transcript: "turn on the desk lamp"))
         {
@@ -1897,10 +1973,15 @@ internal static class Program
                         .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                         .ToList();
 
-                    // Two results: the observation, then the action that followed the approval.
-                    if (results.Count > 1)
+                    // The keystroke's refusal specifically: by the time the approval lands the turn may
+                    // already have moved on, and "the last result" then means something else.
+                    var refusal = results
+                        .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                        .LastOrDefault(body => body.Contains("前台", StringComparison.Ordinal));
+
+                    if (refusal is not null)
                     {
-                        outcome = results[^1].GetProperty("body").GetString();
+                        outcome = refusal;
                         break;
                     }
 
@@ -1959,6 +2040,34 @@ internal static class Program
                     .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
                     .LastOrDefault(body => body.Contains("媒体 ", StringComparison.Ordinal));
 
+                // The turn keeps going after the screenshot: the bare-point move, then the point no window
+                // covers. Waited for, because those results are the point of the check — and approved as they
+                // arrive, because every desktop_act parks (the gear is on "all" in this workspace).
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    var bodies = screenshotResult.GetProperty("items").EnumerateArray()
+                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                        .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                        .ToList();
+
+                    if (bodies.Any(body => body.StartsWith("MovePointer", StringComparison.Ordinal))
+                        && bodies.Any(body => body.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal)))
+                    {
+                        break;
+                    }
+
+                    foreach (var pending in (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                        .GetProperty("pending").EnumerateArray().ToList())
+                    {
+                        await leaseHttp.PostAsJsonAsync(
+                            $"/api/approvals/{pending.GetProperty("approvalId").GetString()}",
+                            new { approved = true });
+                    }
+
+                    await Task.Delay(25);
+                    screenshotResult = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                }
+
                 var allResults = screenshotResult.GetProperty("items").EnumerateArray()
                     .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                     .Select(item => (item.GetProperty("body").GetString() ?? string.Empty).Replace("\n", " "))
@@ -1971,6 +2080,24 @@ internal static class Program
                 Check("desktop: the log records the screenshot by media id, not by pixels",
                     shot is not null && !screenshotResult.GetRawText().Contains("iVBORw0KGgo", StringComparison.Ordinal),
                     $"result={(shot ?? "(none)")[..Math.Min(60, (shot ?? "(none)").Length)]}");
+
+                // The call models actually make: coordinates, no window id. It used to be refused four times in
+                // a row — "缺少 entityId" — and the turn died on the step limit with the app untouched.
+                var barePoint = allResults.LastOrDefault(r => r.StartsWith("MovePointer", StringComparison.Ordinal));
+
+                Check("desktop: a point with no window id resolves to the window that covers it",
+                    barePoint is not null && barePoint.Contains("注入成功", StringComparison.Ordinal),
+                    $"result={barePoint ?? "(none)"}");
+
+                // And when no window covers the point, the refusal has to name the candidates — telling the model
+                // to "observe first" when it has just observed is what produced the loop.
+                var noWindow = allResults.LastOrDefault(r => r.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal));
+
+                Check("desktop: a point no window covers is refused with the candidates named",
+                    noWindow is not null
+                        && noWindow.Contains("entityId", StringComparison.Ordinal)
+                        && noWindow.Contains("'", StringComparison.Ordinal),
+                    $"result={(noWindow ?? "(none)")[..Math.Min(90, (noWindow ?? "(none)").Length)]}");
             }
             finally
             {
@@ -2582,6 +2709,20 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Creates the state under test. Nothing in the product minimizes a window — the observation, the picture
+    /// and the click guard only have to cope with the state — so the smoke produces it, and the check focuses
+    /// the window afterwards to put the desktop back.
+    /// </summary>
+    private static class WindowProbe
+    {
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(nint handle, int command);
+
+        /// <summary>SW_MINIMIZE.</summary>
+        public static void Minimize(nint handle) => ShowWindow(handle, 6);
+    }
+
     /// <summary>Synthetic voice components: the whole pipeline without a microphone, a speaker or a service.</summary>
     private sealed class SyntheticVoiceComponents(string transcript) : IVoiceComponents
     {
@@ -2907,8 +3048,50 @@ internal static class Program
                     null,
                     new[] { new LlmToolCall("c3", "desktop_screenshot", $"{{ \"entityId\": \"{PickTarget()}\" }}") },
                     "tool_calls"),
+                // What models actually do after looking: click the coordinates, with no window id. A pointer move
+                // rather than a click, so the check never presses anything on the user's desktop.
+                3 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c4", "desktop_act", $"{{ \"kind\": \"MovePointer\", \"x\": {PickCentre().X}, \"y\": {PickCentre().Y} }}") },
+                    "tool_calls"),
+                // A point no window covers: the refusal has to say which windows exist, or the model can only
+                // repeat the same call — which is exactly what it did, until the turn hit the step limit.
+                4 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c5", "desktop_act", "{ \"kind\": \"MovePointer\", \"x\": -100000, \"y\": -100000 }") },
+                    "tool_calls"),
                 _ => new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
             });
+        }
+
+        /// <summary>The centre of the picked window, in screen coordinates, as desktop_observe reports them.</summary>
+        private (int X, int Y) PickCentre()
+        {
+            var observed = _requests
+                .SelectMany(request => request.Messages)
+                .Where(message => message.Role == "tool" && message.Content is not null)
+                .Select(message => message.Content!)
+                .LastOrDefault(content => content.Contains("\"entities\"", StringComparison.Ordinal));
+
+            if (observed is null)
+            {
+                return (1, 1);
+            }
+
+            using var document = JsonDocument.Parse(observed);
+            var entities = document.RootElement.GetProperty("entities").EnumerateArray().ToList();
+            var target = entities.FirstOrDefault(entity =>
+                entity.GetProperty("entityId").GetString() == PickTarget());
+
+            if (target.ValueKind == JsonValueKind.Undefined)
+            {
+                return (1, 1);
+            }
+
+            var rect = target.GetProperty("rect");
+            return (
+                rect.GetProperty("x").GetInt32() + (rect.GetProperty("width").GetInt32() / 2),
+                rect.GetProperty("y").GetInt32() + (rect.GetProperty("height").GetInt32() / 2));
         }
 
         /// <summary>The window the observation listed, preferring one that is not foreground.</summary>
@@ -2918,7 +3101,7 @@ internal static class Program
                 .SelectMany(request => request.Messages)
                 .Where(message => message.Role == "tool" && message.Content is not null)
                 .Select(message => message.Content!)
-                .LastOrDefault(content => content.Contains("\"entityId\"", StringComparison.Ordinal));
+                .LastOrDefault(content => content.Contains("\"entities\"", StringComparison.Ordinal));
 
             if (observed is null)
             {
@@ -2926,7 +3109,17 @@ internal static class Program
             }
 
             using var document = JsonDocument.Parse(observed);
-            var entities = document.RootElement.GetProperty("entities").EnumerateArray().ToList();
+            var entities = document.RootElement.GetProperty("entities").EnumerateArray()
+                // A minimized window is a 160×28 stub at -32000: nothing can be clicked or seen in it, so a
+                // model that reads the observation picks a real one.
+                .Where(entity => !(entity.TryGetProperty("minimized", out var small) && small.GetBoolean()))
+                .ToList();
+
+            if (entities.Count == 0)
+            {
+                return "1";
+            }
+
             var background = entities.FirstOrDefault(entity =>
                 !entity.TryGetProperty("foreground", out var flag) || !flag.GetBoolean());
 
@@ -3242,6 +3435,19 @@ internal static class Program
         ("desktop.input_marshalling", "M9", new[]
         {
             "desktop: input marshalling matches the Win32 contract",
+        }),
+        ("desktop.minimized_window", "M9", new[]
+        {
+            "desktop: a minimized window is reported as minimized rather than as a small window",
+            "desktop: a minimized window is refused as a picture instead of a 160×28 stub",
+            "desktop: a click into a minimized window's placeholder rect is refused",
+            "desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
+            "desktop: a restored window is screenshot from the stale observation instead of being refused",
+        }),
+        ("desktop.act_targeting", "M9", new[]
+        {
+            "desktop: a point with no window id resolves to the window that covers it",
+            "desktop: a point no window covers is refused with the candidates named",
         }),
         ("desktop.model_vision", "M9", new[]
         {

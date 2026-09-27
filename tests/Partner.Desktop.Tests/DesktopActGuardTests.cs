@@ -62,15 +62,16 @@ public sealed class DesktopActGuardTests
     };
 
     /// <summary>Named so the tests read as the action they describe, not as a ten-argument record.</summary>
+    /// <remarks>Coordinates default to absent, not to zero: "no point" is a different answer from "(0,0)".</remarks>
     private static DesktopActTool.DesktopActArguments Args(
         string kind,
-        int x = 0,
-        int y = 0,
-        ushort key = 0,
+        int? x = null,
+        int? y = null,
+        ushort? key = null,
         string? text = null,
-        int delta = 0,
-        int toX = 0,
-        int toY = 0) => new(null, null, kind, x, y, toX, toY, key, text, delta);
+        int? delta = null,
+        int? toX = null,
+        int? toY = null) => new(null, null, kind, x, y, toX, toY, key, text, delta);
 
     [Fact]
     public void The_same_window_in_a_fresh_observation_is_accepted()
@@ -198,6 +199,74 @@ public sealed class DesktopActGuardTests
     {
         // Focus is how a window becomes the target in the first place; it has no coordinates to check.
         Assert.Null(DesktopActTool.Guard(ActionKind.Focus, Entity(foreground: false), (0, 0), Args("Focus")));
+    }
+
+    [Fact]
+    public void A_click_with_no_point_is_refused_rather_than_aimed_at_the_corner()
+    {
+        // The model sends arguments, and "no coordinates" arriving as (0,0) is a click nobody asked for.
+        var blocked = DesktopActTool.Guard(ActionKind.LeftClick, Entity(), null, Args("LeftClick"));
+
+        Assert.NotNull(blocked);
+        Assert.Contains("x/y", blocked);
+        Assert.Contains("屏幕坐标", blocked);
+    }
+
+    [Fact]
+    public void Key_press_and_scroll_carry_their_payload_or_are_refused()
+    {
+        Assert.NotNull(DesktopActTool.Guard(ActionKind.KeyPress, Entity(foreground: true), null, Args("KeyPress")));
+        Assert.NotNull(DesktopActTool.Guard(ActionKind.Scroll, Entity(foreground: true), null, Args("Scroll", delta: 3)));
+        Assert.NotNull(DesktopActTool.Guard(ActionKind.Scroll, Entity(foreground: true), (200, 200), Args("Scroll")));
+
+        Assert.Null(DesktopActTool.Guard(
+            ActionKind.KeyPress, Entity(foreground: true), null, Args("KeyPress", key: 0x42)));
+        Assert.Null(DesktopActTool.Guard(
+            ActionKind.Scroll, Entity(foreground: true), (200, 200), Args("Scroll", delta: 3)));
+    }
+
+    [Fact]
+    public void A_bare_point_belongs_to_the_one_window_that_covers_it()
+    {
+        // This is the call models actually make: they look at a picture, then click the coordinates they worked
+        // out — with no window id. An absolute-coordinate click goes to whatever is at that point, so the window
+        // is derivable, not guessed.
+        var observation = Observation(
+            Entity(id: "aaaa", label: "别处", rect: new PixelRect(0, 0, 100, 100)),
+            Entity(id: "1a2b", label: "网易云音乐", rect: new PixelRect(100, 100, 400, 300)));
+
+        var resolved = DesktopActTool.ResolveByPoint(observation, (200, 200), lastShownEntityId: null);
+
+        Assert.Equal("1a2b", resolved?.EntityId);
+    }
+
+    [Fact]
+    public void Overlapping_windows_make_the_point_ambiguous_unless_one_was_just_shown()
+    {
+        // Two windows over one point: the model has to say which, or have just looked at one of them.
+        var observation = Observation(
+            Entity(id: "aaaa", label: "播放器", rect: new PixelRect(100, 100, 400, 300)),
+            Entity(id: "1a2b", label: "网易云音乐", rect: new PixelRect(150, 150, 400, 300)));
+
+        Assert.Null(DesktopActTool.ResolveByPoint(observation, (200, 200), lastShownEntityId: null));
+        Assert.Equal(
+            "aaaa",
+            DesktopActTool.ResolveByPoint(observation, (200, 200), lastShownEntityId: "aaaa")?.EntityId);
+    }
+
+    [Fact]
+    public void A_point_no_window_covers_is_refused_with_the_candidates_in_the_message()
+    {
+        var observation = Observation(
+            Entity(id: "1a2b", label: "网易云音乐", rect: new PixelRect(100, 100, 400, 300)));
+
+        Assert.Null(DesktopActTool.ResolveByPoint(observation, (-100000, -100000), lastShownEntityId: "1a2b"));
+
+        var refusal = DesktopActTool.DescribeRefusal(observation, (-100000, -100000));
+        Assert.Contains("不落在唯一一个已观察窗口内", refusal);
+        Assert.Contains("1a2b", refusal);
+        Assert.Contains("网易云音乐", refusal);
+        Assert.Contains("100,100", refusal);
     }
 
     [Fact]

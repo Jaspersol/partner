@@ -78,6 +78,7 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                 title = entity.Label,
                 process = entity.Value,
                 foreground = entity.IsForeground,
+                minimized = entity.IsMinimized ? true : (bool?)null,
                 rect = new
                 {
                     x = entity.Rect.X,
@@ -125,18 +126,20 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     public ToolSpec Spec { get; } = new(
         "desktop_act",
         "对 desktop_observe 返回的窗口或控件执行一次动作。kind 取 focus / movePointer / leftClick / rightClick / "
-        + "keyPress / typeText / scroll / drag。给了 elementId 就用该控件的中心点，不必再给坐标；否则用 x/y（必须落在窗口矩形内）。"
+        + "keyPress / typeText / scroll / drag。给了 elementId 就用该控件的中心点，不必再给坐标；否则用 x/y——"
+        + "**屏幕坐标**（desktop_observe 的 clickAt 就是屏幕坐标，可直接用）。"
+        + "x/y 落在哪个已观察窗口里，就作用于那个窗口；跨多个窗口有歧义时会拒绝并列出候选，此时要显式传 entityId。"
         + "typeText 需要 text，keyPress 需要 virtualKey（该窗口须已在前台，否则先 focus），scroll 需要 scrollDelta，drag 需要 x/y + toX/toY。"
         + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。",
         """
         {"type":"object","properties":{
-          "entityId":{"type":"string","description":"窗口 id；给了 elementId 时可省略"},
+          "entityId":{"type":"string","description":"窗口 id；给了 elementId 或 x/y 时可省略"},
           "elementId":{"type":"string","description":"控件 id，来自 desktop_observe"},
           "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","KeyPress","TypeText","Scroll","Drag"]},
-          "x":{"type":"integer"},
-          "y":{"type":"integer"},
-          "toX":{"type":"integer"},
-          "toY":{"type":"integer"},
+          "x":{"type":"integer","description":"屏幕坐标 x"},
+          "y":{"type":"integer","description":"屏幕坐标 y"},
+          "toX":{"type":"integer","description":"拖拽终点屏幕坐标 x"},
+          "toY":{"type":"integer","description":"拖拽终点屏幕坐标 y"},
           "virtualKey":{"type":"integer"},
           "text":{"type":"string"},
           "scrollDelta":{"type":"integer"}
@@ -169,10 +172,19 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return new ToolResult(false, $"未知控件 '{arguments.ElementId}'：先调用 desktop_observe");
         }
 
+        var point = arguments.X is { } x && arguments.Y is { } y ? (x, y) : ((int X, int Y)?)null;
         var entityId = seenElement?.WindowId ?? arguments.EntityId;
+
         if (string.IsNullOrWhiteSpace(entityId))
         {
-            return new ToolResult(false, "缺少 entityId 或 elementId：先调用 desktop_observe");
+            // No window named, but a point is: the point itself says where the click lands, so derive the window
+            // from it. Models do this — they look at the picture, then click the coordinates they worked out —
+            // and refusing that on a technicality is how "operate the app" turns into a loop of refusals.
+            entityId = ResolveByPoint(before, point, automation.LastShownEntityId)?.EntityId;
+            if (entityId is null)
+            {
+                return new ToolResult(false, DescribeRefusal(before, point));
+            }
         }
 
         var seenWindow = before.Find(entityId);
@@ -213,23 +225,24 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         var element = seenElement is null ? null : fresh.FindElement(seenElement.ElementId);
 
         // A named control carries its own click point: the model should not have to do geometry, and the point
-        // is inside the window by construction.
-        var point = element?.Centre ?? (arguments.X, arguments.Y);
+        // is inside the window by construction. Otherwise the point is the model's own screen coordinate —
+        // absent when it did not give one, which the guard treats as a malformed call rather than (0,0).
+        var resolved = element?.Centre ?? point;
 
-        if (Guard(kind, target, point, arguments) is { } blocked)
+        if (Guard(kind, target, resolved, arguments) is { } blocked)
         {
             return new ToolResult(false, blocked);
         }
 
         var parameters = new ActionParams
         {
-            X = point.Item1,
-            Y = point.Item2,
-            VirtualKey = arguments.VirtualKey,
+            X = resolved?.X ?? 0,
+            Y = resolved?.Y ?? 0,
+            VirtualKey = arguments.VirtualKey ?? 0,
             Text = arguments.Text,
-            ScrollDelta = arguments.ScrollDelta,
-            ToX = arguments.ToX,
-            ToY = arguments.ToY,
+            ScrollDelta = arguments.ScrollDelta ?? 0,
+            ToX = arguments.ToX ?? 0,
+            ToY = arguments.ToY ?? 0,
         };
 
         var action = await automation.ActAsync(entityId, kind, parameters, ct).ConfigureAwait(false);
@@ -279,23 +292,90 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     /// global — the OS sends them to a coordinate or to whatever has focus — so without these the model can
     /// type into the user's editor while believing it is talking to another window.
     /// </summary>
-    public static string? Guard(ActionKind kind, UiEntity target, (int X, int Y) point, DesktopActArguments arguments) => kind switch
+    /// <remarks>
+    /// A missing point is refused rather than defaulted: the fields arrive from a model, and "no coordinates"
+    /// silently becoming (0,0) is a click in the corner of the screen that nobody asked for.
+    /// </remarks>
+    public static string? Guard(ActionKind kind, UiEntity target, (int X, int Y)? point, DesktopActArguments arguments) => kind switch
     {
+        // A minimized window's rect is a 160×28 stub at -32000,-32000, so a point "inside" it passes every
+        // containment check and still lands in the void. Focus first — that also restores it.
+        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll or ActionKind.Drag
+            when target.IsMinimized =>
+            $"'{target.Label}' 已最小化（矩形是 -32000 处的占位值）：先对它执行 focus 还原，再操作",
+
+        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll when point is null =>
+            $"{kind} 需要 elementId 或 x/y（屏幕坐标）",
+
+        ActionKind.Drag when point is null || arguments.ToX is null || arguments.ToY is null =>
+            "drag 需要 x/y（起点）+ toX/toY（终点），都是屏幕坐标",
+
         ActionKind.KeyPress or ActionKind.TypeText when !target.IsForeground =>
             $"'{target.Label}' 不在前台，输入会打到别的窗口：先对它执行 focus",
 
-        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick
-            when !target.Rect.Contains(point.X, point.Y) =>
-            $"({point.X},{point.Y}) 不在 '{target.Label}' 的矩形内：坐标是屏幕坐标，会点到别处",
+        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll
+            when !target.Rect.Contains(point!.Value.X, point.Value.Y) =>
+            $"({point!.Value.X},{point.Value.Y}) 不在 '{target.Label}' 的矩形内：坐标是屏幕坐标，会点到别处",
 
-        ActionKind.Drag when !target.Rect.Contains(point.X, point.Y) || !target.Rect.Contains(arguments.ToX, arguments.ToY) =>
+        ActionKind.Drag when !target.Rect.Contains(point!.Value.X, point.Value.Y)
+            || !target.Rect.Contains(arguments.ToX!.Value, arguments.ToY!.Value) =>
             $"拖拽的起点或终点不在 '{target.Label}' 的矩形内",
 
+        ActionKind.KeyPress when arguments.VirtualKey is null or 0 => "keyPress 需要 virtualKey",
         ActionKind.TypeText when string.IsNullOrEmpty(arguments.Text) => "typeText 需要 text",
-        ActionKind.Scroll when arguments.ScrollDelta == 0 => "scroll 需要 scrollDelta",
+        ActionKind.Scroll when arguments.ScrollDelta is null or 0 => "scroll 需要 scrollDelta",
 
         _ => null,
     };
+
+    /// <summary>
+    /// Which window a bare point belongs to. An absolute-coordinate click physically goes to whatever is at
+    /// that point, so deriving the window from the point is not a guess — but ambiguity is still refused: with
+    /// several windows over one point, the model has to say which it meant.
+    /// </summary>
+    /// <remarks>
+    /// The tie-breaker is the window whose picture the model was last shown: that is the one it was reasoning
+    /// about when it worked the coordinates out.
+    /// </remarks>
+    public static UiEntity? ResolveByPoint(DesktopObservation observation, (int X, int Y)? point, string? lastShownEntityId)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+
+        if (point is not { } at)
+        {
+            return null;
+        }
+
+        var covering = observation.Entities.Where(entity => entity.Rect.Contains(at.X, at.Y)).ToList();
+        if (covering.Count == 1)
+        {
+            return covering[0];
+        }
+
+        return covering.FirstOrDefault(entity =>
+            string.Equals(entity.EntityId, lastShownEntityId, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The refusal, with the observed windows in it. "Call desktop_observe first" is useless to a model that
+    /// has just observed — what it needs is the ids it could have named.
+    /// </summary>
+    public static string DescribeRefusal(DesktopObservation observation, (int X, int Y)? point)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+
+        var why = point is { } at
+            ? $"屏幕坐标 ({at.X},{at.Y}) 不落在唯一一个已观察窗口内"
+            : "缺少 entityId，也没有 x/y 可以判断目标窗口";
+
+        var windows = string.Join("；", observation.Entities.Take(8).Select(entity =>
+            $"{entity.EntityId} '{entity.Label}'（{entity.Value ?? "?"}）@{entity.Rect.X},{entity.Rect.Y} "
+            + $"{entity.Rect.Width}×{entity.Rect.Height}"));
+
+        var more = observation.Entities.Count > 8 ? $"；…共 {observation.Entities.Count} 个" : string.Empty;
+
+        return $"{why}：把 entityId 一起传过来。本次观察到：{windows}{more}";
+    }
 
     /// <summary>
     /// The result, with injection and verification kept apart: they answer different questions, and collapsing
@@ -325,15 +405,19 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     }
 
     /// <summary>What the model asked for, as it arrives from the model.</summary>
+    /// <remarks>
+    /// The coordinates are nullable because "absent" and "zero" are different answers, and the difference is
+    /// the whole safety story: a click with no point is a malformed call, not a click at the screen corner.
+    /// </remarks>
     public sealed record DesktopActArguments(
         string? EntityId,
         string? ElementId,
         string? Kind,
-        int X,
-        int Y,
-        int ToX,
-        int ToY,
-        ushort VirtualKey,
+        int? X,
+        int? Y,
+        int? ToX,
+        int? ToY,
+        ushort? VirtualKey,
         string? Text,
-        int ScrollDelta);
+        int? ScrollDelta);
 }

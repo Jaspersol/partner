@@ -56,6 +56,13 @@ public sealed record UiEntity
     /// </summary>
     public bool IsForeground { get; init; }
 
+    /// <summary>
+    /// Whether this window is minimized. A minimized window reports a 160×28 rect at -32000,-32000: clicking
+    /// "inside" it lands in the void, and a screenshot of it is a blank stub — so both are refused, and the
+    /// model is told to focus it first.
+    /// </summary>
+    public bool IsMinimized { get; init; }
+
     public required PixelRect Rect { get; init; }
 
     public required double Confidence { get; init; }

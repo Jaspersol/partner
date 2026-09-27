@@ -43,6 +43,18 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetForegroundWindow(nint hWnd);
 
+    /// <summary>Whether the window is minimized. A minimized window's rect is a 160×28 stub at -32000,-32000.</summary>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsIconic(nint hWnd);
+
+    /// <summary>Changes the window's show state; <see cref="SwRestore"/> un-minimizes it.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ShowWindow(nint hWnd, int command);
+
+    internal const int SwRestore = 9;
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);
 
