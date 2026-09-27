@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings } from '../src/api'
+import ApprovalBanner from '../src/components/ApprovalBanner.vue'
 import Composer from '../src/components/Composer.vue'
 import Inspector from '../src/components/Inspector.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
@@ -22,6 +23,60 @@ const baseItem = {
   originalBody: null,
   revisionCount: 0,
 }
+
+describe('approval banner', () => {
+  const pending = {
+    approvalId: 'ap-1-120000',
+    toolName: 'desktop_act',
+    arguments: '{"entityId":"104d4","kind":"KeyPress","virtualKey":67}',
+    requestedAt: '2026-09-27T11:52:01+00:00',
+    expiresAt: '2026-09-27T11:54:01+00:00',
+  }
+
+  const desktop = {
+    enabled: true,
+    leaseTtlMs: 15000,
+    allowedWindowTitles: [],
+    lastObsId: 'obs-1',
+    entityCount: 1,
+    entities: [{ entityId: '104d4', title: '网易云音乐', process: 'cloudmusic', foreground: false }],
+  }
+
+  it('names the window an approval is about, not just its id', async () => {
+    // The model once pressed a key at a window that was not the one it meant; the prompt is where a human can
+    // see that, so it has to say which window rather than an opaque handle.
+    const wrapper = mount(ApprovalBanner, { props: { pending: [pending], desktop } })
+
+    expect(wrapper.find('[data-test="approval-tool"]').text()).toBe('desktop_act')
+    expect(wrapper.find('[data-test="approval-target"]').text()).toContain('网易云音乐')
+    expect(wrapper.text()).toContain('KeyPress')
+    expect(wrapper.find('[data-test="approval-hint"]').text()).toContain('无人应答即拒绝')
+  })
+
+  it('falls back to the id when the window is no longer in the observation', async () => {
+    const wrapper = mount(ApprovalBanner, {
+      props: { pending: [pending], desktop: { ...desktop, entities: [] } },
+    })
+
+    expect(wrapper.find('[data-test="approval-target"]').text()).toContain('#104d4')
+  })
+
+  it('answers with the decision the human made', async () => {
+    const wrapper = mount(ApprovalBanner, { props: { pending: [pending], desktop } })
+
+    await wrapper.find('[data-test="approval-deny"]').trigger('click')
+    expect(wrapper.emitted('answer')?.[0]).toEqual(['ap-1-120000', false])
+
+    await wrapper.find('[data-test="approval-allow"]').trigger('click')
+    expect(wrapper.emitted('answer')?.[1]).toEqual(['ap-1-120000', true])
+  })
+
+  it('renders nothing when no tool is waiting', () => {
+    const wrapper = mount(ApprovalBanner, { props: { pending: [], desktop: null } })
+
+    expect(wrapper.find('[data-test="approval-banner"]').exists()).toBe(false)
+  })
+})
 
 describe('event list', () => {
   it('pairs a tool call with its result into one card', async () => {
@@ -165,7 +220,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
     approvals: vi.fn(async () => ({ timeoutSeconds: 120, pending: [] })),
     answerApproval: vi.fn(async () => {}),
-    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0 })),
+    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], })),

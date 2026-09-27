@@ -1837,6 +1837,96 @@ internal static class Program
             // The desktop capability end to end, with a scripted model: model → governance → tool → desktop.
             // Nothing is injected here — the action is denied by the approval queue, which is the path that
             // protects the user's pointer, and the smoke never takes it upon itself to click.
+            // The chain the log showed failing: observe → act → approval → lease. The model here is dynamic — it
+            // reads what it just observed and asks to press a key at a real window that is *not* in front, so
+            // the guards refuse it before anything is injected. What is being proven is what happens *before*
+            // that: a slow approval outlives the lease, and the action must still be about the same window.
+            var leaseWorkspace = Path.Combine(root, "desktop-lease");
+            Directory.CreateDirectory(Path.Combine(leaseWorkspace, "settings"));
+            await File.WriteAllTextAsync(
+                Path.Combine(leaseWorkspace, "settings", "runtime.json"),
+                """{"desktop":{"enabled":true,"leaseTtlMs":1500,"allowedWindowTitles":[]}}""");
+
+            var leasePort = FreePort();
+            var leaseToken = TokenAuth.Generate();
+            var leaseLlm = new ObserveThenActLlm();
+
+            var (leaseApp, leaseContext, leaseConsumer, leaseVoice) =
+                await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, leaseLlm);
+            var leaseRun = leaseApp.RunAsync();
+            using var leaseHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{leasePort}") };
+            leaseHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", leaseToken);
+
+            try
+            {
+                await WaitForHostAsync(leaseHttp);
+                await leaseHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "按一下 C" });
+
+                // The action parks in the approval queue.
+                string? parked = null;
+                for (var attempt = 0; attempt < 600 && parked is null; attempt++)
+                {
+                    var parkedQueue = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/approvals");
+                    var pending = parkedQueue.GetProperty("pending").EnumerateArray().ToList();
+                    if (pending.Count > 0)
+                    {
+                        parked = pending[0].GetProperty("approvalId").GetString();
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                Check("desktop: a key press waits for approval", parked is not null, $"id={parked}");
+
+                var obsBefore = (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop"))
+                    .GetProperty("lastObsId").GetString();
+
+                // Wait well past the lease TTL (the policy floors it at 2s), then approve: the lease is long
+                // dead, the window is not. Acting without looking again would be refused as Expired here.
+                await Task.Delay(6000);
+                if (parked is not null)
+                {
+                    await leaseHttp.PostAsJsonAsync($"/api/approvals/{parked}", new { approved = true });
+                }
+
+                string? outcome = null;
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    var polled = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var results = polled.GetProperty("items").EnumerateArray()
+                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                        .ToList();
+
+                    if (results.Count > 0)
+                    {
+                        outcome = results[^1].GetProperty("body").GetString();
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                // The keystroke was refused (that window is not in front), so nothing was typed — and the tool
+                // looked again before deciding, which is what makes a lease that died during the approval
+                // harmless. Without the re-look the lease is dead and the action is refused as Expired.
+                var obsAfter = (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop"))
+                    .GetProperty("lastObsId").GetString();
+
+                Check("desktop: an approved action looks again instead of trusting a dead lease",
+                    outcome is not null
+                    && outcome.Contains("前台", StringComparison.Ordinal)
+                    && obsAfter != obsBefore,
+                    $"reObserved={obsAfter != obsBefore} result={(outcome ?? "(none)")[..Math.Min(70, (outcome ?? "(none)").Length)]}");
+            }
+            finally
+            {
+                await leaseApp.StopAsync();
+                await leaseRun;
+                await leaseVoice.DisposeAsync();
+                await leaseConsumer.DisposeAsync();
+                await leaseContext.DisposeAsync();
+            }
+
             var desktopWorkspace = Path.Combine(root, "desktop-tools");
             Directory.CreateDirectory(Path.Combine(desktopWorkspace, "settings"));
             await File.WriteAllTextAsync(
@@ -2680,6 +2770,76 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// A model that observes and then acts on what it saw: the entity id of a real window is machine-specific,
+    /// so a fixed script cannot name one. It picks a window that is *not* in front, which makes the keystroke a
+    /// refusal the guards produce — the test never types into the user's desktop.
+    /// </summary>
+    private sealed class ObserveThenActLlm : ILlmClient
+    {
+        private readonly List<LlmRequest> _requests = new();
+
+        public IReadOnlyList<LlmRequest> Requests => _requests;
+
+        /// <summary>
+        /// The ReAct shape, driven by what is already in the conversation: look, act on what was seen, then
+        /// answer. The entity id of a real window is machine-specific, so a fixed script cannot name one — and
+        /// the target is chosen to be a window that is *not* in front, which makes the keystroke a refusal the
+        /// guards produce rather than something typed into the user's desktop.
+        /// </summary>
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+        {
+            _requests.Add(request);
+
+            var toolResults = request.Messages.Count(message => message.Role == "tool");
+
+            return Task.FromResult(toolResults switch
+            {
+                0 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c1", "desktop_observe", "{}") },
+                    "tool_calls"),
+                1 => new LlmResponse(
+                    null,
+                    new[]
+                    {
+                        new LlmToolCall(
+                            "c2",
+                            "desktop_act",
+                            $"{{ \"entityId\": \"{PickTarget()}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}"),
+                    },
+                    "tool_calls"),
+                _ => new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
+            });
+        }
+
+        /// <summary>The window the observation listed, preferring one that is not foreground.</summary>
+        private string PickTarget()
+        {
+            var observed = _requests
+                .SelectMany(request => request.Messages)
+                .Where(message => message.Role == "tool" && message.Content is not null)
+                .Select(message => message.Content!)
+                .LastOrDefault(content => content.Contains("\"entityId\"", StringComparison.Ordinal));
+
+            if (observed is null)
+            {
+                return "1";
+            }
+
+            using var document = JsonDocument.Parse(observed);
+            var entities = document.RootElement.GetProperty("entities").EnumerateArray().ToList();
+            var background = entities.FirstOrDefault(entity =>
+                !entity.TryGetProperty("foreground", out var flag) || !flag.GetBoolean());
+
+            return (background.ValueKind == JsonValueKind.Undefined ? entities[0] : background)
+                .GetProperty("entityId").GetString() ?? "1";
+        }
+
+        public Task<LlmResponse> StreamAsync(LlmRequest request, Action<string> onText, CancellationToken ct = default) =>
+            CompleteAsync(request, ct);
+    }
+
     /// <summary>Waits until a host answers, so a probe is not a guess at a duration.</summary>
     private static async Task WaitForHostAsync(HttpClient http)
     {
@@ -3062,6 +3222,8 @@ internal static class Program
             "image: an upload comes back as an id",
             "image: the model receives the attachment inline",
             "image: the logs keep the id, not the bytes",
+            "desktop: a key press waits for approval",
+            "desktop: an approved action looks again instead of trusting a dead lease",
             "desktop: the capability reports itself enabled",
             "desktop: the model can observe through its tool",
             "desktop: an action waits for approval instead of running",

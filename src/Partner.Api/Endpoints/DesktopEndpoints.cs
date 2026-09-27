@@ -27,6 +27,14 @@ public static class DesktopEndpoints
                 allowedWindowTitles = settings.AllowedWindowTitles,
                 lastObsId = ctx.Desktop.LastObservation?.ObsId,
                 entityCount = ctx.Desktop.LastObservation?.Entities.Count ?? 0,
+                entities = (ctx.Desktop.LastObservation?.Entities ?? Array.Empty<Partner.Desktop.Perception.UiEntity>())
+                    .Select(entity => new
+                    {
+                        entityId = entity.EntityId,
+                        title = entity.Label,
+                        process = entity.Value,
+                        foreground = entity.IsForeground,
+                    }),
             });
         });
 

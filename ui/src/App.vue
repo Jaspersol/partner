@@ -8,11 +8,14 @@ import {
   type ConsumerState,
   type QueueSummary,
   type RebuildReport,
+  type PendingApproval,
+  type DesktopState,
 } from './api'
 import { resolveConnection } from './config'
 import { applyTheme, nextTheme, readTheme, type Theme } from './theme'
 import SideBar, { type NavItem } from './components/SideBar.vue'
 import StatusBar from './components/StatusBar.vue'
+import ApprovalBanner from './components/ApprovalBanner.vue'
 import TopBar from './components/TopBar.vue'
 import MemoryView from './views/MemoryView.vue'
 import QueueView from './views/QueueView.vue'
@@ -36,6 +39,16 @@ const NAV: NavItem[] = [
 /** How often the badge re-reads the queue: blocked work should not need a click to appear (ui.md §10 G6). */
 const QUEUE_POLL_MS = 5000
 
+/**
+ * A tool call waiting for a human, shown here rather than inside a view: the answer is part of a turn that is
+ * already parked, and a prompt that only exists on the session tab is a prompt nobody sees while they are
+ * elsewhere — which is how two approvals once timed out with nobody watching.
+ */
+const APPROVAL_POLL_MS = 500
+
+const approvals = ref<PendingApproval[]>([])
+const desktop = ref<DesktopState | null>(null)
+
 const active = ref('session')
 const sidebarCollapsed = ref(false)
 const inspectorCollapsed = ref(false)
@@ -53,6 +66,7 @@ const connected = computed(() => api.value !== null)
 const viewLabel = computed(() => NAV.find((item) => item.key === active.value)?.label ?? '')
 
 let poller: ReturnType<typeof setInterval> | undefined
+let approvalPoller: ReturnType<typeof setInterval> | undefined
 
 async function refreshSummary() {
   if (!api.value) {
@@ -62,6 +76,10 @@ async function refreshSummary() {
   try {
     summary.value = summarizeQueue(await api.value.queue())
     consumer.value = await api.value.consumer()
+    approvals.value = (await api.value.approvals()).pending
+
+    // Only fetched while something is waiting: it is what turns an entityId into a window a human recognises.
+    desktop.value = approvals.value.length > 0 ? await api.value.desktop() : null
   } catch (failure) {
     // A stale badge is worse than none: it would claim the queue is empty when we simply do not know.
     summary.value = null
@@ -70,6 +88,21 @@ async function refreshSummary() {
       connectionError.value = 'token 失效（401）——请重启壳以获取新令牌'
     }
   }
+}
+
+/** Answers a parked tool call. A failed answer is left on screen rather than swallowed: it is still waiting. */
+async function answerApproval(approvalId: string, approved: boolean) {
+  if (!api.value) {
+    return
+  }
+
+  try {
+    await api.value.answerApproval(approvalId, approved)
+  } catch (failure) {
+    connectionError.value = String(failure)
+  }
+
+  await refreshSummary()
 }
 
 async function rebuildProjections() {
@@ -115,12 +148,25 @@ onMounted(async () => {
   api.value = new PartnerApi(resolved.connection)
 
   await refreshSummary()
-  poller = setInterval(refreshSummary, QUEUE_POLL_MS)
+  // Two cadences: the badge can wait five seconds, a parked turn cannot.
+  poller = setInterval(() => {
+    void refreshSummary()
+  }, QUEUE_POLL_MS)
+
+  approvalPoller = setInterval(() => {
+    if (approvals.value.length > 0) {
+      void refreshSummary()
+    }
+  }, APPROVAL_POLL_MS)
 })
 
 onUnmounted(() => {
   if (poller !== undefined) {
     clearInterval(poller)
+  }
+
+  if (approvalPoller !== undefined) {
+    clearInterval(approvalPoller)
   }
 })
 </script>
@@ -137,6 +183,12 @@ onUnmounted(() => {
       :theme="theme"
       @update:collapsed="sidebarCollapsed = $event"
       @cycle-theme="cycleTheme"
+    />
+
+    <ApprovalBanner
+      :pending="approvals"
+      :desktop="desktop"
+      @answer="answerApproval"
     />
 
     <div class="body" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">

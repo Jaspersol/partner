@@ -133,7 +133,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
     approvals: vi.fn(async () => ({ timeoutSeconds: 120, pending: [] })),
     answerApproval: vi.fn(async () => {}),
-    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0 })),
+    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
@@ -309,57 +309,6 @@ describe('session removal', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="error"]').text()).toContain('404')
-  })
-})
-
-describe('tool approval', () => {
-  it('shows a parked tool call and answers it', async () => {
-    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-    const approvals = vi.fn(async () => ({
-      timeoutSeconds: 120,
-      pending: [
-        {
-          approvalId: 'ap-1-120000',
-          toolName: 'desktop_act',
-          arguments: '{entityId:1a2b,kind:LeftClick}',
-          requestedAt: '2026-09-27T12:00:00+00:00',
-          expiresAt: '2026-09-27T12:02:00+00:00',
-        },
-      ],
-    }))
-    const answerApproval = vi.fn(async () => {})
-    const { stub } = createStub({
-      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage })),
-      approvals,
-      answerApproval,
-    })
-
-    const wrapper = mount(SessionView, { props: { api: stub } })
-    await flushPromises()
-
-    // An irreversible action waits for a human: the prompt names the tool and shows what it wants to do.
-    const banner = wrapper.find('[data-test=session-approval]')
-    expect(banner.text()).toContain('desktop_act')
-    expect(banner.text()).toContain('LeftClick')
-
-    await wrapper.find('[data-test=session-approval-allow]').trigger('click')
-    await flushPromises()
-
-    expect(answerApproval).toHaveBeenCalledWith('ap-1-120000', true)
-    wrapper.unmount()
-  })
-
-  it('shows nothing when no tool is waiting', async () => {
-    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-    const { stub } = createStub({
-      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: false, context: usage })),
-    })
-
-    const wrapper = mount(SessionView, { props: { api: stub } })
-    await flushPromises()
-
-    expect(wrapper.find('[data-test=session-approval]').exists()).toBe(false)
-    wrapper.unmount()
   })
 })
 

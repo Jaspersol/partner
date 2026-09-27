@@ -103,6 +103,7 @@ public sealed class DesktopAutomation : IDisposable
                 Role = "window",
                 Label = w.Title,
                 Value = w.ProcessName,
+                IsForeground = w.IsForeground,
                 Rect = new PixelRect(w.X, w.Y, w.Width, w.Height),
                 Confidence = 1.0,
                 EvidenceDigest = DesktopObservation.Digest(w.Title, w.ProcessName, new PixelRect(w.X, w.Y, w.Width, w.Height)),

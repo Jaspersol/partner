@@ -17,6 +17,12 @@ public sealed record PixelRect(int X, int Y, int Width, int Height)
 
     public int Area => Math.Max(0, Width) * Math.Max(0, Height);
 
+    /// <summary>
+    /// Whether a screen point lands inside this rectangle. Pointer actions are global — the coordinates go to
+    /// whatever is there — so this is the only thing that ties a click to the window it claims to target.
+    /// </summary>
+    public bool Contains(int x, int y) => x >= X && x < X + Width && y >= Y && y < Y + Height;
+
     public PixelRect Intersect(PixelRect other)
     {
         var left = Math.Max(X, other.X);
@@ -43,6 +49,12 @@ public sealed record UiEntity
     public required string Label { get; init; }
 
     public string? Value { get; init; }
+
+    /// <summary>
+    /// Whether this window had focus when it was observed. Keystrokes are global, so a KeyPress is only
+    /// meaningful against the foreground window — otherwise it types into whatever the user was using.
+    /// </summary>
+    public bool IsForeground { get; init; }
 
     public required PixelRect Rect { get; init; }
 

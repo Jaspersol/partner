@@ -190,6 +190,8 @@ export interface DesktopState {
   allowedWindowTitles: string[]
   lastObsId: string | null
   entityCount: number
+  /** The windows from the last observation: an approval names an entityId, and this is how a human reads it. */
+  entities: { entityId: string; title: string; process: string | null; foreground: boolean }[]
 }
 
 export interface DesktopEntity {

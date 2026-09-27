@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type {
   ConsumerState,
   PartnerApiSurface,
-  PendingApproval,
   QueueSummary,
   SessionRevision,
   SessionView,
@@ -30,11 +29,6 @@ const notice = ref('')
 const composer = ref<InstanceType<typeof Composer> | null>(null)
 const inspectorCollapsed = ref(false)
 
-/**
- * Tool calls waiting for a decision. Nobody answering means denied, so this list is part of the safety path
- * rather than a notification: an irreversible action is parked until a human says yes.
- */
-const approvals = ref<PendingApproval[]>([])
 
 
 const selected = computed(() => view.value?.items.find((item) => item.seq === selectedSeq.value) ?? null)
@@ -96,8 +90,6 @@ async function refresh() {
       emit('context', contextFor(selectedSeq.value))
     }
 
-    // A parked tool call rides the same tick as the content: the answer is part of the turn.
-    approvals.value = (await props.api.approvals()).pending
 
     // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
     await followIfFollowing()
@@ -298,15 +290,6 @@ onUnmounted(() => {
   }
 })
 
-async function answer(approvalId: string, approved: boolean) {
-  error.value = ''
-  try {
-    await props.api.answerApproval(approvalId, approved)
-    await refresh()
-  } catch (failure) {
-    error.value = String(failure)
-  }
-}
 
 function focusComposer() {
   composer.value?.focus()
@@ -374,18 +357,6 @@ defineExpose({ refresh, focusComposer })
       @failed="error = $event"
     />
 
-    <div v-if="approvals.length > 0" class="approval notice" data-test="session-approval">
-      <span class="muted">模型请求执行工具</span>
-      <strong>{{ approvals[0]?.toolName }}</strong>
-      <code class="break">{{ approvals[0]?.arguments }}</code>
-      <span class="spacer" />
-      <button class="primary" data-test="session-approval-allow" @click="answer(approvals[0]!.approvalId, true)">
-        允许
-      </button>
-      <button class="ghost" data-test="session-approval-deny" @click="answer(approvals[0]!.approvalId, false)">
-        拒绝
-      </button>
-    </div>
 
     <p v-if="notice" class="muted notice" data-test="session-notice">{{ notice }}</p>
     <p v-if="error" class="error notice" data-test="error">{{ error }}</p>
@@ -419,12 +390,6 @@ defineExpose({ refresh, focusComposer })
   font-weight: 600;
 }
 
-.approval {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  border-block-start: 1px solid var(--warn);
-}
 
 .notice {
   margin: 0;
