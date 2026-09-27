@@ -95,17 +95,16 @@ public sealed class SessionCompactorTests : IDisposable
     }
 
     [Fact]
-    public async Task A_multi_line_summary_is_flattened_to_keep_the_log_line_framed()
+    public async Task A_multi_line_summary_keeps_its_structure_and_the_log_still_parses()
     {
         await using var store = await SeedAsync("one", "two", "three");
 
-        await new SessionCompactor(store, Summarizer("第一行\n第二行\r\n第三行")).CompactAsync(promptBudget: 8);
+        await new SessionCompactor(store, Summarizer("- 第一行\n- 第二行\n\n**小结**")).CompactAsync(promptBudget: 8);
 
         var summary = (await store.ProjectAsync()).Items.Single(i => i.Kind == SessionEventKind.Summary);
-        Assert.DoesNotContain('\n', summary.Body);
-        Assert.Contains("第一行", summary.Body, StringComparison.Ordinal);
+        Assert.Equal("- 第一行\n- 第二行\n\n**小结**", summary.Body);
 
-        // The log still parses: a broken frame would lose every later event.
+        // The invariant the flattening was there for: the log is one record per line and still parses whole.
         var count = 0;
         await foreach (var _ in store.ReadAllAsync())
         {

@@ -153,6 +153,25 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_multi_line_reply_is_recorded_with_its_line_structure()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            // A reply is markdown, and its structure *is* the line breaks. Flattening them here is what made the
+            // session view render a formatted answer as one long line.
+            const string Reply = "## 步骤\n\n- 打开书房的灯\n- 关掉客厅的灯\n\n> 完成后再回报一次";
+
+            var runner = Build(store, new ScriptedLlmClient(new[] { Say(Reply) }));
+
+            await runner.RunAsync(Claimed());
+
+            var assistant = Assert.Single(await RawAsync(store), e => e.Kind == SessionEventKind.Assistant);
+            Assert.Equal(Reply, assistant.Body);
+        }
+    }
+
+    [Fact]
     public async Task Streaming_reports_pieces_and_still_logs_one_complete_answer()
     {
         var (store, _) = JsonlSessionStore.Open(_dir);

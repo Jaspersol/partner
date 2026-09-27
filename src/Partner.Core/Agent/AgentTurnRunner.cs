@@ -448,8 +448,9 @@ public sealed class AgentTurnRunner
         {
             Kind = kind,
             Source = source,
-            // The log is line-framed: flatten any newlines the model produced.
-            Body = body.Replace('\n', ' ').Replace('\r', ' '),
+            // Verbatim, newlines included: a reply is markdown, and its structure *is* the line breaks. Framing
+            // is the serialized record's problem, and the serializer escapes them.
+            Body = body,
             Meta = merged,
         };
     }

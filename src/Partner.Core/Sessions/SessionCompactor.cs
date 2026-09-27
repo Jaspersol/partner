@@ -108,8 +108,8 @@ public sealed class SessionCompactor
             return new CompactionResult(0, null, "压缩失败：模型没有返回摘要");
         }
 
-        // The log is line-framed, so a multi-line summary would corrupt it.
-        var single = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        // Only trimmed: a summary keeps its line structure, like any other model output.
+        var single = text.Trim();
 
         var summarySeq = await _session.AppendAsync(new SessionEvent
         {

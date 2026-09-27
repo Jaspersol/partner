@@ -40,6 +40,23 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task An_edit_may_be_multiline()
+    {
+        // A model reply is markdown; editing one must not be a 500 because of its line breaks.
+        var seq = await SeedAsync("single line");
+
+        var response = await _http.PostAsync(
+            $"/api/session/{seq}/edit",
+            JsonContent.Create(new { body = "## 改过的标题\n\n- 一\n- 二" }));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var view = await _http.GetFromJsonAsync<JsonElement>("/api/session");
+        var item = view.GetProperty("items").EnumerateArray().First(i => i.GetProperty("seq").GetInt64() == seq);
+        Assert.Equal("## 改过的标题\n\n- 一\n- 二", item.GetProperty("body").GetString());
+    }
+
+    [Fact]
     public async Task Deleting_an_event_takes_its_text_out_of_the_log()
     {
         await SeedAsync("kept before");

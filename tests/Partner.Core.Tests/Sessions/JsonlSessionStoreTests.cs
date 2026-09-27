@@ -254,13 +254,32 @@ public sealed class JsonlSessionStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Append_rejects_multiline_body()
+    public async Task A_multiline_body_round_trips_through_the_file()
     {
+        // The log is one JSON record per line; a body's newlines belong to the body and are escaped by the
+        // serializer. Flattening them here is what used to destroy a markdown reply's structure.
+        const string Markdown = "## 标题\n\n- 一\n- 二\n\n```json\n{ \"a\": 1 }\n```";
+
         var (store, _) = JsonlSessionStore.Open(_dir);
         await using (store)
         {
-            await Assert.ThrowsAsync<ArgumentException>(
-                () => store.AppendAsync(Ev(body: "line1\nline2")));
+            await store.AppendAsync(Ev(body: Markdown));
+        }
+
+        // One physical line per record, and the body comes back exactly as it went in.
+        var lines = File.ReadAllLines(Path.Combine(_dir, "session", "events.jsonl"));
+        Assert.Single(lines);
+
+        var (reopened, _) = JsonlSessionStore.Open(_dir);
+        await using (reopened)
+        {
+            var events = new List<SessionEvent>();
+            await foreach (var e in reopened.ReadAllAsync())
+            {
+                events.Add(e);
+            }
+
+            Assert.Equal(Markdown, Assert.Single(events).Body);
         }
     }
 

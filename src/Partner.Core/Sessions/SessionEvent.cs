@@ -22,7 +22,7 @@ public sealed record SessionEvent
 
     public InputSource Source { get; init; }
 
-    /// <summary>Single-line content. Newlines are rejected by the store (line-framed log).</summary>
+    /// <summary>Content, newlines included (a model reply is markdown, and its structure is the line breaks).</summary>
     public string Body { get; init; } = string.Empty;
 
     /// <summary>Only set when <see cref="Kind"/> is <see cref="SessionEventKind.Edit"/>: the seq being revised.</summary>

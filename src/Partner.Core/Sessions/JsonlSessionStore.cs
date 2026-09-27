@@ -377,10 +377,8 @@ public sealed class JsonlSessionStore : ISessionStore
             throw new ArgumentException("Body must not be empty.", nameof(e));
         }
 
-        if (e.Body.Contains('\n') || e.Body.Contains('\r'))
-        {
-            throw new ArgumentException("Body must be single-line (the log is line-framed).", nameof(e));
-        }
+        // Newlines in the body are fine: the log is JSON per line, and the serializer escapes them. What must
+        // stay single-line is the *record*, which the sink checks where it writes.
 
         if (e.Kind == SessionEventKind.Edit)
         {
