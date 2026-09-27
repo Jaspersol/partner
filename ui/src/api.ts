@@ -144,6 +144,8 @@ export interface ModelSettings {
   contextTokens: number
   /** Output ceiling for one completion. */
   maxTokens: number
+  /** Whether this model can look at pictures: the switch that makes screenshots the blind-app fallback. */
+  supportsImages: boolean
 }
 
 /** What the API returns: no key, only whether one is stored. */
@@ -154,6 +156,8 @@ export interface ModelSettingsView {
   timeoutSeconds: number
   contextTokens: number
   maxTokens: number
+  /** Whether the model takes pictures; the screenshot fallback is registered from this. */
+  supportsImages: boolean
 }
 
 export interface RuntimeSettings {

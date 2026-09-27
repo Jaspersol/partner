@@ -213,6 +213,17 @@ public sealed class AgentTurnRunner
                                 }), ct).ConfigureAwait(false);
 
                             conversation.Add(new LlmMessage("tool", result.Content, ToolCallId: call.Id, Name: call.Name));
+
+                            // Pictures a tool returned ride in a user message: the tool role carries text only, and
+                            // the model has to see the image as an image. The bytes are not in the log — the result
+                            // body names the media id, and the request carries the data URI.
+                            if (result.Images is { Count: > 0 })
+                            {
+                                conversation.Add(new LlmMessage(
+                                    "user",
+                                    $"以下是工具 '{call.Name}' 返回的图片（共 {result.Images.Count} 张）。",
+                                    Images: result.Images));
+                            }
                         }
                     }
 

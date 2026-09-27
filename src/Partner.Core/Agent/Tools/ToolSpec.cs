@@ -14,4 +14,13 @@ public sealed record ToolSpec(string Name, string Description, string Parameters
 /// </summary>
 /// <param name="Ok">是否成功。</param>
 /// <param name="Content">回填给模型的文本（成功为输出，失败为错误说明）。</param>
-public sealed record ToolResult(bool Ok, string Content);
+/// <summary>
+/// What a tool hands back.
+/// </summary>
+/// <param name="Ok">Whether the tool did what it was asked.</param>
+/// <param name="Content">The text the model reads (and that the log records).</param>
+/// <param name="Images">
+/// Pictures to show the model, as data URIs. A tool result is text in the log, so the bytes travel beside it:
+/// the log keeps the id, the request carries the pixels. Only ever set when the configured model takes images.
+/// </param>
+public sealed record ToolResult(bool Ok, string Content, IReadOnlyList<string>? Images = null);

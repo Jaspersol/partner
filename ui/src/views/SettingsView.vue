@@ -29,7 +29,7 @@ const form = reactive<RuntimeSettings>({
   },
   asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
+  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
 })
 
@@ -101,6 +101,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     model: settings.model.model,
     timeoutSeconds: settings.model.timeoutSeconds,
     contextTokens: settings.model.contextTokens,
+    supportsImages: settings.model.supportsImages ?? false,
     maxTokens: settings.model.maxTokens,
   })
 
@@ -136,6 +137,7 @@ async function persist() {
       model: form.model.model === '' ? null : form.model.model,
       timeoutSeconds: form.model.timeoutSeconds,
       contextTokens: form.model.contextTokens,
+      supportsImages: form.model.supportsImages,
       maxTokens: form.model.maxTokens,
     },
   }
@@ -424,6 +426,15 @@ onMounted(refresh)
             <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
             <span class="source">模型的上下文窗口；提示预算 = 它减去输出长度，改小后保存会立即压缩一次历史</span>
           </label>
+          <label class=field>
+            <span>支持图片（视觉）</span>
+            <input type=checkbox v-model=form.model.supportsImages data-test=model-supports-images />
+          </label>
+          <p class=muted>
+            打开后，UIA 看不见的应用（Electron、游戏、画布）走**截图给模型看**这条路，不再需要 OCR——
+            模型自己读图比本地识别准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败。
+          </p>
+
           <label class="field">
             <span>输出长度（token）</span>
             <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />

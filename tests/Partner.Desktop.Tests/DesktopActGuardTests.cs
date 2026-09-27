@@ -210,13 +210,17 @@ public sealed class DesktopActGuardTests
         Assert.True(DesktopToolCatalog.IsDangerous("desktop_clipboard_set"));
 
         Assert.False(DesktopToolCatalog.IsDangerous("desktop_observe"));
+        Assert.False(DesktopToolCatalog.IsDangerous("desktop_screenshot"));
         Assert.False(DesktopToolCatalog.IsDangerous("desktop_act"));
         Assert.False(DesktopToolCatalog.IsDangerous("desktop_clipboard_get"));
+
+        // Looking — including taking a picture — never asks.
+        Assert.True(DesktopToolCatalog.IsReadOnly("desktop_screenshot"));
 
         // Every tool is in the catalog: the host walks this list to decide what to allow, so a tool missing
         // from it would never be allowed to run.
         Assert.Contains("desktop_act", DesktopToolCatalog.All);
         Assert.Contains("desktop_exec", DesktopToolCatalog.All);
-        Assert.Equal(6, DesktopToolCatalog.All.Count);
+        Assert.Equal(7, DesktopToolCatalog.All.Count);
     }
 }

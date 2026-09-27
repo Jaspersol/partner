@@ -16,6 +16,7 @@ public static class DesktopToolCatalog
     private static readonly HashSet<string> ReadOnlyNames = new(StringComparer.Ordinal)
     {
         "desktop_observe",
+        "desktop_screenshot",
         "desktop_clipboard_get",
     };
 
@@ -31,6 +32,7 @@ public static class DesktopToolCatalog
     public static IReadOnlyList<string> All { get; } = new[]
     {
         "desktop_observe",
+        "desktop_screenshot",
         "desktop_act",
         "desktop_launch",
         "desktop_exec",

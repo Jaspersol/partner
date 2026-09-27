@@ -1845,7 +1845,7 @@ internal static class Program
             Directory.CreateDirectory(Path.Combine(leaseWorkspace, "settings"));
             await File.WriteAllTextAsync(
                 Path.Combine(leaseWorkspace, "settings", "runtime.json"),
-                """{"desktop":{"enabled":true,"leaseTtlMs":1500,"allowedWindowTitles":[]}}""");
+                """{"model":{"supportsImages":true},"desktop":{"enabled":true,"leaseTtlMs":1500,"allowedWindowTitles":[]}}""");
 
             var leasePort = FreePort();
             var leaseToken = TokenAuth.Generate();
@@ -1918,6 +1918,59 @@ internal static class Program
                     && outcome.Contains("前台", StringComparison.Ordinal)
                     && obsAfter != obsBefore,
                     $"reObserved={obsAfter != obsBefore} result={(outcome ?? "(none)")[..Math.Min(70, (outcome ?? "(none)").Length)]}");
+
+
+                // The blind-app fallback: a screenshot reaches the model as an image, and the log keeps only the
+                // media id. This is what replaces OCR — the model reads the pixels itself. Waited for, because
+                // the turn is still running when the approval lands.
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    var hasImage = leaseLlm.Requests
+                        .SelectMany(request => request.Messages)
+                        .Any(message => message.Images is { Count: > 0 });
+
+                    if (hasImage)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                var shown = leaseLlm.Requests
+                    .SelectMany(request => request.Messages)
+                    .Where(message => message.Images is { Count: > 0 })
+                    .ToList();
+
+                var screenshotResult = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    if (screenshotResult.GetProperty("items").EnumerateArray()
+                        .Any(item => (item.GetProperty("body").GetString() ?? string.Empty).Contains("媒体 ", StringComparison.Ordinal)))
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                    screenshotResult = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                }
+                var shot = screenshotResult.GetProperty("items").EnumerateArray()
+                    .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                    .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                    .LastOrDefault(body => body.Contains("媒体 ", StringComparison.Ordinal));
+
+                var allResults = screenshotResult.GetProperty("items").EnumerateArray()
+                    .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                    .Select(item => (item.GetProperty("body").GetString() ?? string.Empty).Replace("\n", " "))
+                    .ToList();
+
+                Check("desktop: a screenshot reaches the model as an image",
+                    shown.Count > 0 && shown[^1].Images!.Any(image => image.StartsWith("data:image/png;base64,", StringComparison.Ordinal)),
+                    $"imageMessages={shown.Count} results=[{string.Join(" | ", allResults.Select(r => r[..Math.Min(60, r.Length)]))}]");
+
+                Check("desktop: the log records the screenshot by media id, not by pixels",
+                    shot is not null && !screenshotResult.GetRawText().Contains("iVBORw0KGgo", StringComparison.Ordinal),
+                    $"result={(shot ?? "(none)")[..Math.Min(60, (shot ?? "(none)").Length)]}");
             }
             finally
             {
@@ -2850,6 +2903,10 @@ internal static class Program
                             $"{{ \"entityId\": \"{PickTarget()}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}"),
                     },
                     "tool_calls"),
+                2 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c3", "desktop_screenshot", $"{{ \"entityId\": \"{PickTarget()}\" }}") },
+                    "tool_calls"),
                 _ => new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
             });
         }
@@ -3265,6 +3322,8 @@ internal static class Program
             "image: the logs keep the id, not the bytes",
             "desktop: a key press waits for approval",
             "desktop: an approved action looks again instead of trusting a dead lease",
+            "desktop: a screenshot reaches the model as an image",
+            "desktop: the log records the screenshot by media id, not by pixels",
             "desktop: the default gear asks for every action but never for looking",
             "desktop: the middle gear frees the GUI and still gates commands",
             "desktop: the open gear asks for nothing",

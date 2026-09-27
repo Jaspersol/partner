@@ -54,5 +54,8 @@ public sealed record ModelConfig(
         // The turn window and output ceiling are part of the same configuration: changing either has to
         // reach the running runner, which only happens through a restart.
         || left.ContextTokens != right.ContextTokens
-        || left.MaxTokens != right.MaxTokens;
+        || left.MaxTokens != right.MaxTokens
+        // Whether the model takes pictures decides which tools exist (the screenshot fallback), and the tool
+        // table is built at start — so this belongs with the rest of what a restart is for.
+        || left.SupportsImages != right.SupportsImages;
 }

@@ -172,6 +172,67 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_tool_that_returns_a_picture_shows_it_to_the_model()
+    {
+        // The blind-app fallback: UI Automation cannot see Electron or a canvas, so the tool hands the model a
+        // screenshot. A tool message carries text only, so the picture rides in the message after it — and the
+        // log still holds just the text.
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var picture = "data:image/png;base64,iVBORw0KGgo=";
+            var registry = new InMemoryToolRegistry();
+            registry.Register(new FakeTool(
+                "shot",
+                (_, _) => Task.FromResult(new ToolResult(true, "截图 100×50（媒体 m1）", new[] { picture }))));
+
+            var llm = new ScriptedLlmClient(new[]
+            {
+                Call("c1", "shot"),
+                Say("看到了"),
+            });
+
+            var runner = Build(
+                store,
+                llm,
+                tools: registry,
+                governance: new AllowListGovernance(new[] { "shot" }));
+
+            await runner.RunAsync(Claimed());
+
+            // The second request is the one made after the tool ran.
+            var after = llm.Requests[1].Messages;
+            var withPicture = Assert.Single(after, message => message.Images is { Count: > 0 });
+            Assert.Equal("user", withPicture.Role);
+            Assert.Equal(picture, Assert.Single(withPicture.Images!));
+
+            // The log records the text, never the bytes.
+            var events = await RawAsync(store);
+            var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Contains("媒体 m1", result.Body, StringComparison.Ordinal);
+            Assert.DoesNotContain("base64", string.Join("\n", events.Select(e => e.Body)), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task A_tool_that_returns_no_picture_adds_no_message()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var registry = new InMemoryToolRegistry();
+            registry.Register(new FakeTool("tick", (_, _) => Task.FromResult(new ToolResult(true, "ok"))));
+
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "tick"), Say("done") });
+
+            await Build(store, llm, tools: registry, governance: new AllowListGovernance(new[] { "tick" }))
+                .RunAsync(Claimed());
+
+            Assert.DoesNotContain(llm.Requests[1].Messages, message => message.Images is { Count: > 0 });
+        }
+    }
+
+    [Fact]
     public async Task Streaming_reports_pieces_and_still_logs_one_complete_answer()
     {
         var (store, _) = JsonlSessionStore.Open(_dir);

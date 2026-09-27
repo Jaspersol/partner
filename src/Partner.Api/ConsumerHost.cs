@@ -231,6 +231,14 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         {
             var policy = new DesktopToolPolicy(desktop.AllowedWindowTitles);
             tools.Register(new DesktopObserveTool(_context.Desktop, policy));
+
+            // Only for a model that takes pictures: a screenshot handed to a text-only model fails the request,
+            // and the whole point of the setting is to be honest about which model is configured.
+            if (_context.Settings.Load().Model.SupportsImages)
+            {
+                tools.Register(new DesktopScreenshotTool(_context.Desktop, _context.Media));
+            }
+
             tools.Register(new DesktopActTool(_context.Desktop, policy));
             tools.Register(new DesktopLaunchTool());
             tools.Register(new DesktopExecTool());

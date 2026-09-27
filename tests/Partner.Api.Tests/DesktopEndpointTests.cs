@@ -164,6 +164,46 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task The_screenshot_tool_exists_only_for_a_model_that_takes_pictures()
+    {
+        // Sending an image to a text-only model fails the request, so the tool is registered from the claim
+        // about the model — not always, and not never.
+        async Task<List<string>> ToolsAsync()
+        {
+            var state = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
+            return state.GetProperty("tools").EnumerateArray()
+                .Select(tool => tool.GetProperty("name").GetString()!)
+                .ToList();
+        }
+
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", supportsImages = false },
+            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        Assert.DoesNotContain("desktop_screenshot", await ToolsAsync());
+
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", supportsImages = true },
+            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        var withImages = await ToolsAsync();
+        Assert.Contains("desktop_screenshot", withImages);
+        // Looking is free whatever the gear says.
+        var screenshot = (await _http.GetFromJsonAsync<JsonElement>("/api/consumer"))
+            .GetProperty("tools").EnumerateArray()
+            .First(tool => tool.GetProperty("name").GetString() == "desktop_screenshot");
+        Assert.Equal("allow", screenshot.GetProperty("decision").GetString());
+
+        // And the setting is reported back, or the checkbox would forget itself on the next save.
+        var settings = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        Assert.True(settings.GetProperty("model").GetProperty("supportsImages").GetBoolean());
+    }
+
+    [Fact]
     public async Task An_empty_approval_queue_is_reported_rather_than_hidden()
     {
         // The UI has to distinguish "nothing is waiting" from "we could not ask", so the shape is always there.

@@ -184,12 +184,24 @@ public sealed record ModelSettings
 
     /// <summary>Output ceiling for one completion.</summary>
     public int MaxTokens { get; init; } = 4096;
+
+    /// <summary>
+    /// Whether this model can look at pictures.
+    /// <para>
+    /// On, the applications UI Automation cannot see (Electron, games, canvases) are handled by **showing the
+    /// model a screenshot** rather than by OCR: a vision model reads the UI better than any local recogniser.
+    /// Off, the screenshot tool is not registered at all — sending an image to a text-only model fails the
+    /// request, so this has to be a deliberate claim about the configured model.
+    /// </para>
+    /// </summary>
+    public bool SupportsImages { get; init; }
 }
 
 /// <summary>What the API returns: the same shape, minus the secret, plus whether one is stored.</summary>
 public sealed record ModelSettingsView
 {
     public string? BaseUrl { get; init; }
+
 
     public string? Model { get; init; }
 
@@ -200,6 +212,8 @@ public sealed record ModelSettingsView
     public int ContextTokens { get; init; } = 32768;
 
     public int MaxTokens { get; init; } = 4096;
+
+    public bool SupportsImages { get; init; }
 }
 
 public sealed record SettingsView
@@ -230,6 +244,7 @@ public sealed record SettingsView
             TimeoutSeconds = settings.Model.TimeoutSeconds,
             ContextTokens = settings.Model.ContextTokens,
             MaxTokens = settings.Model.MaxTokens,
+            SupportsImages = settings.Model.SupportsImages,
         },
 
         // Without this the settings response drops the section, and the UI — which refills its form from the
