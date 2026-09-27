@@ -406,6 +406,63 @@ async function main() {
     const keyState = await evaluate(cdp, 'document.querySelector(\'[data-test="model-api-key-state"]\').textContent')
     check('the API key is stored without being echoed back into the form', keyField === '' && keyState.includes('已设置'), `field="${keyField}" state=${keyState.trim()}`)
 
+    // The image capability: the switch exists in the real window, and turning it on registers the screenshot
+    // tool — that is what makes blind apps (Electron, canvas) readable without OCR.
+    const hasImageSwitch = await evaluate(
+      cdp,
+      `document.querySelector('[data-test="model-supports-images"]') !== null`,
+    )
+    check('the model card offers the image capability', hasImageSwitch === true, `present=${hasImageSwitch}`)
+
+    // Both switches in one go: the screenshot tool is a desktop tool, and it exists only for a model that
+    // takes pictures — so the pair is what the claim is about.
+    const toggled = await evaluate(
+      cdp,
+      `(() => {
+        const image = document.querySelector('[data-test="model-supports-images"]')
+        image.checked = true
+        image.dispatchEvent(new Event('change', { bubbles: true }))
+        const desktop = document.querySelector('[data-test="desktop-enabled"]')
+        desktop.checked = true
+        desktop.dispatchEvent(new Event('change', { bubbles: true }))
+        return { image: image.checked, desktop: desktop.checked }
+      })()`,
+    )
+    check(
+      'both switches take the click',
+      toggled?.image === true && toggled?.desktop === true,
+      `image=${toggled?.image} desktop=${toggled?.desktop}`,
+    )
+
+    await evaluate(cdp, `document.querySelector('[data-test="settings-save"]').click()`)
+
+    // Waited for on the server side: the switches are the form's, and the claim is about what the running
+    // consumer was built with.
+    let savedDesktop = null
+    let toolNames = []
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const settings = await (await fetch(`http://127.0.0.1:${port}/api/settings`, { headers: { Authorization: `Bearer ${token}` } })).json()
+      const consumerState = await (await fetch(`http://127.0.0.1:${port}/api/consumer`, { headers: { Authorization: `Bearer ${token}` } })).json()
+      savedDesktop = settings.desktop
+      toolNames = consumerState.tools.map(tool => tool.name)
+
+      if (savedDesktop?.enabled === true && toolNames.includes('desktop_screenshot')) {
+        break
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+
+    check(
+      'the image capability is saved with the model',
+      savedDesktop?.enabled === true,
+      `desktop=${JSON.stringify(savedDesktop)}`,
+    )
+    check(
+      'turning it on registers the screenshot tool for the running consumer',
+      toolNames.includes('desktop_screenshot'),
+      `tools=${toolNames.length}`,
+    )
     // Removing history from the UI: delete one event, and retract from an event onward (two-step).
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
     await waitFor(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length >= 2', 'the session list')
