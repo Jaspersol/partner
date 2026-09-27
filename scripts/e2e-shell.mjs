@@ -281,6 +281,24 @@ async function main() {
     const notice = await evaluate(cdp, 'document.querySelector(\'[data-test="session-notice"]\').textContent')
     check('the composer says the work is queued rather than done', notice.includes('等待执行'), notice.trim())
 
+    // And the queue tab is where that pending text can be read: the item is still Queued (no consumer yet).
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-队列"]\').click()')
+    await waitFor(
+      cdp,
+      'document.querySelectorAll(\'[data-test="queue-list"] li\').length === 1',
+      'the queued item to appear',
+    )
+    const queuedRow = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-list"] li\').textContent')
+    check(
+      'the queue tab shows the pending input content',
+      queuedRow.includes('delivered from the shell'),
+      queuedRow.trim().slice(0, 80),
+    )
+
+    // Back to the session: the checks that follow read the composer, which only exists there.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
+    await waitFor(cdp, 'document.querySelector(\'[data-test="composer-consumer"]\') !== null', 'the composer state')
+
     // The shell runs without model configuration, so the UI must say the queue is not being executed —
     // otherwise a delivered message that never moves looks like a broken app.
     const consumerNote = await evaluate(cdp, 'document.querySelector(\'[data-test="composer-consumer"]\')?.textContent ?? ""')
