@@ -4,6 +4,7 @@ using Partner.Core.Agent.Hooks;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Skills;
 using Partner.Core.Agent.Tools;
+using Partner.Desktop.Tools;
 using Partner.Core.Hosting;
 using Partner.Core.Memory;
 using Partner.Core.Sessions;
@@ -203,14 +204,31 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             turnOptions.BaseSystemPrompt,
             _context.Media);
 
+        var desktop = _context.Settings.Load().Desktop;
+        var tools = new InMemoryToolRegistry();
+        var allowed = new List<string>();
+        var ask = new List<string>();
+
+        if (desktop.Enabled)
+        {
+            var policy = new DesktopToolPolicy(desktop.AllowedWindowTitles);
+            tools.Register(new DesktopObserveTool(_context.Desktop, policy));
+            tools.Register(new DesktopActTool(_context.Desktop, policy));
+
+            // Looking is read-only; acting moves the user's pointer, so it always goes through approval —
+            // enabling the capability lets the model *ask*, not *do*.
+            allowed.Add("desktop_observe");
+            ask.Add("desktop_act");
+        }
+
         var runner = new AgentTurnRunner(
             _context.Session,
             llm,
-            new InMemoryToolRegistry(),
-            // Nothing is exposed to the model yet, so an empty allow-list denies exactly nothing. It is the
-            // fail-closed default: a tool must be registered *and* allowed before it can run.
-            new AllowListGovernance(Array.Empty<string>()),
-            new DenyAllApprovalHandler(),
+            tools,
+            // Fail-closed: a tool must be registered *and* allowed before it can run. With the desktop off the
+            // lists are empty, which denies exactly nothing because nothing is registered either.
+            new AllowListGovernance(allowed, ask),
+            _context.Approvals,
             SkillHooks(_workspace),
             assembler: assembler,
             options: turnOptions,

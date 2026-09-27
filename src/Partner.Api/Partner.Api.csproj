@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />
+    <ProjectReference Include="../Partner.Desktop/Partner.Desktop.csproj" />
     <ProjectReference Include="../Partner.Voice/Partner.Voice.csproj" />
   </ItemGroup>
 </Project>

@@ -157,6 +157,7 @@ export interface RuntimeSettings {
   asr: AsrSettings
   tts: TtsSettings
   model: ModelSettings
+  desktop: DesktopSettings
 }
 
 export interface SettingsView {
@@ -165,6 +166,52 @@ export interface SettingsView {
   asr: AsrSettings
   tts: TtsSettings
   model: ModelSettingsView
+  desktop: DesktopSettings
+}
+
+/**
+ * The desktop capability (M9). Off by default: it is the only irreversible capability here, and enabling it
+ * lets the model *ask* to act — every action still waits for approval.
+ */
+export interface DesktopSettings {
+  enabled: boolean
+  leaseTtlMs: number
+  allowedWindowTitles: string[]
+}
+
+export interface DesktopState {
+  enabled: boolean
+  leaseTtlMs: number
+  allowedWindowTitles: string[]
+  lastObsId: string | null
+  entityCount: number
+}
+
+export interface DesktopEntity {
+  entityId: string
+  title: string
+  process: string
+  rect: { x: number; y: number; width: number; height: number }
+}
+
+export interface DesktopObservation {
+  obsId: string
+  count: number
+  entities: DesktopEntity[]
+}
+
+/** A tool call waiting for a human decision. */
+export interface PendingApproval {
+  approvalId: string
+  toolName: string
+  arguments: string
+  requestedAt: string
+  expiresAt: string
+}
+
+export interface ApprovalQueue {
+  timeoutSeconds: number
+  pending: PendingApproval[]
 }
 
 /** Saving returns what was stored plus the consumer state it produced. */
@@ -300,6 +347,10 @@ export interface PartnerApiSurface {
   deleteMemory(recordId: string): Promise<void>
   memoryRevisions(recordId: string): Promise<MemoryRevision[]>
   settings(): Promise<SettingsView>
+  approvals(): Promise<ApprovalQueue>
+  answerApproval(approvalId: string, approved: boolean): Promise<void>
+  desktop(): Promise<DesktopState>
+  observeDesktop(): Promise<DesktopObservation>
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved>
   rebuild(): Promise<RebuildReport>
 }
@@ -403,6 +454,23 @@ export class PartnerApi implements PartnerApiSurface {
     }
 
     return response.blob()
+  }
+
+  /** Tool calls waiting for a human. Nobody answering means denied, so the UI is part of the safety path. */
+  approvals(): Promise<ApprovalQueue> {
+    return this.request<ApprovalQueue>('GET', '/api/approvals')
+  }
+
+  answerApproval(approvalId: string, approved: boolean): Promise<void> {
+    return this.request<void>('POST', `/api/approvals/${approvalId}`, { approved })
+  }
+
+  desktop(): Promise<DesktopState> {
+    return this.request<DesktopState>('GET', '/api/desktop')
+  }
+
+  observeDesktop(): Promise<DesktopObservation> {
+    return this.request<DesktopObservation>('POST', '/api/desktop/observe')
   }
 
   /** Whether the queue is being executed at all. Without this the UI cannot explain a stuck queue. */

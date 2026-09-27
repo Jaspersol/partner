@@ -85,6 +85,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
     tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
     model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
+            desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
   }
 
   const stub: PartnerApiSurface = {
@@ -130,6 +131,10 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
       }
     }),
     uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
+    approvals: vi.fn(async () => ({ timeoutSeconds: 120, pending: [] })),
+    answerApproval: vi.fn(async () => {}),
+    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0 })),
+    observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
     ...overrides,
@@ -304,6 +309,57 @@ describe('session removal', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="error"]').text()).toContain('404')
+  })
+})
+
+describe('tool approval', () => {
+  it('shows a parked tool call and answers it', async () => {
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const approvals = vi.fn(async () => ({
+      timeoutSeconds: 120,
+      pending: [
+        {
+          approvalId: 'ap-1-120000',
+          toolName: 'desktop_act',
+          arguments: '{entityId:1a2b,kind:LeftClick}',
+          requestedAt: '2026-09-27T12:00:00+00:00',
+          expiresAt: '2026-09-27T12:02:00+00:00',
+        },
+      ],
+    }))
+    const answerApproval = vi.fn(async () => {})
+    const { stub } = createStub({
+      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage })),
+      approvals,
+      answerApproval,
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    // An irreversible action waits for a human: the prompt names the tool and shows what it wants to do.
+    const banner = wrapper.find('[data-test=session-approval]')
+    expect(banner.text()).toContain('desktop_act')
+    expect(banner.text()).toContain('LeftClick')
+
+    await wrapper.find('[data-test=session-approval-allow]').trigger('click')
+    await flushPromises()
+
+    expect(answerApproval).toHaveBeenCalledWith('ap-1-120000', true)
+    wrapper.unmount()
+  })
+
+  it('shows nothing when no tool is waiting', async () => {
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const { stub } = createStub({
+      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: false, context: usage })),
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test=session-approval]').exists()).toBe(false)
+    wrapper.unmount()
   })
 })
 
@@ -563,11 +619,12 @@ describe('settings view', () => {
     await flushPromises()
 
     const headings = wrapper.findAll('section.card h2').map((node) => node.text())
-    expect(headings).toEqual(['语音输入', '语音输出', '语音识别（ASR）', '语音合成（TTS）', '模型（对话）'])
+    expect(headings).toEqual(['语音输入', '语音输出', '语音识别（ASR）', '语音合成（TTS）', '桌面（M9）', '模型（对话）'])
 
     expect(wrapper.find('[data-test="asr-base-url"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tts-base-url"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="model-base-url"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="desktop-enabled"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="model-api-key"]').exists()).toBe(true)
   })
 
@@ -579,6 +636,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
         model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
+    desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
       })),
     })
 
@@ -599,6 +657,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
         model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
+    desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
       })),
     })
 
@@ -673,6 +732,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
         model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
+            desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -746,6 +806,7 @@ describe('settings view', () => {
             asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
             tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
             model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens },
+            desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },

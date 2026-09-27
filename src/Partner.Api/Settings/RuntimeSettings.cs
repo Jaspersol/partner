@@ -20,7 +20,28 @@ public sealed record RuntimeSettings
 
     public ModelSettings Model { get; init; } = new();
 
+    public DesktopSettings Desktop { get; init; } = new();
+
     public static RuntimeSettings Default { get; } = new();
+}
+
+/// <summary>
+/// 桌面操控（M9）的开关与边界。
+/// <para>
+/// 默认**关闭**：打开之后模型就能移动指针、发按键，这是本仓库里唯一不可逆的能力。即使打开，动作类工具
+/// 也走人工批准（治理的 ask 列表），所以「打开」只是让模型能**问**，不是让它能**做**。
+/// </para>
+/// </summary>
+public sealed record DesktopSettings
+{
+    /// <summary>是否把桌面能力暴露给模型。</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>租约基准有效期（毫秒）：观察之后多久之内还能据此动作。受策略的上下限约束。</summary>
+    public int LeaseTtlMs { get; init; } = 15_000;
+
+    /// <summary>允许动作的窗口标题子串（不区分大小写）；空表示不限。</summary>
+    public IReadOnlyList<string> AllowedWindowTitles { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>Mirrors <c>VoiceInputSetting</c>.</summary>

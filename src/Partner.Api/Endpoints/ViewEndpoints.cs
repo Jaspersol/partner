@@ -19,6 +19,7 @@ public static class ViewEndpoints
     {
         MapInput(app);
         MapMedia(app);
+        DesktopEndpoints.Map(app);
         MapSession(app);
         MapQueue(app);
         MapMemory(app);

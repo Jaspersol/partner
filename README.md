@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**500 个 .NET 单测 + 73 个前端测试全绿 / 126 项 smoke 检查 / 53 项能力 `product-supported`**。
+当前基线：**513 个 .NET 单测 + 75 个前端测试全绿 / 133 项 smoke 检查 / 53 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -325,6 +325,23 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 
 ---
 
+## 桌面操控（M9）
+
+**已接入**：模型可以通过两个工具观察与操作真实桌面，界面可以批准或拒绝。
+
+| 环节 | 做法 |
+|---|---|
+| 观察 | `desktop_observe`：枚举可见窗口（实体 id、标题、进程、矩形）并**发出租约**。只读，无需批准 |
+| 动作 | `desktop_act`：focus / movePointer / leftClick / rightClick / keyPress。**不可逆**，所以治理把它放进 ask 列表——每次调用都要人点头 |
+| 租约 | 动作必须携带最近一次观察发出的租约；TTL 来自设置（`desktop.leaseTtlMs`，受策略上下限约束），过期即拒绝，且**不做任何注入** |
+| 批准 | 会话里弹出「允许 / 拒绝」；**无人应答按拒绝处理**（默认 120s）。窗口关着、页签没在看，都不会让不可逆动作溜过去 |
+| 窗口白名单 | 设置里的标题子串列表（不区分大小写，空=不限）。真正拦住动作的是批准；这个列表只是把安装范围收窄 |
+| 开关 | **默认关闭**。关闭时工具根本不注册给模型——不是「注册了但拒绝」，是模型看不到 |
+
+**没做**：L2 感知（UIA 语义树 / OCR）——感知只到窗口级，所以「点那个按钮」目前只能给坐标。**没在真机验证**：注入的**成功**路径（真的点了一下、校验到变化）只有单测覆盖；smoke 验的是拒绝路径，它不会去动你的鼠标。
+
+---
+
 ## 会话的实时性（流式、折叠、刷新）
 
 三件事合起来回答「为什么我发了消息像没反应」：
@@ -372,10 +389,10 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（500） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
-| smoke（126 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
+| .NET 单测（513） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
+| smoke（133 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
 | 前端契约测试（14） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点、上下文占用 |
-| 前端视图测试（34） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随） |
+| 前端视图测试（36） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随） |
 | 前端组件测试（25） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（折叠工具行、流式行与它的 Markdown 渲染） |
 | **壳的端到端（31）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（53） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
@@ -485,7 +502,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1)、`desktop.tool_path`(7：模型经工具观察、动作被审批拦住并拒绝、拒绝写进日志) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1)、`settings.*`(2) |
@@ -512,7 +529,8 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 项 | 状态 |
 |---|---|
-| M9 L2（UIA 语义树 / OCR） | 未做。当前桌面感知只到窗口枚举 + GDI 抓帧 |
+| M9 L2（UIA 语义树 / OCR） | 未做。当前桌面感知只到窗口枚举 + GDI 抓帧，因此动作只能给坐标 |
+| 桌面注入的**成功**路径 | 未在真机验证。单测覆盖了参数与拒绝路径；smoke 只验拒绝（它不会去动用户的鼠标）。要确认「点一下真的生效」需要在真实窗口上手动跑一次 |
 | 游戏商业目标 | 未接入。当前目标是自研合成网格游戏，用于证明闭环而非证明某个具体游戏 |
 | 游戏浏览器/CDP 通道 | 未验证（环境受阻）。进程边界适配器已跑通并实测延迟 |
 | 反射层真实节奏 | 未实测。单测与 smoke 都是受控节拍，真实游戏里的信号节奏仍需一次实测 |
@@ -520,7 +538,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | WebView2 的 UI Automation | UIA 看不到 DOM（实测只暴露 16 个元素）；CDP 可以，e2e 就是走 CDP |
 | 生产打包 | ✅ 已跑：`Partner_0.1.0_x64-setup.exe` **63 MB**（含 214 MB 自包含 API，NSIS 压缩）。**未在干净机器上安装验证** |
 | 记忆页签空态 | API 按设计没有「新建记忆」端点（写入来自 Agent），因此该页签在空工作区是空列表 |
-| 消费者里的工具 / MCP | **未接入**：宿主的消费者用空工具表跑回合，所以模型只能对话，不能调工具。MCP 客户端（`Core/Agent/Mcp/`）已在 smoke 里验证，但没接进宿主 |
+| MCP 工具 | **未接入**：MCP 客户端（`Core/Agent/Mcp/`）已在 smoke 里验证，但没接进宿主。桌面能力走的是自己的两个工具，不经过 MCP |
 | 真实模型供应商往返 | **未验证**：`HttpLlmClient` 用桩 handler 验了线格式，用真 TCP 假端点验了完整往返；没有对真实供应商（OpenAI/Ollama 等）跑过 |
 | 真实音频设备 | 部分验证：e2e 里语音宿主**真的打开了系统麦克风**（报出 `麦克风 (NVIDIA Broadcast)`）；但完整回路（说话→入队→回合→朗读）用的是合成声源/扬声器，**没有对着真麦克风说完一整句** |
 | 真实 ASR / TTS 服务 | **未验证**：本机没有部署 ASR/TTS 服务，识别与合成走脚本实现；`HttpAsrClient`/`HttpTtsClient` 各有契约测试，但没对真实服务跑过 |

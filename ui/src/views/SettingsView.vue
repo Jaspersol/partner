@@ -30,12 +30,22 @@ const form = reactive<RuntimeSettings>({
   asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
+  desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] as string[] },
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
 const apiKeySet = ref(false)
 const apiKeyDraft = ref('')
 const apiKeyEdited = ref(false)
+
+/** Titles are edited as one comma-separated line; empty entries are dropped rather than stored. */
+function onTitlesInput(event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  form.desktop.allowedWindowTitles = raw
+    .split(/[,，]/)
+    .map((title) => title.trim())
+    .filter((title) => title !== '')
+}
 
 const status = ref('')
 const error = ref('')
@@ -80,6 +90,11 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   Object.assign(form.output, settings.output)
   Object.assign(form.asr, settings.asr)
   Object.assign(form.tts, settings.tts)
+  Object.assign(form.desktop, {
+    enabled: settings.desktop?.enabled ?? false,
+    leaseTtlMs: settings.desktop?.leaseTtlMs ?? 15000,
+    allowedWindowTitles: settings.desktop?.allowedWindowTitles ?? [],
+  })
   Object.assign(form.model, {
     baseUrl: settings.model.baseUrl,
     model: settings.model.model,
@@ -110,6 +125,7 @@ async function persist() {
   status.value = ''
 
   const payload: RuntimeSettings = {
+    desktop: { ...form.desktop },
     input: { ...form.input },
     output: { ...form.output },
     asr: { ...form.asr },
@@ -322,6 +338,39 @@ onMounted(refresh)
             <span>播放块大小 (ms)</span>
             <input type="number" v-model.number="form.tts.chunkMs" />
           </label>
+        </section>
+
+        <section class="card">
+          <h2>桌面（M9）</h2>
+          <p class="card-note">
+            本仓库里唯一**不可逆**的能力：打开后模型可以观察窗口，并请求移动指针或发按键。即使打开，
+            **每个动作都要人工批准**（会话里弹出「允许 / 拒绝」，无人应答即拒绝），所以打开只是让模型
+            能问，不是让它能做。关闭时工具根本不注册给模型。
+          </p>
+          <label class="field">
+            <span>启用桌面能力</span>
+            <input type="checkbox" v-model="form.desktop.enabled" data-test="desktop-enabled" />
+          </label>
+          <label class="field">
+            <span>租约有效期（毫秒）</span>
+            <input
+              type="number"
+              min="1000"
+              v-model.number="form.desktop.leaseTtlMs"
+              data-test="desktop-lease-ttl"
+            />
+          </label>
+          <label class="field">
+            <span>允许的窗口标题（逗号分隔，空=不限）</span>
+            <input
+              type="text"
+              :value="form.desktop.allowedWindowTitles.join('、')"
+              placeholder="记事本、计算器"
+              data-test="desktop-allowed-titles"
+              @input="onTitlesInput"
+            />
+          </label>
+          <p class="muted">窗口标题子串、不区分大小写。真正拦住动作的是批准；这个列表只是把安装范围收窄。</p>
         </section>
 
         <section class="card">

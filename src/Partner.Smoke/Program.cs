@@ -1555,11 +1555,11 @@ internal static class Program
             var onWorkspace = Path.Combine(root, "consumer-on");
             var onPort = FreePort();
             var onToken = TokenAuth.Generate();
-            var scripted = new ScriptedLlmClient(new[]
+            var onLlm = new ScriptedLlmClient(new[]
             {
                 new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
             });
-            var (onApp, onContext, onConsumer, onVoice) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, scripted);
+            var (onApp, onContext, onConsumer, onVoice) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, onLlm);
             var onRun = onApp.RunAsync();
             using var onHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{onPort}") };
             onHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", onToken);
@@ -1833,6 +1833,139 @@ internal static class Program
                         && !sessionLog.Contains("iVBORw0KGgo", StringComparison.Ordinal),
                         $"queueHasId={queueLog.Contains(mediaId!, StringComparison.Ordinal)}");
                 }
+
+            // The desktop capability end to end, with a scripted model: model → governance → tool → desktop.
+            // Nothing is injected here — the action is denied by the approval queue, which is the path that
+            // protects the user's pointer, and the smoke never takes it upon itself to click.
+            var desktopWorkspace = Path.Combine(root, "desktop-tools");
+            Directory.CreateDirectory(Path.Combine(desktopWorkspace, "settings"));
+            await File.WriteAllTextAsync(
+                Path.Combine(desktopWorkspace, "settings", "runtime.json"),
+                """{"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
+
+            var desktopPort = FreePort();
+            var desktopToken = TokenAuth.Generate();
+            var desktopScripted = new ScriptedLlmClient(new[]
+            {
+                // Turn 1: look. Read-only, so it runs without approval.
+                new LlmResponse(null, new[] { new LlmToolCall("c1", "desktop_observe", "{}") }, "tool_calls"),
+                new LlmResponse("看过了。", Array.Empty<LlmToolCall>(), "stop"),
+                // Turn 2: act. Irreversible, so it parks in the approval queue.
+                new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c2", "desktop_act", """{"entityId":"deadbeef","kind":"LeftClick","x":1,"y":1}""") },
+                    "tool_calls"),
+                new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
+            });
+
+            var (desktopApp, desktopContext, desktopConsumer, desktopVoice) =
+                await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, desktopScripted);
+            var desktopRun = desktopApp.RunAsync();
+            using var desktopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{desktopPort}") };
+            desktopHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", desktopToken);
+
+            try
+            {
+                await WaitForHostAsync(desktopHttp);
+
+                var state = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/desktop");
+                Check("desktop: the capability reports itself enabled",
+                    state.GetProperty("enabled").GetBoolean(),
+                    $"enabled={state.GetProperty("enabled").GetBoolean()}");
+
+                await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "看看桌面" });
+
+                var observed = false;
+                string? observeResult = null;
+                for (var attempt = 0; attempt < 400 && !observed; attempt++)
+                {
+                    var polled = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var results = polled.GetProperty("items").EnumerateArray()
+                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                        .ToList();
+
+                    if (results.Count > 0)
+                    {
+                        observeResult = results[^1].GetProperty("body").GetString();
+                        observed = true;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                // The model's tool call reached the real desktop: the result names the windows it enumerated.
+                Check("desktop: the model can observe through its tool",
+                    observed && observeResult is not null && observeResult.Contains("\"obsId\"", StringComparison.Ordinal),
+                    $"result={(observeResult ?? "(none)")[..Math.Min(80, (observeResult ?? "(none)").Length)]}");
+
+                // Acting is irreversible, so governance parks it. The smoke answers — and denies.
+                await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "点一下" });
+
+                string? approvalId = null;
+                for (var attempt = 0; attempt < 400 && approvalId is null; attempt++)
+                {
+                    var approvalQueue = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/approvals");
+                    var pending = approvalQueue.GetProperty("pending").EnumerateArray().ToList();
+                    if (pending.Count > 0)
+                    {
+                        approvalId = pending[0].GetProperty("approvalId").GetString();
+                        Check("desktop: an action waits for approval instead of running",
+                            pending[0].GetProperty("toolName").GetString() == "desktop_act",
+                            pending[0].GetProperty("toolName").GetString() ?? "(none)");
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                Check("desktop: the approval queue surfaces the parked action", approvalId is not null, $"id={approvalId}");
+
+                if (approvalId is not null)
+                {
+                    var answered = await desktopHttp.PostAsJsonAsync(
+                        $"/api/approvals/{approvalId}",
+                        new { approved = false });
+
+                    Check("desktop: answering the queue settles it", answered.IsSuccessStatusCode, $"status={answered.StatusCode}");
+
+                    var denied = false;
+                    string? denyResult = null;
+                    for (var attempt = 0; attempt < 400 && !denied; attempt++)
+                    {
+                        var polled = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                        var results = polled.GetProperty("items").EnumerateArray()
+                            .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                            .ToList();
+
+                        if (results.Count > 1)
+                        {
+                            denyResult = results[^1].GetProperty("body").GetString();
+                            denied = denyResult is not null && denyResult.Contains("approval denied", StringComparison.Ordinal);
+                        }
+
+                        await Task.Delay(25);
+                    }
+
+                    // Nothing was injected: the refusal is what the model gets back, and the turn continues.
+                    Check("desktop: a denied action is refused, not performed",
+                        denied,
+                        $"result={(denyResult ?? "(none)")[..Math.Min(90, (denyResult ?? "(none)").Length)]}");
+                }
+
+                var log = await ReadSharedAsync(Path.Combine(desktopWorkspace, "session", "events.jsonl"));
+                Check("desktop: the refusal is in the log with the tool's name",
+                    log.Contains("desktop_act", StringComparison.Ordinal)
+                    && log.Contains("approval denied", StringComparison.Ordinal),
+                    $"hasCall={log.Contains("\"desktop_act\"", StringComparison.Ordinal)}");
+            }
+            finally
+            {
+                await desktopApp.StopAsync();
+                await desktopRun;
+                await desktopVoice.DisposeAsync();
+                await desktopConsumer.DisposeAsync();
+                await desktopContext.DisposeAsync();
+            }
+
 
             }
             finally
@@ -2929,6 +3062,13 @@ internal static class Program
             "image: an upload comes back as an id",
             "image: the model receives the attachment inline",
             "image: the logs keep the id, not the bytes",
+            "desktop: the capability reports itself enabled",
+            "desktop: the model can observe through its tool",
+            "desktop: an action waits for approval instead of running",
+            "desktop: the approval queue surfaces the parked action",
+            "desktop: answering the queue settles it",
+            "desktop: a denied action is refused, not performed",
+            "desktop: the refusal is in the log with the tool's name",
             "settings: pointing the model settings at an endpoint re-points the consumer",
             "settings: the API key is sent to the model but never echoed back",
             "settings: the model listing is pulled through the API",

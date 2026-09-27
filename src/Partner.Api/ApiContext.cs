@@ -1,8 +1,11 @@
 using Partner.Api.Settings;
+using Partner.Core.Agent.Tools;
 using Partner.Core.Media;
 using Partner.Core.Memory;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
+using Partner.Desktop;
+using Partner.Desktop.Perception;
 
 namespace Partner.Api;
 
@@ -18,7 +21,9 @@ public sealed class ApiContext : IAsyncDisposable
         IInputQueue queue,
         IMemoryStore memory,
         SettingsStore settings,
-        IMediaStore media)
+        IMediaStore media,
+        DesktopAutomation desktop,
+        QueuedApprovalHandler approvals)
     {
         Workspace = workspace;
         Session = session;
@@ -26,6 +31,8 @@ public sealed class ApiContext : IAsyncDisposable
         Memory = memory;
         Settings = settings;
         Media = media;
+        Desktop = desktop;
+        Approvals = approvals;
     }
 
     public string Workspace { get; }
@@ -41,6 +48,17 @@ public sealed class ApiContext : IAsyncDisposable
     /// <summary>Attachments live here, not in the log: the bytes are files, the events carry only their ids.</summary>
     public IMediaStore Media { get; }
 
+    /// <summary>
+    /// The desktop facade, shared by the tools and the endpoints so a lease issued by one is visible to the
+    /// other — the point of a lease is that observing and acting agree on what was seen.
+    /// </summary>
+    public DesktopAutomation Desktop { get; }
+
+    /// <summary>
+    /// Where a tool call waits for a human. Shared with the API so the UI can answer what the model asked.
+    /// </summary>
+    public QueuedApprovalHandler Approvals { get; }
+
     public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
@@ -53,8 +71,26 @@ public sealed class ApiContext : IAsyncDisposable
         var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
         var media = FileMediaStore.Open(workspace);
 
-        return await Task.FromResult(new ApiContext(workspace, session, queue, memory, settings, media))
-            .ConfigureAwait(false);
+        // The TTL comes from the settings at call time rather than at construction: a lease policy is a
+        // per-observation decision, and the settings can change while the process runs.
+        var desktop = new DesktopAutomation(ttlPolicy: LeaseTtlPolicyFor(settings.Load()));
+
+        return await Task.FromResult(new ApiContext(
+            workspace,
+            session,
+            queue,
+            memory,
+            settings,
+            media,
+            desktop,
+            new QueuedApprovalHandler())).ConfigureAwait(false);
+    }
+
+    /// <summary>The lease policy the settings ask for, clamped by the policy's own floor and cap.</summary>
+    public static LeaseTtlPolicy LeaseTtlPolicyFor(RuntimeSettings settings)
+    {
+        var wanted = Math.Clamp(settings.Desktop.LeaseTtlMs, (int)LeaseTtlPolicy.Default.FloorMs, (int)LeaseTtlPolicy.Default.CapMs);
+        return LeaseTtlPolicy.Default with { BaseMs = wanted };
     }
 
     public async ValueTask DisposeAsync()

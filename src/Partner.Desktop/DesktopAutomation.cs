@@ -47,6 +47,7 @@ public sealed class DesktopAutomation : IDisposable
     private readonly IScreenCapture _capture;
     private readonly InputInjector _injector;
     private readonly LeaseStore _leases;
+    private readonly LeaseTtlPolicy _ttlPolicy;
     private readonly PostActionVerifier _verifier;
     private readonly TimeProvider _clock;
     private readonly List<double> _actionLatenciesMs = new();
@@ -63,11 +64,19 @@ public sealed class DesktopAutomation : IDisposable
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
         _clock = clock ?? TimeProvider.System;
-        _leases = new LeaseStore(ttlPolicy);
+        _ttlPolicy = ttlPolicy ?? LeaseTtlPolicy.Default;
+        _leases = new LeaseStore(_ttlPolicy);
         _verifier = new PostActionVerifier(_capture, verifyBudget);
     }
 
     public IScreenCapture Capture => _capture;
+
+    /// <summary>
+    /// The most recent observation, or null before the first one. Exposed so a caller can check *what* it is
+    /// about to act on (a policy on window titles has to read the title) without re-observing — which would
+    /// mint a fresh lease and make the lease mechanism vacuous.
+    /// </summary>
+    public DesktopObservation? LastObservation => _lastObservation;
 
     public LeaseStore Leases => _leases;
 
@@ -103,7 +112,7 @@ public sealed class DesktopAutomation : IDisposable
 
 
         // Issue one lease per entity so an action can be gated on it.
-        var decision = new LeaseTtlPolicy().Compute(scope, entities.Count, payloadBytes, _leases.ObservedRoundTripMs);
+        var decision = _ttlPolicy.Compute(scope, entities.Count, payloadBytes, _leases.ObservedRoundTripMs);
         foreach (var entity in entities)
         {
             _leases.Issue(entity, obsId, now, decision.TtlMs);
