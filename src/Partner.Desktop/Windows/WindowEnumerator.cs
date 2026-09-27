@@ -80,8 +80,8 @@ public static class WindowEnumerator
         List().FirstOrDefault(w =>
             (processName is null
                 || string.Equals(
-                    Path.GetFileNameWithoutExtension(w.ProcessName ?? string.Empty),
-                    Path.GetFileNameWithoutExtension(processName),
+                    System.IO.Path.GetFileNameWithoutExtension(w.ProcessName ?? string.Empty),
+                    System.IO.Path.GetFileNameWithoutExtension(processName),
                     StringComparison.OrdinalIgnoreCase))
             && (titleContains is null || w.Title.Contains(titleContains, StringComparison.OrdinalIgnoreCase)));
 

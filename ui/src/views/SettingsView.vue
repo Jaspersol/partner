@@ -30,7 +30,7 @@ const form = reactive<RuntimeSettings>({
   asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
-  desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] as string[] },
+  desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
@@ -93,6 +93,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   Object.assign(form.desktop, {
     enabled: settings.desktop?.enabled ?? false,
     leaseTtlMs: settings.desktop?.leaseTtlMs ?? 15000,
+    approval: settings.desktop?.approval ?? 'all',
     allowedWindowTitles: settings.desktop?.allowedWindowTitles ?? [],
   })
   Object.assign(form.model, {

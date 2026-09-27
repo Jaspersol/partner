@@ -46,7 +46,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private Task? _running;
     private HttpClient? _http;
     private ILlmClient? _llm;
-    private IReadOnlyList<ToolExposure> _tools = Array.Empty<ToolExposure>();
+    private IReadOnlyList<string> _toolNames = Array.Empty<string>();
+    private DesktopGovernance? _governance;
     private string _reason = "未启动";
 
     /// <summary>
@@ -69,7 +70,14 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         Reason: _reason,
         Model: _model,
         Stats: _loop?.Stats ?? TurnLoopStats.Empty,
-        Tools: _tools);
+
+        // Decided when it is read, not when the loop started: the approval gear is live, so a snapshot would
+        // report a decision the runtime no longer makes.
+        Tools: _toolNames
+            .Select(name => new ToolExposure(
+                name,
+                (_governance?.Decide(name, "{}").Decision ?? ToolDecision.Deny).ToString().ToLowerInvariant()))
+            .ToList());
 
     public static ConsumerHost Create(ApiContext context, string workspace)
     {
@@ -159,7 +167,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             {
                 _reason = reason;
                 _model = null;
-                _tools = Array.Empty<ToolExposure>();
+                _toolNames = Array.Empty<string>();
+                _governance = null;
                 return State;
             }
 
@@ -217,35 +226,30 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
 
         var desktop = _context.Settings.Load().Desktop;
         var tools = new InMemoryToolRegistry();
-        var allowed = new List<string>();
-        var ask = new List<string>();
 
         if (desktop.Enabled)
         {
             var policy = new DesktopToolPolicy(desktop.AllowedWindowTitles);
             tools.Register(new DesktopObserveTool(_context.Desktop, policy));
             tools.Register(new DesktopActTool(_context.Desktop, policy));
-
-            // Looking is read-only; acting moves the user's pointer, so it always goes through approval —
-            // enabling the capability lets the model *ask*, not *do*.
-            allowed.Add("desktop_observe");
-            ask.Add("desktop_act");
+            tools.Register(new DesktopLaunchTool());
+            tools.Register(new DesktopExecTool());
+            tools.Register(new DesktopClipboardGetTool());
+            tools.Register(new DesktopClipboardSetTool());
         }
 
-        // The exposure list is what /api/consumer reports: a tool the model cannot see is not a capability.
-        _tools = tools.Specs
-            .Select(spec => new ToolExposure(
-                spec.Name,
-                ask.Contains(spec.Name) ? "ask" : "allow"))
-            .ToList();
+        _toolNames = tools.Specs.Select(spec => spec.Name).ToList();
+
+        var governance = new DesktopGovernance(_context);
+        _governance = governance;
 
         var runner = new AgentTurnRunner(
             _context.Session,
             llm,
             tools,
-            // Fail-closed: a tool must be registered *and* allowed before it can run. With the desktop off the
-            // lists are empty, which denies exactly nothing because nothing is registered either.
-            new AllowListGovernance(allowed, ask),
+            // Fail-closed and live: the desktop tools answer to the current approval gear, and anything that is
+            // not a desktop tool is denied because nothing else is registered.
+            governance,
             _context.Approvals,
             SkillHooks(_workspace),
             assembler: assembler,

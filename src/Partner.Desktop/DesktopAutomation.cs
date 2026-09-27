@@ -112,6 +112,20 @@ public sealed class DesktopAutomation : IDisposable
             .ToList();
 
 
+        // Elements are read per window and numbered inside this observation: an id is a position in this
+        // answer, not a handle that survives a new one — which is exactly what makes a stale element detectable.
+        var elements = new List<UiElement>();
+        foreach (var entity in entities)
+        {
+            var handle = ParseHandle(entity.EntityId);
+            var index = 0;
+
+            foreach (var element in UiaTree.Read(handle, entity.EntityId))
+            {
+                elements.Add(element with { ElementId = $"{entity.EntityId}:{index++}" });
+            }
+        }
+
         // Issue one lease per entity so an action can be gated on it.
         var decision = _ttlPolicy.Compute(scope, entities.Count, payloadBytes, _leases.ObservedRoundTripMs);
         foreach (var entity in entities)
@@ -126,8 +140,9 @@ public sealed class DesktopAutomation : IDisposable
             ObsId = obsId,
             TargetKey = "desktop",
             Timestamp = now,
-            Sources = new[] { "win32.enumwindows" },
+            Sources = new[] { "win32.enumwindows", "uia.controlview" },
             Entities = entities,
+            Elements = elements,
         };
 
         _lastObservation = observation;
@@ -195,6 +210,9 @@ public sealed class DesktopAutomation : IDisposable
             ActionKind.LeftClick => _injector.LeftClick(parameters.X, parameters.Y),
             ActionKind.RightClick => _injector.RightClick(parameters.X, parameters.Y),
             ActionKind.KeyPress => _injector.KeyPress(parameters.VirtualKey),
+            ActionKind.TypeText => _injector.TypeText(parameters.Text ?? string.Empty),
+            ActionKind.Scroll => _injector.Scroll(parameters.ScrollDelta),
+            ActionKind.Drag => _injector.Drag(parameters.X, parameters.Y, parameters.ToX, parameters.ToY),
             _ => new InjectionResult(false, 0, $"unsupported action {kind}"),
         };
 

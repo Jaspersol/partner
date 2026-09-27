@@ -40,6 +40,15 @@ public sealed record DesktopSettings
     /// <summary>租约基准有效期（毫秒）：观察之后多久之内还能据此动作。受策略的上下限约束。</summary>
     public int LeaseTtlMs { get; init; } = 15_000;
 
+    /// <summary>
+    /// 审批挡位：<c>none</c>（不审批）/ <c>dangerous</c>（危险指令审批）/ <c>all</c>（全部审批）。
+    /// <para>
+    /// 「危险」指离开 GUI 的能力：执行命令、启动程序、写剪贴板。点击与打字留在人能看见的界面里，
+    /// 所以中间挡位放它们过去——参考项目举的危险例子是「删除文件」，不是「按了个按钮」。
+    /// </para>
+    /// </summary>
+    public string Approval { get; init; } = ApprovalGears.All;
+
     /// <summary>允许动作的窗口标题子串（不区分大小写）；空表示不限。</summary>
     public IReadOnlyList<string> AllowedWindowTitles { get; init; } = Array.Empty<string>();
 
@@ -52,9 +61,28 @@ public sealed record DesktopSettings
         other is not null
         && Enabled == other.Enabled
         && LeaseTtlMs == other.LeaseTtlMs
+        && Approval == other.Approval
         && AllowedWindowTitles.SequenceEqual(other.AllowedWindowTitles, StringComparer.Ordinal);
 
-    public override int GetHashCode() => HashCode.Combine(Enabled, LeaseTtlMs, AllowedWindowTitles.Count);
+    public override int GetHashCode() => HashCode.Combine(Enabled, LeaseTtlMs, Approval, AllowedWindowTitles.Count);
+}
+
+/// <summary>The three approval gears, in the order the UI offers them.</summary>
+public static class ApprovalGears
+{
+    /// <summary>Nothing is asked; the model acts as soon as it is enabled.</summary>
+    public const string None = "none";
+
+    /// <summary>Only actions that leave the GUI are asked: commands, launching, clipboard writes.</summary>
+    public const string Dangerous = "dangerous";
+
+    /// <summary>Every desktop action waits for a human. The default.</summary>
+    public const string All = "all";
+
+    public static IReadOnlyList<string> Values { get; } = new[] { None, Dangerous, All };
+
+    public static string Normalize(string? value) =>
+        Values.FirstOrDefault(gear => string.Equals(gear, value, StringComparison.OrdinalIgnoreCase)) ?? All;
 }
 
 /// <summary>Mirrors <c>VoiceInputSetting</c>.</summary>

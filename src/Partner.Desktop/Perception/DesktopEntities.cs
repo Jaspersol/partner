@@ -78,6 +78,16 @@ public sealed record DesktopObservation
 
     public required IReadOnlyList<UiEntity> Entities { get; init; }
 
+    /// <summary>
+    /// Controls discovered inside those windows. Empty for apps that expose nothing (Chromium, games, canvases):
+    /// the window-level path still works there, it just needs coordinates.
+    /// </summary>
+    public IReadOnlyList<UiElement> Elements { get; init; } = Array.Empty<UiElement>();
+
+    /// <summary>An element by the id this observation gave it.</summary>
+    public UiElement? FindElement(string elementId) =>
+        Elements.FirstOrDefault(element => string.Equals(element.ElementId, elementId, StringComparison.Ordinal));
+
     public UiEntity? Find(string entityId) =>
         Entities.FirstOrDefault(e => string.Equals(e.EntityId, entityId, StringComparison.Ordinal));
 

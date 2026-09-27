@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
+import { APPROVAL_GEARS } from '../api'
 import type { ConsumerState, PartnerApiSurface, QueueSummary, SubmitResult, UploadedMedia } from '../api'
 
 /**
@@ -10,8 +11,15 @@ const props = defineProps<{
   api: PartnerApiSurface
   summary?: QueueSummary | undefined
   consumer?: ConsumerState | undefined
+  /** The current approval gear, or null while the desktop capability is off. */
+  approval?: string | null | undefined
 }>()
-const emit = defineEmits<{ sent: [result: SubmitResult]; failed: [message: string] }>()
+const emit = defineEmits<{
+  sent: [result: SubmitResult]
+  failed: [message: string]
+  /** The gear changed: the app shell owns the setting, the composer only offers the choice. */
+  approval: [gear: string]
+}>()
 
 const box = ref<HTMLTextAreaElement | null>(null)
 const draft = ref('')
@@ -184,6 +192,19 @@ defineExpose({ focus })
     </div>
 
     <div class="composer-tools">
+      <select
+        v-if="approval"
+        class="gear"
+        :value="approval"
+        aria-label="审批挡位"
+        data-test="composer-approval"
+        @change="emit('approval', ($event.target as HTMLSelectElement).value)"
+      >
+        <option v-for="gear in APPROVAL_GEARS" :key="gear.value" :value="gear.value" :title="gear.hint">
+          审批：{{ gear.label }}
+        </option>
+      </select>
+
       <label class="ghost attach" :class="{ busy: uploading }" data-test="composer-attach">
         {{ uploading ? '上传中…' : '＋ 图片' }}
         <input
@@ -231,6 +252,10 @@ defineExpose({ focus })
   inline-size: 32px;
   object-fit: cover;
   border-radius: var(--radius-sm);
+}
+
+.gear {
+  font-size: var(--fs-meta, 0.85em);
 }
 
 .attach input {

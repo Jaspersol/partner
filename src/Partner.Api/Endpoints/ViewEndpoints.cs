@@ -345,6 +345,14 @@ public static class ViewEndpoints
         });
     }
 
+    /// <summary>
+    /// Whether the desktop section changed in a way the running consumer cannot absorb: the tool table and the
+    /// window policy are built at start, the approval gear is read per call.
+    /// </summary>
+    private static bool DesktopNeedsRestart(DesktopSettings before, DesktopSettings after) =>
+        before.Enabled != after.Enabled
+        || !before.AllowedWindowTitles.SequenceEqual(after.AllowedWindowTitles, StringComparer.Ordinal);
+
     /// <summary>Only events the caller can currently see may be removed; removing a hidden seq is a mistake.</summary>
     private static async Task<bool> ExistsAsync(ApiContext ctx, long seq, CancellationToken ct)
     {
@@ -513,10 +521,10 @@ public static class ViewEndpoints
             // The model section is the one that must take effect now rather than at the next restart. Other
             // sections can change without interrupting a turn in flight.
             //
-            // The desktop section is the exception among those: it decides which tools are registered, and the
-            // registry is built when the consumer starts. Toggling it without restarting would leave the model
-            // with the old tool table — enabled but still unable to ask, which reads as a broken capability.
-            if (ModelConfig.Differs(before.Model, stored.Model) || before.Desktop != stored.Desktop)
+            // The desktop section is the exception among those: it decides which tools are registered and with
+            // which window policy, and both are built when the consumer starts. The approval gear is *not* part
+            // of that — governance reads it live — so changing only the gear does not restart anything.
+            if (ModelConfig.Differs(before.Model, stored.Model) || DesktopNeedsRestart(before.Desktop, stored.Desktop))
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);

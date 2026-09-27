@@ -181,12 +181,22 @@ export interface SettingsView {
 export interface DesktopSettings {
   enabled: boolean
   leaseTtlMs: number
+  /** 'none' | 'dangerous' | 'all' — see ApprovalGear. */
+  approval: string
   allowedWindowTitles: string[]
 }
+
+/** The three approval gears, in the order the UI offers them. */
+export const APPROVAL_GEARS = [
+  { value: 'none', label: '不审批', hint: '模型直接动手，不留问' },
+  { value: 'dangerous', label: '危险指令审批', hint: '执行命令 / 启动程序 / 写剪贴板要批准' },
+  { value: 'all', label: '全部审批', hint: '每个桌面动作都要批准（看屏幕不算）' },
+] as const
 
 export interface DesktopState {
   enabled: boolean
   leaseTtlMs: number
+  approval: string
   allowedWindowTitles: string[]
   lastObsId: string | null
   entityCount: number
@@ -372,6 +382,7 @@ export interface PartnerApiSurface {
   answerApproval(approvalId: string, approved: boolean): Promise<void>
   desktop(): Promise<DesktopState>
   observeDesktop(): Promise<DesktopObservation>
+  setApprovalGear(approval: string): Promise<{ approval: string; changed: boolean }>
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved>
   rebuild(): Promise<RebuildReport>
 }
@@ -488,6 +499,14 @@ export class PartnerApi implements PartnerApiSurface {
 
   desktop(): Promise<DesktopState> {
     return this.request<DesktopState>('GET', '/api/desktop')
+  }
+
+  /**
+   * Sets the approval gear. A focused call rather than a settings PUT: the composer control has no business
+   * round-tripping the whole form, and a partial PUT would reset the sections it does not mention.
+   */
+  setApprovalGear(approval: string): Promise<{ approval: string; changed: boolean }> {
+    return this.request<{ approval: string; changed: boolean }>('POST', '/api/desktop/approval', { approval })
   }
 
   observeDesktop(): Promise<DesktopObservation> {

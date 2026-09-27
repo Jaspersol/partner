@@ -1897,7 +1897,8 @@ internal static class Program
                         .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                         .ToList();
 
-                    if (results.Count > 0)
+                    // Two results: the observation, then the action that followed the approval.
+                    if (results.Count > 1)
                     {
                         outcome = results[^1].GetProperty("body").GetString();
                         break;
@@ -1957,6 +1958,37 @@ internal static class Program
             try
             {
                 await WaitForHostAsync(desktopHttp);
+
+                async Task<List<string>> ExposedToolsAsync()
+                {
+                    var consumer = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
+                    return consumer.GetProperty("tools").EnumerateArray()
+                        .Select(tool => $"{tool.GetProperty("name").GetString()}:{tool.GetProperty("decision").GetString()}")
+                        .ToList();
+                }
+
+                var gearAll = await ExposedToolsAsync();
+                Check("desktop: the default gear asks for every action but never for looking",
+                    gearAll.Contains("desktop_observe:allow")
+                    && gearAll.Contains("desktop_act:ask")
+                    && gearAll.Contains("desktop_exec:ask"),
+                    string.Join(",", gearAll));
+
+                await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "dangerous" });
+                var gearDangerous = await ExposedToolsAsync();
+                Check("desktop: the middle gear frees the GUI and still gates commands",
+                    gearDangerous.Contains("desktop_act:allow")
+                    && gearDangerous.Contains("desktop_exec:ask")
+                    && gearDangerous.Contains("desktop_launch:ask"),
+                    string.Join(",", gearDangerous));
+
+                await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
+                var gearNone = await ExposedToolsAsync();
+                Check("desktop: the open gear asks for nothing",
+                    gearNone.All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
+                    string.Join(",", gearNone));
+
+                await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "all" });
 
                 var state = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/desktop");
                 Check("desktop: the capability reports itself enabled",
@@ -2273,8 +2305,13 @@ internal static class Program
                 // Shrinking the context folds history once, using the model that is already configured. Enough
                 // history is needed first: folding one event is not compaction. The wait is on the session's own
                 // sequence — a turn that is mid-flight is not in the history yet.
-                var fillSeq = (await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session"))
-                    .GetProperty("lastSeq").GetInt64();
+                // Counted in content events, not in seq: a turn also appends turnStart/stepStart/stepEnd/turnEnd,
+                // so waiting for "six more seqs" can be satisfied by the control events of one turn while the
+                // other two are still running — and then the shrink happens before there is history to fold.
+                static int ContentCount(JsonElement session) => session.GetProperty("items").EnumerateArray()
+                    .Count(item => item.GetProperty("kind").GetString() is "User" or "Assistant");
+
+                var fillContent = ContentCount(await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session"));
 
                 for (var i = 0; i < 3; i++)
                 {
@@ -2284,7 +2321,7 @@ internal static class Program
                 for (var attempt = 0; attempt < 400; attempt++)
                 {
                     var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
-                    if (polled.GetProperty("lastSeq").GetInt64() >= fillSeq + 6)
+                    if (ContentCount(polled) >= fillContent + 6)
                     {
                         break;
                     }
@@ -3224,6 +3261,9 @@ internal static class Program
             "image: the logs keep the id, not the bytes",
             "desktop: a key press waits for approval",
             "desktop: an approved action looks again instead of trusting a dead lease",
+            "desktop: the default gear asks for every action but never for looking",
+            "desktop: the middle gear frees the GUI and still gates commands",
+            "desktop: the open gear asks for nothing",
             "desktop: the capability reports itself enabled",
             "desktop: the model can observe through its tool",
             "desktop: an action waits for approval instead of running",

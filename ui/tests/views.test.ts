@@ -85,7 +85,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
     tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
     model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
-            desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
+            desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
   }
 
   const stub: PartnerApiSurface = {
@@ -133,8 +133,9 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
     approvals: vi.fn(async () => ({ timeoutSeconds: 120, pending: [] })),
     answerApproval: vi.fn(async () => {}),
-    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
+    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
+    setApprovalGear: vi.fn(async () => ({ approval: 'all', changed: false })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
     ...overrides,
@@ -585,7 +586,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
         model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
-    desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
+    desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       })),
     })
 
@@ -606,7 +607,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
         model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
-    desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
+    desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       })),
     })
 
@@ -681,7 +682,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
         model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
-            desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
+            desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -755,7 +756,7 @@ describe('settings view', () => {
             asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
             tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
             model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens },
-            desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
+            desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },

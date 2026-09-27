@@ -3,6 +3,9 @@
     <!-- Windows-only layer (M9). Core stays platform-neutral on net8.0. -->
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <!-- UI Automation ships in the WindowsDesktop pack (WPF). Without it the only way to address a control is
+         a screen coordinate, which is how a model ends up typing into the wrong window. -->
+    <UseWPF>true</UseWPF>
     <RootNamespace>Partner.Desktop</RootNamespace>
   </PropertyGroup>
   <ItemGroup>

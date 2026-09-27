@@ -36,6 +36,7 @@ describe('approval banner', () => {
   const desktop = {
     enabled: true,
     leaseTtlMs: 15000,
+    approval: 'all',
     allowedWindowTitles: [],
     lastObsId: 'obs-1',
     entityCount: 1,
@@ -220,8 +221,9 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
     approvals: vi.fn(async () => ({ timeoutSeconds: 120, pending: [] })),
     answerApproval: vi.fn(async () => {}),
-    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
+    desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
+    setApprovalGear: vi.fn(async () => ({ approval: 'all', changed: false })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], })),
     devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),
@@ -237,7 +239,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
       tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
       model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096 },
-    desktop: { enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [] },
+    desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
     })),
     saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
       settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
@@ -400,6 +402,32 @@ describe('composer', () => {
     await wrapper.find('[data-test="composer-detach"]').trigger('click')
     expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(false)
     expect(api.submitInput).not.toHaveBeenCalled()
+  })
+
+  it('offers the approval gear, and only when the desktop is on', async () => {
+    const api = stubApi()
+    const stats = { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }
+    const consumer = { running: true, reason: '运行中', model: 'm', stats, tools: [] }
+
+    // Off: there is nothing to approve, so there is nothing to choose.
+    const off = mount(Composer, { props: { api, consumer, approval: null } })
+    await flushPromises()
+    expect(off.find('[data-test=composer-approval]').exists()).toBe(false)
+
+    const on = mount(Composer, { props: { api, consumer, approval: 'all' } })
+    await flushPromises()
+
+    const select = on.find<HTMLSelectElement>('[data-test=composer-approval]')
+    expect(select.element.value).toBe('all')
+    expect(select.findAll('option').map((option) => option.text())).toEqual([
+      '审批：不审批',
+      '审批：危险指令审批',
+      '审批：全部审批',
+    ])
+
+    // The choice is the shell's to apply: the composer only reports it.
+    await select.setValue('dangerous')
+    expect(on.emitted('approval')?.[0]).toEqual(['dangerous'])
   })
 
   it('says which tools the model has, because off is not inferable', async () => {

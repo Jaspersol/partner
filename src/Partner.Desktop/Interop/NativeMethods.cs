@@ -145,6 +145,34 @@ internal static class NativeMethods
         public uint Colors;
     }
 
+    // ---- clipboard ------------------------------------------------------------------------------
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool OpenClipboard(nint owner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool CloseClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool EmptyClipboard();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern nint GetClipboardData(uint format);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern nint SetClipboardData(uint format, nint handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern nint GlobalAlloc(uint flags, nuint bytes);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern nint GlobalLock(nint handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern bool GlobalUnlock(nint handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern nint GlobalFree(nint handle);
+
     // ---- input injection ------------------------------------------------------------------------
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(uint count, [In] Input[] inputs, int size);
@@ -158,6 +186,7 @@ internal static class NativeMethods
     internal const uint MouseeventfRightdown = 0x0008;
     internal const uint MouseeventfRightup = 0x0010;
     internal const uint MouseeventfVirtualdesk = 0x4000;
+    internal const uint MouseeventfWheel = 0x0800;
 
     internal const uint KeyeventfKeyup = 0x0002;
     internal const uint KeyeventfUnicode = 0x0004;

@@ -1,3 +1,4 @@
+using Partner.Api.Settings;
 using Partner.Desktop;
 using Partner.Desktop.Input;
 
@@ -24,6 +25,7 @@ public static class DesktopEndpoints
             {
                 enabled = settings.Enabled,
                 leaseTtlMs = settings.LeaseTtlMs,
+                approval = settings.Approval,
                 allowedWindowTitles = settings.AllowedWindowTitles,
                 lastObsId = ctx.Desktop.LastObservation?.ObsId,
                 entityCount = ctx.Desktop.LastObservation?.Entities.Count ?? 0,
@@ -36,6 +38,31 @@ public static class DesktopEndpoints
                         foreground = entity.IsForeground,
                     }),
             });
+        });
+
+        app.MapPost("/api/desktop/approval", (ApprovalRequest request, ApiContext ctx) =>
+        {
+            // An unknown gear is refused rather than coerced: the settings file falls back to the strictest
+            // gear on a typo, but a caller that asks for something this does not know should hear about it.
+            var requested = request.Approval ?? string.Empty;
+            if (!ApprovalGears.Values.Contains(requested, StringComparer.OrdinalIgnoreCase))
+            {
+                return Results.BadRequest(new { error = $"approval 必须是 $" + string.Join(" / ", ApprovalGears.Values) });
+            }
+
+            var gear = ApprovalGears.Normalize(requested);
+
+            var before = ctx.Settings.Load();
+            if (before.Desktop.Approval == gear)
+            {
+                return Results.Ok(new { approval = gear, changed = false });
+            }
+
+            // No restart: the gear is a decision, and governance reads it per call. Restarting would interrupt
+            // a turn in flight — and would tear down a consumer started with an injected client.
+            var stored = ctx.Settings.Save(before with { Desktop = before.Desktop with { Approval = gear } });
+
+            return Results.Ok(new { approval = stored.Desktop.Approval, changed = true });
         });
 
         app.MapPost("/api/desktop/observe", (ApiContext ctx) =>
@@ -135,6 +162,8 @@ public static class DesktopEndpoints
         ctx.Settings.Load().Desktop.Enabled ? null : "桌面能力未启用（设置里的「桌面」段）";
 
     public sealed record DesktopActRequest(string? EntityId, string? Kind, int X, int Y, ushort VirtualKey);
+
+    public sealed record ApprovalRequest(string? Approval);
 
     public sealed record ApprovalAnswer(bool Approved);
 }

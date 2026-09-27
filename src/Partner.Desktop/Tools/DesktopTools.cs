@@ -8,9 +8,9 @@ namespace Partner.Desktop.Tools;
 /// <summary>
 /// Which windows the model may act on.
 /// <para>
-/// An empty list means any window. The gate that actually protects the user is approval on the action itself;
-/// a title filter that matched nothing would look like a broken tool rather than a policy, so this is for
-/// narrowing an installation, not for being the only guard.
+/// An empty list means any window. The gate that actually protects the user is the approval gear; a title
+/// filter that matched nothing would look like a broken tool rather than a policy, so this is for narrowing
+/// an installation, not for being the only guard.
 /// </para>
 /// </summary>
 public sealed record DesktopToolPolicy(IReadOnlyList<string> AllowedWindowTitles)
@@ -37,10 +37,11 @@ public sealed record DesktopToolPolicy(IReadOnlyList<string> AllowedWindowTitles
 }
 
 /// <summary>
-/// Lists the windows on the desktop and issues the leases an action must carry.
+/// Looks at the desktop: the windows, and the controls inside them.
 /// <para>
-/// Read-only: it never injects input, which is why it needs no approval. Its result is also the only way to
-/// obtain an <c>entityId</c>, so acting is always preceded by looking.
+/// This is the discover half of discover-then-act. Returning controls — with names and click points — is what
+/// makes "click 播放" possible instead of "click at (412,338)", which is how a model ends up clicking whatever
+/// happens to be at those coordinates. Read-only, so it never needs approval.
 /// </para>
 /// </summary>
 public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopToolPolicy policy) : ITool
@@ -53,8 +54,8 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
 
     public ToolSpec Spec { get; } = new(
         "desktop_observe",
-        "列出当前桌面的可见窗口：实体 id、标题、进程与矩形。动作只能针对这里返回的 entityId。"
-        + "若你要操作的程序不在列表里，它就没在运行：不要对别的窗口动手，先想办法把它打开（例如用键盘启动器）。",
+        "看当前桌面：可见窗口（entityId、标题、进程、矩形）以及窗口内的可交互控件（elementId、名称、类型、点击点）。"
+        + "动作只能针对这里返回的 entityId / elementId。若你要操作的程序不在列表里，它就没在运行：先用 desktop_launch 打开它，不要对别的窗口动手。",
         """{"type":"object","properties":{},"additionalProperties":false}""");
 
     public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
@@ -84,6 +85,16 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                     width = entity.Rect.Width,
                     height = entity.Rect.Height,
                 },
+                elements = observation.Elements
+                    .Where(element => element.WindowId == entity.EntityId)
+                    .Select(element => new
+                    {
+                        elementId = element.ElementId,
+                        name = element.Name,
+                        role = element.Role,
+                        clickAt = new { x = element.Centre.X, y = element.Centre.Y },
+                    })
+                    .ToList(),
             })
             .ToList();
 
@@ -94,57 +105,49 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
 }
 
 /// <summary>
-/// Performs one action against a window observed by <see cref="DesktopObserveTool"/>.
+/// Acts on a window, or on a control inside it.
 /// <para>
-/// Irreversible: it moves the user's pointer or sends keystrokes. Governance puts it in the <c>ask</c> list, so
-/// every call reaches a human before it reaches the desktop. Two things follow from that wait:
+/// Irreversible: it moves the user's pointer, sends keystrokes, or types text. Governance decides whether it
+/// runs unattended (see the approval gear). Two rules survive every gear:
 /// </para>
 /// <list type="bullet">
 ///   <item><b>The target is re-checked, not the lease.</b> A human can take minutes to answer, which outlives
-///   any sane lease; refusing then would make approval useless. So the window is observed again and the action
-///   proceeds only if it is still the same window (title, process, geometry) — the lease's meaning, without
-///   its clock.</item>
-///   <item><b>Global inputs are guarded.</b> Keystrokes go to whatever has focus and clicks go to whatever is
-///   at those coordinates, so an action that would land outside the window it names is refused before
-///   anything is injected.</item>
+///   any sane lease; refusing then would make approval useless. The desktop is observed again and the action
+///   proceeds only if the window — and the control, when one was named — is still the same.</item>
+///   <item><b>Global inputs are guarded.</b> Keystrokes and typed text go to whatever has focus, and pointer
+///   actions go to whatever is at those coordinates, so anything that would land outside the named window is
+///   refused before input is injected.</item>
 /// </list>
 /// </summary>
 public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPolicy policy) : ITool
 {
     public ToolSpec Spec { get; } = new(
         "desktop_act",
-        "对最近一次 desktop_observe 返回的某个窗口执行一次动作。kind 取 focus/movePointer/leftClick/rightClick/keyPress；"
-        + "坐标动作需要 x/y（必须落在该窗口矩形内），按键需要 virtualKey（要求该窗口已在前台，否则先 focus）。"
-        + "执行前会重新观察并核对目标是否仍是同一个窗口；租约过期不会直接失败。"
-        + "目标必须就是你要操作的那个窗口：按键只会打到前台窗口，坐标必须落在该窗口矩形内，否则会被拒绝。",
+        "对 desktop_observe 返回的窗口或控件执行一次动作。kind 取 focus / movePointer / leftClick / rightClick / "
+        + "keyPress / typeText / scroll / drag。给了 elementId 就用该控件的中心点，不必再给坐标；否则用 x/y（必须落在窗口矩形内）。"
+        + "typeText 需要 text，keyPress 需要 virtualKey（该窗口须已在前台，否则先 focus），scroll 需要 scrollDelta，drag 需要 x/y + toX/toY。"
+        + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。",
         """
         {"type":"object","properties":{
-          "entityId":{"type":"string"},
-          "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","KeyPress"]},
+          "entityId":{"type":"string","description":"窗口 id；给了 elementId 时可省略"},
+          "elementId":{"type":"string","description":"控件 id，来自 desktop_observe"},
+          "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","KeyPress","TypeText","Scroll","Drag"]},
           "x":{"type":"integer"},
           "y":{"type":"integer"},
-          "virtualKey":{"type":"integer"}
-        },"required":["entityId","kind"],"additionalProperties":false}
+          "toX":{"type":"integer"},
+          "toY":{"type":"integer"},
+          "virtualKey":{"type":"integer"},
+          "text":{"type":"string"},
+          "scrollDelta":{"type":"integer"}
+        },"required":["kind"],"additionalProperties":false}
         """);
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
-        DesktopActArguments? arguments;
-        try
+        var arguments = Json.Deserialize<DesktopActArguments>(argumentsJson);
+        if (arguments is null)
         {
-            arguments = JsonSerializer.Deserialize<DesktopActArguments>(argumentsJson, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-            });
-        }
-        catch (JsonException error)
-        {
-            return new ToolResult(false, $"参数不是合法 JSON：{error.Message}");
-        }
-
-        if (arguments is null || string.IsNullOrWhiteSpace(arguments.EntityId))
-        {
-            return new ToolResult(false, "缺少 entityId：先调用 desktop_observe");
+            return new ToolResult(false, "参数不是合法 JSON");
         }
 
         if (!Enum.TryParse<ActionKind>(arguments.Kind, ignoreCase: true, out var kind))
@@ -152,21 +155,38 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return new ToolResult(false, $"未知动作 '{arguments.Kind}'；可用：{string.Join(", ", Enum.GetNames<ActionKind>())}");
         }
 
-        // What the model decided on. Kept so the re-observation below can tell "same window" from "some other
-        // window that happens to reuse the id".
-        var seen = automation.LastObservation?.Find(arguments.EntityId);
-        if (seen is null)
+        // What the model decided on, before looking again.
+        var before = automation.LastObservation;
+        if (before is null)
         {
-            return new ToolResult(false, $"未知实体 '{arguments.EntityId}'：先调用 desktop_observe");
+            return new ToolResult(false, "还没有观察过：先调用 desktop_observe");
         }
 
-        if (!policy.Allows(seen.Label))
+        var seenElement = arguments.ElementId is { Length: > 0 } elementId ? before.FindElement(elementId) : null;
+        if (arguments.ElementId is { Length: > 0 } && seenElement is null)
         {
-            return new ToolResult(false, $"窗口 '{seen.Label}' 不在允许列表内（设置里的桌面段）");
+            return new ToolResult(false, $"未知控件 '{arguments.ElementId}'：先调用 desktop_observe");
         }
 
-        // Approval can outlive the lease by minutes. Re-observing and comparing content keeps the guarantee the
-        // lease was for — act only on the window that was seen — without making a slow human answer a failure.
+        var entityId = seenElement?.WindowId ?? arguments.EntityId;
+        if (string.IsNullOrWhiteSpace(entityId))
+        {
+            return new ToolResult(false, "缺少 entityId 或 elementId：先调用 desktop_observe");
+        }
+
+        var seenWindow = before.Find(entityId);
+        if (seenWindow is null)
+        {
+            return new ToolResult(false, $"未知窗口 '{entityId}'：先调用 desktop_observe");
+        }
+
+        if (!policy.Allows(seenWindow.Label))
+        {
+            return new ToolResult(false, $"窗口 '{seenWindow.Label}' 不在允许列表内（设置里的桌面段）");
+        }
+
+        // Approval can outlive the lease by minutes. Looking again keeps the guarantee the lease was for —
+        // act only on what was seen — without making a slow human answer a failure.
         DesktopObservation fresh;
         try
         {
@@ -177,27 +197,43 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return new ToolResult(false, $"重新观察失败：{error.Message}");
         }
 
-        if (Revalidate(seen, fresh) is { } stale)
+        if (Revalidate(seenWindow, fresh) is { } stale)
         {
             return new ToolResult(false, stale);
         }
 
-        var target = fresh.Find(arguments.EntityId)!;
+        var target = fresh.Find(entityId)!;
 
-        if (Guard(kind, target, arguments) is { } blocked)
+        if (seenElement is not null && RevalidateElement(seenElement, fresh) is { } staleElement)
+        {
+            return new ToolResult(false, staleElement);
+        }
+
+        var element = seenElement is null ? null : fresh.FindElement(seenElement.ElementId);
+
+        // A named control carries its own click point: the model should not have to do geometry, and the point
+        // is inside the window by construction.
+        var point = element?.Centre ?? (arguments.X, arguments.Y);
+
+        if (Guard(kind, target, point, arguments) is { } blocked)
         {
             return new ToolResult(false, blocked);
         }
 
-        var action = await automation
-            .ActAsync(
-                arguments.EntityId,
-                kind,
-                new ActionParams { X = arguments.X, Y = arguments.Y, VirtualKey = arguments.VirtualKey },
-                ct)
-            .ConfigureAwait(false);
+        var parameters = new ActionParams
+        {
+            X = point.Item1,
+            Y = point.Item2,
+            VirtualKey = arguments.VirtualKey,
+            Text = arguments.Text,
+            ScrollDelta = arguments.ScrollDelta,
+            ToX = arguments.ToX,
+            ToY = arguments.ToY,
+        };
 
-        return new ToolResult(action.GuardPassed, Describe(action, kind, target));
+        var action = await automation.ActAsync(entityId, kind, parameters, ct).ConfigureAwait(false);
+
+        return new ToolResult(action.GuardPassed, Describe(action, kind, target, element));
     }
 
     /// <summary>
@@ -220,19 +256,42 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             : $"窗口 '{seen.Label}' 与观察时不同（标题/进程/位置/大小变了）：重新 desktop_observe 再决定";
     }
 
+    /// <summary>The same check for a named control: the layout moved, so the coordinates are not trustworthy.</summary>
+    public static string? RevalidateElement(UiElement seen, DesktopObservation fresh)
+    {
+        ArgumentNullException.ThrowIfNull(seen);
+        ArgumentNullException.ThrowIfNull(fresh);
+
+        var now = fresh.FindElement(seen.ElementId);
+        if (now is null)
+        {
+            return $"控件 '{seen.Name}' 已经不在了：重新 desktop_observe 再决定";
+        }
+
+        return now.Digest == seen.Digest
+            ? null
+            : $"控件 '{seen.Name}' 与观察时不同（名称或位置变了）：重新 desktop_observe 再决定";
+    }
+
     /// <summary>
     /// What would make this action land somewhere other than the window it names. Pointer and key input are
     /// global — the OS sends them to a coordinate or to whatever has focus — so without these the model can
     /// type into the user's editor while believing it is talking to another window.
     /// </summary>
-    public static string? Guard(ActionKind kind, UiEntity target, DesktopActArguments arguments) => kind switch
+    public static string? Guard(ActionKind kind, UiEntity target, (int X, int Y) point, DesktopActArguments arguments) => kind switch
     {
-        ActionKind.KeyPress when !target.IsForeground =>
-            $"'{target.Label}' 不在前台，按键会打到别的窗口：先对它执行 focus",
+        ActionKind.KeyPress or ActionKind.TypeText when !target.IsForeground =>
+            $"'{target.Label}' 不在前台，输入会打到别的窗口：先对它执行 focus",
 
         ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick
-            when !target.Rect.Contains(arguments.X, arguments.Y) =>
-            $"({arguments.X},{arguments.Y}) 不在 '{target.Label}' 的矩形内：坐标是屏幕坐标，会点到别处",
+            when !target.Rect.Contains(point.X, point.Y) =>
+            $"({point.X},{point.Y}) 不在 '{target.Label}' 的矩形内：坐标是屏幕坐标，会点到别处",
+
+        ActionKind.Drag when !target.Rect.Contains(point.X, point.Y) || !target.Rect.Contains(arguments.ToX, arguments.ToY) =>
+            $"拖拽的起点或终点不在 '{target.Label}' 的矩形内",
+
+        ActionKind.TypeText when string.IsNullOrEmpty(arguments.Text) => "typeText 需要 text",
+        ActionKind.Scroll when arguments.ScrollDelta == 0 => "scroll 需要 scrollDelta",
 
         _ => null,
     };
@@ -241,9 +300,11 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     /// The result, with injection and verification kept apart: they answer different questions, and collapsing
     /// them into one word is how "it clicked" and "nothing visibly happened" end up looking identical.
     /// </summary>
-    private static string Describe(DesktopAction action, ActionKind kind, UiEntity target)
+    private static string Describe(DesktopAction action, ActionKind kind, UiEntity target, UiElement? element)
     {
-        var who = $"{target.Label}（{target.Value ?? "?"}）";
+        var who = element is null
+            ? $"{target.Label}（{target.Value ?? "?"}）"
+            : $"'{element.Name}' [{element.Role}] @ {target.Label}";
 
         if (!action.GuardPassed)
         {
@@ -263,5 +324,15 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     }
 
     /// <summary>What the model asked for, as it arrives from the model.</summary>
-    public sealed record DesktopActArguments(string? EntityId, string? Kind, int X, int Y, ushort VirtualKey);
+    public sealed record DesktopActArguments(
+        string? EntityId,
+        string? ElementId,
+        string? Kind,
+        int X,
+        int Y,
+        int ToX,
+        int ToY,
+        ushort VirtualKey,
+        string? Text,
+        int ScrollDelta);
 }

@@ -15,8 +15,9 @@ const props = defineProps<{
   api: PartnerApiSurface
   summary?: QueueSummary | undefined
   consumer?: ConsumerState | undefined
+  approval?: string | null | undefined
 }>()
-const emit = defineEmits<{ context: [value: string]; changed: [] }>()
+const emit = defineEmits<{ context: [value: string]; changed: []; approval: [gear: string] }>()
 
 const view = ref<SessionView | null>(null)
 const selectedSeq = ref<number | null>(null)
@@ -353,7 +354,9 @@ defineExpose({ refresh, focusComposer })
       :api="api"
       :summary="summary"
       :consumer="consumer"
+      :approval="approval"
       @sent="onSent"
+      @approval="emit('approval', $event)"
       @failed="error = $event"
     />
 

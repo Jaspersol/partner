@@ -78,8 +78,9 @@ async function refreshSummary() {
     consumer.value = await api.value.consumer()
     approvals.value = (await api.value.approvals()).pending
 
-    // Only fetched while something is waiting: it is what turns an entityId into a window a human recognises.
-    desktop.value = approvals.value.length > 0 ? await api.value.desktop() : null
+    // Always fetched: it carries the approval gear the composer offers, and the entities that turn an
+    // approval's entityId into a window a human recognises. Both are read-only and in-memory.
+    desktop.value = await api.value.desktop()
   } catch (failure) {
     // A stale badge is worse than none: it would claim the queue is empty when we simply do not know.
     summary.value = null
@@ -98,6 +99,21 @@ async function answerApproval(approvalId: string, approved: boolean) {
 
   try {
     await api.value.answerApproval(approvalId, approved)
+  } catch (failure) {
+    connectionError.value = String(failure)
+  }
+
+  await refreshSummary()
+}
+
+/** The composer's gear choice, applied where the setting lives. */
+async function setApprovalGear(gear: string) {
+  if (!api.value) {
+    return
+  }
+
+  try {
+    await api.value.setApprovalGear(gear)
   } catch (failure) {
     connectionError.value = String(failure)
   }
@@ -210,7 +226,9 @@ onUnmounted(() => {
             :api="api"
             :summary="summary ?? undefined"
             :consumer="consumer ?? undefined"
+            :approval="desktop?.enabled === true ? desktop.approval : null"
             @context="context = $event"
+            @approval="setApprovalGear"
             @changed="refreshSummary"
           />
           <QueueView

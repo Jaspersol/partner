@@ -116,6 +116,54 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task The_gear_decides_which_tools_ask()
+    {
+        // Observable in /api/consumer: the tool table is what the model can call and what governance will do
+        // about each one. A gear that changed nothing here would be a switch that does nothing.
+        async Task<List<string>> ToolsAsync()
+        {
+            var state = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
+            return state.GetProperty("tools").EnumerateArray()
+                .Select(tool => $"{tool.GetProperty("name").GetString()}:{tool.GetProperty("decision").GetString()}")
+                .ToList();
+        }
+
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
+            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        var all = await ToolsAsync();
+        Assert.Contains("desktop_observe:allow", all);
+        Assert.Contains("desktop_clipboard_get:allow", all);
+        Assert.Contains("desktop_act:ask", all);
+        Assert.Contains("desktop_exec:ask", all);
+
+        // The middle gear: what a person can watch happen goes through, what leaves the GUI waits.
+        var middle = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "dangerous" });
+        Assert.Equal(HttpStatusCode.OK, middle.StatusCode);
+
+        var dangerous = await ToolsAsync();
+        Assert.Contains("desktop_act:allow", dangerous);
+        Assert.Contains("desktop_clipboard_get:allow", dangerous);
+        Assert.Contains("desktop_exec:ask", dangerous);
+        Assert.Contains("desktop_launch:ask", dangerous);
+        Assert.Contains("desktop_clipboard_set:ask", dangerous);
+
+        // And the gear the model was explicitly allowed to run unattended.
+        await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
+
+        var none = await ToolsAsync();
+        Assert.All(none, tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
+        Assert.Equal(6, none.Count);
+
+        // An unknown gear is refused rather than silently stored.
+        var bogus = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "whatever" });
+        Assert.Equal(HttpStatusCode.BadRequest, bogus.StatusCode);
+    }
+
+    [Fact]
     public async Task An_empty_approval_queue_is_reported_rather_than_hidden()
     {
         // The UI has to distinguish "nothing is waiting" from "we could not ask", so the shape is always there.
