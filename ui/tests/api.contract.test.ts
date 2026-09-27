@@ -220,6 +220,15 @@ describe('the API contract the UI binds to', () => {
     expect(usage.usedTokens).toBeLessThanOrEqual(usage.budgetTokens)
   })
 
+  it('returns the desktop section the settings page refills from', async () => {
+    // The settings page writes the form back from this response. A missing section reads as "off", so the
+    // switch used to flip itself back the moment it was saved.
+    const settings = await api.settings()
+    expect(settings.desktop).toBeDefined()
+    expect(typeof settings.desktop.enabled).toBe('boolean')
+    expect(typeof settings.desktop.leaseTtlMs).toBe('number')
+  })
+
   it('lists the devices the runtime can see', async () => {
     const devices = await api.devices()
 

@@ -173,6 +173,8 @@ public sealed record SettingsView
 
     public ModelSettingsView Model { get; init; } = new();
 
+    public DesktopSettings Desktop { get; init; } = new();
+
     public static SettingsView From(RuntimeSettings settings) => new()
     {
         Input = settings.Input,
@@ -188,5 +190,9 @@ public sealed record SettingsView
             ContextTokens = settings.Model.ContextTokens,
             MaxTokens = settings.Model.MaxTokens,
         },
+
+        // Without this the settings response drops the section, and the UI — which refills its form from the
+        // response — flips the switch back to off the moment it is saved.
+        Desktop = settings.Desktop,
     };
 }

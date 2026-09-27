@@ -62,6 +62,26 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task The_settings_response_carries_the_section_the_ui_refills_from()
+    {
+        // The UI refills its form from this response. When the section was missing, saving flipped the switch
+        // back to off — the setting was stored, but the answer to the save said otherwise.
+        var saved = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            desktop = new { enabled = true, leaseTtlMs = 7000, allowedWindowTitles = new[] { "记事本" } },
+        });
+
+        var body = await saved.Content.ReadFromJsonAsync<JsonElement>();
+        var desktop = body.GetProperty("settings").GetProperty("desktop");
+        Assert.True(desktop.GetProperty("enabled").GetBoolean());
+        Assert.Equal(7000, desktop.GetProperty("leaseTtlMs").GetInt32());
+
+        // And the plain read agrees, which is what the settings page loads on open.
+        var read = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        Assert.True(read.GetProperty("desktop").GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
     public async Task An_empty_approval_queue_is_reported_rather_than_hidden()
     {
         // The UI has to distinguish "nothing is waiting" from "we could not ask", so the shape is always there.
