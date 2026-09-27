@@ -129,6 +129,8 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
         compaction: null,
       }
     }),
+    uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
+    mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
     ...overrides,
   }

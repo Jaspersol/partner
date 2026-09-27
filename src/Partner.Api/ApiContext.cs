@@ -1,4 +1,5 @@
 using Partner.Api.Settings;
+using Partner.Core.Media;
 using Partner.Core.Memory;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
@@ -16,13 +17,15 @@ public sealed class ApiContext : IAsyncDisposable
         ISessionStore session,
         IInputQueue queue,
         IMemoryStore memory,
-        SettingsStore settings)
+        SettingsStore settings,
+        IMediaStore media)
     {
         Workspace = workspace;
         Session = session;
         Queue = queue;
         Memory = memory;
         Settings = settings;
+        Media = media;
     }
 
     public string Workspace { get; }
@@ -35,6 +38,9 @@ public sealed class ApiContext : IAsyncDisposable
 
     public SettingsStore Settings { get; }
 
+    /// <summary>Attachments live here, not in the log: the bytes are files, the events carry only their ids.</summary>
+    public IMediaStore Media { get; }
+
     public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
@@ -45,8 +51,10 @@ public sealed class ApiContext : IAsyncDisposable
         var memory = new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), clock: clock);
         // Holds the whole runtime configuration now, not just the voice halves.
         var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
+        var media = FileMediaStore.Open(workspace);
 
-        return await Task.FromResult(new ApiContext(workspace, session, queue, memory, settings)).ConfigureAwait(false);
+        return await Task.FromResult(new ApiContext(workspace, session, queue, memory, settings, media))
+            .ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

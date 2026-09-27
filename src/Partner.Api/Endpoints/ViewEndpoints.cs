@@ -18,6 +18,7 @@ public static class ViewEndpoints
     public static void Map(WebApplication app)
     {
         MapInput(app);
+        MapMedia(app);
         MapSession(app);
         MapQueue(app);
         MapMemory(app);
@@ -99,6 +100,13 @@ public static class ViewEndpoints
                 });
             }
 
+            var mediaIds = request.Media ?? Array.Empty<string>();
+            var unknown = mediaIds.Where(id => ctx.Media.TryRead(id) is null).ToList();
+            if (unknown.Count > 0)
+            {
+                return Results.BadRequest(new { error = $"未知的附图：{string.Join(", ", unknown)}" });
+            }
+
             var suppliedKey = !string.IsNullOrWhiteSpace(request.IdempotencyKey);
             var itemId = "in-" + Guid.NewGuid().ToString("n");
             var key = suppliedKey ? request.IdempotencyKey! : $"ui:{source}:{itemId}";
@@ -112,6 +120,7 @@ public static class ViewEndpoints
                 ItemId = itemId,
                 Source = source,
                 Payload = request.Payload,
+                MediaIds = mediaIds,
                 IdempotencyKey = key,
             }, ct).ConfigureAwait(false);
 
@@ -140,7 +149,49 @@ public static class ViewEndpoints
         return false;
     }
 
-    public sealed record InputRequest(string? Source, string? Payload, string? IdempotencyKey);
+    // ---- attachments (图片输入) --------------------------------------------------------------------
+    private static void MapMedia(WebApplication app)
+    {
+        // The bytes come in as the raw body with the type in the header: no multipart parsing, and the UI can
+        // send a File straight through.
+        app.MapPost("/api/media", async (HttpRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            var contentType = (request.ContentType ?? string.Empty).Split(';')[0].Trim();
+
+            try
+            {
+                var mediaId = await ctx.Media.SaveAsync(contentType, request.Body, ct).ConfigureAwait(false);
+                var attachment = ctx.Media.TryRead(mediaId)!;
+
+                return Results.Ok(new
+                {
+                    mediaId,
+                    contentType = attachment.ContentType,
+                    bytes = attachment.Bytes.Length,
+                });
+            }
+            catch (NotSupportedException error)
+            {
+                return Results.BadRequest(new { error = error.Message });
+            }
+            catch (InvalidOperationException error)
+            {
+                return Results.BadRequest(new { error = error.Message });
+            }
+        });
+
+        // Served back so the composer can show what is attached without keeping a copy of the bytes in the UI.
+        app.MapGet("/api/media/{mediaId}", (string mediaId, ApiContext ctx) =>
+            ctx.Media.TryRead(mediaId) is { } attachment
+                ? Results.Bytes(attachment.Bytes, attachment.ContentType)
+                : Results.NotFound(new { error = $"未知的附图 '{mediaId}'" }));
+    }
+
+    public sealed record InputRequest(
+        string? Source,
+        string? Payload,
+        string? IdempotencyKey,
+        IReadOnlyList<string>? Media = null);
 
     // ---- session view (查看 + 编辑 + 编辑历史) ----------------------------------------------------
     private static void MapSession(WebApplication app)
@@ -323,6 +374,7 @@ public static class ViewEndpoints
                     attempt = i.Attempt,
                     error = i.Error,
                     payload = i.Payload,
+                    mediaIds = i.MediaIds,
                 });
 
             var state = ctx.Queue.Snapshot();

@@ -1,5 +1,6 @@
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
+using Partner.Core.Media;
 using Partner.Core.Memory;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
@@ -54,13 +55,15 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     private readonly int _reserveForOutput;
     private readonly ITokenCounter _tokens;
     private readonly string _baseSystemPrompt;
+    private readonly IMediaStore? _media;
 
     public SessionWindowContextAssembler(
         ISessionStore session,
         int contextTokens = 32768,
         int reserveForOutput = 4096,
         ITokenCounter? tokens = null,
-        string? baseSystemPrompt = null)
+        string? baseSystemPrompt = null,
+        IMediaStore? media = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(contextTokens);
 
@@ -69,6 +72,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         _reserveForOutput = reserveForOutput;
         _tokens = tokens ?? new ApproximateTokenCounter();
         _baseSystemPrompt = baseSystemPrompt ?? "You are a single-user local assistant.";
+        _media = media;
     }
 
     public async Task<ContextUsage> MeasureAsync(CancellationToken ct = default)
@@ -95,7 +99,9 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         ArgumentNullException.ThrowIfNull(injectedPrompts);
 
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
-        var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct).ConfigureAwait(false);
+        var images = ResolveImages(item.MediaIds);
+        var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct, images?.Count ?? 0)
+            .ConfigureAwait(false);
 
         var messages = new List<LlmMessage>
         {
@@ -105,8 +111,31 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         messages.AddRange(plan.Turns);
 
         // The current input is the last user message; the window above is history only.
-        messages.Add(new LlmMessage("user", item.Payload));
+        messages.Add(new LlmMessage("user", item.Payload, Images: images));
         return messages;
+    }
+
+    /// <summary>
+    /// The attachments of the input being sent, as data URIs. Only this input's: history stays textual, so a
+    /// later question does not re-send megabytes of image the model has already seen.
+    /// </summary>
+    private IReadOnlyList<string>? ResolveImages(IReadOnlyList<string> mediaIds)
+    {
+        if (_media is null || mediaIds.Count == 0)
+        {
+            return null;
+        }
+
+        var images = new List<string>();
+        foreach (var id in mediaIds)
+        {
+            if (_media.TryRead(id) is { } attachment)
+            {
+                images.Add(attachment.ToDataUri());
+            }
+        }
+
+        return images.Count > 0 ? images : null;
     }
 
     /// <summary>
@@ -122,7 +151,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         IReadOnlyList<string> injectedPrompts,
         string? currentInput,
         bool fromMemory,
-        CancellationToken ct)
+        CancellationToken ct,
+        int imageCount = 0)
     {
         // A summary stands in for history that was folded away, so it is context rather than a turn.
         var summaries = view.Items.Where(entry => entry.Kind == SessionEventKind.Summary).ToList();
@@ -152,6 +182,11 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         var inputTokens = currentInput is null
             ? 0
             : await Cost(currentInput, ct).ConfigureAwait(false);
+
+        // An attachment costs the window something a character count cannot see. The number is a conservative
+        // flat charge per image rather than a model-specific measurement: it keeps the budget from claiming
+        // room that the image will actually take.
+        inputTokens += imageCount * ContextBudget.ImageTokens;
 
         var budget = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput) - systemTokens - inputTokens;
 

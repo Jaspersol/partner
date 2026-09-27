@@ -1611,6 +1611,14 @@ internal static class Program
 
             // The production client over a real socket: a minimal server that speaks the OpenAI shape stands in
             // for a provider, so the whole chain (deliver → loop → HTTP → parse → session) is exercised for real.
+            /// <summary>The host holds these files open, so a reader has to allow its writer back.</summary>
+            static async Task<string> ReadSharedAsync(string path)
+            {
+                await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream);
+                return await reader.ReadToEndAsync();
+            }
+
             var wireWorkspace = Path.Combine(root, "consumer-wire");
             var wirePort = FreePort();
             var wireToken = TokenAuth.Generate();
@@ -1776,6 +1784,56 @@ internal static class Program
                 Check("session: tool calls and results reach the view",
                     kinds.Contains("ToolCall") && kinds.Contains("ToolResult"),
                     string.Join(",", kinds.Distinct()));
+                // Image input: the bytes reach the model inline, and the log keeps only the id. A 1×1 PNG is
+                // enough — what is being checked is the shape of the request, not the pixels.
+                using (var upload = new ByteArrayContent(Convert.FromBase64String(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")))
+                {
+                    upload.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                    var uploaded = await wireHttp.PostAsync("/api/media", upload);
+                    var mediaId = (await uploaded.Content.ReadFromJsonAsync<JsonElement>())
+                        .GetProperty("mediaId").GetString();
+
+                    Check("image: an upload comes back as an id",
+                        uploaded.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(mediaId),
+                        $"status={uploaded.StatusCode} id={mediaId}");
+
+                    await wireHttp.PostAsJsonAsync("/api/input", new
+                    {
+                        source = "text",
+                        payload = "看看这张图",
+                        media = new[] { mediaId },
+                    });
+
+                    var settledImage = false;
+                    for (var attempt = 0; attempt < 400 && !settledImage; attempt++)
+                    {
+                        var polled = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                        settledImage = !polled.GetProperty("busy").GetBoolean()
+                            && polled.GetProperty("items").EnumerateArray().Any(item =>
+                                item.GetProperty("kind").GetString() == "Assistant"
+                                && item.GetProperty("body").GetString() == "通过真实 HTTP 返回。");
+                        await Task.Delay(25);
+                    }
+
+                    var request = provider.LastRequestBody ?? string.Empty;
+                    Check("image: the model receives the attachment inline",
+                        settledImage
+                        && request.Contains("\"image_url\"", StringComparison.Ordinal)
+                        && request.Contains("data:image/png;base64,", StringComparison.Ordinal),
+                        $"settled={settledImage} imageUrl={request.Contains("\"image_url\"", StringComparison.Ordinal)}");
+
+                    // The session and queue logs stay text: they hold the id, never the bytes.
+                    var sessionLog = await ReadSharedAsync(Path.Combine(wireWorkspace, "session", "events.jsonl"));
+                    var queueLog = await ReadSharedAsync(Path.Combine(wireWorkspace, "queue", "items.jsonl"));
+
+                    Check("image: the logs keep the id, not the bytes",
+                        queueLog.Contains(mediaId!, StringComparison.Ordinal)
+                        && !queueLog.Contains("iVBORw0KGgo", StringComparison.Ordinal)
+                        && !sessionLog.Contains("iVBORw0KGgo", StringComparison.Ordinal),
+                        $"queueHasId={queueLog.Contains(mediaId!, StringComparison.Ordinal)}");
+                }
+
             }
             finally
             {
@@ -2868,6 +2926,9 @@ internal static class Program
             "session: the client asks the model to stream",
             "session: the finished reply replaces the live row, whole",
             "session: tool calls and results reach the view",
+            "image: an upload comes back as an id",
+            "image: the model receives the attachment inline",
+            "image: the logs keep the id, not the bytes",
             "settings: pointing the model settings at an endpoint re-points the consumer",
             "settings: the API key is sent to the model but never echoed back",
             "settings: the model listing is pulled through the API",

@@ -130,14 +130,12 @@ public sealed class JsonlInputQueue : IInputQueue
 
             lock (_gate)
             {
-                var stored = new InputItem
+                // 'with' rather than a field-by-field copy: the queue owns the seq, the clock and the state,
+                // and anything else the caller sent (attachments included) rides along untouched.
+                var stored = item with
                 {
-                    ItemId = item.ItemId,
                     Seq = _nextSeq++,
                     EnqueuedAt = _clock.GetUtcNow(),
-                    Source = item.Source,
-                    Payload = item.Payload,
-                    IdempotencyKey = item.IdempotencyKey,
                     Status = InputItemStatus.Queued,
                     StartedAt = null,
                     FinishedAt = null,
@@ -399,21 +397,15 @@ public sealed class JsonlInputQueue : IInputQueue
         }
     }
 
-    /// <summary>产生一个状态变更后的新实例（<see cref="InputItem"/> 是不可变类，不是 record）。</summary>
+    /// <summary>产生一个状态变更后的新实例：同一个项，只换状态相关的字段。</summary>
     private static InputItem Copy(
         InputItem source,
         InputItemStatus status,
         DateTimeOffset? startedAt,
         DateTimeOffset? finishedAt,
         int attempt,
-        string? error) => new()
+        string? error) => source with
         {
-            ItemId = source.ItemId,
-            Seq = source.Seq,
-            EnqueuedAt = source.EnqueuedAt,
-            Source = source.Source,
-            Payload = source.Payload,
-            IdempotencyKey = source.IdempotencyKey,
             Status = status,
             StartedAt = startedAt,
             FinishedAt = finishedAt,

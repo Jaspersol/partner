@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { ConsumerState, PartnerApiSurface, QueueSummary, SubmitResult } from '../api'
+import { computed, onUnmounted, ref } from 'vue'
+import type { ConsumerState, PartnerApiSurface, QueueSummary, SubmitResult, UploadedMedia } from '../api'
 
 /**
  * The delivery entry point (ui.md §6, design doc §2.3.1). Submitting never inserts locally: the answer is
@@ -13,13 +13,15 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ sent: [result: SubmitResult]; failed: [message: string] }>()
 
-const SOURCES = ['text', 'voice', 'schedule'] as const
-
 const box = ref<HTMLTextAreaElement | null>(null)
 const draft = ref('')
-const source = ref<(typeof SOURCES)[number]>('text')
 const sending = ref(false)
 const stripOpen = ref(true)
+const uploading = ref(false)
+
+/** What is attached, with a local preview URL so the user can see what they are about to send. */
+type Attachment = { media: UploadedMedia; preview: string }
+const attachments = ref<Attachment[]>([])
 
 const queueStatus = computed(() => {
   const summary = props.summary
@@ -45,15 +47,61 @@ const consumerNote = computed(() => {
   return state && !state.running ? `未执行 · ${state.reason}` : ''
 })
 
+const canSend = computed(
+  () => !sending.value && !uploading.value && (draft.value.trim() !== '' || attachments.value.length > 0),
+)
+
+function release(attachment: Attachment) {
+  URL.revokeObjectURL(attachment.preview)
+}
+
+async function attach(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+
+  if (files.length === 0) {
+    return
+  }
+
+  uploading.value = true
+  try {
+    for (const file of files) {
+      const media = await props.api.uploadMedia(file)
+      const preview = URL.createObjectURL(await props.api.mediaBlob(media.mediaId))
+      attachments.value = [...attachments.value, { media, preview }]
+    }
+  } catch (failure) {
+    emit('failed', String(failure))
+  } finally {
+    uploading.value = false
+  }
+}
+
+function detach(mediaId: string) {
+  const going = attachments.value.find((attachment) => attachment.media.mediaId === mediaId)
+  if (going) {
+    release(going)
+  }
+
+  attachments.value = attachments.value.filter((attachment) => attachment.media.mediaId !== mediaId)
+}
+
 async function send() {
   const payload = draft.value.trim()
-  if (payload === '' || sending.value) {
+  if (!canSend.value) {
     return
   }
 
   sending.value = true
   try {
-    const result = await props.api.submitInput(payload, source.value)
+    const media = attachments.value.map((attachment) => attachment.media.mediaId)
+    // The source is what the message *is*, not something the user picks: typing here is always text, the
+    // microphone enqueues its own items, and a scheduled task comes from the scheduler.
+    const result = await props.api.submitInput(payload, 'text', undefined, media)
+
+    attachments.value.forEach(release)
+    attachments.value = []
     draft.value = ''
     emit('sent', result)
   } catch (failure) {
@@ -62,9 +110,14 @@ async function send() {
     sending.value = false
   }
 }
+
 function focus() {
   box.value?.focus()
 }
+
+onUnmounted(() => {
+  attachments.value.forEach(release)
+})
 
 defineExpose({ focus })
 </script>
@@ -75,6 +128,26 @@ defineExpose({ focus })
       <span v-if="queueStatus">{{ queueStatus }}</span>
       <span v-if="consumerNote" class="muted" data-test="composer-consumer">{{ consumerNote }}</span>
       <button class="ghost" data-test="composer-strip-toggle" @click="stripOpen = false">⌃</button>
+    </div>
+
+    <div v-if="attachments.length > 0" class="attachments" data-test="composer-attachments">
+      <span
+        v-for="attachment in attachments"
+        :key="attachment.media.mediaId"
+        class="attachment"
+        data-test="composer-attachment"
+      >
+        <img :src="attachment.preview" alt="附图" />
+        <span class="meta">{{ Math.round(attachment.media.bytes / 1024) }} KB</span>
+        <button
+          class="ghost"
+          data-test="composer-detach"
+          :title="'移除附图'"
+          @click="detach(attachment.media.mediaId)"
+        >
+          ×
+        </button>
+      </span>
     </div>
 
     <div class="composer-input">
@@ -89,9 +162,16 @@ defineExpose({ focus })
     </div>
 
     <div class="composer-tools">
-      <select v-model="source" data-test="composer-source" aria-label="来源">
-        <option v-for="option in SOURCES" :key="option" :value="option">{{ option }}</option>
-      </select>
+      <label class="ghost attach" :class="{ busy: uploading }" data-test="composer-attach">
+        {{ uploading ? '上传中…' : '＋ 图片' }}
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          data-test="composer-attach-input"
+          @change="attach"
+        />
+      </label>
       <span class="spacer" />
       <span v-if="!stripOpen && queueStatus" class="meta">{{ queueStatus }}</span>
       <button
@@ -102,9 +182,40 @@ defineExpose({ focus })
       >
         ⌄
       </button>
-      <button class="primary" :disabled="draft.trim() === '' || sending" data-test="composer-send" @click="send">
-        发送 ⏎
-      </button>
+      <button class="primary" :disabled="!canSend" data-test="composer-send" @click="send">发送 ⏎</button>
     </div>
   </div>
 </template>
+
+<style scoped>
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+}
+
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-1);
+}
+
+.attachment img {
+  block-size: 32px;
+  inline-size: 32px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+
+.attach input {
+  display: none;
+}
+
+.attach.busy {
+  color: var(--muted);
+}
+</style>

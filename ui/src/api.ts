@@ -51,6 +51,8 @@ export interface QueueItem {
   attempt: number
   error: string | null
   payload: string
+  /** Attachment ids the item carries; the bytes live in the media store, never in the queue log. */
+  mediaIds?: string[]
 }
 
 export interface QueueView {
@@ -270,6 +272,13 @@ export interface ApiOptions {
  * Exactly the surface the views use. Views depend on this, so a test stub is checked by the compiler
  * against the same shape the real client exposes — a stub cannot silently drift from the contract.
  */
+/** One stored attachment, as the upload endpoint reports it. */
+export interface UploadedMedia {
+  mediaId: string
+  contentType: string
+  bytes: number
+}
+
 export interface PartnerApiSurface {
   session(from?: number, take?: number): Promise<SessionView>
   editSession(seq: number, body: string, actor?: string): Promise<void>
@@ -278,7 +287,9 @@ export interface PartnerApiSurface {
   sessionRevisions(seq: number): Promise<SessionRevision[]>
   queue(): Promise<QueueView>
   cancel(itemId: string): Promise<boolean>
-  submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult>
+  submitInput(payload: string, source: string, idempotencyKey?: string, media?: string[]): Promise<SubmitResult>
+  uploadMedia(file: Blob, contentType?: string): Promise<UploadedMedia>
+  mediaBlob(mediaId: string): Promise<Blob>
   consumer(): Promise<ConsumerState>
   voice(): Promise<VoiceState>
   devices(): Promise<DeviceList>
@@ -349,8 +360,49 @@ export class PartnerApi implements PartnerApiSurface {
   // ---- input delivery --------------------------------------------------------------------------
 
   /** Delivers to the queue. Nothing executes it here, so the answer says "queued", not "done". */
-  submitInput(payload: string, source: string, idempotencyKey?: string): Promise<SubmitResult> {
-    return this.request<SubmitResult>('POST', '/api/input', { source, payload, idempotencyKey })
+  submitInput(payload: string, source: string, idempotencyKey?: string, media?: string[]): Promise<SubmitResult> {
+    return this.request<SubmitResult>('POST', '/api/input', {
+      source,
+      payload,
+      idempotencyKey,
+      media: media && media.length > 0 ? media : null,
+    })
+  }
+
+  /**
+   * Uploads one attachment. The bytes go as the request body with the type in the header, so a File can be
+   * passed straight through; what comes back is an id the delivery refers to.
+   */
+  async uploadMedia(file: Blob, contentType?: string): Promise<UploadedMedia> {
+    const type = contentType ?? file.type ?? ''
+    const response = await this.fetchImpl(`${this.base}/api/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': type },
+      body: file,
+    })
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new ApiError(response.status, detail || `上传失败（${response.status}）`)
+    }
+
+    return (await response.json()) as UploadedMedia
+  }
+
+  /**
+   * The bytes of an attachment, fetched with the token rather than linked to: an <img src> cannot carry an
+   * Authorization header, and putting the token in a URL would leak it into logs and history.
+   */
+  async mediaBlob(mediaId: string): Promise<Blob> {
+    const response = await this.fetchImpl(`${this.base}/api/media/${encodeURIComponent(mediaId)}`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+    })
+
+    if (!response.ok) {
+      throw new ApiError(response.status, `读取附图失败（${response.status}）`)
+    }
+
+    return response.blob()
   }
 
   /** Whether the queue is being executed at all. Without this the UI cannot explain a stuck queue. */

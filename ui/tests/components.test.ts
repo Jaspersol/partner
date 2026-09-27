@@ -108,6 +108,8 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     queue: vi.fn(async () => ({ headSeq: 0, runningItemId: null, depth: 0, items: [] })),
     cancel: vi.fn(async () => true),
     submitInput: vi.fn(async () => ({ itemId: 'in-1', seq: 1, status: 'Queued', deduplicated: false })),
+    uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
+    mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
     devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),
     listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9/v1', models: ['qwen3', 'llama3'] })),    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
@@ -233,19 +235,57 @@ describe('side bar', () => {
 })
 
 describe('composer', () => {
-  it('delivers the typed text with the chosen source and clears the box', async () => {
+  it('delivers the typed text as text and clears the box', async () => {
     const api = stubApi()
     const wrapper = mount(Composer, { props: { api } })
     await flushPromises()
 
     await wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').setValue('  打开书房的灯  ')
-    await wrapper.find<HTMLSelectElement>('[data-test="composer-source"]').setValue('voice')
     await wrapper.find('[data-test="composer-send"]').trigger('click')
     await flushPromises()
 
-    expect(api.submitInput).toHaveBeenCalledWith('打开书房的灯', 'voice')
+    // No source picker: what arrives from this box is a text message, and the third argument stays unset.
+    expect(api.submitInput).toHaveBeenCalledWith('打开书房的灯', 'text', undefined, [])
     expect(wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('')
     expect(wrapper.emitted('sent')).toHaveLength(1)
+  })
+
+  it('attaches images, previews them, and sends their ids', async () => {
+    const api = stubApi()
+    const wrapper = mount(Composer, { props: { api } })
+    await flushPromises()
+
+    const file = new File(['png'], 'lamp.png', { type: 'image/png' })
+    const input = wrapper.find<HTMLInputElement>('[data-test="composer-attach-input"]')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(api.uploadMedia).toHaveBeenCalledWith(file)
+    expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(true)
+
+    // An attachment alone is enough to send: a picture with no caption is still a message.
+    await wrapper.find('[data-test="composer-send"]').trigger('click')
+    await flushPromises()
+
+    expect(api.submitInput).toHaveBeenCalledWith('', 'text', undefined, ['m1'])
+    expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(false)
+  })
+
+  it('drops an attachment without sending it', async () => {
+    const api = stubApi()
+    const wrapper = mount(Composer, { props: { api } })
+    await flushPromises()
+
+    const file = new File(['png'], 'lamp.png', { type: 'image/png' })
+    const input = wrapper.find<HTMLInputElement>('[data-test="composer-attach-input"]')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+
+    await wrapper.find('[data-test="composer-detach"]').trigger('click')
+    expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(false)
+    expect(api.submitInput).not.toHaveBeenCalled()
   })
 
   it('refuses to send an empty box', async () => {
@@ -435,7 +475,7 @@ describe('session view composer wiring', () => {
     await wrapper.find('[data-test="composer-send"]').trigger('click')
     await flushPromises()
 
-    expect(api.submitInput).toHaveBeenCalledWith('hello', 'text')
+    expect(api.submitInput).toHaveBeenCalledWith('hello', 'text', undefined, [])
     // The queue is what changed, so the view says so instead of pretending a turn ran.
     expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已入队')
     expect(wrapper.emitted('changed')).toHaveLength(1)

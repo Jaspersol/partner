@@ -13,6 +13,13 @@ public static class ContextBudget
     public const int MessageOverheadTokens = 4;
 
     /// <summary>
+    /// What one attached image is charged against the window. A flat, conservative number: a vision model
+    /// prices an image by its own tiling, which this layer cannot know, and charging nothing would let a
+    /// prompt look like it fits while the image alone fills it.
+    /// </summary>
+    public const int ImageTokens = 1024;
+
+    /// <summary>
     /// Keeps the newest contiguous suffix that fits <paramref name="budget"/>. A suffix rather than a
     /// selection: dropping a turn from the middle would leave the conversation answering something that is no
     /// longer in context.

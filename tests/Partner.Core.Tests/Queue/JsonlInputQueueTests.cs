@@ -294,6 +294,27 @@ public sealed class JsonlInputQueueTests
         IdempotencyKey = key,
     };
 
+    [Fact]
+    public async Task Attachments_survive_every_state_transition()
+    {
+        // MediaIds is one field among many in a class that is copied field by field on each transition; a
+        // forgotten one is silently dropped, and the read path takes the last record per item.
+        using var dir = new TempDir();
+        await using var queue = new JsonlInputQueue(dir.Path, clock: new FakeClock(Base));
+
+        var item = Item("with-image", "key-image") with { MediaIds = new[] { "m1", "m2" } };
+        await queue.EnqueueAsync(item);
+
+        var taken = await queue.TakeAsync();
+        Assert.Equal(new[] { "m1", "m2" }, taken!.MediaIds);
+
+        await queue.CompleteAsync(taken.ItemId, InputItemStatus.Done);
+
+        var reread = await ReadLogAsync(queue);
+        var latest = reread.Where(i => i.ItemId == "with-image").OrderBy(i => i.Seq).Last();
+        Assert.Equal(new[] { "m1", "m2" }, latest.MediaIds);
+    }
+
     private static async Task<List<InputItem>> ReadLogAsync(IInputQueue queue)
     {
         var items = new List<InputItem>();

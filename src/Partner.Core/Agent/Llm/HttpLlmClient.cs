@@ -474,7 +474,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
 
     private static OutboundMessage ToMessage(LlmMessage message) => new(
         message.Role,
-        message.Content,
+        ToContent(message),
         message.ToolCalls is null or { Count: 0 }
             ? null
             : message.ToolCalls.Select(call => new OutboundToolCall(
@@ -483,6 +483,35 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
                 new OutboundFunction(call.Name, call.ArgumentsJson))).ToList(),
         message.ToolCallId,
         message.Name);
+
+    /// <summary>
+    /// A message's content: a plain string, or the OpenAI-compatible part array when images are attached.
+    /// <para>
+    /// The data URI is built here rather than stored: it is about a third larger than the bytes, and only the
+    /// request needs it. A server that predates multimodal content will reject the request — which is the
+    /// honest outcome, better than silently sending the text without what the user attached.
+    /// </para>
+    /// </summary>
+    private static object? ToContent(LlmMessage message)
+    {
+        if (message.Images is not { Count: > 0 })
+        {
+            return message.Content;
+        }
+
+        var parts = new List<OutboundContentPart>();
+        if (!string.IsNullOrEmpty(message.Content))
+        {
+            parts.Add(new OutboundContentPart("text", message.Content, null));
+        }
+
+        foreach (var image in message.Images)
+        {
+            parts.Add(new OutboundContentPart("image_url", null, new OutboundImageUrl(image)));
+        }
+
+        return parts;
+    }
 
     private static LlmResponse ToResponse(ChatResponse payload)
     {
@@ -515,9 +544,13 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         int? MaxTokens,
         bool? Stream = null);
 
+    private sealed record OutboundContentPart(string Type, string? Text, OutboundImageUrl? ImageUrl);
+
+    private sealed record OutboundImageUrl(string Url);
+
     private sealed record OutboundMessage(
         string Role,
-        string? Content,
+        object? Content,
         IReadOnlyList<OutboundToolCall>? ToolCalls,
         string? ToolCallId,
         string? Name);

@@ -17,9 +17,11 @@ public sealed record LlmToolCall(string Id, string Name, string ArgumentsJson);
 /// <param name="ToolCalls">助手消息携带的工具调用；无则为 <see langword="null"/>。</param>
 /// <param name="ToolCallId">仅 <c>role == "tool"</c> 时设置：对应 <see cref="LlmToolCall.Id"/>。</param>
 /// <param name="Name">可选名字（例如 <c>role == "tool"</c> 时的工具名）。</param>
+/// <param name="Images">附图的 data URI，按附加顺序；无则为 <see langword="null"/>。</param>
 public sealed record LlmMessage(
     string Role,
     string? Content,
     IReadOnlyList<LlmToolCall>? ToolCalls = null,
     string? ToolCallId = null,
-    string? Name = null);
+    string? Name = null,
+    IReadOnlyList<string>? Images = null);

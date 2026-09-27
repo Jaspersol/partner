@@ -187,6 +187,22 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             Tokens = new DualArmTokenCounter(client, new ApproximateTokenCounter());
         }
 
+        var turnOptions = new AgentTurnOptions
+        {
+            ContextWindowTokens = config?.ContextTokens ?? 32768,
+            MaxTokens = config?.MaxTokens ?? 4096,
+        };
+
+        // Built here rather than left to the runner's default: the assembler is the one that can reach the
+        // media store, so it is the one that attaches the input's images.
+        var assembler = new SessionWindowContextAssembler(
+            _context.Session,
+            turnOptions.ContextWindowTokens,
+            turnOptions.MaxTokens,
+            Tokens,
+            turnOptions.BaseSystemPrompt,
+            _context.Media);
+
         var runner = new AgentTurnRunner(
             _context.Session,
             llm,
@@ -196,11 +212,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             new AllowListGovernance(Array.Empty<string>()),
             new DenyAllApprovalHandler(),
             SkillHooks(_workspace),
-            options: new AgentTurnOptions
-            {
-                ContextWindowTokens = config?.ContextTokens ?? 32768,
-                MaxTokens = config?.MaxTokens ?? 4096,
-            },
+            assembler: assembler,
+            options: turnOptions,
             stream: this);
 
         _loop = new TurnLoop(_context.Queue, runner, _context.Session);
