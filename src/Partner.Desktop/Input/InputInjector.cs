@@ -58,6 +58,15 @@ public sealed record InjectionResult(bool Ok, uint ErrorCode, string Detail);
 /// </summary>
 public sealed class InputInjector
 {
+    /// <summary>
+    /// Brings a window to the foreground.
+    /// <para>
+    /// Plain <c>SetForegroundWindow</c> is refused when the caller is not already the foreground process — the
+    /// Windows foreground lock — and typing is impossible without focus, so the refusal would make the whole
+    /// input path unusable. Attaching to the foreground thread's input queue is the documented way around it:
+    /// the two threads then share the right to set the foreground.
+    /// </para>
+    /// </summary>
     public InjectionResult Focus(nint handle)
     {
         if (handle == 0)
@@ -65,8 +74,35 @@ public sealed class InputInjector
             return new InjectionResult(false, 0, "no window handle");
         }
 
-        var ok = NativeMethods.SetForegroundWindow(handle);
-        return new InjectionResult(ok, (uint)Marshal.GetLastWin32Error(), ok ? "foreground set" : "SetForegroundWindow refused");
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground == handle)
+        {
+            return new InjectionResult(true, 0, "already foreground");
+        }
+
+        // Attach to the *foreground* thread, not the target's: the right to set the foreground belongs to
+        // whoever holds it now, and attaching to that queue is how a background process borrows it.
+        var holder = foreground == 0 ? 0 : NativeMethods.GetWindowThreadProcessId(foreground, 0);
+        var current = NativeMethods.GetCurrentThreadId();
+        var attached = holder != 0 && holder != current && NativeMethods.AttachThreadInput(current, holder, true);
+
+        try
+        {
+            NativeMethods.BringWindowToTop(handle);
+            var ok = NativeMethods.SetForegroundWindow(handle);
+
+            return new InjectionResult(
+                ok,
+                (uint)Marshal.GetLastWin32Error(),
+                ok ? (attached ? "foreground set (attached)" : "foreground set") : "SetForegroundWindow refused");
+        }
+        finally
+        {
+            if (attached)
+            {
+                NativeMethods.AttachThreadInput(current, holder, false);
+            }
+        }
     }
 
     public InjectionResult MovePointer(int x, int y)

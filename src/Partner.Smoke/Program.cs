@@ -2017,7 +2017,11 @@ internal static class Program
 
                 // The model's tool call reached the real desktop: the result names the windows it enumerated.
                 Check("desktop: the model can observe through its tool",
-                    observed && observeResult is not null && observeResult.Contains("\"obsId\"", StringComparison.Ordinal),
+                    observed
+                    && observeResult is not null
+                    && observeResult.Contains("\"obsId\"", StringComparison.Ordinal)
+                    // The controls, not just the windows: addressing "the 播放 button" is the whole point.
+                    && observeResult.Contains("\"elementId\"", StringComparison.Ordinal),
                     $"result={(observeResult ?? "(none)")[..Math.Min(80, (observeResult ?? "(none)").Length)]}");
 
                 // Acting is irreversible, so governance parks it. The smoke answers — and denies.

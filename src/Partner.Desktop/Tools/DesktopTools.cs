@@ -92,6 +92,7 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                         elementId = element.ElementId,
                         name = element.Name,
                         role = element.Role,
+                        value = element.Value ?? null,
                         clickAt = new { x = element.Centre.X, y = element.Centre.Y },
                     })
                     .ToList(),

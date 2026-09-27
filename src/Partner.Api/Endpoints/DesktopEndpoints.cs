@@ -84,7 +84,20 @@ public static class DesktopEndpoints
                     entityId = entity.EntityId,
                     title = entity.Label,
                     process = entity.Value,
+                    foreground = entity.IsForeground,
                     rect = new { x = entity.Rect.X, y = entity.Rect.Y, width = entity.Rect.Width, height = entity.Rect.Height },
+                    // The same controls the tool returns: an endpoint that listed only windows would make the
+                    // element path look like it does not exist.
+                    elements = observation.Elements
+                        .Where(element => element.WindowId == entity.EntityId)
+                        .Select(element => new
+                        {
+                            elementId = element.ElementId,
+                            name = element.Name,
+                            role = element.Role,
+                            value = element.Value,
+                            clickAt = new { x = element.Centre.X, y = element.Centre.Y },
+                        }),
                 })
                 .ToList();
 
@@ -107,7 +120,16 @@ public static class DesktopEndpoints
                 });
             }
 
-            var entity = ctx.Desktop.LastObservation?.Find(request.EntityId ?? string.Empty);
+            var seenElement = request.ElementId is { Length: > 0 } elementId
+                ? ctx.Desktop.LastObservation?.FindElement(elementId)
+                : null;
+
+            if (request.ElementId is { Length: > 0 } && seenElement is null)
+            {
+                return Results.BadRequest(new { error = $"未知控件 '{request.ElementId}'：先 POST /api/desktop/observe" });
+            }
+
+            var entity = ctx.Desktop.LastObservation?.Find(seenElement?.WindowId ?? request.EntityId ?? string.Empty);
             if (entity is null)
             {
                 return Results.BadRequest(new { error = $"未知实体 '{request.EntityId}'：先 POST /api/desktop/observe" });
@@ -123,7 +145,16 @@ public static class DesktopEndpoints
                 .ActAsync(
                     entity.EntityId,
                     kind,
-                    new ActionParams { X = request.X, Y = request.Y, VirtualKey = request.VirtualKey },
+                    new ActionParams
+                    {
+                        X = request.X,
+                        Y = request.Y,
+                        VirtualKey = request.VirtualKey,
+                        Text = request.Text,
+                        ScrollDelta = request.ScrollDelta,
+                        ToX = request.ToX,
+                        ToY = request.ToY,
+                    },
                     ct)
                 .ConfigureAwait(false);
 
@@ -161,7 +192,17 @@ public static class DesktopEndpoints
     private static string? DisabledReason(ApiContext ctx) =>
         ctx.Settings.Load().Desktop.Enabled ? null : "桌面能力未启用（设置里的「桌面」段）";
 
-    public sealed record DesktopActRequest(string? EntityId, string? Kind, int X, int Y, ushort VirtualKey);
+    public sealed record DesktopActRequest(
+        string? EntityId,
+        string? ElementId,
+        string? Kind,
+        int X,
+        int Y,
+        int ToX,
+        int ToY,
+        ushort VirtualKey,
+        string? Text,
+        int ScrollDelta);
 
     public sealed record ApprovalRequest(string? Approval);
 

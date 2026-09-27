@@ -11,14 +11,17 @@ namespace Partner.Desktop.Perception;
 /// <param name="Name">The label a human reads ("播放", "发送", "文件名").</param>
 /// <param name="Role">The control type ("Button", "Edit", …).</param>
 /// <param name="Rect">Screen rectangle; the click point is its centre.</param>
-/// <param name="Digest">Content digest, so a stale element can be told from the same element.</param>
+/// <param name="Digest">Identity digest (name, role, rectangle) — deliberately not the value: typing into
+/// a field must not make the field look like a different element.</param>
+/// <param name="Value">What a text field holds, when UIA exposes it.</param>
 public sealed record UiElement(
     string ElementId,
     string WindowId,
     string Name,
     string Role,
     PixelRect Rect,
-    string Digest)
+    string Digest,
+    string? Value = null)
 {
     /// <summary>Where a click on this element should land.</summary>
     public (int X, int Y) Centre => (Rect.X + Rect.Width / 2, Rect.Y + Rect.Height / 2);
@@ -42,11 +45,16 @@ public static class UiaTree
     /// <summary>How many elements one window may contribute, so one app cannot fill the whole answer.</summary>
     private const int MaxElementsPerWindow = 40;
 
+    /// <summary>How much of a document's text to report: enough to verify a change, not the whole file.</summary>
+    private const int MaxValueChars = 200;
+
     /// <summary>Roles that are not actionable; walking into them costs time and returns nothing.</summary>
     private static readonly HashSet<string> Interesting = new(StringComparer.Ordinal)
     {
         "Button", "Edit", "ComboBox", "CheckBox", "RadioButton", "ListItem", "MenuItem", "TabItem",
         "Hyperlink", "Slider", "Spinner", "TreeItem", "DataItem", "Text", "SplitButton", "Thumb",
+        // A document is the text surface of an editor; its value is how an agent verifies its own typing.
+        "Document",
     };
 
     /// <summary>
@@ -122,6 +130,34 @@ public static class UiaTree
         }
     }
 
+    /// <summary>
+    /// A text field's content, when it exposes one. The value is reported but never part of the identity digest:
+    /// a field whose text changed is the same field.
+    /// </summary>
+    private static string? ReadValue(AutomationElement node)
+    {
+        try
+        {
+            if (node.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) && pattern is ValuePattern value)
+            {
+                return value.Current.Value;
+            }
+
+            // Editors (RichEdit, and anything document-shaped) expose their text through TextPattern instead.
+            if (node.TryGetCurrentPattern(TextPattern.Pattern, out var text) && text is TextPattern document)
+            {
+                var content = document.DocumentRange.GetText(MaxValueChars);
+                return content.Length == 0 ? null : content;
+            }
+
+            return null;
+        }
+        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>The element as the model sees it, or null when it is not something to act on.</summary>
     private static UiElement? Describe(AutomationElement node, string windowId)
     {
@@ -171,6 +207,7 @@ public static class UiaTree
             Name: name,
             Role: role,
             Rect: rect,
-            Digest: DesktopObservation.Digest(name, role, rect));
+            Digest: DesktopObservation.Digest(name, role, rect),
+            Value: ReadValue(node));
     }
 }

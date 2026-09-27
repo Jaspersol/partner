@@ -2,11 +2,14 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type {
   ConsumerState,
+  DesktopState,
   PartnerApiSurface,
+  PendingApproval,
   QueueSummary,
   SessionRevision,
   SessionView,
 } from '../api'
+import ApprovalBanner from '../components/ApprovalBanner.vue'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
 import Inspector from '../components/Inspector.vue'
@@ -16,8 +19,16 @@ const props = defineProps<{
   summary?: QueueSummary | undefined
   consumer?: ConsumerState | undefined
   approval?: string | null | undefined
+  approvals?: PendingApproval[] | undefined
+  desktop?: DesktopState | null | undefined
 }>()
-const emit = defineEmits<{ context: [value: string]; changed: []; approval: [gear: string] }>()
+const emit = defineEmits<{
+  context: [value: string]
+  changed: []
+  approval: [gear: string]
+  /** The human's answer to a parked tool call; the shell owns the call itself. */
+  answer: [approvalId: string, approved: boolean]
+}>()
 
 const view = ref<SessionView | null>(null)
 const selectedSeq = ref<number | null>(null)
@@ -292,6 +303,11 @@ onUnmounted(() => {
 })
 
 
+/** Forwarded rather than decided here: the shell owns the API call and the queue. */
+function answer(approvalId: string, approved: boolean) {
+  emit('answer', approvalId, approved)
+}
+
 function focusComposer() {
   composer.value?.focus()
 }
@@ -348,6 +364,12 @@ defineExpose({ refresh, focusComposer })
         @retract="retractFromSelected"
       />
     </div>
+
+    <ApprovalBanner
+      :pending="approvals ?? []"
+      :desktop="desktop ?? null"
+      @answer="answer"
+    />
 
     <Composer
       ref="composer"

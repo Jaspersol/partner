@@ -145,6 +145,20 @@ internal static class NativeMethods
         public uint Colors;
     }
 
+    // ---- focus ----------------------------------------------------------------------------------
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint GetWindowThreadProcessId(nint hwnd, nint processId);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachInput);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool BringWindowToTop(nint hwnd);
+
     // ---- clipboard ------------------------------------------------------------------------------
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool OpenClipboard(nint owner);

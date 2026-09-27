@@ -313,6 +313,54 @@ describe('session removal', () => {
   })
 })
 
+describe('approval placement', () => {
+  it('puts the prompt in the conversation, right above the composer', async () => {
+    // It was in the app shell first, which put it above every view — including the queue — and a prompt nobody
+    // looks at is a prompt nobody answers.
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const pending = {
+      approvalId: 'ap-1',
+      toolName: 'desktop_act',
+      arguments: '{"entityId":"1a2b","kind":"LeftClick"}',
+      requestedAt: '2026-09-27T11:52:01+00:00',
+      expiresAt: '2026-09-27T11:54:01+00:00',
+    }
+    const { stub } = createStub({
+      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage })),
+    })
+
+    const wrapper = mount(SessionView, {
+      props: {
+        api: stub,
+        approvals: [pending],
+        desktop: {
+          enabled: true,
+          leaseTtlMs: 15000,
+          approval: 'all',
+          allowedWindowTitles: [],
+          lastObsId: 'obs-1',
+          entityCount: 1,
+          entities: [{ entityId: '1a2b', title: '网易云音乐', process: 'cloudmusic', foreground: false }],
+        },
+      },
+    })
+    await flushPromises()
+
+    const banner = wrapper.find('[data-test="approval-banner"]')
+    const composer = wrapper.find('[data-test="composer"]')
+    expect(banner.exists()).toBe(true)
+    expect(composer.exists()).toBe(true)
+
+    // Above the composer, in the same view: a parked turn is about the message being written.
+    const relation = banner.element.compareDocumentPosition(composer.element)
+    expect(relation & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    await wrapper.find('[data-test="approval-allow"]').trigger('click')
+    expect(wrapper.emitted('answer')?.[0]).toEqual(['ap-1', true])
+    wrapper.unmount()
+  })
+})
+
 describe('session scroll position', () => {
   /** Lets the frame a pin scheduled run, so its guard is released before the test plays the reader. */
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))

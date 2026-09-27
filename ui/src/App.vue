@@ -15,7 +15,6 @@ import { resolveConnection } from './config'
 import { applyTheme, nextTheme, readTheme, type Theme } from './theme'
 import SideBar, { type NavItem } from './components/SideBar.vue'
 import StatusBar from './components/StatusBar.vue'
-import ApprovalBanner from './components/ApprovalBanner.vue'
 import TopBar from './components/TopBar.vue'
 import MemoryView from './views/MemoryView.vue'
 import QueueView from './views/QueueView.vue'
@@ -201,12 +200,6 @@ onUnmounted(() => {
       @cycle-theme="cycleTheme"
     />
 
-    <ApprovalBanner
-      :pending="approvals"
-      :desktop="desktop"
-      @answer="answerApproval"
-    />
-
     <div class="body" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
       <SideBar
         :items="NAV"
@@ -227,8 +220,11 @@ onUnmounted(() => {
             :summary="summary ?? undefined"
             :consumer="consumer ?? undefined"
             :approval="desktop?.enabled === true ? desktop.approval : null"
+            :approvals="approvals"
+            :desktop="desktop"
             @context="context = $event"
             @approval="setApprovalGear"
+            @answer="answerApproval"
             @changed="refreshSummary"
           />
           <QueueView
