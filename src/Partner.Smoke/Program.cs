@@ -1787,7 +1787,7 @@ internal static class Program
                     && JsonDocument.Parse(raw).RootElement.GetProperty("model").GetProperty("apiKeySet").GetBoolean(),
                     "apiKeySet=true, value absent");
 
-                // Removing history: the view loses it, the raw log keeps it, and the conversation continues.
+                // Removing history: the view and the log both lose it, and the conversation continues.
                 var doomed = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "要删掉的" });
                 var doomedId = (await doomed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
                 for (var attempt = 0; attempt < 200; attempt++)

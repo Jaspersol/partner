@@ -310,7 +310,7 @@ export class PartnerApi implements PartnerApiSurface {
     await this.request('POST', `/api/session/${seq}/edit`, { body, actor })
   }
 
-  /** Removes one event from the view; the raw log keeps it and seqs are never reused. */
+  /** Removes one event from the view and from the log; seqs are never reused. */
   async deleteEvent(seq: number): Promise<void> {
     await this.request('POST', `/api/session/${seq}/delete`)
   }

@@ -27,8 +27,12 @@ public enum SessionEventKind
 
     /// <summary>
     /// Removes history from the projection: <c>Meta["fromSeq"]</c>..<c>Meta["toSeq"]</c> (inclusive, an absent
-    /// <c>toSeq</c> meaning "to the end") stops being rendered. The raw log keeps every event — this is a
-    /// projection, not a rewrite, so seqs are never reused and the removal is itself auditable.
+    /// <c>toSeq</c> meaning "to the end") stops being rendered.
+    /// <para>
+    /// Written by compaction, which is lossless: the folded events stay in the log behind the summary. An
+    /// explicit user removal does not write one of these — it goes through <c>ISessionStore.PurgeAsync</c>,
+    /// which takes the content out of the log and leaves only a content-free marker for the range.
+    /// </para>
     /// </summary>
     Retract,
 

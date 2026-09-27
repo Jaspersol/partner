@@ -17,9 +17,10 @@ public sealed record CompactionResult(int FoldedEvents, long? SummarySeq, string
 /// Folds history that no longer fits the context window into one summary (design doc §2.5 short-term
 /// memory: "窗口内上下文 + 压缩").
 /// <para>
-/// Both halves are append-only, so the raw log keeps everything: a <see cref="SessionEventKind.Summary"/>
+/// Both halves are append-only, so folding never loses anything: a <see cref="SessionEventKind.Summary"/>
 /// carries the text and a <see cref="SessionEventKind.Retract"/> hides the events it replaced. Without the
-/// retraction the summarized events would still be sent, and the window would not have shrunk at all.
+/// retraction the summarized events would still be sent, and the window would not have shrunk at all. This is
+/// the deliberate opposite of an explicit removal, which takes the content out of the log for good.
 /// </para>
 /// </summary>
 public sealed class SessionCompactor
