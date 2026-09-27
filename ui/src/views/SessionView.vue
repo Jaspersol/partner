@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type { ConsumerState, PartnerApiSurface, QueueSummary, SessionRevision, SessionView } from '../api'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
@@ -81,6 +81,9 @@ async function refresh() {
     if (selectedSeq.value !== null) {
       emit('context', contextFor(selectedSeq.value))
     }
+
+    // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
+    await followIfFollowing()
   } catch (failure) {
     error.value = String(failure)
   }
@@ -178,6 +181,12 @@ async function onSent(result: { itemId: string; deduplicated: boolean }) {
     : `已入队 ${result.itemId} · 等待执行`
   // The delivery lands in the queue, so the session is unchanged until a consumer runs.
   await refresh()
+
+  // Sending is an explicit "show me what happens", so the view starts following the reply even if the reader
+  // had scrolled back — unlike a reply that merely arrives while they are reading something older.
+  following.value = true
+  await followIfFollowing()
+
   emit('changed')
 }
 
@@ -204,8 +213,42 @@ async function poll() {
   })
 }
 
+/**
+ * Whether the list follows new content. Decided by measuring, never assumed: opening a long history is not
+ * "at the bottom", and a reply arriving must not pull a reader away from what they scrolled back to read.
+ */
+const scroller = ref<HTMLElement | null>(null)
+const following = ref(false)
+
+/** How close to the bottom still counts as the bottom — sub-pixel layout and the caret flip it otherwise. */
+const FOLLOW_SLACK_PX = 32
+
+function measureFollow() {
+  const el = scroller.value
+  if (!el) {
+    return
+  }
+
+  following.value = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK_PX
+}
+
+/** After content changes, pin the bottom — but only for a reader who was already there. */
+async function followIfFollowing() {
+  await nextTick()
+
+  const el = scroller.value
+  if (el !== null && following.value) {
+    el.scrollTop = el.scrollHeight
+  }
+}
+
 onMounted(async () => {
   await refresh()
+
+  // Measure before the timer can grow anything, so the first decision is the reader's position, not ours.
+  await nextTick()
+  measureFollow()
+
   poller = setInterval(() => {
     void poll()
   }, BUSY_POLL_MS)
@@ -254,7 +297,7 @@ defineExpose({ refresh, focusComposer })
 
     <div class="split" :class="{ 'is-inspector-collapsed': inspectorCollapsed }">
       <div v-if="!inspectorCollapsed" class="inspector-scrim" @click="inspectorCollapsed = true" />
-      <div class="scroll">
+      <div ref="scroller" class="scroll" @scroll="measureFollow">
         <EventList :items="visible" :selected-seq="selectedSeq" @select="select" />
         <p v-if="visible.length === 0" class="muted" style="padding: var(--space-3)">
           （无匹配事件）

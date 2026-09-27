@@ -61,6 +61,31 @@ describe('event list', () => {
     expect(wrapper.emitted('select')).toBeUndefined()
   })
 
+  it('renders the streaming reply as markdown, half-finished or not', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          {
+            ...baseItem,
+            seq: 0,
+            kind: 'AssistantStreaming',
+            streaming: true,
+            // A reply arrives in pieces, so the renderer sees markdown that is not finished yet.
+            body: '**重点**\n\n- 一\n- 二\n\n还有未闭合的 *星号',
+          },
+        ],
+      },
+    })
+
+    const row = wrapper.find('li')
+    expect(row.find('strong').text()).toBe('重点')
+    expect(row.findAll('li')).toHaveLength(2)
+
+    // The half-written emphasis stays literal rather than swallowing the rest of the text.
+    expect(row.text()).toContain('未闭合的 *星号')
+  })
+
   it('selects a normal event on click', async () => {
     const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 3 }] } })
     await wrapper.find('li').trigger('click')

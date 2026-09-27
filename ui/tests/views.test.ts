@@ -16,6 +16,7 @@ import type {
 import MemoryView from '../src/views/MemoryView.vue'
 import QueueView from '../src/views/QueueView.vue'
 import SessionView from '../src/views/SessionView.vue'
+import Composer from '../src/components/Composer.vue'
 import SettingsViewComponent from '../src/views/SettingsView.vue'
 
 /**
@@ -301,6 +302,68 @@ describe('session removal', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="error"]').text()).toContain('404')
+  })
+})
+
+describe('session scroll position', () => {
+  /** happy-dom has no layout, so the geometry a browser would compute is stated explicitly. */
+  function geometry(wrapper: ReturnType<typeof mount>, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+    const el = wrapper.find('.scroll').element as HTMLElement
+    Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+    el.scrollTop = scrollTop
+    return el
+  }
+
+  it('follows the reply when the reader is already at the bottom', async () => {
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
+    const { stub } = createStub({ session })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const el = geometry(wrapper, 1000, 800)
+    await wrapper.find('.scroll').trigger('scroll')
+
+    // The reply grows, then a refresh lands: the bottom moves and the view moves with it.
+    Object.defineProperty(el, 'scrollHeight', { value: 1400, configurable: true })
+    await (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh()
+
+    expect(el.scrollTop).toBe(1400)
+  })
+
+  it('stays put when the reader has scrolled back', async () => {
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
+    const { stub } = createStub({ session })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const el = geometry(wrapper, 1000, 100)
+    await wrapper.find('.scroll').trigger('scroll')
+
+    // Reading something older while the reply arrives must not yank the view.
+    Object.defineProperty(el, 'scrollHeight', { value: 1400, configurable: true })
+    await (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh()
+
+    expect(el.scrollTop).toBe(100)
+  })
+
+  it('starts following when the reader sends something themselves', async () => {
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: false, context: usage }))
+    const { stub } = createStub({ session })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const el = geometry(wrapper, 1000, 100)
+    await wrapper.find('.scroll').trigger('scroll')
+
+    // Sending is an explicit "show me what happens", unlike a reply arriving while reading.
+    await wrapper.findComponent(Composer).vm.$emit('sent', { itemId: 'in-1', deduplicated: false })
+    await flushPromises()
+
+    expect(el.scrollTop).toBe(1000)
   })
 })
 
