@@ -42,6 +42,19 @@ public sealed record DesktopSettings
 
     /// <summary>允许动作的窗口标题子串（不区分大小写）；空表示不限。</summary>
     public IReadOnlyList<string> AllowedWindowTitles { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Value equality that actually compares the titles. A record holding a list compares it by reference, so
+    /// two defaults — each with its own empty array — would look different, and every settings save would
+    /// restart the consumer (resetting the counters of a turn in flight).
+    /// </summary>
+    public bool Equals(DesktopSettings? other) =>
+        other is not null
+        && Enabled == other.Enabled
+        && LeaseTtlMs == other.LeaseTtlMs
+        && AllowedWindowTitles.SequenceEqual(other.AllowedWindowTitles, StringComparer.Ordinal);
+
+    public override int GetHashCode() => HashCode.Combine(Enabled, LeaseTtlMs, AllowedWindowTitles.Count);
 }
 
 /// <summary>Mirrors <c>VoiceInputSetting</c>.</summary>

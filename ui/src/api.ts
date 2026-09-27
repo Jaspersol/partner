@@ -244,11 +244,25 @@ export interface SubmitResult {
 }
 
 /** Whether anything is executing the queue, and if not, why. */
+/** One tool the model can call, with what governance will do about it. */
+export interface ToolExposure {
+  name: string
+  decision: 'allow' | 'ask' | string
+}
+
 export interface ConsumerState {
   running: boolean
   reason: string
   model: string | null
-  stats: { completed: number; failed: number; canceled: number; skipped: number; handled: number }
+  stats: {
+    completed: number
+    failed: number
+    canceled: number
+    skipped: number
+    handled: number
+  }
+  /** What the model can actually call. A tool that is not here is not a capability. */
+  tools: ToolExposure[]
 }
 
 /** One voice half: whether it is up, on which device, and why not. */

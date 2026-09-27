@@ -82,6 +82,40 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task Toggling_it_changes_what_the_model_can_call()
+    {
+        // The tool table is built when the consumer starts, and /api/consumer reports it — so this observes the
+        // restart that makes the switch mean something, rather than asserting that a request returned 200.
+        var off = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
+        Assert.Empty(off.GetProperty("tools").EnumerateArray());
+
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
+            desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        var on = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
+        var tools = on.GetProperty("tools").EnumerateArray()
+            .Select(tool => tool.GetProperty("name").GetString() + ":" + tool.GetProperty("decision").GetString())
+            .ToList();
+
+        // Looking is allowed outright; acting always asks a human.
+        Assert.Contains("desktop_observe:allow", tools);
+        Assert.Contains("desktop_act:ask", tools);
+
+        // And switching it off takes them away again.
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
+            desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        var offAgain = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
+        Assert.Empty(offAgain.GetProperty("tools").EnumerateArray());
+    }
+
+    [Fact]
     public async Task An_empty_approval_queue_is_reported_rather_than_hidden()
     {
         // The UI has to distinguish "nothing is waiting" from "we could not ask", so the shape is always there.

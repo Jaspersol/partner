@@ -12,7 +12,15 @@ using Partner.Core.Sessions;
 namespace Partner.Api;
 
 /// <summary>What the consumer is doing, so "nothing is executing" is a visible state rather than a silent one.</summary>
-public sealed record ConsumerState(bool Running, string Reason, string? Model, TurnLoopStats Stats);
+/// <summary>One tool the model can call, with the decision governance will apply to it.</summary>
+public sealed record ToolExposure(string Name, string Decision);
+
+public sealed record ConsumerState(
+    bool Running,
+    string Reason,
+    string? Model,
+    TurnLoopStats Stats,
+    IReadOnlyList<ToolExposure> Tools);
 
 /// <summary>
 /// Owns the single consumer of the input queue (design doc §2.2) for the API process.
@@ -38,6 +46,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private Task? _running;
     private HttpClient? _http;
     private ILlmClient? _llm;
+    private IReadOnlyList<ToolExposure> _tools = Array.Empty<ToolExposure>();
     private string _reason = "未启动";
 
     /// <summary>
@@ -59,7 +68,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         Running: _running is { IsCompleted: false },
         Reason: _reason,
         Model: _model,
-        Stats: _loop?.Stats ?? TurnLoopStats.Empty);
+        Stats: _loop?.Stats ?? TurnLoopStats.Empty,
+        Tools: _tools);
 
     public static ConsumerHost Create(ApiContext context, string workspace)
     {
@@ -149,6 +159,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             {
                 _reason = reason;
                 _model = null;
+                _tools = Array.Empty<ToolExposure>();
                 return State;
             }
 
@@ -220,6 +231,13 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             allowed.Add("desktop_observe");
             ask.Add("desktop_act");
         }
+
+        // The exposure list is what /api/consumer reports: a tool the model cannot see is not a capability.
+        _tools = tools.Specs
+            .Select(spec => new ToolExposure(
+                spec.Name,
+                ask.Contains(spec.Name) ? "ask" : "allow"))
+            .ToList();
 
         var runner = new AgentTurnRunner(
             _context.Session,

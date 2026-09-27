@@ -168,7 +168,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, allowedWindowTitles: [], lastObsId: null, entityCount: 0 })),
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
-    consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } })),
+    consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], })),
     devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),
     listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9/v1', models: ['qwen3', 'llama3'] })),    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
     memory: vi.fn(async () => []),
@@ -186,7 +186,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     })),
     saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
       settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
-      consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 } },
+      consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
       voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
       compaction: null,
     })),
@@ -349,15 +349,36 @@ describe('composer', () => {
 
   it('says which tools the model has, because off is not inferable', async () => {
     const api = stubApi()
+    const stats = { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }
 
-    const off = mount(Composer, { props: { api } })
+    // Nothing registered: the model cannot ask, and a desktop request just gets text back.
+    const none = mount(Composer, {
+      props: { api, consumer: { running: true, reason: '运行中', model: 'm', stats, tools: [] } },
+    })
     await flushPromises()
-    expect(off.find('[data-test=composer-tools]').text()).toContain('桌面未启用')
+    expect(none.find('[data-test=composer-tools]').text()).toContain('桌面未启用')
 
-    // With the capability on there is nothing to explain, so the line is not there either.
-    const on = mount(Composer, { props: { api, desktopEnabled: true } })
+    // With the capability on, the line names the tools and says which one needs approval.
+    const some = mount(Composer, {
+      props: {
+        api,
+        consumer: {
+          running: true,
+          reason: '运行中',
+          model: 'm',
+          stats,
+          tools: [
+            { name: 'desktop_observe', decision: 'allow' },
+            { name: 'desktop_act', decision: 'ask' },
+          ],
+        },
+      },
+    })
     await flushPromises()
-    expect(on.find('[data-test=composer-tools]').exists()).toBe(false)
+
+    const line = some.find('[data-test="composer-tools"]').text()
+    expect(line).toContain('desktop_observe')
+    expect(line).toContain('desktop_act（需批准）')
   })
 
   it('refuses to send an empty box', async () => {
@@ -386,6 +407,7 @@ describe('composer', () => {
       reason: '未配置模型：缺少 PARTNER_LLM_BASE_URL',
       model: null,
       stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 },
+      tools: [],
     }
 
     const wrapper = mount(Composer, { props: { api: stubApi(), consumer } })
@@ -456,6 +478,7 @@ describe('status bar', () => {
           reason: '运行中',
           model: 'qwen3',
           stats: { completed: 3, failed: 0, canceled: 0, skipped: 0, handled: 3 },
+          tools: [],
         },
         version: 'v0.1.0',
       },
@@ -476,6 +499,7 @@ describe('status bar', () => {
           reason: '未配置模型：缺少 PARTNER_LLM_BASE_URL',
           model: null,
           stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 },
+          tools: [],
         },
         version: 'v0.1.0',
       },

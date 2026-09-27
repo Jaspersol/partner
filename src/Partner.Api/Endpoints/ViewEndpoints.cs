@@ -512,7 +512,11 @@ public static class ViewEndpoints
 
             // The model section is the one that must take effect now rather than at the next restart. Other
             // sections can change without interrupting a turn in flight.
-            if (ModelConfig.Differs(before.Model, stored.Model))
+            //
+            // The desktop section is the exception among those: it decides which tools are registered, and the
+            // registry is built when the consumer starts. Toggling it without restarting would leave the model
+            // with the old tool table — enabled but still unable to ask, which reads as a broken capability.
+            if (ModelConfig.Differs(before.Model, stored.Model) || before.Desktop != stored.Desktop)
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);

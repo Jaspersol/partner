@@ -10,7 +10,6 @@ const props = defineProps<{
   api: PartnerApiSurface
   summary?: QueueSummary | undefined
   consumer?: ConsumerState | undefined
-  desktopEnabled?: boolean | undefined
 }>()
 const emit = defineEmits<{ sent: [result: SubmitResult]; failed: [message: string] }>()
 
@@ -44,13 +43,21 @@ const queueStatus = computed(() => {
  * explanation matters more, not less.
  */
 /**
- * Which tools the model actually has. Absent by default is not a detail the reader can infer: with the
- * desktop off, the model never sees those tools at all, and a request to control the desktop just gets a
- * text answer — which looks like a broken capability rather than a switched-off one.
+ * Which tools the model actually has. It cannot be inferred: with the desktop off the model never sees those
+ * tools, so a request to control the desktop just gets a text answer — which reads as a broken capability
+ * rather than a switched-off one.
  */
-const desktopOff = computed(() => props.desktopEnabled !== true)
+const tools = computed(() => props.consumer?.tools ?? [])
 
-const toolsNote = '工具：无 · 桌面未启用（设置 → 桌面）'
+
+const toolsNote = computed(() => {
+  if (tools.value.length === 0) {
+    return '工具：无 · 桌面未启用（设置 → 桌面）'
+  }
+
+  const names = tools.value.map((tool) => (tool.decision === 'ask' ? `${tool.name}（需批准）` : tool.name))
+  return `工具：${names.join('、')}`
+})
 
 const consumerNote = computed(() => {
   const state = props.consumer
@@ -135,13 +142,13 @@ defineExpose({ focus })
 <template>
   <div class="composer" data-test="composer">
     <div
-      v-if="stripOpen && (queueStatus || consumerNote || desktopOff)"
+      v-if="stripOpen"
       class="composer-strip"
       data-test="composer-strip"
     >
       <span v-if="queueStatus">{{ queueStatus }}</span>
       <span v-if="consumerNote" class="muted" data-test="composer-consumer">{{ consumerNote }}</span>
-      <span v-if="desktopOff" class="muted" data-test="composer-tools">{{ toolsNote }}</span>
+      <span class="muted" data-test="composer-tools">{{ toolsNote }}</span>
       <button class="ghost" data-test="composer-strip-toggle" @click="stripOpen = false">⌃</button>
     </div>
 
