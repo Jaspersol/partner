@@ -341,8 +341,23 @@ async function main() {
     check('the model card exposes the context window and the output ceiling in tokens', limits === '32768/4096', limits)
     check(
       'the settings page covers every configurable subsystem',
-      cards.includes('语音识别') && cards.includes('语音合成') && cards.includes('模型'),
+      cards.includes('语音识别') && cards.includes('语音合成') && cards.includes('模型') && cards.includes('桌面'),
       cards,
+    )
+
+    // The desktop card is the only irreversible capability, so its card has to say so and default to off.
+    const desktopOff = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="desktop-enabled"]\')?.checked === false',
+    )
+    const desktopNote = await evaluate(
+      cdp,
+      '[...document.querySelectorAll(\'section.card\')].find((c) => c.querySelector(\'h2\')?.textContent.includes(\'桌面\'))?.innerText ?? ""',
+    )
+    check(
+      'the desktop card starts off and says what turning it on means',
+      desktopOff && desktopNote.includes('批准'),
+      `off=${desktopOff} note=${desktopNote.slice(0, 40).replace(/\n/g, ' ')}`,
     )
 
     const beforeModel = await evaluate(cdp, 'document.querySelector(\'[data-test="model-effect"]\').textContent')
