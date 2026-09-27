@@ -53,7 +53,8 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
 
     public ToolSpec Spec { get; } = new(
         "desktop_observe",
-        "列出当前桌面的可见窗口：实体 id、标题、进程与矩形。动作只能针对这里返回的 entityId，且必须用最近一次观察发出的租约。",
+        "列出当前桌面的可见窗口：实体 id、标题、进程与矩形。动作只能针对这里返回的 entityId。"
+        + "若你要操作的程序不在列表里，它就没在运行：不要对别的窗口动手，先想办法把它打开（例如用键盘启动器）。",
         """{"type":"object","properties":{},"additionalProperties":false}""");
 
     public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
@@ -114,7 +115,8 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         "desktop_act",
         "对最近一次 desktop_observe 返回的某个窗口执行一次动作。kind 取 focus/movePointer/leftClick/rightClick/keyPress；"
         + "坐标动作需要 x/y（必须落在该窗口矩形内），按键需要 virtualKey（要求该窗口已在前台，否则先 focus）。"
-        + "执行前会重新观察并核对目标是否仍是同一个窗口；租约过期不会直接失败。",
+        + "执行前会重新观察并核对目标是否仍是同一个窗口；租约过期不会直接失败。"
+        + "目标必须就是你要操作的那个窗口：按键只会打到前台窗口，坐标必须落在该窗口矩形内，否则会被拒绝。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string"},
