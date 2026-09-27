@@ -3243,6 +3243,11 @@ internal static class Program
         {
             "desktop: input marshalling matches the Win32 contract",
         }),
+        ("desktop.model_vision", "M9", new[]
+        {
+            "desktop: a screenshot reaches the model as an image",
+            "desktop: the log records the screenshot by media id, not by pixels",
+        }),
         ("voice.utterance_to_queue", "M10", new[]
         {
             "voice: speech followed by silence produces one utterance",

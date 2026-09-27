@@ -540,6 +540,23 @@
       ]
     },
     {
+      "id": "desktop.model_vision",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a screenshot reaches the model as an image",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the log records the screenshot by media id, not by pixels",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
       "id": "voice.utterance_to_queue",
       "owner": "M10",
       "level": "product-supported",
@@ -781,6 +798,111 @@
           "passed": true
         },
         {
+          "check": "session: the reply is visible while it is still being written",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "session: the client asks the model to stream",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "session: the finished reply replaces the live row, whole",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "session: tool calls and results reach the view",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "image: an upload comes back as an id",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "image: the model receives the attachment inline",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "image: the logs keep the id, not the bytes",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a key press waits for approval",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: an approved action looks again instead of trusting a dead lease",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a screenshot reaches the model as an image",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the log records the screenshot by media id, not by pixels",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the default gear asks for every action but never for looking",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the middle gear frees the GUI and still gates commands",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the open gear asks for nothing",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the capability reports itself enabled",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the model can observe through its tool",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: an action waits for approval instead of running",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the approval queue surfaces the parked action",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: answering the queue settles it",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a denied action is refused, not performed",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the refusal is in the log with the tool\u0027s name",
+          "ran": true,
+          "passed": true
+        },
+        {
           "check": "settings: pointing the model settings at an endpoint re-points the consumer",
           "ran": true,
           "passed": true
@@ -818,12 +940,12 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "session: deleting one event removes it from the view but not from the log",
+          "check": "session: deleting one event takes its text out of the log",
           "ran": true,
           "passed": true
         },
         {
-          "check": "session: retracting removes the selected event and everything after it",
+          "check": "session: retracting removes the selected event and takes its text out of the log",
           "ran": true,
           "passed": true
         },

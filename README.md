@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**547 个 .NET 单测 + 85 个前端测试全绿 / 140 项 smoke 检查 / 53 项能力 `product-supported`**。
+当前基线：**547 个 .NET 单测 + 85 个前端测试全绿 / 142 项 smoke 检查 / 54 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -491,12 +491,12 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
 | .NET 单测（547） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
-| smoke（140 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
+| smoke（142 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
 | 前端契约测试（15） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点、上下文占用 |
 | 前端视图测试（36） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随） |
 | 前端组件测试（34） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（工具卡配对与状态、流式行与它的 Markdown 渲染） |
 | **壳的端到端（34）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、**桌面卡片默认关闭且写明需批准**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、**「支持图片」开关落盘并让运行中的消费者注册截图工具**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
-| 能力门禁（53） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
+| 能力门禁（54） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
 ### 落盘点
 
@@ -603,7 +603,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1)、`desktop.tool_path`(7：模型经工具观察、动作被审批拦住并拒绝、拒绝写进日志) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.tool_path`(7：模型经工具观察、动作被审批拦住并拒绝、拒绝写进日志) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1)、`settings.*`(2) |
