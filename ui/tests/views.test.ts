@@ -306,6 +306,9 @@ describe('session removal', () => {
 })
 
 describe('session scroll position', () => {
+  /** Lets the frame a pin scheduled run, so its guard is released before the test plays the reader. */
+  const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
   /** happy-dom has no layout, so the geometry a browser would compute is stated explicitly. */
   function geometry(wrapper: ReturnType<typeof mount>, scrollHeight: number, scrollTop: number, clientHeight = 200) {
     const el = wrapper.find('.scroll').element as HTMLElement
@@ -314,6 +317,28 @@ describe('session scroll position', () => {
     el.scrollTop = scrollTop
     return el
   }
+
+  it('opens on the newest event', async () => {
+    // happy-dom has no layout, so the geometry a browser would compute is stated on the prototype before the
+    // mount — the initial scroll happens during mount, before a test can reach the element.
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 1200 })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 200 })
+
+    try {
+      const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+      const session = vi.fn(async () => ({ lastSeq: 9, items: [], busy: false, context: usage }))
+      const { stub } = createStub({ session })
+      const wrapper = mount(SessionView, { props: { api: stub } })
+      await flushPromises()
+
+      // The view does exactly one scroll on its own, and it is this one.
+      expect(wrapper.find('.scroll').element.scrollTop).toBe(1200)
+    } finally {
+      // These were not own properties before the stub, so removing the shadow restores what was inherited.
+      delete (HTMLElement.prototype as { scrollHeight?: unknown }).scrollHeight
+      delete (HTMLElement.prototype as { clientHeight?: unknown }).clientHeight
+    }
+  })
 
   it('follows the reply when the reader is already at the bottom', async () => {
     const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
@@ -332,6 +357,27 @@ describe('session scroll position', () => {
     expect(el.scrollTop).toBe(1400)
   })
 
+  it('does not mistake its own pin for the reader scrolling away', async () => {
+    const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
+    const { stub } = createStub({ session })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const el = geometry(wrapper, 1000, 1000)
+    await wrapper.find('.scroll').trigger('scroll')
+
+    // A browser fires a scroll event for a programmatic move. happy-dom does not, so it is dispatched here —
+    // and it must not be read as the reader's intent, or following dies the moment it starts.
+    await (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh()
+    await wrapper.find('.scroll').trigger('scroll')
+
+    Object.defineProperty(el, 'scrollHeight', { value: 1500, configurable: true })
+    await (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh()
+
+    expect(el.scrollTop).toBe(1500)
+  })
+
   it('stays put when the reader has scrolled back', async () => {
     const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
     const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
@@ -339,6 +385,7 @@ describe('session scroll position', () => {
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
+    await nextFrame()
     const el = geometry(wrapper, 1000, 100)
     await wrapper.find('.scroll').trigger('scroll')
 

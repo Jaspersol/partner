@@ -193,10 +193,11 @@ async function onSent(result: { itemId: string; deduplicated: boolean }) {
 /**
  * How the view keeps up. A session being written to must show it while it happens, so a turn in flight is
  * polled quickly; an idle one is polled slowly, because the only thing that can change it then is work
- * started elsewhere (a scheduled task, another window).
+ * started elsewhere (a scheduled task, another window) — and that still has to be caught early enough to show
+ * its reply while it is being written, not after it finished.
  */
 const BUSY_POLL_MS = 400
-const IDLE_POLL_MS = 5000
+const IDLE_POLL_MS = 2000
 
 let poller: ReturnType<typeof setInterval> | undefined
 let lastPoll = 0
@@ -223,7 +224,14 @@ const following = ref(false)
 /** How close to the bottom still counts as the bottom — sub-pixel layout and the caret flip it otherwise. */
 const FOLLOW_SLACK_PX = 32
 
+/** Set while the view is moving itself, so the scroll event it causes is not read as the reader's intent. */
+let pinning = false
+
 function measureFollow() {
+  if (pinning) {
+    return
+  }
+
   const el = scroller.value
   if (!el) {
     return
@@ -237,17 +245,30 @@ async function followIfFollowing() {
   await nextTick()
 
   const el = scroller.value
-  if (el !== null && following.value) {
-    el.scrollTop = el.scrollHeight
+  if (el === null || !following.value) {
+    return
   }
+
+  pinning = true
+  el.scrollTop = el.scrollHeight
+
+  // A browser fires a scroll event for that assignment, and it lands before the next frame. Reading it would
+  // measure a layout that is still settling and could turn following off right after turning it on — which is
+  // how the view used to end up parked 36px short of the bottom, permanently.
+  requestAnimationFrame(() => {
+    pinning = false
+  })
 }
 
 onMounted(async () => {
   await refresh()
 
-  // Measure before the timer can grow anything, so the first decision is the reader's position, not ours.
+  // Open on the newest event. A session is a conversation and its interesting end is the bottom, so this is
+  // the one scroll the view does on its own. From here on it follows the reader's position instead: growing
+  // text keeps the bottom pinned only while they are still there.
   await nextTick()
-  measureFollow()
+  following.value = true
+  await followIfFollowing()
 
   poller = setInterval(() => {
     void poll()
