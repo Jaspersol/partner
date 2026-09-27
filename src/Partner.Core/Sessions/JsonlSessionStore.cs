@@ -559,12 +559,15 @@ public static class SessionProjection
             revisions[target] = revisions.TryGetValue(target, out var n) ? n + 1 : 1;
         }
 
-        // Pass 2: emit content entries. Revisions, retractions and turn/step control markers are not
-        // content — they stay in the raw log for auditability but never render as conversation.
+        // Pass 2: emit renderable entries. Content plus the tool-call pair — those are shown collapsed, which
+        // is why they are not content: prompts and compaction ignore them, the session view does not.
+        // Revisions, retractions and turn/step markers stay in the raw log only.
         var items = new List<SessionViewItem>();
         foreach (var e in ordered)
         {
-            if (e.Kind == SessionEventKind.Edit || e.Kind == SessionEventKind.Retract || !e.Kind.IsContent())
+            if (e.Kind == SessionEventKind.Edit
+                || e.Kind == SessionEventKind.Retract
+                || (!e.Kind.IsContent() && !e.Kind.IsToolControl()))
             {
                 continue;
             }

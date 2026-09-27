@@ -49,7 +49,9 @@ public sealed class SessionCompactor
         // A summary is context, not a turn: it does not count against the window, so the window keeps
         // bounding the raw conversation. Previous summaries are folded into the new one — otherwise every
         // compaction would add another summary and the context would grow instead of shrinking.
-        var conversation = view.Items.Where(item => item.Kind != SessionEventKind.Summary).ToList();
+        var conversation = view.Items
+            .Where(item => item.Kind != SessionEventKind.Summary && item.Kind.IsContent())
+            .ToList();
         var summaries = view.Items.Where(item => item.Kind == SessionEventKind.Summary).ToList();
 
         // The same rule the assembler uses: the newest suffix that fits stays, the rest is folded. A

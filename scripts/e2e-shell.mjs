@@ -123,6 +123,8 @@ async function main() {
   const events = [
     { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'user', source: 'text', body: 'turn on the lamp' },
     { seq: 2, at: '2026-09-26T10:00:01+00:00', kind: 'assistant', source: 'text', body: 'done' },
+    { seq: 3, at: '2026-09-26T10:00:02+00:00', kind: 'toolCall', source: 'text', body: 'clock' },
+    { seq: 4, at: '2026-09-26T10:00:03+00:00', kind: 'toolResult', source: 'text', body: '{"now":"12:00"}' },
   ]
   writeFileSync(join(workspace, 'session', 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n')
   writeFileSync(
@@ -189,7 +191,30 @@ async function main() {
 
     await waitFor(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length > 0', 'the session list')
     const rows = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
-    check('the webview renders the seeded session', rows === 2, `rows=${rows}`)
+    check('the webview renders the seeded session', rows === 4, `rows=${rows}`)
+
+    // A tool call is machinery, not conversation: it is shown (a turn that called a tool must not look like
+    // it did nothing) but folded, so the payload is not in the way.
+    const foldClosed = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="session-control-ToolCall"]\')?.open === false',
+    )
+    const foldLabelled = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="session-control-ToolCall"] summary\')?.textContent ?? ""',
+    )
+    check(
+      'a tool call is shown folded, not hidden',
+      foldClosed && foldLabelled.includes('clock'),
+      `closed=${foldClosed} label=${foldLabelled.trim()}`,
+    )
+
+    await evaluate(cdp, 'document.querySelector(\'[data-test="session-control-ToolCall"] summary\').click()')
+    const foldOpened = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="session-control-ToolCall"]\').open === true',
+    )
+    check('a folded tool call opens on click', foldOpened, `open=${foldOpened}`)
 
     const blocked = await evaluate(cdp, 'document.querySelector(\'[data-test="blocked"]\').textContent')
     check('the status bar surfaces blocked work', blocked.includes('失败 1'), blocked.trim())

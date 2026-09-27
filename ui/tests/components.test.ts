@@ -8,9 +8,65 @@ import MarkdownBody from '../src/components/MarkdownBody.vue'
 import SideBar from '../src/components/SideBar.vue'
 import StatusBar from '../src/components/StatusBar.vue'
 import TopBar from '../src/components/TopBar.vue'
+import EventList from '../src/components/EventList.vue'
 import SessionView from '../src/views/SessionView.vue'
 import { summarizeQueue } from '../src/api'
 import type { QueueView } from '../src/api'
+
+const baseItem = {
+  seq: 1,
+  at: '2026-09-26T10:00:00+00:00',
+  kind: 'User',
+  source: 'Text',
+  body: 'hi',
+  originalBody: null,
+  revisionCount: 0,
+}
+
+describe('event list', () => {
+  it('folds a tool call away by default and opens it on demand', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 7, kind: 'ToolCall', body: 'clock' },
+          { ...baseItem, seq: 8, kind: 'ToolResult', body: 'it is noon' },
+        ],
+      },
+    })
+
+    // Folded: the row says a tool ran, the payload is not in the way.
+    const folds = wrapper.findAll('[data-test=session-control-ToolCall], [data-test=session-control-ToolResult]')
+    expect(folds).toHaveLength(2)
+    expect(folds.every((fold) => !fold.attributes('open'))).toBe(true)
+    expect(folds[0]?.find('summary').text()).toContain('clock')
+
+    await folds[0]?.find('summary').trigger('click')
+    expect(wrapper.text()).toContain('clock')
+  })
+
+  it('marks the reply that is still being written and keeps it out of the inspector', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [{ ...baseItem, seq: 0, kind: 'AssistantStreaming', streaming: true, body: '正在' }],
+      },
+    })
+
+    expect(wrapper.find('[data-test=session-streaming]').exists()).toBe(true)
+    expect(wrapper.find('li').classes()).toContain('streaming')
+
+    // Clicking it must not try to select seq 0: there is nothing to edit yet.
+    await wrapper.find('li').trigger('click')
+    expect(wrapper.emitted('select')).toBeUndefined()
+  })
+
+  it('selects a normal event on click', async () => {
+    const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 3 }] } })
+    await wrapper.find('li').trigger('click')
+    expect(wrapper.emitted('select')?.[0]).toEqual([3])
+  })
+})
 
 /**
  * The pieces the shell is built from. Each is mounted with props, so a failure points at the component

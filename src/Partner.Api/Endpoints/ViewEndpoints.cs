@@ -161,7 +161,28 @@ public static class ViewEndpoints
                     body = i.Body,
                     originalBody = i.OriginalBody,
                     revisionCount = i.RevisionCount,
+                    streaming = false,
+                })
+                .ToList();
+
+            // The reply being written right now rides along as one extra row. It is not in the log — a
+            // half-written answer is not an event of record — so it carries seq 0 and disappears the moment
+            // the real Assistant event lands. The view is already a mix of log and runtime (context below is
+            // measured, not stored), so this is the same contract, not a new one.
+            if (consumer.LiveAssistant is { } live)
+            {
+                items.Add(new
+                {
+                    seq = 0L,
+                    at = DateTimeOffset.UtcNow,
+                    kind = "AssistantStreaming",
+                    source = "Text",
+                    body = live.Text,
+                    originalBody = (string?)null,
+                    revisionCount = 0,
+                    streaming = true,
                 });
+            }
 
             // The window's occupancy is measured the same way a turn would assemble it, so the number the UI
             // shows is the number that decides whether history has to be folded.
@@ -171,6 +192,9 @@ public static class ViewEndpoints
             {
                 lastSeq = view.LastSeq,
                 items,
+                // Whether a turn is in flight. The view uses it to decide how often to re-read itself: a
+                // session that is being written to must show it while it happens, not five seconds later.
+                busy = consumer.LiveAssistant is not null || ctx.Queue.Snapshot().RunningItemId is not null,
                 context = new
                 {
                     usedTokens = usage.UsedTokens,

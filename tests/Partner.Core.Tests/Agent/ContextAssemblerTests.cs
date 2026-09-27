@@ -73,6 +73,30 @@ public sealed class ContextAssemblerTests : IDisposable
     }
 
     [Fact]
+    public async Task Tool_calls_are_shown_in_the_view_but_never_sent_to_the_model()
+    {
+        var store = await SessionAsync(
+            (SessionEventKind.User, "what time is it"),
+            (SessionEventKind.ToolCall, "clock"),
+            (SessionEventKind.ToolResult, "it is noon"),
+            (SessionEventKind.Assistant, "noon"));
+
+        // Shown: a turn that called a tool must not look like it did nothing.
+        var view = await store.ProjectAsync();
+        Assert.Contains(view.Items, item => item.Kind == SessionEventKind.ToolCall);
+        Assert.Contains(view.Items, item => item.Kind == SessionEventKind.ToolResult);
+
+        // Not sent: the window stays conversational. The runner feeds a tool result back to the model for the
+        // turn that produced it; history is what the user and the assistant said.
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 512, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        Assert.DoesNotContain("clock", messages[0].Content!, StringComparison.Ordinal);
+        Assert.DoesNotContain("noon", messages[0].Content!, StringComparison.Ordinal);
+        Assert.DoesNotContain(messages, m => m.Content == "clock" || m.Content == "it is noon");
+    }
+
+    [Fact]
     public async Task Measuring_occupancy_never_reaches_the_model()
     {
         // The session view reports occupancy on every load. If that path could do I/O, a slow or dead model

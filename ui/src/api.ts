@@ -11,6 +11,8 @@ export interface SessionItem {
   body: string
   originalBody: string | null
   revisionCount: number
+  /** True for the reply being written right now: it is not in the log yet, and has seq 0. */
+  streaming?: boolean
 }
 
 /** How much of the model's context window the history currently occupies. */
@@ -27,6 +29,8 @@ export interface ContextUsage {
 export interface SessionView {
   lastSeq: number
   items: SessionItem[]
+  /** True while a turn is running: the view re-reads itself quickly so the turn is visible as it happens. */
+  busy?: boolean
   context: ContextUsage
 }
 

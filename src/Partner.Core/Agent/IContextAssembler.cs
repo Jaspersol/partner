@@ -126,7 +126,9 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     {
         // A summary stands in for history that was folded away, so it is context rather than a turn.
         var summaries = view.Items.Where(entry => entry.Kind == SessionEventKind.Summary).ToList();
-        var conversation = view.Items.Where(entry => entry.Kind != SessionEventKind.Summary).ToList();
+        var conversation = view.Items
+            .Where(entry => entry.Kind != SessionEventKind.Summary && entry.Kind.IsContent())
+            .ToList();
 
         ValueTask<int> Cost(string? text, CancellationToken token) => fromMemory
             ? ValueTask.FromResult(_tokens.Count(text ?? string.Empty) + ContextBudget.MessageOverheadTokens)

@@ -106,7 +106,8 @@ public sealed class AgentTurnRunnerTests : IDisposable
         IApprovalHandler? approval = null,
         HookRegistry? hooks = null,
         AgentTurnOptions? options = null,
-        IContextAssembler? assembler = null) =>
+        IContextAssembler? assembler = null,
+        IAssistantStream? stream = null) =>
         new(
             session,
             llm,
@@ -115,7 +116,64 @@ public sealed class AgentTurnRunnerTests : IDisposable
             approval ?? new DenyAllApprovalHandler(),
             hooks ?? new HookRegistry(),
             assembler,
-            options);
+            options,
+            stream);
+
+    /// <summary>Collects what the runner reports while the model is still writing.</summary>
+    private sealed class RecordingStream : IAssistantStream
+    {
+        public List<string> Deltas { get; } = new();
+
+        public List<string> Completed { get; } = new();
+
+        public void OnAssistantDelta(string itemId, string delta) => Deltas.Add(delta);
+
+        public void OnAssistantCompleted(string itemId) => Completed.Add(itemId);
+    }
+
+    /// <summary>Streams its answer in pieces, the way a real transport does.</summary>
+    private sealed class TricklingLlm(params string[] pieces) : ILlmClient
+    {
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
+            throw new InvalidOperationException("this client only streams");
+
+        public async Task<LlmResponse> StreamAsync(
+            LlmRequest request,
+            Action<string> onText,
+            CancellationToken ct = default)
+        {
+            foreach (var piece in pieces)
+            {
+                onText(piece);
+                await Task.Yield();
+            }
+
+            return new LlmResponse(string.Concat(pieces), Array.Empty<LlmToolCall>(), "stop");
+        }
+    }
+
+    [Fact]
+    public async Task Streaming_reports_pieces_and_still_logs_one_complete_answer()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var stream = new RecordingStream();
+            var runner = Build(store, new TricklingLlm("你", "好"), stream: stream);
+
+            var result = await runner.RunAsync(Claimed());
+
+            // What the UI saw while it was being written.
+            Assert.Equal(new[] { "你", "好" }, stream.Deltas);
+            Assert.Contains(Claimed().ItemId, stream.Completed);
+
+            // And what the session records: one complete answer, never the fragments.
+            var events = await RawAsync(store);
+            var assistant = Assert.Single(events, e => e.Kind == SessionEventKind.Assistant);
+            Assert.Equal("你好", assistant.Body);
+            Assert.Equal(1, result.AssistantMessages);
+        }
+    }
 
     [Fact]
     public async Task Turn_writes_events_in_the_documented_order()

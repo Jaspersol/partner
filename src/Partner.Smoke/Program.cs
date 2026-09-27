@@ -1660,6 +1660,122 @@ internal static class Program
                     && provider.SawAuthorization is null,
                     $"settled={settled} status={wireItem.GetProperty("status").GetString()} "
                     + $"requests=[{string.Join(" | ", provider.Requests)}]");
+
+                // Streaming: the reply has to be readable while it is still being written. The provider releases
+                // it two characters at a time with a pause between them, so a poll landing mid-turn sees a
+                // partial answer that is longer than the one before it.
+                //
+                // A second attempt is allowed because a loaded machine can stall past the whole window; the
+                // check is about the mechanism, and a broken one never passes either attempt. The deterministic
+                // version of this lives in the API tests, which gate the model instead of racing it.
+                var sawLive = false;
+                var grew = false;
+                var firstLive = string.Empty;
+
+                for (var round = 0; round < 2 && !(sawLive && grew); round++)
+                {
+                    await wireHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "流式一轮" });
+
+                    for (var attempt = 0; attempt < 600 && !(sawLive && grew); attempt++)
+                    {
+                        var polled = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                        var live = polled.GetProperty("items").EnumerateArray()
+                            .FirstOrDefault(item => item.GetProperty("streaming").GetBoolean());
+
+                        if (live.ValueKind == JsonValueKind.Object)
+                        {
+                            var body = live.GetProperty("body").GetString() ?? string.Empty;
+
+                            if (!sawLive)
+                            {
+                                sawLive = true;
+                                firstLive = body;
+                            }
+                            else if (body.Length > firstLive.Length)
+                            {
+                                grew = true;
+                            }
+                        }
+
+                        await Task.Delay(10);
+                    }
+
+                    // Let the turn finish before deciding whether to try again.
+                    for (var attempt = 0; attempt < 400; attempt++)
+                    {
+                        var polled = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                        if (!polled.GetProperty("busy").GetBoolean())
+                        {
+                            break;
+                        }
+
+                        await Task.Delay(25);
+                    }
+                }
+
+                Check("session: the reply is visible while it is still being written",
+                    sawLive && grew,
+                    $"live={sawLive} grew={grew} first={firstLive}");
+
+                // And the request that produced it really did ask for a stream, rather than getting a whole
+                // answer that happened to arrive quickly.
+                Check("session: the client asks the model to stream",
+                    provider.LastRequestBody?.Contains("\"stream\":true", StringComparison.Ordinal) == true,
+                    provider.LastRequestBody is null ? "(no body)" : provider.LastRequestBody[..Math.Min(120, provider.LastRequestBody.Length)]);
+
+                // And when the turn ends, the live row is replaced by the event it stood in for.
+                var liveGone = false;
+                var finalAssistant = string.Empty;
+
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    var polled = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var streaming = polled.GetProperty("items").EnumerateArray()
+                        .Any(item => item.GetProperty("streaming").GetBoolean());
+                    var idle = !polled.GetProperty("busy").GetBoolean();
+
+                    if (!streaming && idle)
+                    {
+                        liveGone = true;
+                        finalAssistant = polled.GetProperty("items").EnumerateArray()
+                            .Where(item => item.GetProperty("kind").GetString() == "Assistant")
+                            .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                            .LastOrDefault() ?? string.Empty;
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                Check("session: the finished reply replaces the live row, whole",
+                    liveGone && finalAssistant == "通过真实 HTTP 返回。",
+                    $"gone={liveGone} body={finalAssistant}");
+
+                // Tool rows: a turn that called a tool must not look like it did nothing. They reach the view
+                // (the UI folds them), and the prompt builder ignores them — checked in Core, where the prompt
+                // is built.
+                await wireContext.Session.AppendAsync(new SessionEvent
+                {
+                    Kind = SessionEventKind.ToolCall,
+                    Source = InputSource.Text,
+                    Body = "clock",
+                });
+
+                await wireContext.Session.AppendAsync(new SessionEvent
+                {
+                    Kind = SessionEventKind.ToolResult,
+                    Source = InputSource.Text,
+                    Body = "{\"now\":\"12:00\"}",
+                });
+
+                var withTools = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var kinds = withTools.GetProperty("items").EnumerateArray()
+                    .Select(item => item.GetProperty("kind").GetString())
+                    .ToList();
+
+                Check("session: tool calls and results reach the view",
+                    kinds.Contains("ToolCall") && kinds.Contains("ToolResult"),
+                    string.Join(",", kinds.Distinct()));
             }
             finally
             {
@@ -2277,6 +2393,15 @@ internal static class Program
 
             LastRequestBody = System.Text.Encoding.UTF8.GetString(body, 0, filled);
 
+            // A streamed completion is answered frame by frame with a pause between them, so the session view
+            // can be observed while the reply is still arriving. No Content-Length: SSE ends at EOF, which is
+            // also what lets each frame out before the next one exists.
+            if (LastRequestBody.Contains("\"stream\":true", StringComparison.Ordinal))
+            {
+                await AnswerStreamAsync(stream).ConfigureAwait(false);
+                return;
+            }
+
             // One socket serves both the completion and the listing, so the proxy is exercised for real.
             var payload = RequestPath?.Contains("/models", StringComparison.Ordinal) == true
                 ? "{\"data\":[{\"id\":\"smoke-model-a\"},{\"id\":\"smoke-model-b\"}]}"
@@ -2301,6 +2426,49 @@ internal static class Program
             await stream.WriteAsync(head);
             await stream.WriteAsync(bytes);
             await stream.FlushAsync();
+        }
+
+        /// <summary>
+        /// Answers a streamed completion as SSE: one frame per piece, released with a pause between them.
+        /// <para>
+        /// The pauses are the point — they are what makes "the reply is visible before the turn ends"
+        /// observable rather than a claim about code that merely parses frames quickly.
+        /// </para>
+        /// </summary>
+        private async Task AnswerStreamAsync(NetworkStream stream)
+        {
+            var head = System.Text.Encoding.ASCII.GetBytes(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(head).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+
+            // The provider's own reply, in pieces: the concatenation is what the buffered path would have
+            // returned, so the checks that assert the reply text are asserting the same answer.
+            const int Chunk = 2;
+
+            for (var i = 0; i < _reply.Length; i += Chunk)
+            {
+                var piece = _reply.Substring(i, Math.Min(Chunk, _reply.Length - i));
+                var frame = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    choices = new[] { new { delta = new { content = piece } } },
+                });
+
+                await stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes($"data: {frame}\n\n")).ConfigureAwait(false);
+                await stream.FlushAsync().ConfigureAwait(false);
+
+                // Long enough for a poll to land between two pieces, short enough not to slow the suite down.
+                await Task.Delay(60).ConfigureAwait(false);
+            }
+
+            var finish = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                choices = new[] { new { delta = new { }, finish_reason = "stop" } },
+            });
+
+            await stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes($"data: {finish}\n\n")).ConfigureAwait(false);
+            await stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes("data: [DONE]\n\n")).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
         }
 
         public void Dispose()
@@ -2696,6 +2864,10 @@ internal static class Program
             "consumer: with a model the delivered input becomes a turn in the session",
             "consumer: the queue drains and the loop counts what it handled",
             "consumer: a real HTTP model call completes a turn end to end",
+            "session: the reply is visible while it is still being written",
+            "session: the client asks the model to stream",
+            "session: the finished reply replaces the live row, whole",
+            "session: tool calls and results reach the view",
             "settings: pointing the model settings at an endpoint re-points the consumer",
             "settings: the API key is sent to the model but never echoed back",
             "settings: the model listing is pulled through the API",

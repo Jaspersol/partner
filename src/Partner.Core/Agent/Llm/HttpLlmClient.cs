@@ -289,6 +289,170 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         return ToResponse(payload);
     }
 
+    /// <summary>
+    /// Streams the completion over SSE (<c>stream: true</c>), reporting text as it arrives and returning the
+    /// assembled response.
+    /// <para>
+    /// The returned value — not the callbacks — is what the caller records, so a stream that dies halfway
+    /// leaves no half-written reply in the session. A server that refuses <c>stream: true</c> still answers
+    /// the buffered call, so a 4xx falls back to <see cref="CompleteAsync"/> rather than failing the turn.
+    /// </para>
+    /// </summary>
+    public async Task<LlmResponse> StreamAsync(
+        LlmRequest request,
+        Action<string> onText,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(onText);
+
+        var json = JsonSerializer.Serialize(BuildBody(request) with { Stream = true }, Json);
+
+        using var message = new HttpRequestMessage(HttpMethod.Post, $"{_options.BaseUrl}/chat/completions")
+        {
+            Content = new StringContent(json, Encoding.UTF8, new MediaTypeHeaderValue("application/json")),
+        };
+
+        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+        {
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+        }
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(_options.Timeout);
+
+        // ResponseHeadersRead, not the default: the body is an open stream and buffering it would wait for the
+        // whole reply — which is the thing this method exists to avoid.
+        using var response = await _http
+            .SendAsync(message, HttpCompletionOption.ResponseHeadersRead, deadline.Token)
+            .ConfigureAwait(false);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            if ((int)response.StatusCode is >= 400 and < 500)
+            {
+                // The interface's contract still holds on this path: non-empty text is reported once.
+                var buffered = await CompleteAsync(request, ct).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(buffered.Text))
+                {
+                    onText(buffered.Text);
+                }
+
+                return buffered;
+            }
+
+            var detail = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
+            throw new HttpRequestException(
+                $"模型返回 {(int)response.StatusCode} {response.StatusCode}：{Truncate(detail)}");
+        }
+
+        var text = new StringBuilder();
+        var calls = new SortedDictionary<int, ToolCallBuilder>();
+        var finish = "stop";
+        var nextAnonymousIndex = 0;
+
+        using var stream = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+
+        while (await reader.ReadLineAsync(deadline.Token).ConfigureAwait(false) is { } line)
+        {
+            // SSE frames: "data: {...}" per chunk, blank lines between, ": comment" for keepalives.
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var payload = line["data:".Length..].Trim();
+            if (payload.Length == 0)
+            {
+                continue;
+            }
+
+            if (payload == "[DONE]")
+            {
+                break;
+            }
+
+            ChatChunk? chunk;
+            try
+            {
+                chunk = JsonSerializer.Deserialize<ChatChunk>(payload, Json);
+            }
+            catch (JsonException)
+            {
+                // A frame that is not a chunk we understand (a server's own extension) must not kill the turn.
+                continue;
+            }
+
+            if (chunk?.Choices is not { Count: > 0 })
+            {
+                continue;
+            }
+
+            var choice = chunk.Choices[0];
+
+            if (!string.IsNullOrEmpty(choice.Delta?.Content))
+            {
+                text.Append(choice.Delta.Content);
+                onText(choice.Delta.Content);
+            }
+
+            if (choice.Delta?.ToolCalls is { Count: > 0 })
+            {
+                foreach (var fragment in choice.Delta.ToolCalls)
+                {
+                    // Tool calls arrive as fragments keyed by index: the name in the first frame, the JSON
+                    // arguments split across the rest.
+                    var index = fragment.Index ?? nextAnonymousIndex++;
+                    if (!calls.TryGetValue(index, out var builder))
+                    {
+                        builder = new ToolCallBuilder();
+                        calls[index] = builder;
+                    }
+
+                    if (!string.IsNullOrEmpty(fragment.Id))
+                    {
+                        builder.Id = fragment.Id;
+                    }
+
+                    if (!string.IsNullOrEmpty(fragment.Function?.Name))
+                    {
+                        builder.Name = fragment.Function.Name;
+                    }
+
+                    if (!string.IsNullOrEmpty(fragment.Function?.Arguments))
+                    {
+                        builder.Arguments.Append(fragment.Function.Arguments);
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(choice.FinishReason))
+            {
+                finish = choice.FinishReason;
+            }
+        }
+
+        var assembled = calls.Values
+            .Where(builder => !string.IsNullOrWhiteSpace(builder.Name))
+            .Select(builder => new LlmToolCall(
+                builder.Id ?? $"call_{builder.Name}",
+                builder.Name!,
+                builder.Arguments.Length == 0 ? "{}" : builder.Arguments.ToString()))
+            .ToList();
+
+        return new LlmResponse(text.Length == 0 ? null : text.ToString(), assembled, finish);
+    }
+
+    private sealed class ToolCallBuilder
+    {
+        public string? Id { get; set; }
+
+        public string? Name { get; set; }
+
+        public StringBuilder Arguments { get; } = new();
+    }
+
     private RequestBody BuildBody(LlmRequest request) => new(
         _options.Model,
         request.Messages.Select(ToMessage).ToList(),
@@ -348,7 +512,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         string Model,
         IReadOnlyList<OutboundMessage> Messages,
         IReadOnlyList<ToolPayload>? Tools,
-        int? MaxTokens);
+        int? MaxTokens,
+        bool? Stream = null);
 
     private sealed record OutboundMessage(
         string Role,
@@ -372,6 +537,14 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     private sealed record ModelEntry(string Id);
 
     private sealed record ChatResponse(IReadOnlyList<ChatChoice>? Choices);
+
+    private sealed record ChatChunk(IReadOnlyList<ChatChunkChoice>? Choices);
+
+    private sealed record ChatChunkChoice(ChatDelta? Delta, string? FinishReason);
+
+    private sealed record ChatDelta(string? Content, IReadOnlyList<ChatDeltaToolCall>? ToolCalls);
+
+    private sealed record ChatDeltaToolCall(int? Index, string? Id, ChatFunction? Function);
 
     private sealed record ChatChoice(ChatMessage Message, string? FinishReason);
 

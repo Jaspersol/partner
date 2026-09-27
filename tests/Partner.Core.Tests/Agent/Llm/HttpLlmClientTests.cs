@@ -6,6 +6,112 @@ using Partner.Core.Agent.Tools;
 
 namespace Partner.Core.Tests.Agent.Llm;
 
+/// <summary>Answers each request from a prepared queue, in order.</summary>
+internal sealed class SequencedHandler(params HttpResponseMessage[] responses) : HttpMessageHandler
+{
+    private readonly Queue<HttpResponseMessage> _responses = new(responses);
+
+    public int Requests { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        Requests++;
+        return Task.FromResult(_responses.Count > 0
+            ? _responses.Dequeue()
+            : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+    }
+}
+
+/// <summary>
+/// Answers with an SSE stream. Frames are released one at a time, so a caller can be observed while the reply
+/// is still arriving — which is the only way to test that streaming is actually streaming.
+/// </summary>
+internal sealed class SseHandler(params string[] frames) : HttpMessageHandler
+{
+    private readonly IReadOnlyList<string> _frames = frames;
+
+    public int Requests { get; private set; }
+
+    public string? RequestBody { get; private set; }
+
+    /// <summary>When set, the stream waits for it before releasing the next frame.</summary>
+    public TaskCompletionSource? Gate { get; set; }
+
+    public int Released { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        Requests++;
+        RequestBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new FrameStream(this, ct)),
+        };
+    }
+
+    private sealed class FrameStream(SseHandler owner, CancellationToken ct) : Stream
+    {
+        private byte[]? _current;
+        private int _offset;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count), ct).AsTask().GetAwaiter().GetResult();
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            while (_current is null || _offset >= _current.Length)
+            {
+                if (owner.Released >= owner._frames.Count)
+                {
+                    return 0;
+                }
+
+                if (owner.Gate is { } gate)
+                {
+                    await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    owner.Gate = null;
+                }
+
+                _current = Encoding.UTF8.GetBytes(owner._frames[owner.Released] + "\n\n");
+                _offset = 0;
+                owner.Released++;
+            }
+
+            var take = Math.Min(buffer.Length, _current.Length - _offset);
+            _current.AsSpan(_offset, take).CopyTo(buffer.Span);
+            _offset += take;
+            return take;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+}
+
 /// <summary>Captures the outgoing request and answers with a canned body.</summary>
 internal sealed class StubHandler(HttpStatusCode status, string body) : HttpMessageHandler
 {
@@ -53,6 +159,85 @@ public sealed class HttpLlmClientTests
             Model = "test-model",
             ApiKey = "secret",
         });
+
+    private static string Frame(string json) => "data: " + json;
+
+    [Fact]
+    public async Task A_client_without_streaming_reports_its_answer_in_one_piece()
+    {
+        // This is what makes StreamAsync an addition rather than a break: an implementation that only knows
+        // CompleteAsync still satisfies the interface.
+        ILlmClient client = new ScriptedLlmClient(
+            new[] { new LlmResponse("all at once", Array.Empty<LlmToolCall>(), "stop") });
+
+        var deltas = new List<string>();
+        var response = await client.StreamAsync(Request(new LlmMessage("user", "hi")), deltas.Add);
+
+        Assert.Equal(new[] { "all at once" }, deltas);
+        Assert.Equal("all at once", response.Text);
+    }
+
+    [Fact]
+    public async Task Streaming_reports_text_as_it_arrives_and_assembles_the_response()
+    {
+        var handler = new SseHandler(
+            Frame("{\"choices\":[{\"delta\":{\"content\":\"你\"}}]}"),
+            Frame("{\"choices\":[{\"delta\":{\"content\":\"好\"}}]}"),
+            Frame("{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}"),
+            "data: [DONE]");
+
+        var deltas = new List<string>();
+        var response = await Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), deltas.Add);
+
+        // The caller sees fragments, the return value is the whole thing — and only the return value is logged.
+        Assert.Equal(new[] { "你", "好" }, deltas);
+        Assert.Equal("你好", response.Text);
+        Assert.Equal("stop", response.FinishReason);
+        Assert.Empty(response.ToolCalls);
+
+        using var body = JsonDocument.Parse(handler.RequestBody!);
+        Assert.True(body.RootElement.GetProperty("stream").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Streaming_assembles_tool_calls_from_fragments()
+    {
+        // Raw string literals: the JSON itself contains escaped quotes, and a raw literal passes them through.
+        var handler = new SseHandler(
+            Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"clock","arguments":"{\"city\":\""}}]}}]}"""),
+            Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"上海\"}"}}]}}]}"""),
+            "data: [DONE]");
+
+        var response = await Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), _ => { });
+
+        // A tool call arrives split: the name in one frame, the JSON arguments across the rest.
+        var call = Assert.Single(response.ToolCalls);
+        Assert.Equal("call_1", call.Id);
+        Assert.Equal("clock", call.Name);
+        Assert.Equal("{\"city\":\"上海\"}", call.ArgumentsJson);
+    }
+
+    [Fact]
+    public async Task A_server_that_refuses_streaming_falls_back_to_the_buffered_call()
+    {
+        // Some local servers only implement one of the two shapes. Failing the turn over that would be silly.
+        var handler = new SequencedHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("stream not supported") },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"choices\":[{\"message\":{\"content\":\"buffered\"},\"finish_reason\":\"stop\"}]}",
+                    Encoding.UTF8,
+                    "application/json"),
+            });
+
+        var deltas = new List<string>();
+        var response = await Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), deltas.Add);
+
+        Assert.Equal("buffered", response.Text);
+        Assert.Equal(new[] { "buffered" }, deltas);
+        Assert.Equal(2, handler.Requests);
+    }
 
     private static LlmRequest Request(params LlmMessage[] messages) => new(
         messages,

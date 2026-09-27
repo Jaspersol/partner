@@ -56,6 +56,7 @@ public sealed class AgentTurnRunner
     private readonly IHookRegistry _hooks;
     private readonly IContextAssembler _assembler;
     private readonly AgentTurnOptions _options;
+    private readonly IAssistantStream? _stream;
 
     public AgentTurnRunner(
         ISessionStore session,
@@ -65,7 +66,8 @@ public sealed class AgentTurnRunner
         IApprovalHandler approval,
         IHookRegistry hooks,
         IContextAssembler? assembler = null,
-        AgentTurnOptions? options = null)
+        AgentTurnOptions? options = null,
+        IAssistantStream? stream = null)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _llm = llm ?? throw new ArgumentNullException(nameof(llm));
@@ -74,6 +76,7 @@ public sealed class AgentTurnRunner
         _approval = approval ?? throw new ArgumentNullException(nameof(approval));
         _hooks = hooks ?? throw new ArgumentNullException(nameof(hooks));
         _options = options ?? new AgentTurnOptions();
+        _stream = stream;
         _assembler = assembler ?? new SessionWindowContextAssembler(
             session, _options.ContextWindowTokens, _options.MaxTokens, baseSystemPrompt: _options.BaseSystemPrompt);
     }
@@ -156,9 +159,14 @@ public sealed class AgentTurnRunner
                         systemLogged = true;
                     }
 
-                    var response = await _llm.CompleteAsync(
-                        new LlmRequest(conversation, _tools.Specs, _options.MaxTokens),
-                        ct).ConfigureAwait(false);
+                    var request = new LlmRequest(conversation, _tools.Specs, _options.MaxTokens);
+                    var streamed = _stream is null
+                        ? null
+                        : new Action<string>(delta => _stream.OnAssistantDelta(item.ItemId, delta));
+
+                    var response = streamed is null
+                        ? await _llm.CompleteAsync(request, ct).ConfigureAwait(false)
+                        : await _llm.StreamAsync(request, streamed, ct).ConfigureAwait(false);
 
                     if (!string.IsNullOrEmpty(response.Text))
                     {
@@ -167,6 +175,7 @@ public sealed class AgentTurnRunner
                             Event(SessionEventKind.Assistant, item.Source, response.Text!, item), ct)
                             .ConfigureAwait(false);
                         conversation.Add(new LlmMessage("assistant", response.Text, response.ToolCalls));
+                        _stream?.OnAssistantCompleted(item.ItemId);
                     }
                     else if (response.ToolCalls.Count > 0)
                     {
@@ -286,6 +295,9 @@ public sealed class AgentTurnRunner
         }
         finally
         {
+            // A turn that ends any other way (error, cancel, no text at all) must not leave a live fragment
+            // on screen: the log is the record, and it has nothing to show.
+            _stream?.OnAssistantCompleted(item.ItemId);
             await RunPhaseAsync(AgentPhase.Finally, ctx, CancellationToken.None).ConfigureAwait(false);
         }
     }

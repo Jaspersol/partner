@@ -26,7 +26,7 @@ public sealed record ConsumerState(bool Running, string Reason, string? Model, T
 /// leave the UI describing a configuration that is not in effect.
 /// </para>
 /// </summary>
-public sealed class ConsumerHost : IAsyncDisposable
+public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
 {
     private readonly ApiContext _context;
     private readonly string _workspace;
@@ -38,6 +38,14 @@ public sealed class ConsumerHost : IAsyncDisposable
     private HttpClient? _http;
     private ILlmClient? _llm;
     private string _reason = "未启动";
+
+    /// <summary>
+    /// The assistant text of the turn in flight, or null when nothing is being written. Deliberately not the
+    /// session log: a half-written reply is not an event of record, so it lives here and disappears the moment
+    /// the real <c>Assistant</c> event lands.
+    /// </summary>
+    private readonly object _liveGate = new();
+    private LiveAssistant? _live;
     private string? _model;
 
     private ConsumerHost(ApiContext context, string workspace)
@@ -64,6 +72,40 @@ public sealed class ConsumerHost : IAsyncDisposable
     /// The counter in use: the model's own tokenizer when one is configured, the local estimate otherwise.
     /// </summary>
     public ITokenCounter Tokens { get; private set; } = new ApproximateTokenCounter();
+
+    /// <summary>What the model is writing right now, for the session view to show as it grows.</summary>
+    public LiveAssistant? LiveAssistant
+    {
+        get
+        {
+            lock (_liveGate)
+            {
+                return _live;
+            }
+        }
+    }
+
+    void IAssistantStream.OnAssistantDelta(string itemId, string delta)
+    {
+        lock (_liveGate)
+        {
+            // A new item starts a new live text; the old one belongs to a step that already ended.
+            _live = _live is { } current && current.ItemId == itemId
+                ? current with { Text = current.Text + delta }
+                : new LiveAssistant(itemId, delta);
+        }
+    }
+
+    void IAssistantStream.OnAssistantCompleted(string itemId)
+    {
+        lock (_liveGate)
+        {
+            if (_live is { } current && current.ItemId == itemId)
+            {
+                _live = null;
+            }
+        }
+    }
 
     /// <summary>How much of the context window the session currently occupies.</summary>
     public async Task<ContextUsage> MeasureContextAsync(RuntimeSettings settings, CancellationToken ct = default)
@@ -158,7 +200,8 @@ public sealed class ConsumerHost : IAsyncDisposable
             {
                 ContextWindowTokens = config?.ContextTokens ?? 32768,
                 MaxTokens = config?.MaxTokens ?? 4096,
-            });
+            },
+            stream: this);
 
         _loop = new TurnLoop(_context.Queue, runner, _context.Session);
         _stop = new CancellationTokenSource();

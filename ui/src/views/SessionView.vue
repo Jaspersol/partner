@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { ConsumerState, PartnerApiSurface, QueueSummary, SessionRevision, SessionView } from '../api'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
@@ -143,7 +143,7 @@ async function removeEvent() {
     draft.value = ''
     revisions.value = []
     await refresh()
-    notice.value = `已删除 #${seq}（原始日志保留）`
+    notice.value = `已删除 #${seq}（已从日志移除）`
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -165,7 +165,7 @@ async function retractFromSelected() {
     draft.value = ''
     revisions.value = []
     await refresh()
-    notice.value = `已撤回 #${seq} 及之后的事件（原始日志保留）`
+    notice.value = `已撤回 #${seq} 及之后的事件（已从日志移除）`
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -181,11 +181,46 @@ async function onSent(result: { itemId: string; deduplicated: boolean }) {
   emit('changed')
 }
 
+/**
+ * How the view keeps up. A session being written to must show it while it happens, so a turn in flight is
+ * polled quickly; an idle one is polled slowly, because the only thing that can change it then is work
+ * started elsewhere (a scheduled task, another window).
+ */
+const BUSY_POLL_MS = 400
+const IDLE_POLL_MS = 5000
+
+let poller: ReturnType<typeof setInterval> | undefined
+let lastPoll = 0
+
+async function poll() {
+  const now = Date.now()
+  if (view.value?.busy !== true && now - lastPoll < IDLE_POLL_MS) {
+    return
+  }
+
+  lastPoll = now
+  await refresh().catch(() => {
+    // A failed poll is already surfaced by refresh() itself; the timer keeps going.
+  })
+}
+
+onMounted(async () => {
+  await refresh()
+  poller = setInterval(() => {
+    void poll()
+  }, BUSY_POLL_MS)
+})
+
+onUnmounted(() => {
+  if (poller !== undefined) {
+    clearInterval(poller)
+  }
+})
+
 function focusComposer() {
   composer.value?.focus()
 }
 
-onMounted(refresh)
 defineExpose({ refresh, focusComposer })
 </script>
 

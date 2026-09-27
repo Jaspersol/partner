@@ -62,6 +62,14 @@ public static class SessionEventKindExtensions
         _ => false,
     };
 
+    /// <summary>
+    /// True for the tool-call pair: shown in the session view (collapsed), but not part of what a prompt is
+    /// built from — the turn runner feeds a tool result back to the model for the turn that produced it, and
+    /// history stays conversational.
+    /// </summary>
+    public static bool IsToolControl(this SessionEventKind kind) =>
+        kind is SessionEventKind.ToolCall or SessionEventKind.ToolResult;
+
     /// <summary>True for turn/step boundary markers.</summary>
     public static bool IsControl(this SessionEventKind kind) => kind switch
     {

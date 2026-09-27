@@ -87,6 +87,78 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
         }
     }
 
+    /// <summary>Streams two pieces with a gate between them, so a test can look at the session mid-turn.</summary>
+    private sealed class GatedStreamingLlm(string first, string second) : ILlmClient
+    {
+        public TaskCompletionSource Release { get; } = new();
+
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
+            throw new InvalidOperationException("this client only streams");
+
+        public async Task<LlmResponse> StreamAsync(
+            LlmRequest request,
+            Action<string> onText,
+            CancellationToken ct = default)
+        {
+            onText(first);
+            await Release.Task.WaitAsync(ct).ConfigureAwait(false);
+            onText(second);
+            return new LlmResponse(first + second, Array.Empty<LlmToolCall>(), "stop");
+        }
+    }
+
+    private async Task<JsonElement> WaitForSessionAsync(Func<JsonElement, bool> ready)
+    {
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            var session = await _http.GetFromJsonAsync<JsonElement>("/api/session");
+            if (ready(session))
+            {
+                return session;
+            }
+
+            await Task.Delay(25);
+        }
+
+        throw new InvalidOperationException("the session never reached the expected state");
+    }
+
+    [Fact]
+    public async Task The_session_shows_the_reply_while_it_is_being_written()
+    {
+        var llm = new GatedStreamingLlm("正在", "回复");
+        await _consumer.ReconfigureAsync(config: null, reason: "streaming test", injected: llm);
+
+        await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "写点什么" });
+
+        // Mid-turn: the partial text is on the wire, flagged as streaming, and the view says it is busy. It is
+        // not in the log — the log only ever holds the finished answer.
+        var live = await WaitForSessionAsync(session => session.GetProperty("items").EnumerateArray()
+            .Any(item => item.GetProperty("streaming").GetBoolean()));
+
+        Assert.True(live.GetProperty("busy").GetBoolean());
+        var streaming = live.GetProperty("items").EnumerateArray()
+            .First(item => item.GetProperty("streaming").GetBoolean());
+        Assert.Equal("正在", streaming.GetProperty("body").GetString());
+        Assert.Equal(0, streaming.GetProperty("seq").GetInt64());
+        Assert.Equal("AssistantStreaming", streaming.GetProperty("kind").GetString());
+
+        llm.Release.SetResult();
+
+        // After: the live row is gone, and the complete answer is an ordinary event.
+        var settled = await WaitForSessionAsync(session =>
+            !session.GetProperty("busy").GetBoolean()
+            && session.GetProperty("items").EnumerateArray()
+                .Any(item => item.GetProperty("kind").GetString() == "Assistant"));
+
+        Assert.DoesNotContain(
+            settled.GetProperty("items").EnumerateArray(),
+            item => item.GetProperty("streaming").GetBoolean());
+        var assistant = settled.GetProperty("items").EnumerateArray()
+            .First(item => item.GetProperty("kind").GetString() == "Assistant");
+        Assert.Equal("正在回复", assistant.GetProperty("body").GetString());
+    }
+
     [Fact]
     public async Task With_a_model_the_consumer_reports_running()
     {

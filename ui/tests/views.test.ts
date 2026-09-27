@@ -304,6 +304,47 @@ describe('session removal', () => {
   })
 })
 
+describe('session refresh cadence', () => {
+  it('re-reads quickly while a turn is running, and backs off when it is over', async () => {
+    vi.useFakeTimers()
+    try {
+      const usage = { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 }
+      let busy = true
+      const session = vi.fn(async () => ({ lastSeq: 0, items: [], busy, context: usage }))
+      const { stub } = createStub({ session })
+
+      const wrapper = mount(SessionView, { props: { api: stub } })
+      await flushPromises()
+
+      const afterMount = session.mock.calls.length
+
+      // A turn in flight: the view keeps up with it.
+      await vi.advanceTimersByTimeAsync(1200)
+      const whileBusy = session.mock.calls.length
+      expect(whileBusy).toBeGreaterThan(afterMount)
+
+      // The turn ends. One more read is what tells the view that — the flag it is holding is the previous
+      // answer, which still says busy.
+      busy = false
+      await vi.advanceTimersByTimeAsync(400)
+      const afterNotice = session.mock.calls.length
+      expect(afterNotice).toBeGreaterThan(whileBusy)
+
+      // Backed off: an idle session costs no requests for the next second.
+      await vi.advanceTimersByTimeAsync(1200)
+      expect(session.mock.calls.length).toBe(afterNotice)
+
+      // But work started elsewhere still shows up, just on the slow interval.
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(session.mock.calls.length).toBeGreaterThan(afterNotice)
+
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('queue view', () => {
   it('summarises pending and failed work', async () => {
     const { stub } = createStub()
