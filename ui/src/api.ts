@@ -13,6 +13,11 @@ export interface SessionItem {
   revisionCount: number
   /** True for the reply being written right now: it is not in the log yet, and has seq 0. */
   streaming?: boolean
+  /**
+   * The event's annotations, verbatim: tool id/name/args/ok, turn reason, and so on. A tool call and its
+   * result are two events, and this is what pairs them into one card.
+   */
+  meta?: Record<string, string> | null
 }
 
 /** How much of the model's context window the history currently occupies. */

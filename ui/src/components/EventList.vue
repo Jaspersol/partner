@@ -1,66 +1,117 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { SessionItem } from '../api'
 import MarkdownBody from './MarkdownBody.vue'
+import ToolCard from './ToolCard.vue'
 
-defineProps<{ items: SessionItem[]; selectedSeq: number | null }>()
+const props = defineProps<{ items: SessionItem[]; selectedSeq: number | null }>()
 const emit = defineEmits<{ select: [seq: number] }>()
 
+/** One rendered line: either a conversation event, or a tool call with its result folded in. */
+type Row =
+  | { kind: 'event'; item: SessionItem }
+  | { kind: 'tool'; seq: number; name: string; args: string; status: 'running' | 'ok' | 'failed'; result: string | null }
+
 /**
- * Kinds that are machinery rather than conversation: a tool call and its result. They are shown — otherwise a
- * turn that called a tool looks like it did nothing — but folded away, because the payload is noise until
- * someone is debugging.
+ * Pairs each tool call with its result.
+ * <para>
+ * They are two events in the log and one thing to a reader. The pairing key is the call id the runner wrote
+ * into both events' meta; a result whose call is missing (a partial removal, an older log) still renders, so
+ * nothing disappears silently.
+ * </para>
  */
-const controlKinds = new Set(['ToolCall', 'ToolResult'])
+const rows = computed<Row[]>(() => {
+  const out: Row[] = []
+  const open = new Map<string, Extract<Row, { kind: 'tool' }>>()
 
-function isControl(item: SessionItem): boolean {
-  return controlKinds.has(item.kind)
-}
+  for (const item of props.items) {
+    if (item.kind === 'ToolCall') {
+      const card: Row = {
+        kind: 'tool',
+        seq: item.seq,
+        name: item.meta?.name ?? item.body,
+        args: item.meta?.args ?? '{}',
+        status: 'running',
+        result: null,
+      }
 
-/** One line that says what the folded row is, without opening it. */
-function controlSummary(item: SessionItem): string {
-  const label = item.kind === 'ToolCall' ? '调用' : '结果'
-  const name = item.kind === 'ToolCall' ? item.body : ''
-  const detail = item.kind === 'ToolCall' ? '' : item.body
-  const text = (name || detail).replace(/\s+/g, ' ')
+      const id = item.meta?.id
+      if (id !== undefined) {
+        open.set(id, card as Extract<Row, { kind: 'tool' }>)
+      }
 
-  return `${label} ${text.length > 80 ? text.slice(0, 80) + '…' : text}`.trim()
-}
+      out.push(card)
+      continue
+    }
+
+    if (item.kind === 'ToolResult') {
+      const id = item.meta?.id
+      const card = id === undefined ? undefined : open.get(id)
+
+      if (card !== undefined) {
+        card.status = item.meta?.ok === 'true' ? 'ok' : 'failed'
+        card.result = item.body
+        if (id !== undefined) {
+          open.delete(id)
+        }
+
+        continue
+      }
+
+      // An orphan result: shown on its own rather than dropped.
+      out.push({
+        kind: 'tool',
+        seq: item.seq,
+        name: item.meta?.name ?? 'tool',
+        args: '{}',
+        status: item.meta?.ok === 'true' ? 'ok' : 'failed',
+        result: item.body,
+      })
+      continue
+    }
+
+    out.push({ kind: 'event', item })
+  }
+
+  return out
+})
 </script>
 
 <template>
   <ul class="list" data-test="session-list">
     <li
-      v-for="item in items"
-      :key="item.streaming ? 'streaming' : item.seq"
+      v-for="row in rows"
+      :key="row.kind === 'tool' ? `tool-${row.seq}` : row.item.streaming ? 'streaming' : row.item.seq"
       :class="{
-        selected: item.seq === selectedSeq,
-        streaming: item.streaming === true,
-        control: isControl(item),
+        selected: row.kind === 'event' && row.item.seq === selectedSeq,
+        streaming: row.kind === 'event' && row.item.streaming === true,
       }"
-      :data-kind="item.kind"
-      @click="item.streaming === true || isControl(item) ? undefined : emit('select', item.seq)"
+      :data-kind="row.kind === 'tool' ? 'Tool' : row.item.kind"
+      @click="row.kind === 'event' && row.item.streaming !== true ? emit('select', row.item.seq) : undefined"
     >
-      <div class="meta">
-        <template v-if="item.streaming">
-          <span data-test="session-streaming">正在回复…</span>
-        </template>
-        <template v-else>
-          #{{ item.seq }} {{ item.kind }} / {{ item.source }} {{ item.at.slice(11, 19) }}
-          <span v-if="item.revisionCount > 0" class="edited">已编辑 {{ item.revisionCount }}</span>
-        </template>
-      </div>
-
-      <!-- Folded by default: the row says what happened, opening it says what it contained. -->
-      <details v-if="isControl(item)" class="fold" :data-test="`session-control-${item.kind}`">
-        <summary>{{ controlSummary(item) }}</summary>
-        <MarkdownBody :body="item.body" />
-      </details>
+      <ToolCard
+        v-if="row.kind === 'tool'"
+        :name="row.name"
+        :args="row.args"
+        :status="row.status"
+        :result="row.result"
+      />
 
       <template v-else>
-        <MarkdownBody :body="item.body" />
+        <div class="meta">
+          <template v-if="row.item.streaming">
+            <span data-test="session-streaming">正在回复…</span>
+          </template>
+          <template v-else>
+            #{{ row.item.seq }} {{ row.item.kind }} / {{ row.item.source }} {{ row.item.at.slice(11, 19) }}
+            <span v-if="row.item.revisionCount > 0" class="edited">已编辑 {{ row.item.revisionCount }}</span>
+          </template>
+        </div>
+
+        <MarkdownBody :body="row.item.body" />
         <!-- Always visible, never only in the inspector: an edit must be obvious from the list itself. -->
-        <div v-if="item.revisionCount > 0" class="edited" data-test="session-revision-note">
-          已编辑 {{ item.revisionCount }} 次 · 原文：{{ item.originalBody }}
+        <div v-if="row.item.revisionCount > 0" class="edited" data-test="session-revision-note">
+          已编辑 {{ row.item.revisionCount }} 次 · 原文：{{ row.item.originalBody }}
         </div>
       </template>
     </li>
@@ -68,22 +119,6 @@ function controlSummary(item: SessionItem): string {
 </template>
 
 <style scoped>
-.fold summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-family: var(--font-mono, monospace);
-  font-size: var(--fs-meta, 0.85em);
-}
-
-.fold[open] summary {
-  color: var(--text);
-}
-
-.control {
-  border-inline-start: 2px solid var(--line);
-  padding-inline-start: var(--space-2);
-}
-
 .streaming .meta {
   color: var(--accent);
 }

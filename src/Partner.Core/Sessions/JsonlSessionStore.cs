@@ -583,7 +583,8 @@ public static class SessionProjection
                 e.Source,
                 edited ? revisedBody! : e.Body,
                 edited ? e.Body : null,
-                revisions.TryGetValue(e.Seq, out var count) ? count : 0));
+                revisions.TryGetValue(e.Seq, out var count) ? count : 0,
+                e.Meta));
         }
 
         return new SessionView(lastSeq, items);

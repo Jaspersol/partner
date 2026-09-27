@@ -24,25 +24,79 @@ const baseItem = {
 }
 
 describe('event list', () => {
-  it('folds a tool call away by default and opens it on demand', async () => {
+  it('pairs a tool call with its result into one card', async () => {
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
         items: [
-          { ...baseItem, seq: 7, kind: 'ToolCall', body: 'clock' },
-          { ...baseItem, seq: 8, kind: 'ToolResult', body: 'it is noon' },
+          { ...baseItem, seq: 7, kind: 'ToolCall', body: 'clock', meta: { id: 'c1', name: 'clock', args: '{city:上海}' } },
+          { ...baseItem, seq: 8, kind: 'ToolResult', body: '12:00', meta: { id: 'c1', name: 'clock', ok: 'true' } },
         ],
       },
     })
 
-    // Folded: the row says a tool ran, the payload is not in the way.
-    const folds = wrapper.findAll('[data-test=session-control-ToolCall], [data-test=session-control-ToolResult]')
-    expect(folds).toHaveLength(2)
-    expect(folds.every((fold) => !fold.attributes('open'))).toBe(true)
-    expect(folds[0]?.find('summary').text()).toContain('clock')
+    // Two events, one thing to a reader.
+    const cards = wrapper.findAll('[data-tool]')
+    expect(cards).toHaveLength(1)
+    expect(cards[0]?.attributes('data-tool')).toBe('clock')
+    expect(cards[0]?.attributes('data-status')).toBe('ok')
 
-    await folds[0]?.find('summary').trigger('click')
-    expect(wrapper.text()).toContain('clock')
+    // Folded by default, with a summary that says what happened.
+    expect(cards[0]?.attributes('open')).toBeUndefined()
+    const summary = cards[0]!.find('summary').text()
+    expect(summary).toContain('clock')
+    expect(summary).toContain('上海')
+    expect(summary).toContain('完成')
+
+    // Opening it carries the arguments and the result.
+    expect(cards[0]!.text()).toContain('参数')
+    expect(cards[0]!.text()).toContain('结果')
+  })
+
+  it('marks a failed call without opening it', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 7, kind: 'ToolCall', body: 'desktop_act', meta: { id: 'c1', name: 'desktop_act', args: '{}' } },
+          { ...baseItem, seq: 8, kind: 'ToolResult', body: 'approval denied', meta: { id: 'c1', name: 'desktop_act', ok: 'false' } },
+        ],
+      },
+    })
+
+    const card = wrapper.find('[data-tool=desktop_act]')
+    expect(card.attributes('data-status')).toBe('failed')
+    expect(card.find('summary').text()).toContain('失败')
+    expect(card.text()).toContain('approval denied')
+  })
+
+  it('shows a call that has not come back yet as in flight', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 7, kind: 'ToolCall', body: 'desktop_observe', meta: { id: 'c1', name: 'desktop_observe', args: '{}' } },
+        ],
+      },
+    })
+
+    const card = wrapper.find('[data-tool=desktop_observe]')
+    expect(card.attributes('data-status')).toBe('running')
+    expect(card.find('summary').text()).toContain('进行中')
+  })
+
+  it('renders a result whose call is missing rather than dropping it', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 9, kind: 'ToolResult', body: 'orphan', meta: { id: 'gone', name: 'clock', ok: 'true' } },
+        ],
+      },
+    })
+
+    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
+    expect(wrapper.text()).toContain('orphan')
   })
 
   it('marks the reply that is still being written and keeps it out of the inspector', async () => {
@@ -291,6 +345,19 @@ describe('composer', () => {
     await wrapper.find('[data-test="composer-detach"]').trigger('click')
     expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(false)
     expect(api.submitInput).not.toHaveBeenCalled()
+  })
+
+  it('says which tools the model has, because off is not inferable', async () => {
+    const api = stubApi()
+
+    const off = mount(Composer, { props: { api } })
+    await flushPromises()
+    expect(off.find('[data-test=composer-tools]').text()).toContain('桌面未启用')
+
+    // With the capability on there is nothing to explain, so the line is not there either.
+    const on = mount(Composer, { props: { api, desktopEnabled: true } })
+    await flushPromises()
+    expect(on.find('[data-test=composer-tools]').exists()).toBe(false)
   })
 
   it('refuses to send an empty box', async () => {

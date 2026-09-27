@@ -197,22 +197,22 @@ async function main() {
     // it did nothing) but folded, so the payload is not in the way.
     const foldClosed = await evaluate(
       cdp,
-      'document.querySelector(\'[data-test="session-control-ToolCall"]\')?.open === false',
+      'document.querySelector(\'[data-tool="clock"]\')?.open === false',
     )
     const foldLabelled = await evaluate(
       cdp,
-      'document.querySelector(\'[data-test="session-control-ToolCall"] summary\')?.textContent ?? ""',
+      'document.querySelector(\'[data-tool="clock"] summary\')?.textContent ?? ""',
     )
     check(
-      'a tool call is shown folded, not hidden',
+      'a tool call is shown as one folded card, not two rows',
       foldClosed && foldLabelled.includes('clock'),
       `closed=${foldClosed} label=${foldLabelled.trim()}`,
     )
 
-    await evaluate(cdp, 'document.querySelector(\'[data-test="session-control-ToolCall"] summary\').click()')
+    await evaluate(cdp, 'document.querySelector(\'[data-tool="clock"] summary\').click()')
     const foldOpened = await evaluate(
       cdp,
-      'document.querySelector(\'[data-test="session-control-ToolCall"]\').open === true',
+      'document.querySelector(\'[data-tool="clock"]\').open === true',
     )
     check('a folded tool call opens on click', foldOpened, `open=${foldOpened}`)
 

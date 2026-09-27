@@ -10,6 +10,7 @@ namespace Partner.Core.Sessions;
 /// <param name="Body">Effective body — the latest revision when the event has been edited.</param>
 /// <param name="OriginalBody">Body as first written; non-null only when at least one revision was applied.</param>
 /// <param name="RevisionCount">How many <see cref="SessionEventKind.Edit"/> events target this seq.</param>
+/// <param name="Meta">The event's annotations, verbatim (tool id/name/args/ok, turn reason, …).</param>
 public sealed record SessionViewItem(
     long Seq,
     DateTimeOffset At,
@@ -17,7 +18,8 @@ public sealed record SessionViewItem(
     InputSource Source,
     string Body,
     string? OriginalBody,
-    int RevisionCount);
+    int RevisionCount,
+    IReadOnlyDictionary<string, string>? Meta = null);
 
 /// <summary>Projection of the whole session log.</summary>
 public sealed record SessionView(long LastSeq, IReadOnlyList<SessionViewItem> Items);

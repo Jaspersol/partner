@@ -214,6 +214,10 @@ public static class ViewEndpoints
                     originalBody = i.OriginalBody,
                     revisionCount = i.RevisionCount,
                     streaming = false,
+
+                    // A tool call and its result are two events; the meta is what lets the UI pair them into
+                    // one card (id/name/args/ok) instead of showing two unrelated rows.
+                    meta = i.Meta,
                 })
                 .ToList();
 
@@ -233,6 +237,7 @@ public static class ViewEndpoints
                     originalBody = (string?)null,
                     revisionCount = 0,
                     streaming = true,
+                    meta = (IReadOnlyDictionary<string, string>?)null,
                 });
             }
 

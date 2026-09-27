@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type {
   ConsumerState,
+  DesktopState,
   PartnerApiSurface,
   PendingApproval,
   QueueSummary,
@@ -35,6 +36,9 @@ const inspectorCollapsed = ref(false)
  * rather than a notification: an irreversible action is parked until a human says yes.
  */
 const approvals = ref<PendingApproval[]>([])
+
+/** Whether the model has the desktop tools at all; the composer says so when it does not. */
+const desktop = ref<DesktopState | null>(null)
 
 const selected = computed(() => view.value?.items.find((item) => item.seq === selectedSeq.value) ?? null)
 
@@ -97,6 +101,7 @@ async function refresh() {
 
     // A parked tool call rides the same tick as the content: the answer is part of the turn.
     approvals.value = (await props.api.approvals()).pending
+    desktop.value = await props.api.desktop()
 
     // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
     await followIfFollowing()
@@ -369,6 +374,7 @@ defineExpose({ refresh, focusComposer })
       :api="api"
       :summary="summary"
       :consumer="consumer"
+      :desktop-enabled="desktop?.enabled === true"
       @sent="onSent"
       @failed="error = $event"
     />
