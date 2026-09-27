@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Partner.Api.Settings;
 using Partner.Desktop;
 using Partner.Desktop.Input;
@@ -169,6 +170,24 @@ public static class DesktopEndpoints
             });
         });
 
+        app.MapPost("/api/desktop/launch", async (LaunchRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            var disabled = DisabledReason(ctx);
+            if (disabled is not null)
+            {
+                return Results.BadRequest(new { error = disabled });
+            }
+
+            var tool = new Partner.Desktop.Tools.DesktopLaunchTool();
+            var result = await tool
+                .InvokeAsync(JsonSerializer.Serialize(new { target = request.Target, arguments = request.Arguments }), ct)
+                .ConfigureAwait(false);
+
+            return result.Ok
+                ? Results.Ok(new { launched = request.Target, detail = result.Content })
+                : Results.BadRequest(new { error = result.Content });
+        });
+
         // The model's tool call parks here until someone answers; nobody answering means denied.
         app.MapGet("/api/approvals", (ApiContext ctx) => Results.Ok(new
         {
@@ -205,6 +224,8 @@ public static class DesktopEndpoints
         int ScrollDelta);
 
     public sealed record ApprovalRequest(string? Approval);
+
+    public sealed record LaunchRequest(string? Target, string? Arguments);
 
     public sealed record ApprovalAnswer(bool Approved);
 }

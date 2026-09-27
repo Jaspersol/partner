@@ -7,60 +7,13 @@ using Partner.Desktop.Interop;
 namespace Partner.Desktop.Tools;
 
 /// <summary>
-/// The parts of the desktop that are not input: starting programs, running commands, and the clipboard.
+/// The parts of the desktop that are not input: running commands and the clipboard.
 /// <para>
 /// These are the tools the middle approval gear stops. Everything here reaches past the window the model is
-/// looking at — a command can delete a file the model never saw, a launch starts code, a clipboard write
-/// changes what the user will paste next.
+/// looking at — a command can delete a file the model never saw, a clipboard write changes what the user will
+/// paste next.
 /// </para>
 /// </summary>
-public sealed class DesktopLaunchTool : ITool
-{
-    public ToolSpec Spec { get; } = new(
-        "desktop_launch",
-        "启动一个程序或打开一个 URI（shell 语义，等价于开始菜单里运行）。例如 'notepad'、'https://…'、'C:\\path\\app.exe'。"
-        + "启动之后先用 desktop_observe 看它是否出现，再对它的窗口动手。",
-        """
-        {"type":"object","properties":{
-          "target":{"type":"string","description":"可执行文件、文档或 URI"},
-          "arguments":{"type":"string","description":"可选命令行参数"}
-        },"required":["target"],"additionalProperties":false}
-        """);
-
-    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
-    {
-        var arguments = Json.Deserialize<LaunchArguments>(argumentsJson);
-        if (arguments is null || string.IsNullOrWhiteSpace(arguments.Target))
-        {
-            return Task.FromResult(new ToolResult(false, "缺少 target"));
-        }
-
-        try
-        {
-            var info = new ProcessStartInfo(arguments.Target)
-            {
-                UseShellExecute = true,
-            };
-
-            if (!string.IsNullOrWhiteSpace(arguments.Arguments))
-            {
-                info.Arguments = arguments.Arguments;
-            }
-
-            using var started = Process.Start(info);
-            return Task.FromResult(new ToolResult(
-                true,
-                $"已启动 '{arguments.Target}'（pid {started?.Id.ToString() ?? "未知"}）：接下来用 desktop_observe 找它的窗口"));
-        }
-        catch (Exception error)
-        {
-            return Task.FromResult(new ToolResult(false, $"启动失败：{error.Message}"));
-        }
-    }
-
-    private sealed record LaunchArguments(string? Target, string? Arguments);
-}
-
 /// <summary>
 /// Runs one command and returns its output. The sharpest tool here: it can do anything the user can do in a
 /// shell, which is exactly why the approval gears exist.

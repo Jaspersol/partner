@@ -50,11 +50,12 @@ public sealed class DesktopSystemToolTests
     }
 
     [Fact]
-    public async Task A_launch_that_cannot_start_reports_the_reason()
+    public async Task A_launch_of_a_path_that_cannot_start_reports_the_reason()
     {
-        // Not a throw: the model gets a result it can act on, and the turn continues.
+        // Not a throw: the model gets a result it can act on, and the turn continues. A path is taken literally,
+        // so this is the shell refusing rather than the name not being found.
         var result = await new DesktopLaunchTool()
-            .InvokeAsync("""{"target":"definitely-not-a-real-program-9f3a"}""");
+            .InvokeAsync("""{"target":"C:\\\\definitely\\\\missing\\\\app.exe"}""");
 
         Assert.False(result.Ok);
         Assert.Contains("启动失败", result.Content, StringComparison.Ordinal);
