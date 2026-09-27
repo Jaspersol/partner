@@ -315,6 +315,41 @@ describe('queue view', () => {
     expect(summary).toContain('失败 1')
   })
 
+  it('lists only what is still waiting to go in', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(QueueView, { props: { api: stub } })
+    await flushPromises()
+
+    // The tab is the queue, not its history: the finished item is counted, never listed.
+    const rows = wrapper.findAll('[data-test=queue-list] li')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.text()).toContain('pending work')
+    expect(wrapper.text()).not.toContain('disk unwritable')
+
+    const summary = wrapper.find('[data-test=queue-summary]').text()
+    expect(summary).toContain('待处理 1')
+    expect(summary).toContain('失败 1')
+  })
+
+  it('says so when nothing is queued, even with failures on the books', async () => {
+    const { stub } = createStub({
+      queue: vi.fn(async () => ({
+        headSeq: 2,
+        runningItemId: null,
+        depth: 0,
+        items: [
+          { itemId: 'q2', seq: 2, source: 'Text', status: 'Failed', enqueuedAt: '2026-09-26T10:00:00+00:00', startedAt: null, finishedAt: null, attempt: 2, error: 'disk unwritable', payload: 'backup' },
+        ],
+      })),
+    })
+    const wrapper = mount(QueueView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-test=queue-list] li')).toHaveLength(0)
+    expect(wrapper.find('[data-test=queue-empty]').text()).toContain('当前没有待输入的内容')
+    expect(wrapper.find('[data-test=queue-summary]').text()).toContain('失败 1')
+  })
+
   it('cancels an item and reports an item that is already finished', async () => {
     const { stub, calls } = createStub({ cancel: vi.fn(async () => false) })
     const wrapper = mount(QueueView, { props: { api: stub } })

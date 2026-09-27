@@ -33,6 +33,16 @@ public interface IAppendOnlySink : IDisposable
     /// <summary>Truncates the file to <paramref name="length"/> bytes (drops a torn tail).</summary>
     void TruncateTo(long length);
 
+    /// <summary>
+    /// Replaces the whole file with <paramref name="records"/> (each without its newline), atomically: a crash
+    /// leaves either the old file or the new one, never a half-written mix.
+    /// <para>
+    /// This is the one operation that is not append-only. It exists so that removing history can be physical —
+    /// otherwise "deleted" content would stay on disk with a tombstone in front of it.
+    /// </para>
+    /// </summary>
+    void Rewrite(IReadOnlyList<string> records);
+
     /// <summary>Drops an unterminated final line (a crash mid-append) and returns how many bytes were removed.</summary>
     long RepairTail();
 }

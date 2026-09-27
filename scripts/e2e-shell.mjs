@@ -11,7 +11,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -227,9 +227,23 @@ async function main() {
 
     // Tab switching now goes through the sidebar; every view must render against the same live API.
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-队列"]\').click()')
-    await waitFor(cdp, 'document.querySelector(\'[data-test="queue-list"] li\') !== null', 'the queue view')
+    // The summary element exists before the fetch resolves, so the wait is on the data, not on the element.
+    await waitFor(
+      cdp,
+      'document.querySelector(\'[data-test="queue-summary"]\')?.textContent.includes("失败 1") === true',
+      'the queue view to load',
+    )
     const queueSummary = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-summary"]\').textContent')
-    check('the queue view renders the live queue', queueSummary.includes('失败 1'), queueSummary.trim())
+    const queueRows = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="queue-list"] li\').length')
+    const queueEmpty = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-empty"]\')?.textContent ?? ""')
+
+    // The tab is the queue, not its history: the seeded item is failed, so it is counted here and listed
+    // nowhere — what the page shows is only what is still waiting to go in.
+    check(
+      'the queue view counts blocked work without listing finished work',
+      queueSummary.includes('失败 1') && queueRows === 0 && queueEmpty.includes('当前没有待输入的内容'),
+      `${queueSummary.trim()} rows=${queueRows}`,
+    )
 
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-设置"]\').click()')
     await waitFor(cdp, 'document.querySelector(\'[data-test="utterance-gap"]\') !== null', 'the settings view')
@@ -349,6 +363,16 @@ async function main() {
     const afterDelete = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
     check('deleting from the UI removes one event', afterDelete === beforeDelete - 1, `${beforeDelete} -> ${afterDelete}`)
 
+    // The whole point of the removal: it reaches the file. The seeded bodies are ASCII, so the log can be
+    // searched as text — and the surviving event proves the purge stayed inside its range.
+    const logPath = join(workspace, 'session', 'events.jsonl')
+    const logAfterDelete = readFileSync(logPath, 'utf8')
+    check(
+      'deleting from the UI takes the text out of the log',
+      !logAfterDelete.includes('turn on the desk lamp') && logAfterDelete.includes('"done"'),
+      `removed=${!logAfterDelete.includes('turn on the desk lamp')} kept=${logAfterDelete.includes('"done"')}`,
+    )
+
     // The retraction asks twice: the first click only arms it.
     const beforeRetract = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
     await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\')[0].click()')
@@ -367,7 +391,12 @@ async function main() {
       'document.querySelector(\'[data-test="session-list"] li\') === null',
       'the retracted events to leave the list',
     )
-    check('confirming the retraction empties the tail of the session', true, `removed from ${beforeRetract}`)
+    const logAfterRetract = readFileSync(logPath, 'utf8')
+    check(
+      'confirming the retraction takes the tail out of the log too',
+      !logAfterRetract.includes('turn on the desk lamp') && !logAfterRetract.includes('"done"'),
+      `bytes=${logAfterRetract.length}`,
+    )
 
     // Discovery: the device pickers must offer the machine's real endpoints, not a text box.
     await evaluate(cdp, `document.querySelector('[data-test="tab-设置"]').click()`)

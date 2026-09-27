@@ -219,8 +219,9 @@ public static class ViewEndpoints
             return Results.Ok(events.Select(e => new { seq = e.Seq, at = e.At, body = e.Body, meta = e.Meta }));
         });
 
-        // Both removals are appended as a Retract event: the raw log keeps the history, the projection stops
-        // rendering it, and seqs are never reused.
+        // Both removals are physical: the lines leave the log, and one content-free retraction is left for the
+        // range so the seq space stays monotonic. "Deleted" has to mean deleted — a hidden line is still a line
+        // on disk, and the user asked for the log to lose it.
         app.MapPost("/api/session/{seq:long}/delete", async (long seq, ApiContext ctx, CancellationToken ct) =>
         {
             if (!await ExistsAsync(ctx, seq, ct).ConfigureAwait(false))
@@ -228,15 +229,16 @@ public static class ViewEndpoints
                 return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
             }
 
-            var appended = await ctx.Session.AppendAsync(new SessionEvent
-            {
-                Kind = SessionEventKind.Retract,
-                Source = InputSource.Text,
-                Body = $"delete #{seq}",
-                Meta = SessionRetraction.Single(seq),
-            }, ct).ConfigureAwait(false);
+            var purged = await ctx.Session.PurgeAsync(seq, seq, ct).ConfigureAwait(false);
 
-            return Results.Ok(new { removedFrom = seq, removedTo = seq, eventSeq = appended });
+            return Results.Ok(new
+            {
+                removedFrom = seq,
+                removedTo = seq,
+                purgedEvents = purged.RemovedEvents,
+                purgedRevisions = purged.RemovedRevisions,
+                eventSeq = purged.TombstoneSeq,
+            });
         });
 
         app.MapPost("/api/session/{seq:long}/retract", async (long seq, ApiContext ctx, CancellationToken ct) =>
@@ -246,16 +248,19 @@ public static class ViewEndpoints
                 return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
             }
 
-            // The range is closed at append time by the store, so events added afterwards stay visible.
-            var appended = await ctx.Session.AppendAsync(new SessionEvent
-            {
-                Kind = SessionEventKind.Retract,
-                Source = InputSource.Text,
-                Body = $"retract from #{seq}",
-                Meta = SessionRetraction.From(seq),
-            }, ct).ConfigureAwait(false);
+            // The range is pinned here rather than at append time: events added afterwards stay visible, and
+            // only what existed when the user confirmed gets removed.
+            var toSeq = ctx.Session.LastSeq;
+            var purged = await ctx.Session.PurgeAsync(seq, toSeq, ct).ConfigureAwait(false);
 
-            return Results.Ok(new { removedFrom = seq, removedTo = appended - 1, eventSeq = appended });
+            return Results.Ok(new
+            {
+                removedFrom = seq,
+                removedTo = toSeq,
+                purgedEvents = purged.RemovedEvents,
+                purgedRevisions = purged.RemovedRevisions,
+                eventSeq = purged.TombstoneSeq,
+            });
         });
     }
 

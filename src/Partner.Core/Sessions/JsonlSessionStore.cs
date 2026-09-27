@@ -63,38 +63,151 @@ public sealed class JsonlSessionStore : ISessionStore
         try
         {
             ThrowIfFaulted();
+            return await AppendCoreAsync(sessionEvent, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
 
-            var next = Interlocked.Read(ref _assignedSeq) + 1;
-            if (sessionEvent.Seq != 0 && sessionEvent.Seq != next)
+    /// <summary>Append with the write gate already held.</summary>
+    private Task<long> AppendCoreAsync(SessionEvent sessionEvent, CancellationToken ct)
+    {
+        ThrowIfFaulted();
+
+        var next = Interlocked.Read(ref _assignedSeq) + 1;
+        if (sessionEvent.Seq != 0 && sessionEvent.Seq != next)
+        {
+            throw new InvalidOperationException(
+                $"Seq is assigned by the store: expected {next} but got {sessionEvent.Seq}.");
+        }
+
+        sessionEvent = CloseRetractionRange(sessionEvent, next);
+        Validate(sessionEvent, next);
+
+        var record = sessionEvent with { Seq = next, At = sessionEvent.At == default ? _clock.GetUtcNow() : sessionEvent.At };
+        var durableBefore = _sink.DurableLength;
+        _sink.Append(SessionJson.Serialize(record));
+
+        if (_flushOnAppend)
+        {
+            try
             {
-                throw new InvalidOperationException(
-                    $"Seq is assigned by the store: expected {next} but got {sessionEvent.Seq}.");
+                _sink.FlushToDisk();
+            }
+            catch
+            {
+                RollBackAndFault(durableBefore);
+                throw;
             }
 
-            sessionEvent = CloseRetractionRange(sessionEvent, next);
-            Validate(sessionEvent, next);
+            Interlocked.Exchange(ref _durableSeq, next);
+        }
 
-            var record = sessionEvent with { Seq = next, At = sessionEvent.At == default ? _clock.GetUtcNow() : sessionEvent.At };
-            var durableBefore = _sink.DurableLength;
-            _sink.Append(SessionJson.Serialize(record));
+        Interlocked.Exchange(ref _assignedSeq, next);
+        return Task.FromResult(next);
+    }
 
-            if (_flushOnAppend)
+    /// <summary>
+    /// Removes events from the log for real: the lines are gone rather than hidden behind a retraction.
+    /// <para>
+    /// Survivors are written to a sibling file and swapped in, so a crash leaves either the old log or the new
+    /// one. One content-free <see cref="SessionEventKind.Retract"/> is left for the range: it records that
+    /// something was removed without recording what, and it keeps the seq space monotonic — seqs are never
+    /// reused, because memory records point back at them (<c>MemoryRecord.SourceEventSeq</c>).
+    /// </para>
+    /// <para>
+    /// Only an explicit removal goes through here. Compaction writes a retraction too, but it is lossless by
+    /// design: the folded history stays in the log behind the summary.
+    /// </para>
+    /// </summary>
+    public async Task<PurgeResult> PurgeAsync(long fromSeq, long toSeq, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfFaulted();
+        ArgumentOutOfRangeException.ThrowIfLessThan(fromSeq, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(toSeq, fromSeq);
+
+        await _writeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            ThrowIfFaulted();
+
+            var survivors = new List<string>();
+            var removed = 0;
+            var revisions = 0;
+
+            foreach (var line in _sink.ReadLines())
             {
-                try
+                var parsed = SessionJson.Deserialize(line);
+
+                // A line that cannot be parsed is kept: it is not shown anywhere, and dropping it would destroy
+                // something this store does not understand.
+                if (parsed is null)
                 {
-                    _sink.FlushToDisk();
-                }
-                catch
-                {
-                    RollBackAndFault(durableBefore);
-                    throw;
+                    survivors.Add(line);
+                    continue;
                 }
 
-                Interlocked.Exchange(ref _durableSeq, next);
+                if (parsed.Seq >= fromSeq && parsed.Seq <= toSeq)
+                {
+                    removed++;
+                    continue;
+                }
+
+                // A revision holds a copy of the removed event's text, so it leaves with it.
+                if (parsed.Kind == SessionEventKind.Edit
+                    && parsed.EditedFromSeq is { } edited
+                    && edited >= fromSeq && edited <= toSeq)
+                {
+                    revisions++;
+                    continue;
+                }
+
+                // A retraction whose whole range is gone describes nothing any more.
+                if (parsed.Kind == SessionEventKind.Retract
+                    && SessionRetraction.TryRead(parsed, out var retractedFrom, out var retractedTo)
+                    && retractedFrom >= fromSeq && retractedTo <= toSeq)
+                {
+                    continue;
+                }
+
+                survivors.Add(line);
             }
 
-            Interlocked.Exchange(ref _assignedSeq, next);
-            return next;
+            if (removed == 0)
+            {
+                return new PurgeResult(0, 0, LastSeq);
+            }
+
+            _sink.Rewrite(survivors);
+
+            var tombstone = await AppendCoreAsync(
+                new SessionEvent
+                {
+                    Kind = SessionEventKind.Retract,
+                    Source = InputSource.Text,
+                    Body = $"purge #{fromSeq}..#{toSeq}",
+                    Meta = SessionRetraction.Between(fromSeq, toSeq),
+                },
+                ct).ConfigureAwait(false);
+
+            // The rewrite is durable by construction; the tombstone must be too. Without it a restart would read
+            // a lower high-water mark and hand out a seq that a memory record may already point at.
+            try
+            {
+                _sink.FlushToDisk();
+            }
+            catch
+            {
+                Faulted = true;
+                throw;
+            }
+
+            Interlocked.Exchange(ref _durableSeq, Interlocked.Read(ref _assignedSeq));
+
+            return new PurgeResult(removed, revisions, tombstone);
         }
         finally
         {
@@ -396,6 +509,13 @@ public static class SessionRetraction
     {
         [FromKey] = seq.ToString(CultureInfo.InvariantCulture),
         [ToKey] = seq.ToString(CultureInfo.InvariantCulture),
+    };
+
+    /// <summary>A retraction covering <paramref name="fromSeq"/>..<paramref name="toSeq"/> inclusive.</summary>
+    public static IReadOnlyDictionary<string, string> Between(long fromSeq, long toSeq) => new Dictionary<string, string>
+    {
+        [FromKey] = fromSeq.ToString(CultureInfo.InvariantCulture),
+        [ToKey] = toSeq.ToString(CultureInfo.InvariantCulture),
     };
 
     /// <summary>A retraction covering everything from <paramref name="fromSeq"/> onward.</summary>

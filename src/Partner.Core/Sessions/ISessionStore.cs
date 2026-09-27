@@ -6,7 +6,8 @@ namespace Partner.Core.Sessions;
 /// Contract:
 /// <list type="bullet">
 ///   <item><b>Single writer.</b> <see cref="AppendAsync"/> is the only mutator and assigns the seq.</item>
-///   <item><b>Append-only.</b> Nothing is rewritten; corrections are <c>Edit</c> events.</item>
+///   <item><b>Append-only by default.</b> Corrections are <c>Edit</c> events and removals are retractions;
+///   nothing is rewritten except by an explicit <see cref="PurgeAsync"/>.</item>
 ///   <item><b>Durability barrier.</b> When the store is configured to flush on append, a returned seq
 ///   means the record is on disk. Otherwise <see cref="FlushAsync"/> is the barrier and must throw on
 ///   failure — callers treat a thrown flush as "the turn is not durable".</item>
@@ -14,6 +15,12 @@ namespace Partner.Core.Sessions;
 /// </list>
 /// </para>
 /// </summary>
+/// <summary>What a physical removal took out of the log.</summary>
+/// <param name="RemovedEvents">Events whose content was dropped.</param>
+/// <param name="RemovedRevisions">Revisions that held a copy of that content.</param>
+/// <param name="TombstoneSeq">Seq of the content-free retraction left for the range.</param>
+public readonly record struct PurgeResult(int RemovedEvents, int RemovedRevisions, long TombstoneSeq);
+
 public interface ISessionStore : IAsyncDisposable
 {
     /// <summary>Highest seq durably committed. 0 for an empty log.</summary>
@@ -24,6 +31,14 @@ public interface ISessionStore : IAsyncDisposable
 
     /// <summary>Appends one event and returns its seq. Throws <see cref="InvalidOperationException"/> when <see cref="Faulted"/>.</summary>
     Task<long> AppendAsync(SessionEvent sessionEvent, CancellationToken ct = default);
+
+    /// <summary>
+    /// Physically removes <paramref name="fromSeq"/>..<paramref name="toSeq"/> (inclusive) from the log,
+    /// together with any revisions of those events. Used by an explicit user removal: a retraction hides
+    /// content, this deletes it. A content-free retraction is left for the range so the seq space stays
+    /// monotonic, and nothing else in the log is touched.
+    /// </summary>
+    Task<PurgeResult> PurgeAsync(long fromSeq, long toSeq, CancellationToken ct = default);
 
     /// <summary>Durability barrier for buffered appends. Throws on failure and faults the store.</summary>
     Task FlushAsync(CancellationToken ct = default);

@@ -1808,26 +1808,57 @@ internal static class Program
                     .First(i => i.GetProperty("body").GetString() == "要删掉的")
                     .GetProperty("seq").GetInt64();
 
+                // The log is JSON with CJK escaped, so it is parsed rather than searched: a raw Contains would
+                // report "gone" for text that is still there.
+                static bool LogHolds(string workspace, string body)
+                {
+                    var path = Path.Combine(workspace, "session", "events.jsonl");
+                    if (!File.Exists(path))
+                    {
+                        return false;
+                    }
+
+                    using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var reader = new StreamReader(stream);
+                    while (reader.ReadLine() is { } line)
+                    {
+                        if (SessionJson.Deserialize(line)?.Body == body)
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
                 var delete = await settingsHttp.PostAsync($"/api/session/{target}/delete", content: null);
                 var afterDelete = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var stillThere = afterDelete.GetProperty("items").EnumerateArray()
                     .Any(i => i.GetProperty("seq").GetInt64() == target);
 
-                Check("session: deleting one event removes it from the view but not from the log",
+                Check("session: deleting one event takes its text out of the log",
                     delete.IsSuccessStatusCode
                     && !stillThere
+                    && !LogHolds(settingsWorkspace, "要删掉的")
                     && afterDelete.GetProperty("lastSeq").GetInt64() > beforeRemoval.GetProperty("lastSeq").GetInt64(),
                     $"deleted={delete.IsSuccessStatusCode} visible={stillThere} "
+                    + $"inLog={LogHolds(settingsWorkspace, "要删掉的")} "
                     + $"lastSeq {beforeRemoval.GetProperty("lastSeq").GetInt64()}->{afterDelete.GetProperty("lastSeq").GetInt64()}");
 
                 // Retraction takes everything from the selected event onward, as of now.
-                var kept = afterDelete.GetProperty("items").EnumerateArray().First().GetProperty("seq").GetInt64();
+                var keptItem = afterDelete.GetProperty("items").EnumerateArray().First();
+                var kept = keptItem.GetProperty("seq").GetInt64();
+                var keptBody = keptItem.GetProperty("body").GetString() ?? string.Empty;
                 var retract = await settingsHttp.PostAsync($"/api/session/{kept}/retract", content: null);
                 var afterRetract = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
 
-                Check("session: retracting removes the selected event and everything after it",
-                    retract.IsSuccessStatusCode && afterRetract.GetProperty("items").GetArrayLength() == 0,
-                    $"retracted={retract.IsSuccessStatusCode} remaining={afterRetract.GetProperty("items").GetArrayLength()}");
+                Check("session: retracting removes the selected event and takes its text out of the log",
+                    retract.IsSuccessStatusCode
+                    && afterRetract.GetProperty("items").GetArrayLength() == 0
+                    && !LogHolds(settingsWorkspace, keptBody),
+                    $"retracted={retract.IsSuccessStatusCode} "
+                    + $"remaining={afterRetract.GetProperty("items").GetArrayLength()} "
+                    + $"inLog={LogHolds(settingsWorkspace, keptBody)}");
 
                 // And the conversation continues: a closed range must not swallow what comes next.
                 await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "撤回之后" });
@@ -2674,8 +2705,8 @@ internal static class Program
         }),
         ("session.removal", "M1", new[]
         {
-            "session: deleting one event removes it from the view but not from the log",
-            "session: retracting removes the selected event and everything after it",
+            "session: deleting one event takes its text out of the log",
+            "session: retracting removes the selected event and takes its text out of the log",
             "session: events after a retraction stay visible",
         }),
         ("ui.composer", "M13", new[]

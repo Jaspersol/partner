@@ -40,6 +40,15 @@ internal sealed class FakeSink : IAppendOnlySink
         _buffer.Clear();
     }
 
+    /// <summary>Swaps in a new set of lines: the double stands in for the real file's atomic replace.</summary>
+    public void Rewrite(IReadOnlyList<string> records)
+    {
+        _lines.Clear();
+        _lines.AddRange(records);
+        _buffer.Clear();
+        DurableLength = _lines.Count;
+    }
+
     public IReadOnlyList<string> ReadLines() => _lines.ToList();
 
     public long RepairTail() => 0;
@@ -85,6 +94,113 @@ public sealed class JsonlSessionStoreTests : IDisposable
 
     private static SessionEvent Ev(SessionEventKind kind = SessionEventKind.User, string body = "hi") =>
         new() { Kind = kind, Source = InputSource.Text, Body = body };
+
+    [Fact]
+    public async Task A_purge_takes_the_lines_out_and_leaves_a_content_free_marker()
+    {
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        var one = await store.AppendAsync(Ev(body: "first secret"));
+        var two = await store.AppendAsync(Ev(body: "second secret"));
+        var three = await store.AppendAsync(Ev(body: "third secret"));
+
+        var purged = await store.PurgeAsync(two, two);
+
+        Assert.Equal(1, purged.RemovedEvents);
+        Assert.Equal(0, purged.RemovedRevisions);
+
+        var log = string.Join("\n", sink.ReadLines());
+        Assert.DoesNotContain("second secret", log, StringComparison.Ordinal);
+        Assert.Contains("first secret", log, StringComparison.Ordinal);
+        Assert.Contains("third secret", log, StringComparison.Ordinal);
+
+        // What stays behind is the range, not the content: a removal that is still auditable, without being a
+        // copy of what was removed.
+        Assert.Contains("purge #2..#2", log, StringComparison.Ordinal);
+
+        var view = await store.ProjectAsync();
+        Assert.Equal(new[] { one, three }, view.Items.Select(i => i.Seq).ToArray());
+    }
+
+    [Fact]
+    public async Task A_purge_takes_the_revisions_of_those_events_with_it()
+    {
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        var one = await store.AppendAsync(Ev(body: "the original text"));
+        await store.AppendAsync(Ev(SessionEventKind.Edit, "the revised text") with { EditedFromSeq = one });
+
+        await store.PurgeAsync(one, one);
+
+        var log = string.Join("\n", sink.ReadLines());
+        Assert.DoesNotContain("the original text", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("the revised text", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_purge_never_hands_a_seq_out_twice()
+    {
+        // Memory records point back at session seqs (MemoryRecord.SourceEventSeq), so a reused seq would
+        // silently re-attribute a memory to a different event.
+        long purgedTo;
+        long marker;
+
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var one = await store.AppendAsync(Ev(body: "first"));
+            purgedTo = await store.AppendAsync(Ev(body: "second"));
+            marker = (await store.PurgeAsync(one, purgedTo)).TombstoneSeq;
+
+            Assert.True(store.LastSeq >= marker);
+        }
+
+        // The high-water mark is read back from the file, not remembered from the previous process.
+        var (reopened, _) = JsonlSessionStore.Open(_dir);
+        await using (reopened)
+        {
+            Assert.True(reopened.LastSeq > purgedTo);
+            Assert.True(await reopened.AppendAsync(Ev(body: "after")) > purgedTo);
+        }
+    }
+
+    [Fact]
+    public async Task A_purge_leaves_retractions_it_was_not_asked_about_alone()
+    {
+        // Compaction hides folded history with a retraction; it is lossless by design, so a purge of a
+        // different range must not sweep it up.
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        var folded = await store.AppendAsync(Ev(body: "folded away"));
+        await store.AppendAsync(Ev(body: "kept"));
+
+        await store.AppendAsync(Ev(SessionEventKind.Retract, "folded") with
+        {
+            Meta = SessionRetraction.Single(folded),
+        });
+
+        var removed = await store.AppendAsync(Ev(body: "removed on purpose"));
+        await store.PurgeAsync(removed, removed);
+
+        var log = string.Join("\n", sink.ReadLines());
+        Assert.Contains("folded away", log, StringComparison.Ordinal);
+        Assert.Contains("kept", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("removed on purpose", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Purging_a_range_that_is_not_in_the_log_changes_nothing()
+    {
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        await store.AppendAsync(Ev(body: "only one"));
+        var before = sink.ReadLines().Count;
+
+        var purged = await store.PurgeAsync(50, 60);
+
+        Assert.Equal(0, purged.RemovedEvents);
+        Assert.Equal(before, sink.ReadLines().Count);
+    }
 
     [Fact]
     public async Task Append_assigns_monotonic_seq_starting_at_one()

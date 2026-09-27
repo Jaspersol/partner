@@ -9,9 +9,15 @@ const emit = defineEmits<{ context: [value: string]; changed: [] }>()
 const view = ref<QueueView | null>(null)
 const error = ref('')
 
-const pending = computed(
-  () => (view.value?.items ?? []).filter((item) => item.status === 'Queued' || item.status === 'Running').length,
+/**
+ * Only what is waiting to go in. The tab answers "what is queued right now" — finished items are history, and
+ * a queue that keeps showing them stops being a queue. Failures stay visible as counts here and in the top-bar
+ * badge; their reasons live in the queue log on disk.
+ */
+const pendingItems = computed(() =>
+  (view.value?.items ?? []).filter((item) => item.status === 'Queued' || item.status === 'Running'),
 )
+const pending = computed(() => pendingItems.value.length)
 const failed = computed(() => (view.value?.items ?? []).filter((item) => item.status === 'Failed').length)
 
 async function refresh() {
@@ -56,8 +62,10 @@ defineExpose({ refresh })
     </div>
 
     <div class="scroll">
-      <QueueList :items="view?.items ?? []" @cancel="cancel" />
-      <p v-if="(view?.items.length ?? 0) === 0" class="muted" style="padding: var(--space-3)">（队列为空）</p>
+      <QueueList :items="pendingItems" @cancel="cancel" />
+      <p v-if="pendingItems.length === 0" class="muted" style="padding: var(--space-3)" data-test="queue-empty">
+        （当前没有待输入的内容）
+      </p>
     </div>
 
     <p v-if="error" class="error notice" data-test="error">{{ error }}</p>

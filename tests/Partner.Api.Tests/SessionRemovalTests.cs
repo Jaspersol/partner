@@ -28,6 +28,80 @@ public sealed partial class ViewEndpointsTests
         });
     }
 
+    private async Task<string> LogTextAsync()
+    {
+        await using var stream = new FileStream(
+            Path.Combine(_workspace, "session", "events.jsonl"),
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync();
+    }
+
+    [Fact]
+    public async Task Deleting_an_event_takes_its_text_out_of_the_log()
+    {
+        await SeedAsync("kept before");
+        var second = await SeedAsync("the secret that must not linger");
+        await SeedAsync("kept after");
+
+        var response = await _http.PostAsync($"/api/session/{second}/delete", content: null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // The point of the whole operation: the line is gone from the file, not hidden behind a marker.
+        var log = await LogTextAsync();
+        Assert.DoesNotContain("the secret that must not linger", log, StringComparison.Ordinal);
+        Assert.Contains("kept before", log, StringComparison.Ordinal);
+        Assert.Contains("kept after", log, StringComparison.Ordinal);
+
+        // One content-free retraction stands for the removal, so the seq space stays monotonic.
+        Assert.Contains("purge", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Retracting_takes_the_whole_tail_out_of_the_log()
+    {
+        await SeedAsync("kept");
+        var second = await SeedAsync("first removed");
+        await SeedAsync("second removed");
+
+        await _http.PostAsync($"/api/session/{second}/retract", content: null);
+
+        var log = await LogTextAsync();
+        Assert.DoesNotContain("first removed", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("second removed", log, StringComparison.Ordinal);
+        Assert.Contains("kept", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_revision_of_a_removed_event_does_not_stay_behind_in_the_log()
+    {
+        var seq = await SeedAsync("the original text");
+        await _http.PostAsync(
+            $"/api/session/{seq}/edit",
+            JsonContent.Create(new { body = "the revised text" }));
+
+        await _http.PostAsync($"/api/session/{seq}/delete", content: null);
+
+        var log = await LogTextAsync();
+        Assert.DoesNotContain("the original text", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("the revised text", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_seq_space_survives_a_purge()
+    {
+        var first = await SeedAsync("one");
+        var second = await SeedAsync("two");
+
+        await _http.PostAsync($"/api/session/{first}/retract", content: null);
+
+        // Seqs are never reused: memory records point back at them.
+        var view = await _http.GetFromJsonAsync<JsonElement>("/api/session");
+        Assert.True(view.GetProperty("lastSeq").GetInt64() > second);
+    }
+
     [Fact]
     public async Task Deleting_one_event_leaves_every_later_event_alone()
     {
@@ -98,28 +172,5 @@ public sealed partial class ViewEndpointsTests
 
         var unknown = await _http.PostAsync("/api/session/9999/retract", content: null);
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
-    }
-
-    [Fact]
-    public async Task The_raw_log_keeps_removed_events_and_the_last_seq_does_not_rewind()
-    {
-        await SeedAsync("one");
-        var second = await SeedAsync("two");
-
-        var before = await _http.GetFromJsonAsync<JsonElement>("/api/session");
-        await _http.PostAsync($"/api/session/{second}/delete", content: null);
-        var after = await _http.GetFromJsonAsync<JsonElement>("/api/session");
-
-        // Ids are never reused: the next append continues past the highest seq ever assigned.
-        Assert.True(after.GetProperty("lastSeq").GetInt64() > before.GetProperty("lastSeq").GetInt64());
-
-        var raw = new List<string>();
-        await foreach (var e in _context.Session.ReadAllAsync())
-        {
-            raw.Add(e.Body);
-        }
-
-        Assert.Contains("two", raw);
-        Assert.Contains("delete #" + second, raw);
     }
 }

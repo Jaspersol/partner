@@ -9,7 +9,7 @@ namespace Partner.Core.Storage;
 public sealed class FileAppendOnlySink : IAppendOnlySink
 {
     private readonly string _path;
-    private readonly FileStream _stream;
+    private FileStream _stream;
     private readonly List<byte> _buffer = new();
     private bool _disposed;
 
@@ -24,14 +24,16 @@ public sealed class FileAppendOnlySink : IAppendOnlySink
             Directory.CreateDirectory(dir);
         }
 
-        _stream = new FileStream(
-            path,
-            FileMode.OpenOrCreate,
-            FileAccess.ReadWrite,
-            // Single writer by construction; readers may tail the file.
-            FileShare.Read);
-        _stream.Seek(0, SeekOrigin.End);
+        _stream = OpenStream(path);
         DurableLength = _stream.Length;
+    }
+
+    /// <summary>Single writer by construction; readers may tail the file.</summary>
+    private static FileStream OpenStream(string path)
+    {
+        var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+        stream.Seek(0, SeekOrigin.End);
+        return stream;
     }
 
     public string FilePath => _path;
@@ -154,6 +156,64 @@ public sealed class FileAppendOnlySink : IAppendOnlySink
         var removed = read - goodLength;
         TruncateTo(goodLength);
         return removed;
+    }
+
+    /// <summary>
+    /// Writes the survivors to a sibling file and swaps it in. Truncate-then-rewrite would be shorter, but a
+    /// crash between the two would leave a mix of old and new lines — each still a valid record, so nothing
+    /// downstream could tell the log had been corrupted.
+    /// </summary>
+    public void Rewrite(IReadOnlyList<string> records)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(records);
+
+        foreach (var record in records)
+        {
+            ArgumentNullException.ThrowIfNull(record);
+            if (record.Contains('\n') || record.Contains('\r'))
+            {
+                throw new ArgumentException("Record must not contain newline characters.", nameof(records));
+            }
+        }
+
+        var temp = _path + ".rewrite";
+
+        using (var file = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            foreach (var record in records)
+            {
+                file.Write(Encoding.UTF8.GetBytes(record));
+                file.WriteByte((byte)'\n');
+            }
+
+            file.Flush(flushToDisk: true);
+        }
+
+        _buffer.Clear();
+        _stream.Dispose();
+
+        // A concurrent reader (ReadLines opens with FileShare.ReadWrite) can hold the file for the moment it
+        // takes to read it, so the swap retries instead of failing on a sharing violation.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(temp, _path, overwrite: true);
+                break;
+            }
+            catch (IOException) when (attempt < 20)
+            {
+                Thread.Sleep(25);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 20)
+            {
+                Thread.Sleep(25);
+            }
+        }
+
+        _stream = OpenStream(_path);
+        DurableLength = _stream.Length;
     }
 
     public void Dispose()
