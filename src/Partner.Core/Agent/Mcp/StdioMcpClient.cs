@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Partner.Core.Diagnostics;
 
 namespace Partner.Core.Agent.Mcp;
 
@@ -17,15 +18,13 @@ namespace Partner.Core.Agent.Mcp;
 /// </summary>
 public sealed class StdioMcpClient : IMcpClient
 {
-    private const int StderrCapacity = 100;
     private const string ProtocolVersion = "2024-11-05";
     private static readonly TimeSpan ShutdownGrace = TimeSpan.FromSeconds(2);
 
     private readonly McpServerConfig _config;
     private readonly TimeProvider _clock;
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
-    private readonly Queue<string> _stderrLines = new();
-    private readonly object _stderrLock = new();
+    private readonly StderrTailBuffer _stderr = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly SemaphoreSlim _listLock = new(1, 1);
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
@@ -108,7 +107,7 @@ public sealed class StdioMcpClient : IMcpClient
 
             _process = process;
             _stdoutTask = ReadStdoutAsync(process.StandardOutput, cts.Token);
-            _stderrTask = DrainStderrAsync(process.StandardError, cts.Token);
+            _stderrTask = _stderr.DrainAsync(process.StandardError, cts.Token);
 
             try
             {
@@ -371,7 +370,7 @@ public sealed class StdioMcpClient : IMcpClient
         {
             _pending.TryRemove(id, out _);
             throw new TimeoutException(
-                $"MCP request '{method}' to server '{_config.Name}' timed out after {_config.CallTimeout}.{StderrTail()}");
+                $"MCP request '{method}' to server '{_config.Name}' timed out after {_config.CallTimeout}.{_stderr.Tail()}");
         }
         catch (Exception)
         {
@@ -454,38 +453,6 @@ public sealed class StdioMcpClient : IMcpClient
         }
     }
 
-    private async Task DrainStderrAsync(StreamReader reader, CancellationToken ct)
-    {
-        try
-        {
-            while (true)
-            {
-                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-                if (line is null)
-                {
-                    break;
-                }
-
-                lock (_stderrLock)
-                {
-                    _stderrLines.Enqueue(line);
-                    while (_stderrLines.Count > StderrCapacity)
-                    {
-                        _stderrLines.Dequeue();
-                    }
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // 正常停止。
-        }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
-        {
-            // stderr 管道关闭；不影响主流程。
-        }
-    }
-
     private void DispatchLine(string line)
     {
         JsonDocument document;
@@ -537,16 +504,6 @@ public sealed class StdioMcpClient : IMcpClient
 
     private InvalidOperationException NotRunning() =>
         new($"MCP server '{_config.Name}' is not running.");
-
-    private string StderrTail()
-    {
-        lock (_stderrLock)
-        {
-            return _stderrLines.Count == 0
-                ? string.Empty
-                : " stderr: " + string.Join(" | ", _stderrLines);
-        }
-    }
 
     private static void EnsureNoError(string method, JsonElement response)
     {

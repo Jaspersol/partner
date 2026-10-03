@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { toolAppearance } from '../toolAppearance'
+import Icon from './Icon.vue'
 import MarkdownBody from './MarkdownBody.vue'
 
 /**
@@ -23,6 +25,8 @@ const STATUS_LABEL: Record<string, string> = {
   failed: '失败',
 }
 
+const appearance = computed(() => toolAppearance(props.name))
+
 /** JSON on one line, trimmed: the summary is a glance, not the payload. */
 const argsSummary = computed(() => {
   const compact = props.args.replace(/\s+/g, ' ').trim()
@@ -44,20 +48,29 @@ const argsPretty = computed(() => {
 </script>
 
 <template>
-  <details class="tool" :data-tool="name" :data-status="status">
+  <details
+    class="tool"
+    :data-tool="name"
+    :data-tool-family="appearance.family"
+    :data-status="status"
+    :data-chat-anchor-key="`tool:${name}:${appearance.family}`"
+  >
     <summary>
-      <span class="name">{{ name }}</span>
+      <span class="icon" :title="appearance.label">
+        <Icon :name="appearance.icon" :size="14" />
+      </span>
+      <span class="name" :title="appearance.label">{{ name }}</span>
       <span class="args">{{ argsSummary }}</span>
       <span class="status" :class="status">{{ STATUS_LABEL[status] }}</span>
     </summary>
 
     <div class="section">
-      <span class="label">参数</span>
+      <span class="tool-section-label">参数</span>
       <pre>{{ argsPretty }}</pre>
     </div>
 
     <div v-if="result !== null" class="section">
-      <span class="label">结果</span>
+      <span class="tool-section-label">结果</span>
       <MarkdownBody :body="result" />
     </div>
   </details>
@@ -65,59 +78,138 @@ const argsPretty = computed(() => {
 
 <style scoped>
 .tool {
-  border: 1px solid var(--line);
+  /* An inset block, not a box. It used to draw a full hairline on all four sides *and* sit on --surface-1,
+     which is two signals for one relationship and left the card invisible against the row behind it. Now the
+     surface step carries it and only the family stripe stays — the stripe is information, the border was not. */
+  border-inline-start: 3px solid var(--tool-accent, var(--line-strong));
   border-radius: var(--radius-sm);
+  background: var(--surface-2);
   padding: var(--space-1) var(--space-2);
-  margin-block: var(--space-1);
+  min-inline-size: 0;
+}
+
+/* The colour says what kind of tool it is; the status says whether it worked. Two channels, two meanings —
+   conflating them would leave a failed search indistinguishable from a successful terminal command. */
+.tool[data-status='failed'] {
+  --tool-accent: var(--error);
+}
+
+.tool[data-tool-family='shell'] {
+  --tool-accent: var(--tool-shell);
+}
+
+.tool[data-tool-family='read'] {
+  --tool-accent: var(--tool-read);
+}
+
+.tool[data-tool-family='write'] {
+  --tool-accent: var(--tool-write);
+}
+
+.tool[data-tool-family='search'] {
+  --tool-accent: var(--tool-search);
+}
+
+.tool[data-tool-family='web'] {
+  --tool-accent: var(--tool-web);
+}
+
+.tool[data-tool-family='record'] {
+  --tool-accent: var(--tool-record);
+}
+
+.tool[data-tool-family='schedule'] {
+  --tool-accent: var(--tool-schedule);
+}
+
+.tool[data-tool-family='agent'] {
+  --tool-accent: var(--tool-agent);
+}
+
+.tool[data-tool-family='control'] {
+  --tool-accent: var(--tool-control);
 }
 
 summary {
+  cursor: pointer;
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  cursor: pointer;
-  font-family: var(--font-mono, monospace);
-  font-size: var(--fs-meta, 0.85em);
+  min-inline-size: 0;
+}
+
+.icon {
+  flex: none;
+  color: var(--tool-accent, var(--accent));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* A fixed box so the family glyph, the name and the status all sit on the same baseline whether the icon is
+     a page or a crosshair — the whole point of replacing the characters. */
+  inline-size: 1.35em;
 }
 
 .name {
   color: var(--accent);
-  font-weight: 600;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
 }
 
 .args {
-  color: var(--muted);
+  flex: 1;
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-2);
 }
 
 .status {
-  margin-inline-start: auto;
-  color: var(--muted);
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
 }
 
-/* A failed call is the one a reader must not have to open to notice. */
+.status.ok {
+  color: var(--ok);
+}
+
+.status.running {
+  color: var(--accent);
+}
+
 .status.failed {
   color: var(--error);
-  font-weight: 600;
 }
 
 .section {
-  margin-block-start: var(--space-1);
+  margin-block-start: var(--space-2);
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
 }
 
-.label {
-  color: var(--muted);
-  font-size: var(--fs-meta, 0.85em);
+.tool-section-label {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 pre {
-  margin: var(--space-1) 0 0;
-  padding: var(--space-1);
-  background: var(--pane);
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--surface-0);
   border-radius: var(--radius-sm);
   overflow: auto;
+  max-block-size: 20rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  font-size: var(--fs-meta);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

@@ -10,6 +10,7 @@ public sealed record TurnLoopStats(int Completed, int Failed, int Canceled, int 
 {
     public static TurnLoopStats Empty { get; } = new(0, 0, 0, 0);
 
+    /// <summary>Serialized into the consumer's <c>stats.handled</c> on <c>/api/consumer</c>.</summary>
     public int Handled => Completed + Failed + Canceled + Skipped;
 }
 
@@ -24,6 +25,8 @@ public sealed record TurnLoopStats(int Completed, int Failed, int Canceled, int 
 ///   <item>Cancellation of a <c>Running</c> item (the queue's <c>RunningToken</c>) settles it as <c>Canceled</c>.</item>
 ///   <item>Stopping the loop stops the <i>claiming</i>, not the turn in flight: a half-run turn is worse than a
 ///     late shutdown. An interrupted item is re-queued by the queue on the next start.</item>
+///   <item>A turn is bounded by <see cref="AgentTurnOptions.TurnTimeout"/>, and a turn that outlives it settles
+///     its item as <c>Failed</c> and is let go of — waiting on a wedged turn is what parks the queue.</item>
 ///   <item>A redelivered item (re-queued after a crash) whose turn already ended is not run twice.</item>
 /// </list>
 /// </para>
@@ -92,11 +95,44 @@ public sealed class TurnLoop
             return;
         }
 
+        // The ceiling is the loop's, not the runner's: every budget inside a turn is a promise by the code
+        // being called, and this loop is the only place that can say the promise was not kept. Without it a
+        // turn that never returns holds the only reader this queue has, so the item stays Running, every
+        // message behind it waits, and the UI's "running" is a lie with no way out but killing the process.
+
+        // The turn observes the item's own cancel token, so a UI cancel interrupts it, while stopping the
+        // loop does not.
+        using var turn = CancellationTokenSource.CreateLinkedTokenSource(_queue.RunningToken);
+
         try
         {
-            // The turn observes the item's own cancel token, so a UI cancel interrupts it, while stopping the
-            // loop does not.
-            await _runner.RunAsync(item, _queue.RunningToken).ConfigureAwait(false);
+            var running = _runner.RunAsync(item, turn.Token);
+
+            // Waited on with a bound rather than awaited outright. This is the part that is easy to get wrong:
+            // cancelling the token does <i>not</i> bring back a turn that is parked on an await which ignores
+            // it, so `await running` would keep waiting for exactly the case this exists to catch. Waiting on
+            // the pair instead means the loop gives up on schedule whether or not the turn is listening.
+            var finished = await Task
+                .WhenAny(running, Task.Delay(_runner.TurnTimeout, CancellationToken.None))
+                .ConfigureAwait(false);
+
+            if (finished != running)
+            {
+                // Asked to stop in case it is listening, then left alone: it is not waited for, and its result
+                // belongs to a turn that no longer has an item.
+                turn.Cancel();
+                Forget(running);
+
+                Interlocked.Increment(ref _failed);
+                await _queue.CompleteAsync(
+                    item.ItemId,
+                    InputItemStatus.Failed,
+                    $"回合超过 {_runner.TurnTimeout.TotalSeconds:0} 秒未结束，已中止"
+                    + "（多半是某个工具或模型调用没有返回；请看会话里最后一个 tool/call 定位）").ConfigureAwait(false);
+                return;
+            }
+
+            await running.ConfigureAwait(false);
             Interlocked.Increment(ref _completed);
             await _queue.CompleteAsync(item.ItemId, InputItemStatus.Done).ConfigureAwait(false);
         }
@@ -111,6 +147,17 @@ public sealed class TurnLoop
             await _queue.CompleteAsync(item.ItemId, InputItemStatus.Failed, error.Message).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Keeps an abandoned turn from resurfacing as an unobserved task exception. It is deliberately not
+    /// awaited: the whole point is that the loop has stopped waiting for it.
+    /// </summary>
+    private static void Forget(Task abandoned) =>
+        abandoned.ContinueWith(
+            static faulted => _ = faulted.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     /// <summary>True when the log already carries a finished turn for this item.</summary>
     private async Task<bool> AlreadyTurnedAsync(InputItem item)

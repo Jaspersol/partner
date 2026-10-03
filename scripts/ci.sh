@@ -31,6 +31,16 @@ if [ -z "${NPM:-}" ]; then
   fi
 fi
 
+echo "== docs (design-doc references still resolve) =="
+# Cheap and first: `ui.md §N` is pinned from ~40 source comments, and a renamed section reads exactly like a
+# valid one. See the script header for what it does and does not check.
+node scripts/check-docs.mjs
+
+echo "== css (scoped classes not inheriting a global box model) =="
+# Same reasoning, one layer down: Vue scoped styles are additive, not isolating. Caught the thinking row
+# inheriting the shell's grid. See the script header.
+node scripts/check-css-names.mjs
+
 echo "== build =="
 "$DOTNET" build -v q --nologo
 

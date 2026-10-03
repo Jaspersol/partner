@@ -25,6 +25,12 @@ public sealed record MemoryRecord
     /// <summary>Session event this memory was derived from, when applicable.</summary>
     public long? SourceEventSeq { get; init; }
 
+    /// <summary>
+    /// When this record was last handed to a turn. Null means never recalled, which the demotion rule treats
+    /// as "unused" — a record nobody ever found is not one to keep trusting.
+    /// </summary>
+    public DateTimeOffset? LastRecalledAt { get; init; }
+
     public DateTimeOffset CreatedAt { get; init; }
 
     /// <summary>Defaults to <see cref="CreatedAt"/>.</summary>

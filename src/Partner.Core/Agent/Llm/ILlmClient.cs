@@ -29,4 +29,32 @@ public interface ILlmClient
 
         return response;
     }
+
+    /// <summary>
+    /// The same completion, reporting text <b>and</b> reasoning as they arrive.
+    /// <para>
+    /// A default method again, so a client that only knows <see cref="CompleteAsync"/> still satisfies the
+    /// interface unchanged — and still gets its reasoning through <see cref="LlmResponse.Reasoning"/>, just
+    /// not while it happens. The interface's contract holds on this path too: non-empty text is reported at
+    /// least once, and the **return value** is what the caller records, so a stream that dies halfway leaves a
+    /// turn without an answer rather than half an answer a later turn would read as complete.
+    /// </para>
+    /// </summary>
+    async Task<LlmResponse> StreamWithReasoningAsync(
+        LlmRequest request,
+        Action<string> onText,
+        Action<string> onReasoning,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(onText);
+        ArgumentNullException.ThrowIfNull(onReasoning);
+
+        var response = await StreamAsync(request, onText, ct).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(response.Reasoning))
+        {
+            onReasoning(response.Reasoning);
+        }
+
+        return response;
+    }
 }

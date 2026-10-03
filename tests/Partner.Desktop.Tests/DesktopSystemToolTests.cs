@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Media;
 using Partner.Desktop.Capture;
+using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
 namespace Partner.Desktop.Tests;
@@ -38,6 +40,12 @@ public sealed class DesktopSystemToolTests
             Assert.Contains($"\"entityId\":\"{target.EntityId}\"", result.Content);
             Assert.Contains("\"kind\":\"LeftClick\"", result.Content);
             Assert.Contains("屏幕坐标", result.Content);
+
+            // The picture carries a grid whose labels are screen coordinates, and the answer says so. A model
+            // that estimates a position from an unmarked picture is off by hundreds of pixels; this is the
+            // reference it measures against instead.
+            Assert.Contains("坐标网格", result.Content);
+            Assert.Contains("刻度上的数字就是屏幕坐标", result.Content);
 
             var image = Assert.Single(result.Images!);
             Assert.StartsWith("data:image/png;base64,", image);
@@ -81,6 +89,65 @@ public sealed class DesktopSystemToolTests
         Assert.Contains("command", result.Content, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A command that leaves a background process holding the inherited pipe must not outlive the tool's own
+    /// timeout — and must not be reported as a success.
+    /// <para>
+    /// This is the hang, reproduced. <c>cmd.exe</c> exits immediately, so waiting for the <i>process</i> returns
+    /// at once; the pipe stays open for as long as <c>ping</c> lives. The reads were the only unbounded awaits
+    /// in the tool, so the call sat there for the child's whole lifetime with nothing to stop it — measured at
+    /// 44s against a 30s budget, returning <c>ok=true</c>. Every turn that issued such a command looked frozen
+    /// until the user killed the app, and because the queue is single-reader that took the whole queue with it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Exec_gives_up_on_a_command_whose_background_child_holds_the_pipe()
+    {
+        var tool = new DesktopExecTool(TimeSpan.FromSeconds(2));
+
+        var started = Stopwatch.StartNew();
+        var result = await tool.InvokeAsync("""{"command":"start /b ping -n 45 127.0.0.1 > nul & exit 0"}""");
+        started.Stop();
+
+        // The budget, plus room for the shell to actually start. Not 45 seconds: that is the whole point.
+        Assert.True(
+            started.Elapsed < TimeSpan.FromSeconds(20),
+            $"the tool took {started.Elapsed.TotalSeconds:0}s to give up on a 2s budget");
+
+        Assert.False(result.Ok);
+        Assert.Contains("未结束", result.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Exec_reports_what_a_command_printed_before_it_was_cut_off()
+    {
+        // Partial output is the evidence for why the model reached for the command; a timeout that discards it
+        // leaves nothing to diagnose from.
+        var tool = new DesktopExecTool(TimeSpan.FromSeconds(2));
+
+        var result = await tool.InvokeAsync("""{"command":"echo before-the-hang & start /b ping -n 45 127.0.0.1 > nul & exit 0"}""");
+
+        Assert.False(result.Ok);
+        Assert.Contains("before-the-hang", result.Content, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The output a command produces is bounded while it is being read, not after. A command that prints
+    /// without end used to be buffered whole and only then truncated — so "output is truncated" was true of
+    /// what reached the conversation and false of what the process held in memory.
+    /// </summary>
+    [Fact]
+    public async Task Exec_truncates_a_command_that_prints_far_more_than_the_cap()
+    {
+        var tool = new DesktopExecTool(TimeSpan.FromSeconds(20));
+
+        var result = await tool.InvokeAsync(
+            """{"command":"for /L %i in (1,1,20000) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}""");
+
+        Assert.Contains("已截断", result.Content, StringComparison.Ordinal);
+        Assert.True(result.Content.Length < 20_000, $"the cap did not hold: {result.Content.Length} characters");
+    }
+
     [Fact]
     public async Task Launch_without_a_target_says_so()
     {
@@ -110,5 +177,67 @@ public sealed class DesktopSystemToolTests
         Assert.True(DesktopToolCatalog.IsDangerous("desktop_clipboard_set"));
         Assert.True(DesktopToolCatalog.IsReadOnly("desktop_clipboard_get"));
         Assert.False(DesktopToolCatalog.IsReadOnly("desktop_clipboard_set"));
+    }
+
+    /// <summary>
+    /// The grid on a picture is labelled in screen coordinates, and the label has to describe the pixels it
+    /// is drawn on. A window can move between being observed and being photographed — a restore, a drag, a
+    /// snap — and the capture is taken where the window is <i>now</i>, so drawing the observation's rectangle
+    /// over the new pixels shifts every number the model reads off the picture by however far it moved.
+    /// Nothing fails: the picture is a valid picture of a valid window, and the model clicks empty space.
+    /// </summary>
+    [Fact]
+    public async Task A_picture_is_labelled_with_where_the_window_was_actually_captured()
+    {
+        var workspace = Directory.CreateTempSubdirectory("partner-screenshot-moved-");
+        try
+        {
+            using var automation = new DesktopAutomation();
+            var tool = new DesktopScreenshotTool(automation, new FileMediaStore(workspace.FullName));
+
+            var observation = automation.Observe();
+            var target = observation.Entities.First(entity => !entity.IsMinimized && entity.Rect.Width > 100);
+
+            // The capture lands the window somewhere else than the observation recorded — the moved case.
+            var moved = target.Rect with { X = target.Rect.X + 137, Y = target.Rect.Y + 61 };
+            var shifted = new DesktopAutomation(capture: new OffsetCapture(moved));
+            shifted.Observe();
+
+            var result = await new DesktopScreenshotTool(shifted, new FileMediaStore(workspace.FullName))
+                .InvokeAsync($$"""{"entityId":"{{target.EntityId}}","marks":false}""");
+
+            Assert.True(result.Ok, result.Content);
+
+            // The mapping the model is told to use is the one the pixels are actually in.
+            Assert.Contains($"屏幕 ({moved.X},{moved.Y})", result.Content);
+            Assert.Contains($"({moved.X}+px", result.Content);
+
+            // And the disagreement is stated, rather than leaving the model to trust a picture whose
+            // labels quietly disagree with the window list it observed.
+            Assert.Contains("截图时窗口已移动", result.Content);
+        }
+        finally
+        {
+            workspace.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>A capture that reports a window at a chosen rectangle, so the moved-window case is
+    /// reproducible without moving the user's windows.</summary>
+    private sealed class OffsetCapture(PixelRect where) : IScreenCapture
+    {
+        public Task<CaptureResult> CaptureWindowAsync(nint handle, CancellationToken ct = default) =>
+            Task.FromResult(new CaptureResult
+            {
+                Ok = true,
+                Width = where.Width,
+                Height = where.Height,
+                Bgra = new byte[where.Width * where.Height * 4],
+                Method = "test.offset",
+                ScreenRect = where,
+            });
+
+        public Task<CaptureResult> CaptureScreenRegionAsync(int x, int y, int width, int height, CancellationToken ct = default) =>
+            CaptureWindowAsync(0, ct);
     }
 }

@@ -52,10 +52,35 @@ internal sealed class BlockingLlmClient : ILlmClient
     }
 }
 
-internal sealed class ThrowingLlmClient(string message) : ILlmClient
+/// <summary>
+/// Fails with a chosen exception, so a test can exercise one specific failure shape rather than a generic one.
+/// </summary>
+internal sealed class ThrowingLlmClient(string message, Exception? failure = null) : ILlmClient
 {
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
-        throw new InvalidOperationException(message);
+        throw failure ?? new InvalidOperationException(message);
+}
+
+/// <summary>Records the gear each request arrived with, so a turn's gear can be asserted end to end.</summary>
+internal sealed class GearRecordingLlmClient : ILlmClient
+{
+
+    private int _next;
+    private readonly List<LlmResponse> _scripted;
+
+    public GearRecordingLlmClient(params LlmResponse[] scripted) => _scripted = scripted.ToList();
+
+    public List<string?> Seen { get; } = new();
+
+    public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+    {
+        // A turn may run several steps; the gear has to be the same on every one of them.
+        Seen.Add(request.ReasoningEffort);
+
+        // The last scripted response repeats, so a two-step turn does not need a third entry for its tail.
+        var step = Math.Min(_next++, _scripted.Count - 1);
+        return Task.FromResult(_scripted[step]);
+    }
 }
 
 /// <summary>Acceptance tests for the turn runner (design doc §2.9.8).</summary>
@@ -107,7 +132,8 @@ public sealed class AgentTurnRunnerTests : IDisposable
         HookRegistry? hooks = null,
         AgentTurnOptions? options = null,
         IContextAssembler? assembler = null,
-        IAssistantStream? stream = null) =>
+        IAssistantStream? stream = null,
+        IToolFailureLog? failures = null) =>
         new(
             session,
             llm,
@@ -117,7 +143,8 @@ public sealed class AgentTurnRunnerTests : IDisposable
             hooks ?? new HookRegistry(),
             assembler,
             options,
-            stream);
+            stream,
+            failures);
 
     /// <summary>Collects what the runner reports while the model is still writing.</summary>
     private sealed class RecordingStream : IAssistantStream
@@ -126,9 +153,46 @@ public sealed class AgentTurnRunnerTests : IDisposable
 
         public List<string> Completed { get; } = new();
 
+        public List<string> ReasoningDeltas { get; } = new();
+
+        public List<string> ReasoningCompleted { get; } = new();
+
         public void OnAssistantDelta(string itemId, string delta) => Deltas.Add(delta);
 
         public void OnAssistantCompleted(string itemId) => Completed.Add(itemId);
+
+        public void OnReasoningDelta(string itemId, string delta) => ReasoningDeltas.Add(delta);
+
+        public void OnReasoningCompleted(string itemId) => ReasoningCompleted.Add(itemId);
+    }
+
+    /// <summary>Streams reasoning and then an answer, the way a real reasoning model does.</summary>
+    private sealed class ReasoningLlm : ILlmClient
+    {
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
+            throw new InvalidOperationException("this client only streams");
+
+        public Task<LlmResponse> StreamAsync(LlmRequest request, Action<string> onText, CancellationToken ct = default) =>
+            throw new InvalidOperationException("this client streams both channels");
+
+        public async Task<LlmResponse> StreamWithReasoningAsync(
+            LlmRequest request,
+            Action<string> onText,
+            Action<string> onReasoning,
+            CancellationToken ct = default)
+        {
+            onReasoning("先确认时区");
+            await Task.Yield();
+            onReasoning("再换算");
+            await Task.Yield();
+            onText("下午三点");
+
+            return new LlmResponse(
+                "下午三点",
+                Array.Empty<LlmToolCall>(),
+                "stop",
+                Reasoning: "先确认时区再换算");
+        }
     }
 
     /// <summary>Streams its answer in pieces, the way a real transport does.</summary>
@@ -149,6 +213,188 @@ public sealed class AgentTurnRunnerTests : IDisposable
             }
 
             return new LlmResponse(string.Concat(pieces), Array.Empty<LlmToolCall>(), "stop");
+        }
+    }
+
+    [Fact]
+    public async Task Reasoning_is_recorded_and_reported_live()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var stream = new RecordingStream();
+            await Build(store, new ReasoningLlm(), stream: stream).RunAsync(Claimed());
+
+            // Recorded, not merely shown: a thinking row that only existed while the model was writing it
+            // would be gone exactly when a reader asks "what was it working out".
+            var thinking = Assert.Single(await RawAsync(store), e => e.Kind == SessionEventKind.Thinking);
+            Assert.Equal("先确认时区再换算", thinking.Body);
+
+            // And it arrives before the answer, in pieces, on its own channel.
+            Assert.Equal(new[] { "先确认时区", "再换算" }, stream.ReasoningDeltas);
+            Assert.Single(stream.ReasoningCompleted);
+        }
+    }
+
+    [Fact]
+    public async Task A_model_that_does_not_think_records_no_thinking_event()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            await Build(store, new ScriptedLlmClient(new[] { Say("答") })).RunAsync(Claimed());
+
+            // An empty thinking row is worse than none: it looks like the model considered something and
+            // decided not to say.
+            Assert.DoesNotContain(await RawAsync(store), e => e.Kind == SessionEventKind.Thinking);
+        }
+    }
+
+    [Fact]
+    public async Task Reasoning_stays_out_of_what_the_model_is_asked_next()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            // A stream host is what puts the turn on the streaming path; without one the runner takes the
+            // buffered call, which is also a real path.
+            await Build(store, new ReasoningLlm(), stream: new RecordingStream()).RunAsync(Claimed());
+
+            var view = await store.ProjectAsync();
+
+            // Visible to a reader, invisible to the model: it is working notes for the turn that produced it.
+            // Feeding it back would spend window on a chain of thought that is already spent.
+            Assert.Contains(view.Items, e => e.Kind == SessionEventKind.Thinking);
+            // IsToolControl, not IsContent: the projection shows it, the assembler never reads it.
+            Assert.True(SessionEventKind.Thinking.IsToolControl());
+            Assert.False(SessionEventKind.Thinking.IsContent());
+        }
+    }
+
+    [Fact]
+    public async Task A_failing_tool_is_counted_by_reason_not_by_call()
+    {
+        // The summary exists to answer "what keeps breaking", so the same failure twice is one row counted
+        // twice — not two rows, which would be the session log with extra steps.
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var failures = new InMemoryToolFailureLog();
+            var llm = new ScriptedLlmClient(new[]
+            {
+                Call("c1", "flaky"),
+                Call("c2", "flaky"),
+                Say("done"),
+            });
+
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("flaky", (_, _) =>
+                Task.FromResult(new ToolResult(false, "file not found: a.txt"))));
+
+            await Build(store, llm, tools, failures: failures).RunAsync(Claimed());
+
+            var row = Assert.Single(failures.Top(10));
+            Assert.Equal("flaky", row.Tool);
+            Assert.Equal(2, row.Count);
+        }
+    }
+
+    [Fact]
+    public async Task A_command_that_ran_and_exited_non_zero_is_a_result_and_not_a_failure()
+    {
+        // The distinction the whole summary rests on: `grep` finding nothing, or `git` reporting a conflict,
+        // is the answer to a question. Counting those would fill the summary with "the tool is broken" rows
+        // for tools that are working exactly as asked.
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var failures = new InMemoryToolFailureLog();
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "bash"), Say("done") });
+
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("bash", (_, _) =>
+                Task.FromResult(new ToolResult(true, "exit 1\nfatal: not a git repository"))));
+
+            // Allowed, so the call actually reaches the tool: the point is what happens *after* it ran.
+            var allow = new AllowListGovernance(new[] { "bash" });
+
+            await Build(store, llm, tools, governance: allow, failures: failures).RunAsync(Claimed());
+
+            Assert.Empty(failures.Top(10));
+            Assert.Equal(0, failures.Totals.Occurrences);
+        }
+    }
+
+    [Fact]
+    public async Task A_denied_call_is_counted_because_the_tool_never_ran()
+    {
+        // Governance refusing is not the tool failing, but from the reader's side nothing happened and the
+        // model has to try again — that is worth seeing in the summary.
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var failures = new InMemoryToolFailureLog();
+            var llm = new ScriptedLlmClient(new[] { Call("c1", "blocked"), Say("done") });
+
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("blocked"));
+
+            // Nothing is on the allow list, so governance refuses before the tool is reached.
+            var deny = new AllowListGovernance(Array.Empty<string>());
+
+            await Build(store, llm, tools, governance: deny, failures: failures).RunAsync(Claimed());
+
+            var row = Assert.Single(failures.Top(10));
+            Assert.Equal("blocked", row.Tool);
+            Assert.Contains("denied", row.LastMessage, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task A_model_failure_is_recorded_with_what_to_do_and_the_id_to_quote()
+    {
+        // The body is one line and it is what a reader scans; the request id is what a person has to look up,
+        // so it rides in the meta. Both have to survive — a failure that can only be re-created is not a
+        // diagnosis.
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var llm = new ThrowingLlmClient("boom", ModelCallFailure.Rejected(
+                "模型补全",
+                System.Net.HttpStatusCode.Unauthorized,
+                """{"error":{"message":"invalid api key"}}""",
+                "req_9f2c"));
+
+            // The runner records the failure and then rethrows: the log is a record, not a swallow.
+            await Assert.ThrowsAsync<ModelCallFailure>(() => Build(store, llm).RunAsync(Claimed()));
+
+            var events = await RawAsync(store);
+            var failure = Assert.Single(
+                events,
+                e => e.Kind == SessionEventKind.System && e.Body.StartsWith("error: ", StringComparison.Ordinal));
+
+            Assert.Contains("API Key", failure.Meta!["error.next"], StringComparison.Ordinal);
+            Assert.Equal("req_9f2c", failure.Meta["error.requestId"]);
+            Assert.Equal("rejected", failure.Meta["error.kind"]);
+        }
+    }
+
+    [Fact]
+    public async Task An_ordinary_exception_records_no_error_meta()
+    {
+        // The keys must not exist when there is nothing behind them: a reader who sees an empty `error.requestId`
+        // has been told the provider gave an id, and it did not.
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => Build(store, new ThrowingLlmClient("boom")).RunAsync(Claimed()));
+
+            var failure = Assert.Single(
+                await RawAsync(store),
+                e => e.Kind == SessionEventKind.System && e.Body.StartsWith("error: ", StringComparison.Ordinal));
+
+            Assert.True(failure.Meta is null || !failure.Meta.ContainsKey("error.kind"));
         }
     }
 
@@ -686,5 +932,90 @@ public sealed class AgentTurnRunnerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task A_turn_uses_the_gear_its_message_carried_on_every_step()
+    {
+        // A tool loop runs several completions for one message. If only the first step saw the gear, the
+        // answer would be reasoned at one level and its follow-up at another.
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("tick"));
+
+            var llm = new GearRecordingLlmClient(Call("c1", "tick"), Say("done"));
+            var runner = Build(store, llm, tools, new AllowListGovernance(new[] { "tick" }));
+
+            await runner.RunAsync(Claimed() with { ReasoningEffort = "high" });
+
+            Assert.Equal(new[] { "high", "high" }, llm.Seen);
+        }
+    }
+
+    [Fact]
+    public async Task A_turn_without_a_gear_leaves_the_choice_to_the_configured_default()
+    {
+        // Voice and scheduled turns carry no gear. They must arrive as "no choice", which is what lets the
+        // client fall back — null is not the same as off, which would drop the parameter entirely.
+        var (store, _) = SessionStore();
+        await using (store)
+        {
+            var llm = new GearRecordingLlmClient(Say("hi"));
+            var runner = Build(store, llm);
+
+            await runner.RunAsync(Claimed());
+
+            Assert.Equal(new string?[] { null }, llm.Seen);
+        }
+    }
+
     private (JsonlSessionStore Store, long Repaired) SessionStore() => JsonlSessionStore.Open(_dir);
+    /// A retried turn must not log the reader's message a second time.
+    /// </summary>
+    /// <remarks>
+    /// The input queue re-runs an interrupted <c>Running</c> item on restart, and a re-run starts the turn
+    /// over rather than resuming it. If the turn appended a fresh <c>User</c> event each time, two things
+    /// broke at once: the conversation showed the same message twice, and memory's at-least-once guard —
+    /// which asks whether a record already exists for that event seq — stopped matching, so the fact was
+    /// stored twice and recall returned it as two independent pieces of evidence.
+    /// </remarks>
+    [Fact]
+    public async Task RetriedTurnDoesNotLogTheMessageTwice()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var runner = Build(store, new ConstantLlm("好的"));
+
+            await runner.RunAsync(Claimed("我喜欢深色主题"));
+
+            // Exactly what a restart does: the same item, run again from the beginning.
+            await runner.RunAsync(Claimed("我喜欢深色主题"));
+
+            var users = (await RawAsync(store)).Where(e => e.Kind == SessionEventKind.User).ToList();
+
+            // One message, logged once — and it is the *same* event, not a copy: the seq the memory guard keys
+            // on has to be stable across a retry, or the fact is stored twice and recalled as two pieces of
+            // independent evidence.
+            var only = Assert.Single(users);
+            Assert.Equal("我喜欢深色主题", only.Body);
+        }
+    }
+
+    private sealed class ConstantLlm(string text) : ILlmClient
+    {
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
+            Task.FromResult(new LlmResponse(text, Array.Empty<LlmToolCall>(), "stop"));
+
+        public Task<LlmResponse> StreamAsync(
+            LlmRequest request,
+            Action<string> onText,
+            CancellationToken ct = default)
+        {
+            onText(text);
+            return Task.FromResult(new LlmResponse(text, Array.Empty<LlmToolCall>(), "stop"));
+        }
+    }
 }
+
+    /// <summary>

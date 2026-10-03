@@ -96,4 +96,66 @@ public sealed partial class ViewEndpointsTests
         var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
         Assert.Equal(2, queue.GetProperty("items").GetArrayLength());
     }
+
+    [Fact]
+    public async Task A_submitted_gear_rides_the_queued_item()
+    {
+        // The gear is chosen per message, so it has to survive the hop through the queue: the consumer reads
+        // it off the item, not off whatever the settings happened to say by the time the turn ran.
+        var response = await _http.PostAsJsonAsync(
+            "/api/input",
+            new { source = "text", payload = "think harder", reasoningEffort = "high" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
+        Assert.Equal("high", queue.GetProperty("items")[0].GetProperty("reasoningEffort").GetString());
+    }
+
+    [Fact]
+    public async Task Submitting_input_without_a_gear_leaves_it_unset()
+    {
+        // Unset is not the default gear: the default is applied when the request is built, so an item can
+        // say "no choice" and still get the configured gear.
+        var response = await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "hi" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
+        Assert.Equal(JsonValueKind.Null, queue.GetProperty("items")[0].GetProperty("reasoningEffort").ValueKind);
+    }
+
+    [Fact]
+    public async Task Submitting_input_rejects_a_gear_that_is_not_on_the_menu()
+    {
+        // Rejected rather than passed through: the picker only ever offers listed gears, so anything else
+        // is a stale or hand-rolled client, and accepting it would hide the mismatch.
+        var response = await _http.PostAsJsonAsync(
+            "/api/input",
+            new { source = "text", payload = "x", reasoningEffort = "turbo" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("turbo", await response.Content.ReadAsStringAsync());
+
+        var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
+        Assert.Empty(queue.GetProperty("items").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task A_gear_the_menu_grew_is_accepted()
+    {
+        // The list is the user's, not a built-in enum — an endpoint with its own word must be usable without
+        // a code change.
+        var settings = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { reasoningGears = new[] { "medium", "high", "minimal" } },
+        });
+        Assert.Equal(HttpStatusCode.OK, settings.StatusCode);
+
+        var response = await _http.PostAsJsonAsync(
+            "/api/input",
+            new { source = "text", payload = "x", reasoningEffort = "minimal" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
 }

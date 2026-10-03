@@ -14,6 +14,17 @@ public sealed record DesktopWindow
 
     public string? ProcessName { get; init; }
 
+    /// <summary>
+    /// When the owning process started, in UTC ticks — part of the window's <i>identity</i>.
+    /// <para>
+    /// Windows recycles window handles: the same handle can name a completely different window once the
+    /// first one closes, and a process that restarted keeps neither its pid nor its start time. Pairing the
+    /// handle with these is what distinguishes "the same window, moved" from "a different window, same id".
+    /// Null when the process cannot be queried (an elevated process refuses).
+    /// </para>
+    /// </summary>
+    public long? ProcessStartTicks { get; init; }
+
     public required int X { get; init; }
 
     public required int Y { get; init; }
@@ -68,6 +79,7 @@ public static class WindowEnumerator
                 Title = title,
                 ProcessId = (int)processId,
                 ProcessName = TryGetProcessName(processId),
+                ProcessStartTicks = TryGetProcessStartTicks(processId),
                 X = bounds.Left,
                 Y = bounds.Top,
                 Width = bounds.Width,
@@ -113,6 +125,16 @@ public static class WindowEnumerator
         return rect;
     }
 
+    /// <summary>
+    /// The rectangle <c>GetWindowRect</c> reports: the visible frame expanded by the invisible resize border
+    /// on Windows 10+. Needed by the capture, because <c>PrintWindow</c> renders from <i>this</i> origin.
+    /// </summary>
+    internal static NativeMethods.Rect GetOuterBounds(nint handle)
+    {
+        NativeMethods.GetWindowRect(handle, out var rect);
+        return rect;
+    }
+
     internal static string GetTitle(nint handle)
     {
         var length = NativeMethods.GetWindowTextLengthW(handle);
@@ -135,6 +157,25 @@ public static class WindowEnumerator
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The owning process's start time, as UTC ticks. Part of the window's identity because a handle alone is
+    /// not: Windows recycles handles, and a restarted process reuses its name and often its pid range.
+    /// </summary>
+    private static long? TryGetProcessStartTicks(uint processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return process.StartTime.ToUniversalTime().Ticks;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // An elevated process refuses StartTime to a non-elevated caller; the window is still observable,
+            // it just cannot be told apart from a recycled handle by time.
             return null;
         }
     }

@@ -20,52 +20,11 @@ namespace Partner.Api.Tests;
 /// The UI data layer, exercised over a real HTTP socket. Each test owns its workspace and its host, so the
 /// suite is isolated and order-independent.
 /// </summary>
-public sealed partial class ViewEndpointsTests : IAsyncLifetime
+public sealed partial class ViewEndpointsTests : ApiFixture
 {
-    private string _workspace = string.Empty;
-    private ApiContext _context = null!;
-    private ConsumerHost _consumer = null!;
-    private VoiceHost _voice = null!;
-    private WebApplication _app = null!;
-    private Task _run = null!;
-    private HttpClient _http = null!;
-    private int _port;
-    private string _token = string.Empty;
+    protected override string WorkspaceName => "partner-api-tests";
 
-    public async Task InitializeAsync()
-    {
-        _workspace = Path.Combine(Path.GetTempPath(), "partner-api-tests", Guid.NewGuid().ToString("N"));
-
-        _port = FreePort();
-        _token = TokenAuth.Generate();
-
-        // Same composition root as the executable: auth middleware included, so these tests cannot pass
-        // against a host that is wired differently from production.
-        var (app, context, consumer, voice) = await ApiHost.BuildAsync(_workspace, _port, _token);
-        _app = app;
-        _context = context;
-        _consumer = consumer;
-        _voice = voice;
-        _run = _app.RunAsync();
-
-        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-        await WaitForHostAsync();
-    }
-
-    public async Task DisposeAsync()
-    {
-        _http.Dispose();
-        await _app.StopAsync();
-        await _run;
-        await _voice.DisposeAsync();
-        await _consumer.DisposeAsync();
-        await _context.DisposeAsync();
-        if (Directory.Exists(_workspace))
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-    }
+    protected override string ReadinessPath => "/api/settings";
 
     [Fact]
     public async Task Editing_a_session_event_keeps_the_original_and_appends_one_event()
@@ -192,12 +151,14 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
         var response = await _http.PostAsync("/api/queue/i1/cancel", content: null);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
+        // The queue is what is still in play, so a cancelled item is simply not there any more. This
+        // used to assert "one entry per item, showing the transitioned state"; it now asserts the absence,
+        // which is the same fact stated more strongly — there is no state left in which it could still run.
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
         var items = view.GetProperty("items").EnumerateArray().ToList();
 
-        // One entry per item, showing the transitioned state rather than every log row.
-        Assert.Single(items);
-        Assert.Equal("Canceled", items[0].GetProperty("status").GetString());
+        Assert.Empty(items);
+        Assert.Equal(0, view.GetProperty("depth").GetInt32());
     }
 
     [Fact]
@@ -375,15 +336,6 @@ public sealed partial class ViewEndpointsTests : IAsyncLifetime
         Assert.False(response.Headers.Contains("Access-Control-Allow-Origin"));
         // The request itself still succeeds for a non-browser client; CORS is enforced by the browser.
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-    }
-
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 
     private async Task WaitForHostAsync()

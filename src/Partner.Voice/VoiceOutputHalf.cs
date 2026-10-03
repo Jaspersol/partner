@@ -145,7 +145,7 @@ public sealed class VoiceOutputHalf : IDisposable
 
         if (_settings.MuteDuringTts && _items.Any(i => i.Status is SpeechStatus.Played or SpeechStatus.Playing))
         {
-            _gate.Engage(_sink.DrainMs);
+            _gate.Engage();
         }
     }
 

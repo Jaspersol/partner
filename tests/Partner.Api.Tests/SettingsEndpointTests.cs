@@ -17,67 +17,11 @@ namespace Partner.Api.Tests;
 /// The settings surface: TTS/ASR/model configuration, the write-only API key, and the fact that changing the
 /// model actually re-points the consumer rather than only changing what the UI displays.
 /// </summary>
-public sealed class SettingsEndpointTests : IAsyncLifetime
+public sealed class SettingsEndpointTests : ApiFixture
 {
-    private string _workspace = string.Empty;
-    private ApiContext _context = null!;
-    private ConsumerHost _consumer = null!;
-    private VoiceHost _voice = null!;
-    private WebApplication _app = null!;
-    private Task _run = null!;
-    private HttpClient _http = null!;
-    private int _port;
-    private string _token = string.Empty;
+    protected override string WorkspaceName => "partner-settings-tests";
 
-    public async Task InitializeAsync()
-    {
-        _workspace = Path.Combine(Path.GetTempPath(), "partner-settings-tests", Guid.NewGuid().ToString("N"));
-        _port = FreePort();
-        _token = TokenAuth.Generate();
-
-        var (app, context, consumer, voice) = await ApiHost.BuildAsync(_workspace, _port, _token);
-        _app = app;
-        _context = context;
-        _consumer = consumer;
-        _voice = voice;
-        _run = _app.RunAsync();
-
-        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-
-        for (var attempt = 0; attempt < 60; attempt++)
-        {
-            try
-            {
-                using var probe = await _http.GetAsync("/api/settings");
-                if (probe.IsSuccessStatusCode)
-                {
-                    break;
-                }
-            }
-            catch (HttpRequestException)
-            {
-                // Not listening yet.
-            }
-
-            await Task.Delay(50);
-        }
-    }
-
-    public async Task DisposeAsync()
-    {
-        _http.Dispose();
-        await _app.StopAsync();
-        await _run;
-        await _voice.DisposeAsync();
-        await _consumer.DisposeAsync();
-        await _context.DisposeAsync();
-
-        if (Directory.Exists(_workspace))
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-    }
+    protected override string ReadinessPath => "/api/settings";
 
     [Fact]
     public async Task Shrinking_the_context_folds_the_history_once()
@@ -246,15 +190,6 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
         }
     }
 
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
-
     [Fact]
     public async Task The_defaults_cover_every_section()
     {
@@ -271,6 +206,59 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
         Assert.Equal("qwen3-asr", settings.GetProperty("asr").GetProperty("model").GetString());
         Assert.Equal("zh", settings.GetProperty("tts").GetProperty("lang").GetString());
         Assert.Equal(120, settings.GetProperty("model").GetProperty("timeoutSeconds").GetDouble());
+    }
+
+    [Fact]
+    public async Task The_gear_menu_and_its_default_round_trip()
+    {
+        var put = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { reasoningEffort = "high", reasoningGears = new[] { "low", "high" } },
+        });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var settings = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        var model = settings.GetProperty("model");
+
+        Assert.Equal("high", model.GetProperty("reasoningEffort").GetString());
+        Assert.Equal(new[] { "low", "high" }, model.GetProperty("reasoningGears").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public async Task A_default_dropped_from_the_menu_is_readded_rather_than_rejected()
+    {
+        // The default is a property of the model, not of the menu, so removing it from the list cannot change
+        // what new turns send — the menu just grows an entry so the value stays selectable. Rejecting
+        // instead would make the page unsavable the moment a gear is renamed, which is the normal way to
+        // use this editor.
+        var put = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { reasoningEffort = "turbo", reasoningGears = new[] { "low" } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var model = (await _http.GetFromJsonAsync<JsonElement>("/api/settings")).GetProperty("model");
+        var gears = model.GetProperty("reasoningGears").EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal("turbo", model.GetProperty("reasoningEffort").GetString());
+        Assert.Equal(new[] { "low", "turbo" }, gears);
+    }
+
+    [Fact]
+    public async Task The_gear_menu_is_normalized_and_deduplicated_in_the_users_order()
+    {
+        // Order is the menu order, so it is preserved; casing and padding are not a different setting.
+        var put = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { reasoningGears = new[] { "  HIGH ", "low", "high", "  " } },
+        });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var model = (await _http.GetFromJsonAsync<JsonElement>("/api/settings")).GetProperty("model");
+        var gears = model.GetProperty("reasoningGears").EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.Equal(new[] { "high", "low", "medium" }, gears);
     }
 
     [Fact]
@@ -379,20 +367,31 @@ public sealed class SettingsEndpointTests : IAsyncLifetime
         var submitted = await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "hello" });
         var itemId = (await submitted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
+        // 15s, not the default 5s: this waits for a consumer reconfigure *and* for the resulting turn to
+        // fail against a closed port. `dotnet test` runs every assembly at once, so this is also the slowest
+        // moment of the whole run and the 5s budget is not reliably enough there.
+        //
+        // Read from the session, not from the queue. The queue is what is still in play, so a turn that failed
+        // against a dead endpoint is simply gone from it — its Failed record and the error text that came with it
+        // are compacted away. That was never the only copy: AgentTurnRunner writes the message into the session as
+        // an `error:`-prefixed System event, precisely so the failure stays visible, and that row is where a
+        // reader meets it.
         var failed = await Eventually.IsTrueAsync(async () =>
         {
-            var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
-            return queue.GetProperty("items").EnumerateArray().Any(item =>
-                item.GetProperty("itemId").GetString() == itemId
-                && item.GetProperty("status").GetString() == "Failed");
-        });
+            var session = await _http.GetFromJsonAsync<JsonElement>("/api/session");
+            return session.GetProperty("items").EnumerateArray().Any(item =>
+                item.GetProperty("kind").GetString() == "System"
+                && item.GetProperty("body").GetString()!.StartsWith("error:", StringComparison.Ordinal));
+        }, attempts: 600);
 
         Assert.True(failed, "the consumer did not run the item against the configured endpoint");
 
-        var queueAfter = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
-        var error = queueAfter.GetProperty("items").EnumerateArray()
-            .First(item => item.GetProperty("itemId").GetString() == itemId)
-            .GetProperty("error").GetString();
+        var sessionAfter = await _http.GetFromJsonAsync<JsonElement>("/api/session");
+        var error = sessionAfter.GetProperty("items").EnumerateArray()
+            .First(item =>
+                item.GetProperty("kind").GetString() == "System"
+                && item.GetProperty("body").GetString()!.StartsWith("error:", StringComparison.Ordinal))
+            .GetProperty("body").GetString();
 
         Assert.Contains(closed.ToString(), error!, StringComparison.Ordinal);
     }

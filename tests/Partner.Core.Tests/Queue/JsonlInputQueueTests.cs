@@ -82,11 +82,94 @@ public sealed class JsonlInputQueueTests
             Assert.Equal(0, reopened.Snapshot().Depth);
             Assert.Equal(2, reopened.Snapshot().HeadSeq);
 
-            var log = await ReadLogAsync(reopened);
-            Assert.Equal(
-                new[] { InputItemStatus.Queued, InputItemStatus.Running, InputItemStatus.Done },
-                log.Select(i => i.Status));
+            // The settled item is gone from the items log — that is the change. What must survive is the
+            // key, and the two asserts above already prove it: the retry was de-duplicated rather than
+            // enqueued a second time.
+            Assert.Empty(await ReadLogAsync(reopened));
         }
+    }
+
+    /// <summary>
+    /// An interrupted item is retried, but only a bounded number of times.
+    /// <para>
+    /// This is the restart loop that turned one wedged turn into three: nothing in the log said "stop", the
+    /// item came back on every start, and each retry re-ran a turn that had already issued its tool calls.
+    /// The cap turns the last attempt into a recorded failure, so the queue ends up telling the user why
+    /// instead of showing a permanently "running" item they can only clear by killing the process.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Constructor_FailsAnItemThatHasUsedUpItsAttemptsInsteadOfRequeueingItForever()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock(Base);
+
+        // One restart per attempt: enqueue, claim (leaving it Running), reopen.
+        for (var restart = 0; restart < JsonlInputQueue.MaxAttempts; restart++)
+        {
+            await using var queue = new JsonlInputQueue(dir.Path, clock: clock);
+
+            if (restart == 0)
+            {
+                await queue.EnqueueAsync(Item("item-a", "key-a"));
+            }
+
+            var taken = await queue.TakeAsync();
+            Assert.Equal("item-a", taken!.ItemId);
+            Assert.Equal(restart, taken.Attempt);
+            Assert.Equal(InputItemStatus.Running, taken.Status);
+
+            // No settle: the process dies here, which is the case under test.
+        }
+
+        // The next start has no attempts left, so the item is failed with the reason recorded.
+        await using (var final = new JsonlInputQueue(dir.Path, clock: clock))
+        {
+            Assert.Null(await TakeNowAsync(final));
+            Assert.Equal(0, final.Snapshot().Depth);
+
+            // The cap still holds, and it holds where it always showed: the item is not taken again and
+            // the queue is empty. The Failed record used to be the evidence and is now compacted away — the
+            // attempt index is proven by the loop above, which read it off each retry.
+            Assert.DoesNotContain(await ReadLogAsync(final), i => i.ItemId == "item-a");
+
+        }
+
+        // A third start changes nothing: without the record there is nothing to retry.
+        await using (var again = new JsonlInputQueue(dir.Path, clock: clock))
+        {
+            Assert.Null(await TakeNowAsync(again));
+            Assert.Equal(0, again.Snapshot().Depth);
+        }
+    }
+
+    /// <summary>
+    /// A failed item is not offered again, and its idempotency key still deduplicates — the same two answers a
+    /// settled item has always given, now including one the queue settled for itself.
+    /// </summary>
+    [Fact]
+    public async Task AnItemTheQueueFailedOnStartupIsNeitherTakenNorReEnqueued()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock(Base);
+
+        await using (var queue = new JsonlInputQueue(dir.Path, clock: clock))
+        {
+            await queue.EnqueueAsync(Item("item-a", "key-a"));
+            await queue.TakeAsync();
+        }
+
+        for (var restart = 0; restart < JsonlInputQueue.MaxAttempts; restart++)
+        {
+            await using var queue = new JsonlInputQueue(dir.Path, clock: clock);
+            await TakeNowAsync(queue);
+        }
+
+        await using var reopened = new JsonlInputQueue(dir.Path, clock: clock);
+
+        Assert.Null(await TakeNowAsync(reopened));
+        Assert.Equal(1, await reopened.EnqueueAsync(Item("item-a", "key-a")));
+        Assert.Equal(0, reopened.Snapshot().Depth);
     }
 
     [Fact]
@@ -158,11 +241,13 @@ public sealed class JsonlInputQueueTests
 
         await using (var reopened = new JsonlInputQueue(dir.Path, clock: clock))
         {
-            // item-a 保持 Canceled 且不重入队；item-b 中断后重入队。
+            // item-a 已取消且不再入队；item-b 中断后重入队。
             Assert.Equal(1, reopened.Snapshot().Depth);
 
-            var log = await ReadLogAsync(reopened);
-            Assert.Equal(InputItemStatus.Canceled, log.Last(i => i.ItemId == "item-a").Status);
+            // The cancelled item is compacted out of the log, so "it never comes back" is now asserted by its
+            // absence. The reason it does not come back used to be its Canceled record; it is now its key
+            // plus the fact that nothing was queued for it.
+            Assert.DoesNotContain(await ReadLogAsync(reopened), i => i.ItemId == "item-a");
 
             var only = await reopened.TakeAsync();
             Assert.Equal("item-b", only!.ItemId);
@@ -233,12 +318,11 @@ public sealed class JsonlInputQueueTests
 
         await using (var reopened = new JsonlInputQueue(dir.Path, clock: clock))
         {
-            var log = await ReadLogAsync(reopened);
-            var last = log[^1];
-            Assert.Equal("item-a", last.ItemId);
-            Assert.Equal(InputItemStatus.Failed, last.Status);
-            Assert.Equal("boom", last.Error);
-            Assert.Equal(clock.GetUtcNow(), last.FinishedAt!.Value);
+            // The failed item is compacted out on this start, so its error text is no longer in the
+            // queue's log. It was never the only copy: a failed turn writes TurnEnd with reason=error and an
+            // "error:"-prefixed System event into the session log, which is where a reader meets it.
+            Assert.Empty(await ReadLogAsync(reopened));
+            Assert.Null(await TakeNowAsync(reopened));
             Assert.Equal(0, reopened.Snapshot().Depth);
         }
     }
@@ -313,6 +397,95 @@ public sealed class JsonlInputQueueTests
         var reread = await ReadLogAsync(queue);
         var latest = reread.Where(i => i.ItemId == "with-image").OrderBy(i => i.Seq).Last();
         Assert.Equal(new[] { "m1", "m2" }, latest.MediaIds);
+    }
+
+    [Fact]
+    public async Task Settled_items_are_dropped_from_memory_but_stay_on_disk()
+    {
+        // The log only grows, so holding every finished message in a map made startup memory proportional to
+        // the whole history. Nothing needs a Done item in memory — it cannot be taken, cancelled or completed
+        // again — and a restart replays the log, not this map.
+        using var dir = new TempDir();
+        var clock = new FakeClock(Base);
+
+        await using var queue = new JsonlInputQueue(dir.Path, clock: clock);
+        for (var i = 0; i < 3; i++)
+        {
+            await queue.EnqueueAsync(Item($"item-{i}", $"key-{i}"));
+            var taken = await queue.TakeAsync();
+            await queue.CompleteAsync(taken!.ItemId, InputItemStatus.Done);
+        }
+
+        // The log is the record of what happened, and is unaffected.
+        var log = await ReadLogAsync(queue);
+        Assert.Equal(9, log.Count);
+        Assert.Equal(3, log.Count(i => i.Status == InputItemStatus.Done));
+    }
+
+    [Fact]
+    public async Task A_settled_item_still_deduplicates_after_a_restart()
+    {
+        // Dropping it from memory must not weaken de-duplication: the key is the guarantee, and the question it
+        // has to answer — "what seq was this key accepted at" — is answerable without the item.
+        using var dir = new TempDir();
+        var clock = new FakeClock(Base);
+
+        await using (var queue = new JsonlInputQueue(dir.Path, clock: clock))
+        {
+            await queue.EnqueueAsync(Item("item-a", "key"));
+            var taken = await queue.TakeAsync();
+            await queue.CompleteAsync(taken!.ItemId, InputItemStatus.Done);
+        }
+
+        await using var reopened = new JsonlInputQueue(dir.Path, clock: clock);
+
+        // Same key, different item: the old seq comes back and nothing is enqueued.
+        Assert.Equal(1, await reopened.EnqueueAsync(Item("item-other", "key")));
+        Assert.Equal(0, reopened.Snapshot().Depth);
+    }
+
+    [Fact]
+    public async Task Completing_an_already_settled_item_is_idempotent_rather_than_an_error()
+    {
+        // A redelivered item whose turn already ended is marked Done again without being re-run. That is
+        // ordinary crash recovery, and it lands exactly where the item is no longer in memory — so throwing
+        // here would turn recovery into a second crash.
+        using var dir = new TempDir();
+        var clock = new FakeClock(Base);
+
+        await using var queue = new JsonlInputQueue(dir.Path, clock: clock);
+        await queue.EnqueueAsync(Item("item-a", "key"));
+        var taken = await queue.TakeAsync();
+        await queue.CompleteAsync(taken!.ItemId, InputItemStatus.Done);
+
+        await queue.CompleteAsync(taken.ItemId, InputItemStatus.Done);
+
+        Assert.Equal(
+            InputItemStatus.Done,
+            (await ReadLogAsync(queue)).Last(i => i.ItemId == "item-a").Status);
+    }
+
+    [Fact]
+    public async Task Completing_an_item_that_never_existed_still_fails()
+    {
+        // Idempotence is for items that were here. An id the queue never saw is a caller bug, and swallowing
+        // it would mark nothing while reporting success.
+        using var dir = new TempDir();
+        await using var queue = new JsonlInputQueue(dir.Path, clock: new FakeClock(Base));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => queue.CompleteAsync("no-such-item", InputItemStatus.Done));
+    }
+
+    /// <summary>
+    /// Takes an item if one is waiting and answers null if not. <c>TakeAsync</c> with no token waits for the
+    /// next item indefinitely — which is right for a consumer and hangs a test that is asking "is there
+    /// anything left?", so the question is asked with a token instead.
+    /// </summary>
+    private static async Task<InputItem?> TakeNowAsync(IInputQueue queue)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        return await queue.TakeAsync(cts.Token);
     }
 
     private static async Task<List<InputItem>> ReadLogAsync(IInputQueue queue)

@@ -58,6 +58,8 @@ internal sealed class RecordingQueue : IInputQueue
 
     public QueueState Snapshot() => new(_items.Count + 1, null, _items.Count, false);
 
+    public IReadOnlyList<InputItem> ActiveItems() => _items.ToList();
+
     public Task<bool> CancelAsync(string itemId, CancellationToken ct = default) => Task.FromResult(false);
 
     public Task CompleteAsync(string itemId, InputItemStatus status, string? error = null, CancellationToken ct = default) =>

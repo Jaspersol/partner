@@ -5,17 +5,18 @@ using Partner.Desktop.Tools;
 namespace Partner.Api;
 
 /// <summary>
-/// Governance for the desktop tools, reading the approval gear as it is **now** rather than as it was when the
-/// consumer started.
+/// Governance for the tools this host exposes, reading the approval gear as it is **now** rather than as it
+/// was when the consumer started.
 /// <para>
 /// The gear is a decision, not a capability: switching it must not restart a running turn, and it must not
 /// tear down a consumer that was started with an injected client (tests, diagnostics) where a restart has no
-/// model to start from. Enabling the capability still rebuilds the tool table at start — that one changes what
+/// model to start from. Enabling a capability still rebuilds the tool table at start — that one changes what
 /// exists.
 /// </para>
 /// <para>
-/// Fail-closed like every other governance: a tool that is not a desktop tool, or a capability that is off,
-/// is denied rather than allowed by omission.
+/// Fail-closed like every other governance: a tool this host does not know is denied rather than allowed by
+/// omission. MCP tools are known but not trusted — each one is another process's code — so they ask unless the
+/// allow list says otherwise.
 /// </para>
 /// </summary>
 public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
@@ -25,6 +26,22 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
     public GovernanceDecision Decide(string toolName, string argumentsJson)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+
+        if (NamespacedMcpTool.TryUnprefix(toolName, out _, out _))
+        {
+            // An MCP tool is someone else's code in a process this host started. It is asked for unless the
+            // allow list says otherwise — the same reading as the desktop gear, and deliberately not "allowed
+            // because the user enabled the server": enabling says which tools to *offer*, not which may act.
+            var mcp = _context.Settings.Load().Mcp;
+            if (!mcp.Enabled)
+            {
+                return new GovernanceDecision(ToolDecision.Deny, "MCP 未启用");
+            }
+
+            return mcp.AllowedTools.Contains(toolName, StringComparer.Ordinal)
+                ? new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 在允许清单中")
+                : new GovernanceDecision(ToolDecision.Ask, $"'{toolName}' 需要人工批准（外部进程）");
+        }
 
         if (!DesktopToolCatalog.All.Contains(toolName, StringComparer.Ordinal))
         {

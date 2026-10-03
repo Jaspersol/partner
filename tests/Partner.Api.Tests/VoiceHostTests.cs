@@ -19,77 +19,15 @@ namespace Partner.Api.Tests;
 /// The voice host, driven with synthetic audio and scripted ASR/TTS. Real hardware would make these tests
 /// depend on the machine's microphone, and the pause logic is the part worth pinning down anyway.
 /// </summary>
-public sealed class VoiceHostTests : IAsyncLifetime
+public sealed class VoiceHostTests : ApiFixture
 {
-    private string _workspace = string.Empty;
-    private ApiContext _context = null!;
-    private VoiceHost _voice = null!;
-    private WebApplication _app = null!;
-    private Task _run = null!;
-    private HttpClient _http = null!;
-    private SyntheticVoice _components = null!;
-    private int _port;
-    private string _token = string.Empty;
+    private readonly SyntheticVoice _components = new();
 
-    public async Task InitializeAsync()
-    {
-        _workspace = Path.Combine(Path.GetTempPath(), "partner-voice-tests", Guid.NewGuid().ToString("N"));
-        _port = FreePort();
-        _token = TokenAuth.Generate();
-        _components = new SyntheticVoice();
+    protected override string WorkspaceName => "partner-voice-tests";
 
-        var (app, context, _, voice) = await ApiHost.BuildAsync(
-            _workspace, _port, _token, clock: null, llm: null, components: _components);
+    protected override IVoiceComponents Components => _components;
 
-        _app = app;
-        _context = context;
-        _voice = voice;
-        _run = _app.RunAsync();
-
-        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-
-        for (var attempt = 0; attempt < 60; attempt++)
-        {
-            try
-            {
-                using var probe = await _http.GetAsync("/api/voice");
-                if (probe.IsSuccessStatusCode)
-                {
-                    break;
-                }
-            }
-            catch (HttpRequestException)
-            {
-                // Not listening yet.
-            }
-
-            await Task.Delay(50);
-        }
-    }
-
-    public async Task DisposeAsync()
-    {
-        _http.Dispose();
-        await _app.StopAsync();
-        await _run;
-        await _voice.DisposeAsync();
-        await _context.DisposeAsync();
-
-        if (Directory.Exists(_workspace))
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-    }
-
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
+    protected override string ReadinessPath => "/api/voice";
 
     private Task<JsonElement> StateAsync() => _http.GetFromJsonAsync<JsonElement>("/api/voice");
 

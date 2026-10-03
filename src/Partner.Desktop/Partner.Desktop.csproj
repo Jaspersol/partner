@@ -11,4 +11,11 @@
   <ItemGroup>
     <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The INPUT records are the contract: the flags and the normalized coordinates are what was silently
+         wrong before, and a test has to be able to read them without moving the user's mouse. -->
+    <InternalsVisibleTo Include="Partner.Desktop.Tests" />
+    <!-- The smoke asserts the same contract in the capability gate, and it must not move the pointer either. -->
+    <InternalsVisibleTo Include="partner-smoke" />
+  </ItemGroup>
 </Project>

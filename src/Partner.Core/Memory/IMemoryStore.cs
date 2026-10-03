@@ -73,4 +73,23 @@ public interface IMemoryStore : IAsyncDisposable
     Task<IReadOnlyList<ConsolidationEntry>> LogAsync(int limit = 100, CancellationToken ct = default);
 
     Task<IReadOnlyList<MemoryRevision>> RevisionsAsync(string recordId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The record distilled from a given session event, or null when there is none.
+    /// <para>
+    /// The schema carries no unique constraint on <c>source_event_seq</c>: a memory may be written with no source
+    /// at all, and an index over a column that is mostly null buys nothing. So making writes at-least-once is
+    /// the caller's job, and this is the question that lets it.
+    /// </para>
+    /// </summary>
+    Task<MemoryRecord?> FindBySourceAsync(long sourceEventSeq, CancellationToken ct = default);
+
+    /// <summary>
+    /// Moves a record to another tier, on a person's judgement. False when the id is unknown.
+    /// <para>
+    /// The tier decides how long the demotion rule protects a record, and "a fact I rely on" versus "something
+    /// I once guessed" is not something a score can tell — so it is the person's call, and it is persisted.
+    /// </para>
+    /// </summary>
+    Task<bool> SetTierAsync(string recordId, MemoryTier tier, CancellationToken ct = default);
 }

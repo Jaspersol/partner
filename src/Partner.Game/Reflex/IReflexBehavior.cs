@@ -8,9 +8,6 @@ public sealed record ReflexApi(IGameAdapter Adapter, ReflexContext Context, Cons
 {
     /// <summary>Asks the conscious layer to look at this signal. Only escalated signals ever reach it.</summary>
     public void Escalate(RawSignal signal) => Gate.Escalate(signal);
-
-    public void SetGoal(string? goal) => Context.UpdateAutonomy(
-        Context.GetSnapshot().Autonomy with { CurrentGoal = goal });
 }
 
 /// <summary>

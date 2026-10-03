@@ -85,6 +85,26 @@ public sealed class ToolPolicyTests
     }
 
     [Fact]
+    public void An_absent_version_reads_as_the_current_one()
+    {
+        // A document written before the field existed is v1, not "unknown": the property initialiser answers
+        // before anything is set, so a policy without it keeps loading.
+        var policy = ToolPolicy.Parse("""{ "tools": { "clock": { "decision": "allow" } } }""");
+
+        Assert.Equal(ToolDecision.Allow, policy.Find("clock")!.Decision);
+    }
+
+    [Fact]
+    public void A_newer_version_is_refused_rather_than_half_read()
+    {
+        // Fail-closed: a document this build cannot fully understand must not govern tools by the parts it
+        // happens to recognise, because the entry it does not is exactly the one that would go unchecked.
+        var error = Assert.Throws<ArgumentException>(() => ToolPolicy.Parse("""{ "version": 2, "tools": {} }"""));
+
+        Assert.Contains("version 2", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Policy_loads_from_a_file()
     {
         var path = Path.Combine(Path.GetTempPath(), $"partner-policy-{Guid.NewGuid():n}.json");

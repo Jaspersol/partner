@@ -115,42 +115,117 @@ fn start_api(port: u16) -> Result<(Child, String), String> {
 }
 
 /// Where the sidecar lives. A release shell only ever uses the folder bundled beside it; a debug shell
-/// prefers the .NET build output, so editing the API and re-running the shell picks up the change instead of
-/// silently using whatever the last `dotnet publish` produced.
+/// prefers the newest .NET build output, so editing the API and re-running the shell picks up the change
+/// instead of silently using whatever the last `dotnet publish` produced.
 fn api_exe_path() -> Result<PathBuf, String> {
     let bundled = std::env::current_exe()
         .ok()
         .and_then(|current| current.parent().map(|directory| directory.join("api").join("partner-api.exe")));
 
-    let development = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let debug_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("src")
         .join("Partner.Api")
         .join("bin")
-        .join("Debug")
-        .join("net8.0")
-        .join("partner-api.exe");
+        .join("Debug");
 
-    if cfg!(debug_assertions) && development.exists() {
-        return Ok(development);
+    let build_output = newest_api_build(&debug_root);
+
+    if cfg!(debug_assertions) {
+        if let Some(path) = build_output {
+            return Ok(path);
+        }
     }
 
     if let Some(path) = bundled.filter(|path| path.exists()) {
         return Ok(path);
     }
 
-    if development.exists() {
-        return Ok(development);
-    }
+    build_output.ok_or_else(|| {
+        format!(
+            "partner-api.exe not found under <shell>/api or under {} — run \"dotnet build\" first",
+            debug_root.display()
+        )
+    })
+}
 
-    Err(format!(
-        "partner-api.exe not found under <shell>/api or at {} — run \"dotnet build\" first",
-        development.display()
-    ))
+/// The most recently written `partner-api.exe` under `bin/Debug/<framework>/`.
+///
+/// The framework folder is scanned for rather than spelled out: the moniker carries the Windows SDK version
+/// (`net8.0-windows10.0.19041.0`), so a path pinned to `net8.0` never exists — and a debug shell then falls
+/// through to the bundled snapshot, which is exactly the staleness this function exists to prevent. Several
+/// framework folders can also coexist after a target framework change, so newest wins.
+fn newest_api_build(debug_root: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(debug_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("partner-api.exe"))
+        .filter(|candidate| candidate.is_file())
+        .filter_map(|candidate| {
+            let modified = std::fs::metadata(&candidate).ok()?.modified().ok()?;
+            Some((modified, candidate))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, candidate)| candidate)
 }
 
 /// One workspace per user, shared with any hand-started API: the session log is the source of truth either way.
 fn workspace_dir() -> Result<PathBuf, String> {
     let base = std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA is not set".to_string())?;
     Ok(PathBuf::from(base).join("Partner").join("workspace"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("partner-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// The scan exists because the framework folder is not a constant: the moniker carries the Windows SDK
+    /// version, so a path pinned to `net8.0` never exists — and a debug shell then falls through to the
+    /// bundled snapshot, which is the staleness the function was written to prevent. Several folders can also
+    /// coexist after a target framework change, so the newest has to win.
+    #[test]
+    fn the_newest_framework_folder_wins() {
+        let root = scratch("sidecar-newest");
+
+        let older = root.join("net8.0-windows");
+        let newer = root.join("net8.0-windows10.0.19041.0");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+
+        std::fs::write(older.join("partner-api.exe"), b"older").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(newer.join("partner-api.exe"), b"newer").unwrap();
+
+        assert_eq!(
+            newest_api_build(&root),
+            Some(newer.join("partner-api.exe")),
+            "the most recently built sidecar should be chosen"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A framework folder without the binary (a partially built target) must not be picked, and a directory
+    /// with nothing at all must report "nothing found" rather than a path that does not exist.
+    #[test]
+    fn a_folder_without_the_sidecar_is_not_a_candidate() {
+        let root = scratch("sidecar-empty");
+        std::fs::create_dir_all(root.join("net8.0-windows10.0.19041.0")).unwrap();
+
+        assert_eq!(newest_api_build(&root), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_build_root_is_not_an_error() {
+        assert_eq!(newest_api_build(&PathBuf::from("no-such-directory-here")), None);
+    }
 }

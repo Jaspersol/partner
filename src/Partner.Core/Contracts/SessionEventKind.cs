@@ -46,6 +46,18 @@ public enum SessionEventKind
 
     ToolCall,
     ToolResult,
+
+    /// <summary>
+    /// What the model thought before it answered, when it says so out loud.
+    ///
+    /// <para>
+    /// Shown in the session view and <b>never</b> part of what a prompt is built from: reasoning is the model's
+    /// own working notes for this turn, and feeding it back on the next one costs window and buys nothing. That
+    /// is the same bargain as the tool-call pair — visible to a reader, invisible to the model — so it joins that
+    /// family rather than inventing a third rule.
+    /// </para>
+    /// </summary>
+    Thinking,
 }
 
 public static class SessionEventKindExtensions
@@ -63,12 +75,17 @@ public static class SessionEventKindExtensions
     };
 
     /// <summary>
-    /// True for the tool-call pair: shown in the session view (collapsed), but not part of what a prompt is
-    /// built from — the turn runner feeds a tool result back to the model for the turn that produced it, and
-    /// history stays conversational.
+    /// True for what a reader sees but a prompt does not: the tool-call pair, and the model's own reasoning.
+    ///
+    /// <para>
+    /// Both are part of <i>how</i> an answer was reached rather than the conversation itself, so neither counts
+    /// against the context budget nor is replayed to the model on a later turn. The tool result is fed back by
+    /// the runner within the turn that produced it; reasoning is the model's working notes and is never
+    /// replayed at all.
+    /// </para>
     /// </summary>
     public static bool IsToolControl(this SessionEventKind kind) =>
-        kind is SessionEventKind.ToolCall or SessionEventKind.ToolResult;
+        kind is SessionEventKind.ToolCall or SessionEventKind.ToolResult or SessionEventKind.Thinking;
 
     /// <summary>True for turn/step boundary markers.</summary>
     public static bool IsControl(this SessionEventKind kind) => kind switch

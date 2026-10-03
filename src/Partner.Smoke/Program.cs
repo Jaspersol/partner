@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using Partner.Api.Voice;
 using System.Globalization;
@@ -18,6 +18,7 @@ using Partner.Core.Media;
 using Partner.Desktop;
 using Partner.Desktop.Capture;
 using Partner.Desktop.Input;
+using Partner.Desktop.Interop;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 using Partner.Desktop.Windows;
@@ -709,6 +710,16 @@ internal static class Program
             };
 
             var samples = new List<double>();
+
+            // Warm-up calls are discarded on purpose. The first few recalls on a freshly seeded store pay for
+            // SQLite's page cache and the FTS tokenizer's own first pass, and they are not what a person
+            // waits for: every call after the first few costs a fraction of them. Sampling the cold calls
+            // measures start-up, and would fail a store that answers every real query in 80ms.
+            for (var i = 0; i < 3; i++)
+            {
+                await memory.RecallAsync(queries[i % queries.Length]);
+            }
+
             for (var i = 0; i < 60; i++)
             {
                 var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -910,6 +921,36 @@ internal static class Program
             windows.Count > 0 && windows.All(w => w.Handle != 0 && w.Width > 0 && w.Height > 0),
             $"windows={windows.Count}");
 
+        // The point a click is delivered to is decided by the OS, not by the rectangle a caller named. This is
+        // the read-only half of that rule: the hit test must resolve to a real top-level window (a child
+        // handle would make the comparison against an observed window meaningless) and that window must
+        // contain the point (a virtualized coordinate would land somewhere else entirely).
+        var probeWindow = windows.FirstOrDefault(w => w.Width >= 200 && w.Height >= 200);
+        if (probeWindow is null)
+        {
+            Check("desktop: the window under a point is the top-level window that contains it", false, "no window large enough to probe");
+        }
+        else
+        {
+            var probeX = probeWindow.X + probeWindow.Width / 2;
+            var probeY = probeWindow.Y + probeWindow.Height / 2;
+            var under = HitTest.At(probeX, probeY);
+
+            var contains = false;
+            var isRoot = false;
+            if (under.Handle != 0)
+            {
+                var bounds = WindowEnumerator.GetBounds(under.Handle);
+                contains = probeX >= bounds.Left && probeX < bounds.Right
+                    && probeY >= bounds.Top && probeY < bounds.Bottom;
+                isRoot = NativeMethods.GetAncestor(under.Handle, NativeMethods.GaRoot) == under.Handle;
+            }
+
+            Check("desktop: the window under a point is the top-level window that contains it",
+                under.Handle != 0 && isRoot && contains,
+                $"({probeX},{probeY}) -> {under.Handle:x} '{under.Title}' contains={contains} root={isRoot}");
+        }
+
         var captureTarget = windows.FirstOrDefault(w => w.Width >= 100 && w.Height >= 100);
         if (captureTarget is null)
         {
@@ -950,6 +991,64 @@ internal static class Program
             Check("desktop: action on an unknown entity is refused without injecting",
                 !refused.GuardPassed && refused.GuardReason == "entity_not_found" && refused.Injection is null,
                 refused.GuardReason ?? "(none)");
+
+            // A named control is acted on through its UI Automation pattern when it has one. What can be
+            // checked without touching anything live is the routing decision: an action no pattern can express
+            // must come back as "not applicable", which is what tells the caller to inject at the element's
+            // centre. A non-null here would mean the action was silently swallowed.
+            var sample = observation.Elements.FirstOrDefault();
+            var handle = sample is null
+                ? 0
+                : nint.Parse(sample.WindowId, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+            var routedToInput = sample is not null
+                && new[]
+                {
+                    ActionKind.MovePointer, ActionKind.RightClick, ActionKind.Scroll,
+                    ActionKind.TypeText, ActionKind.KeyPress, ActionKind.Drag,
+                }.All(kind => UiaTree.TryAct(handle, sample.WindowId, sample.ElementId, kind) is null);
+
+            Check("desktop: an action a pattern cannot express is routed to injected input",
+                routedToInput,
+                sample is null
+                    ? "no UIA elements in this observation"
+                    : $"'{sample.Name}' [{sample.Role}]");
+
+            // An id is an index into one observation, so it stops resolving as soon as the tree changes.
+            // Substituting "whatever is at that spot now" is how an action lands on the wrong control.
+            var notGuessed = sample is not null
+                && UiaTree.TryAct(handle, sample.WindowId, $"{sample.WindowId}:9999", ActionKind.LeftClick) is null
+                && UiaTree.TryAct(handle, sample.WindowId, "not-an-element-id", ActionKind.LeftClick) is null;
+
+            Check("desktop: a control id that does not resolve is not guessed at",
+                notGuessed,
+                sample is null ? "no UIA elements in this observation" : sample.ElementId);
+
+            // What goes on the picture the model reasons about. Estimating a position from an unmarked image is
+            // where a real session asked for a play button at (1280,1032) and produced (957,948) while
+            // describing the button correctly in words. A mark is not an estimate: it names a control the
+            // observation found and carries that control's own click point.
+            var sampleWindow = sample is null ? null : observation.Find(sample.WindowId);
+
+            var marks = sampleWindow is null
+                ? Array.Empty<ScreenshotMark>()
+                : ScreenshotMarks.Marks(
+                    observation.Elements
+                        .Where(element => string.Equals(element.WindowId, sampleWindow.EntityId, StringComparison.Ordinal))
+                        .ToList(),
+                    sampleWindow.Rect);
+
+            var marksCarryRealPoints = marks.Count > 0
+                && marks.Select((mark, position) => mark.Index == position + 1).All(numbered => numbered)
+                && marks.All(mark => observation.Elements.Any(element =>
+                    string.Equals(element.ElementId, mark.ElementId, StringComparison.Ordinal)
+                    && element.Centre == mark.ClickAt));
+
+            Check("desktop: a picture's marks carry each control's real screen point",
+                marksCarryRealPoints,
+                marks.Count == 0
+                    ? "no marks for the sampled window"
+                    : $"{marks.Count} marks, first = '{marks[0].Label}' @ ({marks[0].ClickAt.X},{marks[0].ClickAt.Y})");
         }
 
         var desktopClock = new OffsetClock(new DateTimeOffset(2026, 9, 26, 12, 0, 0, TimeSpan.Zero));
@@ -970,6 +1069,32 @@ internal static class Program
         Check("desktop: input marshalling matches the Win32 contract",
             InputInjector.InputSize == (IntPtr.Size == 8 ? 40 : 28),
             $"INPUT size = {InputInjector.InputSize}");
+
+        // The bug this replaces: every positional mouse event went out without MOUSEEVENTF_ABSOLUTE, so a
+        // screen coordinate was applied as a relative mouse delta and each click landed in the corner of the
+        // screen. Asserted on the records themselves, because the smoke must not move the user's pointer.
+        var pointerProbe = new InputInjector(() => new VirtualDesktop(0, 0, 2560, 1440));
+        var positioned = pointerProbe.TryBuildPointer(1280, 720, 0, out var pointerRecords, out _);
+        var positionalOk = positioned
+            && (pointerRecords[0].Union.Mouse.Flags & NativeMethods.MouseeventfAbsolute) != 0
+            && (pointerRecords[0].Union.Mouse.Flags & NativeMethods.MouseeventfVirtualdesk) != 0
+            && pointerRecords[0].Union.Mouse.Dx is > 32000 and < 33600
+            && pointerRecords[0].Union.Mouse.Dy is > 32000 and < 33600;
+
+        Check("desktop: positional input is absolute in the 0..65535 virtual-desktop space",
+            positionalOk,
+            positioned
+                ? $"dx={pointerRecords[0].Union.Mouse.Dx} dy={pointerRecords[0].Union.Mouse.Dy} "
+                    + $"flags=0x{pointerRecords[0].Union.Mouse.Flags:x}"
+                : "no records were built");
+
+        // Clamping silently would turn "click the Save button" into "click the screen edge".
+        var offScreenRefused = !pointerProbe.TryBuildPointer(99999, 720, 0, out _, out var offScreenError)
+            && offScreenError?.Contains("虚拟桌面", StringComparison.Ordinal) == true;
+
+        Check("desktop: a point outside the virtual desktop is refused instead of clamped",
+            offScreenRefused,
+            offScreenError ?? "(no error reported)");
 
         // A minimized window is a trap the observation used to hide: Windows reports it as a 160×28 stub at
         // -32000,-32000, so a click "inside" it passed every containment check and landed in the void, and a
@@ -1545,7 +1670,9 @@ internal static class Program
                 + $"asr={saved.GetProperty("asr").GetProperty("model").GetString()} "
                 + $"tts={saved.GetProperty("tts").GetProperty("chunkMs").GetInt32()}");
 
-            // Queue view + cancel.
+            // Queue view + cancel. The view is served from what is still in play rather than from the log, so a
+            // cancelled item leaves the list instead of appearing in it as Canceled. The check asserts that
+            // shape: Queued while waiting, absent once settled, with the depth following it down.
             var queuedSeq = await apiContext.Queue.EnqueueAsync(new InputItem
             {
                 ItemId = "ui-queued",
@@ -1554,17 +1681,25 @@ internal static class Program
                 IdempotencyKey = "text:ui:1",
             });
             var queueView = await http.GetFromJsonAsync<JsonElement>("/api/queue");
+            var listedBefore = queueView.GetProperty("items").EnumerateArray()
+                .FirstOrDefault(i => i.GetProperty("itemId").GetString() == "ui-queued");
+            var beforeStatus = listedBefore.ValueKind == JsonValueKind.Object
+                ? listedBefore.GetProperty("status").GetString()
+                : "(not listed)";
             var cancel = await http.PostAsync("/api/queue/ui-queued/cancel", content: null);
             cancel.EnsureSuccessStatusCode();
             var queueAfter = await http.GetFromJsonAsync<JsonElement>("/api/queue");
-            var canceledItem = queueAfter.GetProperty("items").EnumerateArray()
-                .First(i => i.GetProperty("itemId").GetString() == "ui-queued");
+            var stillListed = queueAfter.GetProperty("items").EnumerateArray()
+                .Any(i => i.GetProperty("itemId").GetString() == "ui-queued");
 
             Check("ui: queue view shows state and honours cancel",
                 queuedSeq == 1
                 && queueView.GetProperty("depth").GetInt32() == 1
-                && canceledItem.GetProperty("status").GetString() == "Canceled",
-                $"seq={queuedSeq} depth={queueView.GetProperty("depth").GetInt32()} status={canceledItem.GetProperty("status").GetString()}");
+                && beforeStatus == "Queued"
+                && !stillListed
+                && queueAfter.GetProperty("depth").GetInt32() == 0,
+                $"seq={queuedSeq} depth={queueView.GetProperty("depth").GetInt32()} before={beforeStatus} "
+                + $"stillListed={stillListed} depthAfter={queueAfter.GetProperty("depth").GetInt32()}");
 
             // The composer's entry point: it delivers to the queue and nothing executes it here.
             var sessionBefore = await http.GetFromJsonAsync<JsonElement>("/api/session");
@@ -1647,15 +1782,7 @@ internal static class Program
                 var delivered = await onHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "打开书房的灯" });
                 var deliveredId = (await delivered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
-                var settled = false;
-                for (var attempt = 0; attempt < 200 && !settled; attempt++)
-                {
-                    var polled = await onHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                    settled = polled.GetProperty("items").EnumerateArray().Any(item =>
-                        item.GetProperty("itemId").GetString() == deliveredId
-                        && item.GetProperty("status").GetString() == "Done");
-                    await Task.Delay(25);
-                }
+                var settled = await WaitForQueueItemToSettleAsync(onHttp, deliveredId);
 
                 var session = await onHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var entries = session.GetProperty("items").EnumerateArray()
@@ -1716,15 +1843,7 @@ internal static class Program
                 var delivered = await wireHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "走一次真实 HTTP" });
                 var deliveredId = (await delivered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
-                var settled = false;
-                for (var attempt = 0; attempt < 200 && !settled; attempt++)
-                {
-                    var polled = await wireHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                    settled = polled.GetProperty("items").EnumerateArray().Any(item =>
-                        item.GetProperty("itemId").GetString() == deliveredId
-                        && item.GetProperty("status").GetString() == "Done");
-                    await Task.Delay(25);
-                }
+                var settled = await WaitForQueueItemToSettleAsync(wireHttp, deliveredId);
 
                 var session = await wireHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var assistant = session.GetProperty("items").EnumerateArray()
@@ -1733,16 +1852,18 @@ internal static class Program
                     .ToList();
 
                 var wireQueue = await wireHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                var wireItem = wireQueue.GetProperty("items").EnumerateArray().FirstOrDefault();
+                var stillQueued = wireQueue.GetProperty("items").EnumerateArray()
+                    .Any(item => item.GetProperty("itemId").GetString() == deliveredId);
 
                 Check("consumer: a real HTTP model call completes a turn end to end",
                     settled
+                    && !stillQueued
                     && assistant.Count == 1
                     && assistant[0] == "通过真实 HTTP 返回。"
                     && provider.RequestPath?.Contains("/v1/chat/completions", StringComparison.Ordinal) == true
                     // No key configured means no Authorization header, rather than an empty one.
                     && provider.SawAuthorization is null,
-                    $"settled={settled} status={wireItem.GetProperty("status").GetString()} "
+                    $"settled={settled} depth={wireQueue.GetProperty("depth").GetInt32()} "
                     + $"requests=[{string.Join(" | ", provider.Requests)}]");
 
                 // Streaming: the reply has to be readable while it is still being written. The provider releases
@@ -2073,6 +2194,14 @@ internal static class Program
                     .Select(item => (item.GetProperty("body").GetString() ?? string.Empty).Replace("\n", " "))
                     .ToList();
 
+                // The failure this check has to be diagnosable for: a lease that expired while the model was
+                // thinking. The timestamps are what say whether the action was late or the lease was short.
+                var timeline = string.Join(" | ", screenshotResult.GetProperty("items").EnumerateArray()
+                    .Where(item => item.GetProperty("kind").GetString() is "ToolCall" or "ToolResult")
+                    .Select(item => item.TryGetProperty("at", out var at)
+                        ? $"{at.GetDateTime():HH:mm:ss.fff} {(item.GetProperty("body").GetString() ?? string.Empty)[..Math.Min(28, (item.GetProperty("body").GetString() ?? string.Empty).Length)]}"
+                        : item.GetRawText()[..Math.Min(40, item.GetRawText().Length)]));
+
                 Check("desktop: a screenshot reaches the model as an image",
                     shown.Count > 0 && shown[^1].Images!.Any(image => image.StartsWith("data:image/png;base64,", StringComparison.Ordinal)),
                     $"imageMessages={shown.Count} results=[{string.Join(" | ", allResults.Select(r => r[..Math.Min(60, r.Length)]))}]");
@@ -2087,7 +2216,9 @@ internal static class Program
 
                 Check("desktop: a point with no window id resolves to the window that covers it",
                     barePoint is not null && barePoint.Contains("注入成功", StringComparison.Ordinal),
-                    $"result={barePoint ?? "(none)"}");
+                    $"result={barePoint ?? "(none)"} | every result=["
+                        + string.Join(" | ", allResults.Select(body => body[..Math.Min(70, body.Length)]))
+                        + $"] | timeline=[{timeline}]");
 
                 // And when no window covers the point, the refusal has to name the candidates — telling the model
                 // to "observe first" when it has just observed is what produced the loop.
@@ -2308,6 +2439,7 @@ internal static class Program
                         baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
                         model = "settings-model",
                         apiKey = "smoke-key",
+                        reasoningEffort = "XHIGH ",
                     },
                 });
                 var putBody = await put.Content.ReadFromJsonAsync<JsonElement>();
@@ -2316,15 +2448,7 @@ internal static class Program
                 var delivered = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "设置驱动" });
                 var deliveredId = (await delivered.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
-                var settled = false;
-                for (var attempt = 0; attempt < 200 && !settled; attempt++)
-                {
-                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                    settled = polled.GetProperty("items").EnumerateArray().Any(item =>
-                        item.GetProperty("itemId").GetString() == deliveredId
-                        && item.GetProperty("status").GetString() == "Done");
-                    await Task.Delay(25);
-                }
+                var settled = await WaitForQueueItemToSettleAsync(settingsHttp, deliveredId);
 
                 var session = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var assistant = session.GetProperty("items").EnumerateArray()
@@ -2373,15 +2497,7 @@ internal static class Program
                 var second = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "第二轮" });
                 var secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
-                var secondSettled = false;
-                for (var attempt = 0; attempt < 200 && !secondSettled; attempt++)
-                {
-                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                    secondSettled = polled.GetProperty("items").EnumerateArray().Any(item =>
-                        item.GetProperty("itemId").GetString() == secondId
-                        && item.GetProperty("status").GetString() == "Done");
-                    await Task.Delay(25);
-                }
+                var secondSettled = await WaitForQueueItemToSettleAsync(settingsHttp, secondId);
 
                 var sent = settingsProvider.LastRequestBody ?? string.Empty;
                 using var sentJson = JsonDocument.Parse(sent.Length == 0 ? "{}" : sent);
@@ -2393,6 +2509,70 @@ internal static class Program
                     secondSettled && roles.Count > 0 && roles[0] == "system" && !roles.Skip(1).Contains("system"),
                     $"settled={secondSettled} bodyLen={sent.Length} path={settingsProvider.RequestPath} roles={string.Join(",", roles)}");
 
+                // The gear travels settings → the client the consumer builds → the wire. A gear that is saved
+                // and never sent is the kind of setting that looks configured and does nothing.
+                var gear = sentJson.RootElement.TryGetProperty("reasoning_effort", out var sentGear)
+                    ? sentGear.GetString()
+                    : "(absent)";
+
+                Check("settings: the thinking gear reaches the model request",
+                    gear == "xhigh",
+                    $"reasoning_effort={gear} bodyLen={sent.Length}");
+
+                // The same gear, chosen for one message instead of for the runtime. This is the hop the
+                // composer drives, and it is the one a settings-only check cannot see: the value has to
+                // leave /api/input, ride the queue item, and win over the configured default on the wire.
+                // The whole model section, not just the gear: a partial PUT replaces the record, so omitting
+                // the endpoint here would blank it and fail validation instead of changing the menu.
+                var perTurnPut = await settingsHttp.PutAsJsonAsync("/api/settings", new
+                {
+                    model = new
+                    {
+                        baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
+                        model = "settings-model",
+                        // Carried over: the record is replaced wholesale, and the next check asserts the key
+                        // is still stored but never echoed back.
+                        apiKey = "smoke-key",
+                        reasoningEffort = "low",
+                        reasoningGears = new[] { "low", "scenic" },
+                    },
+                });
+                await perTurnPut.Content.ReadAsStringAsync();
+
+                var perTurn = await settingsHttp.PostAsJsonAsync("/api/input", new
+                {
+                    source = "text",
+                    payload = "这一条换个档",
+                    reasoningEffort = "scenic",
+                });
+                var perTurnId = (await perTurn.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+
+                var perTurnSettled = await WaitForQueueItemToSettleAsync(settingsHttp, perTurnId);
+
+                var perTurnBody = settingsProvider.LastRequestBody ?? string.Empty;
+                using var perTurnJson = JsonDocument.Parse(perTurnBody.Length == 0 ? "{}" : perTurnBody);
+                var perTurnGear = perTurnJson.RootElement.TryGetProperty("reasoning_effort", out var onWire)
+                    ? onWire.GetString()
+                    : "(absent)";
+
+                Check("input: a gear chosen for one message wins over the configured default",
+                    perTurnSettled && perTurnGear == "scenic",
+                    $"settled={perTurnSettled} reasoning_effort={perTurnGear}");
+
+                // A word the menu does not carry must not reach the model: the composer only ever offers
+                // listed gears, so anything else is a stale client and the turn would silently differ.
+                var offMenu = await settingsHttp.PostAsJsonAsync("/api/input", new
+                {
+                    source = "text",
+                    payload = "这档不存在",
+                    reasoningEffort = "turbo",
+                });
+
+                Check("input: a gear that is not on the menu is rejected and lists the ones that are",
+                    offMenu.StatusCode == System.Net.HttpStatusCode.BadRequest
+                    && (await offMenu.Content.ReadAsStringAsync()).Contains("scenic", StringComparison.Ordinal),
+                    $"status={(int)offMenu.StatusCode}");
+
                 // The key went out on the wire but must never come back through the settings endpoint.
                 var raw = await settingsHttp.GetStringAsync("/api/settings");
                 Check("settings: the API key is sent to the model but never echoed back",
@@ -2403,18 +2583,7 @@ internal static class Program
                 // Removing history: the view and the log both lose it, and the conversation continues.
                 var doomed = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "要删掉的" });
                 var doomedId = (await doomed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
-                for (var attempt = 0; attempt < 200; attempt++)
-                {
-                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/queue");
-                    if (polled.GetProperty("items").EnumerateArray().Any(item =>
-                        item.GetProperty("itemId").GetString() == doomedId
-                        && item.GetProperty("status").GetString() == "Done"))
-                    {
-                        break;
-                    }
-
-                    await Task.Delay(25);
-                }
+                await WaitForQueueItemToSettleAsync(settingsHttp, doomedId);
 
                 var beforeRemoval = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var target = beforeRemoval.GetProperty("items").EnumerateArray()
@@ -3155,6 +3324,37 @@ internal static class Program
         throw new InvalidOperationException("the host never started listening");
     }
 
+    /// <summary>
+    /// Waits for a queue item to leave the view.
+    /// <para>
+    /// The view is served from what is still in play rather than from the log, so an item settles by
+    /// disappearing from it — there is no <c>Done</c> row to poll for. What the turn produced is asserted from
+    /// the session afterwards, which is where a settled item's record lives.
+    /// </para>
+    /// </summary>
+    private static async Task<bool> WaitForQueueItemToSettleAsync(HttpClient http, string? itemId)
+    {
+        if (string.IsNullOrEmpty(itemId))
+        {
+            return false;
+        }
+
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            var polled = await http.GetFromJsonAsync<JsonElement>("/api/queue");
+            var listed = polled.GetProperty("items").EnumerateArray()
+                .Any(item => item.GetProperty("itemId").GetString() == itemId);
+            if (!listed)
+            {
+                return true;
+            }
+
+            await Task.Delay(25);
+        }
+
+        return false;
+    }
+
     /// <summary>Asks the OS for a free port (the API host must not collide with anything).</summary>
     private static int FreePort()
     {
@@ -3435,6 +3635,23 @@ internal static class Program
         ("desktop.input_marshalling", "M9", new[]
         {
             "desktop: input marshalling matches the Win32 contract",
+            "desktop: positional input is absolute in the 0..65535 virtual-desktop space",
+            "desktop: a point outside the virtual desktop is refused instead of clamped",
+        }),
+        // Only the routing half is registered here, because it is the half the smoke can observe without
+        // injecting anything. That a named button really is pressed through its pattern is proven by
+        // DesktopLiveInteractionTests, which is opt-in: it moves the pointer and shows a window.
+        ("desktop.uia_pattern_routing", "M9", new[]
+        {
+            "desktop: an action a pattern cannot express is routed to injected input",
+            "desktop: a control id that does not resolve is not guessed at",
+        }),
+        // The draw itself (grid lines, chips, the scaled-picture offset) is covered by ScreenshotMarksTests and
+        // by the opt-in live test that compares a mark against the application's own PointToScreen; what is
+        // registered here is the part the model consumes, which the smoke can observe read-only.
+        ("desktop.screenshot_marks", "M9", new[]
+        {
+            "desktop: a picture's marks carry each control's real screen point",
         }),
         ("desktop.minimized_window", "M9", new[]
         {
@@ -3448,6 +3665,7 @@ internal static class Program
         {
             "desktop: a point with no window id resolves to the window that covers it",
             "desktop: a point no window covers is refused with the candidates named",
+            "desktop: the window under a point is the top-level window that contains it",
         }),
         ("desktop.model_vision", "M9", new[]
         {
@@ -3547,6 +3765,9 @@ internal static class Program
             "desktop: the refusal is in the log with the tool's name",
             "settings: pointing the model settings at an endpoint re-points the consumer",
             "settings: the API key is sent to the model but never echoed back",
+            "settings: the thinking gear reaches the model request",
+            "input: a gear chosen for one message wins over the configured default",
+            "input: a gear that is not on the menu is rejected and lists the ones that are",
             "settings: the model listing is pulled through the API",
             "settings: an unreachable model endpoint returns a reason, not a silent empty list",
             "settings: shrinking the context compacts the history once",

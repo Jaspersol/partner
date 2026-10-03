@@ -108,8 +108,6 @@ public sealed class SyntheticAudioSink(int sampleRate = 24_000, string deviceNam
 
     public bool HasPending { get; private set; }
 
-    public bool IsHeld => _held;
-
     public bool IsRunning => _running;
 
     public void Start() => _running = true;

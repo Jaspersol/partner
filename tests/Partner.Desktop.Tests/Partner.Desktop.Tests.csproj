@@ -4,6 +4,9 @@
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <RootNamespace>Partner.Desktop.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
+    <!-- The live UIA test hosts a real window with a real button on an STA thread; without WinForms there is
+         no way to prove that a named control is actually pressed through its pattern. -->
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />

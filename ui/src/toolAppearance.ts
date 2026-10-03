@@ -1,0 +1,101 @@
+/**
+ * What one tool looks like: a glyph to scan by and a hue to sort by.
+ *
+ * <para>
+ * A turn that calls a tool is a list of names, and a list of names is read one at a time. Giving each family
+ * its own glyph and its own accent turns "ran three tools" into something the eye can take in at a glance —
+ * which is the only reason this table exists rather than a `data-tool` attribute somebody can style by hand.
+ * </para>
+ *
+ * <para>
+ * The families are matched by prefix, longest first: `desktop_exec` and `desktop_clipboard_get` are different
+ * things, and a table that matched on the head of the name would file both of them under "desktop". A name
+ * nothing matches falls back rather than being hidden — an unrecognised tool is exactly the one a reader needs
+ * to see, because it is the one they cannot guess.
+ * </para>
+ */
+
+import type { IconName } from './icons'
+
+export type ToolFamily =
+  | 'shell'
+  | 'read'
+  | 'write'
+  | 'search'
+  | 'web'
+  | 'agent'
+  | 'record'
+  | 'schedule'
+  | 'control'
+
+interface ToolAppearance {
+  icon: IconName
+  family: ToolFamily
+  /** The word a reader scans for, used as the card's title attribute. */
+  label: string
+}
+
+/** Prefix → appearance. Order matters: the first match wins, so specific names come before families. */
+const RULES: readonly (readonly [string, ToolAppearance])[] = [
+  ['desktop_screenshot', { icon: 'file', family: 'read', label: '截图' }],
+  ['desktop_observe', { icon: 'file', family: 'read', label: '观察' }],
+  ['desktop_clipboard', { icon: 'file', family: 'read', label: '剪贴板' }],
+  // Acting on the world, not running something in it. It shared the ⌘ glyph with the shell family only because
+  // there was nothing better in the character set; now that there is, the two families must not look alike.
+  ['desktop_act', { icon: 'crosshair', family: 'control', label: '桌面动作' }],
+  ['desktop_launch', { icon: 'terminal', family: 'shell', label: '启动' }],
+  ['desktop_exec', { icon: 'terminal', family: 'shell', label: '执行' }],
+
+  ['memory_recall', { icon: 'database', family: 'record', label: '记忆检索' }],
+  ['memory_write', { icon: 'database', family: 'record', label: '记忆写入' }],
+  ['memory', { icon: 'database', family: 'record', label: '记忆' }],
+  ['recall', { icon: 'database', family: 'record', label: '检索' }],
+
+  ['skill', { icon: 'swap', family: 'agent', label: '技能' }],
+  ['mcp', { icon: 'swap', family: 'agent', label: 'MCP' }],
+  ['agent', { icon: 'swap', family: 'agent', label: 'Agent' }],
+  ['task', { icon: 'swap', family: 'agent', label: '子任务' }],
+
+  ['schedule', { icon: 'flag', family: 'schedule', label: '调度' }],
+  ['cron', { icon: 'flag', family: 'schedule', label: '调度' }],
+
+  ['search', { icon: 'search', family: 'search', label: '搜索' }],
+  ['glob', { icon: 'search', family: 'search', label: '查找文件' }],
+  ['grep', { icon: 'search', family: 'search', label: '搜索' }],
+  ['find', { icon: 'search', family: 'search', label: '查找' }],
+
+  ['fetch', { icon: 'download', family: 'web', label: '抓取' }],
+  ['web', { icon: 'download', family: 'web', label: '网页' }],
+  ['http', { icon: 'download', family: 'web', label: '网络请求' }],
+  ['browse', { icon: 'download', family: 'web', label: '浏览' }],
+
+  ['read', { icon: 'file', family: 'read', label: '读取' }],
+  ['list', { icon: 'file', family: 'read', label: '列出' }],
+  ['view', { icon: 'file', family: 'read', label: '查看' }],
+
+  ['write', { icon: 'pencil', family: 'write', label: '写入' }],
+  ['edit', { icon: 'pencil', family: 'write', label: '编辑' }],
+  ['patch', { icon: 'pencil', family: 'write', label: '修改' }],
+  ['append', { icon: 'pencil', family: 'write', label: '追加' }],
+
+  ['bash', { icon: 'terminal', family: 'shell', label: '命令' }],
+  ['shell', { icon: 'terminal', family: 'shell', label: '命令' }],
+  ['exec', { icon: 'terminal', family: 'shell', label: '执行' }],
+  ['run', { icon: 'terminal', family: 'shell', label: '运行' }],
+  ['process', { icon: 'terminal', family: 'shell', label: '进程' }],
+]
+
+/** An unrecognised tool gets the neutral one — visible, just not categorised. */
+const FALLBACK: ToolAppearance = { icon: 'diamond', family: 'control', label: '工具' }
+
+export function toolAppearance(name: string): ToolAppearance {
+  const lower = name.toLowerCase()
+
+  for (const [prefix, appearance] of RULES) {
+    if (lower.startsWith(prefix)) {
+      return appearance
+    }
+  }
+
+  return FALLBACK
+}

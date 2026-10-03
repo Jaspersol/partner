@@ -18,6 +18,10 @@ export interface SessionItem {
    * result are two events, and this is what pairs them into one card.
    */
   meta?: Record<string, string> | null
+  /** What the model is thinking right now. Only ever set on a live row. */
+  reasoning?: string | null
+  /** When that thinking started, so the view can say how long it has been. Absent when it is over. */
+  reasoningSince?: string | null
 }
 
 /** How much of the model's context window the history currently occupies. */
@@ -58,6 +62,8 @@ export interface QueueItem {
   payload: string
   /** Attachment ids the item carries; the bytes live in the media store, never in the queue log. */
   mediaIds?: string[]
+  /** The gear this message chose, or null when it did not choose and the default applies. */
+  reasoningEffort?: string | null
 }
 
 export interface QueueView {
@@ -73,10 +79,53 @@ export interface MemoryItem {
   scope: string
   body: string
   createdAt: string
+  /** When this record was last handed to a turn. Null means never recalled — the demotion rule counts that as unused. */
+  lastRecalledAt?: string | null
   validTo: string | null
   supersededBy: string | null
   editedBy: string | null
   importance: number
+}
+
+/**
+ * One MCP server, in the shape the settings file stores it.
+ * <p>
+ * Enabling starts a <b>child process</b> — which is why the capability is off by default and why a server
+ * missing a name or command is refused at save rather than at start-up.
+ */
+export interface McpServerSettings {
+  name: string
+  command: string
+  arguments: string[]
+  workingDirectory: string | null
+  callTimeoutSeconds: number
+}
+
+export interface McpSettings {
+  enabled: boolean
+  servers: McpServerSettings[]
+  /** Tools that may run without asking. Empty means every one of them is asked for. */
+  allowedTools: string[]
+}
+
+/** One workspace skill, as the read endpoint reports it. */
+export interface SkillView {
+  skillId: string
+  name: string
+  description: string
+  enabled: boolean
+  instructions: string
+}
+
+export interface SkillListView {
+  skills: SkillView[]
+  /** Why a directory was skipped. Shown rather than swallowed: a skill that did not load is otherwise invisible. */
+  warnings: string[]
+}
+
+export interface SkillSettings {
+  /** Skill ids to skip. A deny list, so a skill added later is on by default. */
+  disabled: string[]
 }
 
 export interface RecallHit {
@@ -146,6 +195,11 @@ export interface ModelSettings {
   maxTokens: number
   /** Whether this model can look at pictures: the switch that makes screenshots the blind-app fallback. */
   supportsImages: boolean
+  /** Default gear sent as reasoning_effort; `off` (or blank) sends nothing. Free text, not a closed list. */
+  reasoningEffort: string
+
+  /** The gears the UI offers as a menu, in the order the user arranged them. */
+  reasoningGears: string[]
 }
 
 /** What the API returns: no key, only whether one is stored. */
@@ -158,6 +212,11 @@ export interface ModelSettingsView {
   maxTokens: number
   /** Whether the model takes pictures; the screenshot fallback is registered from this. */
   supportsImages: boolean
+  /** The default gear the consumer is actually sending; normalized to lower case. */
+  reasoningEffort: string
+
+  /** The gears offered as a menu, in the order the user arranged them. */
+  reasoningGears: string[]
 }
 
 export interface RuntimeSettings {
@@ -167,6 +226,8 @@ export interface RuntimeSettings {
   tts: TtsSettings
   model: ModelSettings
   desktop: DesktopSettings
+  mcp: McpSettings
+  skills: SkillSettings
 }
 
 export interface SettingsView {
@@ -176,6 +237,8 @@ export interface SettingsView {
   tts: TtsSettings
   model: ModelSettingsView
   desktop: DesktopSettings
+  mcp: McpSettings
+  skills: SkillSettings
 }
 
 /**
@@ -358,8 +421,22 @@ export interface ApiOptions {
 export interface UploadedMedia {
   mediaId: string
   contentType: string
+  /** The name the person gave it, sanitised by the server. This is what the model is told to call the file. */
+  fileName: string
+  /** Where it lives on disk, so a message can hand the model a path it can actually open. */
+  path: string
   bytes: number
 }
+
+/**
+ * How a file name travels with its bytes.
+ *
+ * <para>
+ * A header rather than the body, so a <code>File</code> can still be posted straight through without being read
+ * into memory first — which is what makes a folder of attachments possible at all.
+ * </para>
+ */
+const FILE_NAME_HEADER = 'X-File-Name'
 
 export interface PartnerApiSurface {
   session(from?: number, take?: number): Promise<SessionView>
@@ -369,9 +446,19 @@ export interface PartnerApiSurface {
   sessionRevisions(seq: number): Promise<SessionRevision[]>
   queue(): Promise<QueueView>
   cancel(itemId: string): Promise<boolean>
-  submitInput(payload: string, source: string, idempotencyKey?: string, media?: string[]): Promise<SubmitResult>
-  uploadMedia(file: Blob, contentType?: string): Promise<UploadedMedia>
+  submitInput(
+    payload: string,
+    source: string,
+    options?: { idempotencyKey?: string; media?: string[]; reasoningEffort?: string | null },
+  ): Promise<SubmitResult>
+  uploadMedia(file: Blob, contentType?: string, fileName?: string): Promise<UploadedMedia>
   mediaBlob(mediaId: string): Promise<Blob>
+  /** Every record, including the ones a later statement retired — "fully visible" means seeing what replaced it. */
+  memoryAll(): Promise<MemoryItem[]>
+  /** Moves a record between tiers on the person's judgement. */
+  setMemoryTier(recordId: string, tier: string): Promise<void>
+  /** What skills the workspace holds, plus the scan warnings for the ones that were skipped. */
+  skills(): Promise<SkillListView>
   consumer(): Promise<ConsumerState>
   voice(): Promise<VoiceState>
   devices(): Promise<DeviceList>
@@ -446,25 +533,47 @@ export class PartnerApi implements PartnerApiSurface {
 
   // ---- input delivery --------------------------------------------------------------------------
 
-  /** Delivers to the queue. Nothing executes it here, so the answer says "queued", not "done". */
-  submitInput(payload: string, source: string, idempotencyKey?: string, media?: string[]): Promise<SubmitResult> {
+  /**
+   * Delivers to the queue. Nothing executes it here, so the answer says "queued", not "done".
+   * <para>
+   * The per-message parts are an object rather than two more positional parameters: a caller reading
+   * `submitInput(text, 'text', 'composer:1', ids, 'high')` cannot tell what the last two mean.
+   * </para>
+   */
+  submitInput(
+    payload: string,
+    source: string,
+    options: { idempotencyKey?: string; media?: string[]; reasoningEffort?: string | null } = {},
+  ): Promise<SubmitResult> {
+    const { idempotencyKey, media, reasoningEffort } = options
+
     return this.request<SubmitResult>('POST', '/api/input', {
       source,
       payload,
       idempotencyKey,
       media: media && media.length > 0 ? media : null,
+
+      // Null when the composer did not choose: the server then applies the configured default, which is a
+      // different outcome from sending "off" and must not collapse into it.
+      reasoningEffort: reasoningEffort || null,
     })
   }
 
   /**
-   * Uploads one attachment. The bytes go as the request body with the type in the header, so a File can be
-   * passed straight through; what comes back is an id the delivery refers to.
+   * Uploads one attachment. The bytes go as the request body with the type and the name in headers, so a File
+   * can be passed straight through without being read into memory first; what comes back is the id the delivery
+   * refers to, plus the name and path the model is told.
    */
-  async uploadMedia(file: Blob, contentType?: string): Promise<UploadedMedia> {
+  async uploadMedia(file: Blob, contentType?: string, fileName?: string): Promise<UploadedMedia> {
     const type = contentType ?? file.type ?? ''
     const response = await this.fetchImpl(`${this.base}/api/media`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': type },
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': type,
+        // Latin-1 only: a header has to be representable, and the server sanitises the name anyway.
+        [FILE_NAME_HEADER]: encodeURIComponent(fileName ?? (file instanceof File ? file.name : 'attachment')),
+      },
       body: file,
     })
 
@@ -552,6 +661,18 @@ export class PartnerApi implements PartnerApiSurface {
     }
 
     return this.request<MemoryItem[]>('GET', `/api/memory?${query}`)
+  }
+
+  memoryAll(): Promise<MemoryItem[]> {
+    return this.request<MemoryItem[]>('GET', '/api/memory/all')
+  }
+
+  skills(): Promise<SkillListView> {
+    return this.request<SkillListView>('GET', '/api/skills')
+  }
+
+  async setMemoryTier(recordId: string, tier: string): Promise<void> {
+    await this.request('POST', `/api/memory/${encodeURIComponent(recordId)}/tier`, { tier })
   }
 
   recall(query: string, limit = 20): Promise<RecallHit[]> {

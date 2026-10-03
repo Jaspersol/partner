@@ -55,7 +55,7 @@ const kind = computed(() => /"kind"\s*:\s*"([^"]+)"/.exec(current.value?.argumen
   gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
   border-block-end: 1px solid var(--warn);
-  background: var(--pane);
+  background: var(--surface-1);
 }
 
 .title {
@@ -64,7 +64,9 @@ const kind = computed(() => /"kind"\s*:\s*"([^"]+)"/.exec(current.value?.argumen
 }
 
 .kind {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
 }
 
 .target {
@@ -72,8 +74,8 @@ const kind = computed(() => /"kind"\s*:\s*"([^"]+)"/.exec(current.value?.argumen
 }
 
 .args {
-  color: var(--muted);
-  font-size: var(--fs-meta, 0.85em);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
 }
 
 .spacer {

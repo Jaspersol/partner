@@ -92,8 +92,6 @@ public sealed class PauseBlockingDetector
     /// <summary>A block was refused by a full backlog and is still owed.</summary>
     public bool HasHeldPause => _heldPause is not null;
 
-    public bool HasSpeechHeard => _dirty;
-
     /// <summary>One tick. <paramref name="nowSeconds"/> is the stream clock, <paramref name="energy"/> the RMS.</summary>
     public PauseDecision Step(double nowSeconds, double energy)
     {

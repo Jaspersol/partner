@@ -126,10 +126,15 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     public ToolSpec Spec { get; } = new(
         "desktop_act",
         "对 desktop_observe 返回的窗口或控件执行一次动作。kind 取 focus / movePointer / leftClick / rightClick / "
-        + "keyPress / typeText / scroll / drag。给了 elementId 就用该控件的中心点，不必再给坐标；否则用 x/y——"
-        + "**屏幕坐标**（desktop_observe 的 clickAt 就是屏幕坐标，可直接用）。"
+        + "keyPress / typeText / scroll / drag。给了 elementId 就按控件操作（leftClick / focus 优先走 UI Automation 的 "
+        + "Invoke / Select / Toggle / SetFocus，**不需要该窗口在前台**；控件没有对应 pattern 时才点它的中心点），不必再给坐标；"
+        + "否则用 x/y——"
+        + "**屏幕坐标**（desktop_observe 的 clickAt 就是屏幕坐标，可直接用），且必须落在虚拟桌面范围内。"
         + "x/y 落在哪个已观察窗口里，就作用于那个窗口；跨多个窗口有歧义时会拒绝并列出候选，此时要显式传 entityId。"
-        + "typeText 需要 text，keyPress 需要 virtualKey（该窗口须已在前台，否则先 focus），scroll 需要 scrollDelta，drag 需要 x/y + toX/toY。"
+        + "点还必须真的能落到目标窗口上：若该点被别的窗口挡住（包括本应用自己的窗口），会拒绝并报出挡住的窗口——"
+        + "先对目标 focus 把它带到前台，再点。"
+        + "typeText 需要 text，keyPress 需要 virtualKey（该窗口须已在前台，否则先 focus），"
+        + "scroll 需要 scrollDelta（**格数**：正数向上滚，负数向下滚，一次 3 格比较合适），drag 需要 x/y + toX/toY。"
         + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。",
         """
         {"type":"object","properties":{
@@ -142,7 +147,7 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
           "toY":{"type":"integer","description":"拖拽终点屏幕坐标 y"},
           "virtualKey":{"type":"integer"},
           "text":{"type":"string"},
-          "scrollDelta":{"type":"integer"}
+          "scrollDelta":{"type":"integer","description":"滚轮格数：正数向上，负数向下，一次 3 格比较合适"}
         },"required":["kind"],"additionalProperties":false}
         """);
 
@@ -199,11 +204,12 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         }
 
         // Approval can outlive the lease by minutes. Looking again keeps the guarantee the lease was for —
-        // act only on what was seen — without making a slow human answer a failure.
+        // act only on what was seen — without making a slow human answer a failure. Only this window's UI
+        // Automation tree is re-read: it is the one being acted on, and walking every window costs seconds.
         DesktopObservation fresh;
         try
         {
-            fresh = automation.Observe();
+            fresh = automation.Observe(elementsFor: entityId);
         }
         catch (Exception error)
         {
@@ -224,6 +230,10 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
 
         var element = seenElement is null ? null : fresh.FindElement(seenElement.ElementId);
 
+        // Not a refusal: the window is the same window, it just moved or retitled. Reported so the model knows
+        // its picture is stale — without spending a step re-observing to find out.
+        var drift = DescribeDrift(seenWindow, target);
+
         // A named control carries its own click point: the model should not have to do geometry, and the point
         // is inside the window by construction. Otherwise the point is the model's own screen coordinate —
         // absent when it did not give one, which the guard treats as a malformed call rather than (0,0).
@@ -238,6 +248,7 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         {
             X = resolved?.X ?? 0,
             Y = resolved?.Y ?? 0,
+            ElementId = seenElement?.ElementId,
             VirtualKey = arguments.VirtualKey ?? 0,
             Text = arguments.Text,
             ScrollDelta = arguments.ScrollDelta ?? 0,
@@ -247,12 +258,24 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
 
         var action = await automation.ActAsync(entityId, kind, parameters, ct).ConfigureAwait(false);
 
-        return new ToolResult(action.GuardPassed, Describe(action, kind, target, element));
+        var described = Describe(action, kind, target, element);
+
+        return new ToolResult(action.GuardPassed, drift is null ? described : $"{described} · {drift}");
     }
 
     /// <summary>
     /// Whether a fresh observation still shows the same window the decision was made on. Returns the reason it
     /// does not, or null when it is safe to act.
+    /// <para>
+    /// The bar is identity, not immobility. The window must still be the same window — same handle, same
+    /// process, same process start time — so a recycled handle (the old window closed and Windows handed the
+    /// handle to a new one) is caught. It is <b>not</b> required to have kept its title or its rectangle: a
+    /// music player retitles itself on every track, a browser on every tab change, an editor on its dirty
+    /// marker, and restoring a minimized window moves it by definition. Treating those as a mismatch is how
+    /// "act only on what you saw" degenerates into "you may never act" on exactly the applications the model
+    /// is pointed at. What did change is reported by <see cref="DescribeDrift"/>; the coordinates are
+    /// recomputed from the fresh rectangle wherever that matters.
+    /// </para>
     /// </summary>
     public static string? Revalidate(UiEntity seen, DesktopObservation fresh)
     {
@@ -265,12 +288,46 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return $"窗口 '{seen.Label}' 已经不在了：重新 desktop_observe 再决定";
         }
 
-        return now.EvidenceDigest == seen.EvidenceDigest
+        return now.IdentityDigest == seen.IdentityDigest
             ? null
-            : $"窗口 '{seen.Label}' 与观察时不同（标题/进程/位置/大小变了）：重新 desktop_observe 再决定";
+            : $"句柄 {seen.EntityId} 现在属于别的窗口了（观察时是 {seen.Value ?? "?"}，现在是 {now.Value ?? "?"}）："
+                + "重新 desktop_observe 再决定";
     }
 
-    /// <summary>The same check for a named control: the layout moved, so the coordinates are not trustworthy.</summary>
+    /// <summary>
+    /// What moved or retitled since the decision, as a note to keep in the result.
+    /// <para>
+    /// Deliberately not a refusal. A screen coordinate stays valid as long as it still lands inside the window
+    /// it names — which the guard checks against the <i>fresh</i> rectangle — and an element-addressed action
+    /// recomputes its click point from the fresh rectangle as well. Saying it out loud is what lets the model
+    /// notice that its picture is stale, without costing it a step.
+    /// </para>
+    /// </summary>
+    public static string? DescribeDrift(UiEntity seen, UiEntity now)
+    {
+        ArgumentNullException.ThrowIfNull(seen);
+        ArgumentNullException.ThrowIfNull(now);
+
+        var notes = new List<string>(2);
+
+        if (!string.Equals(seen.Label, now.Label, StringComparison.Ordinal))
+        {
+            notes.Add($"标题从 '{seen.Label}' 变成 '{now.Label}'");
+        }
+
+        if (seen.LayoutDigest != now.LayoutDigest)
+        {
+            notes.Add($"矩形从 ({seen.Rect.X},{seen.Rect.Y}) {seen.Rect.Width}×{seen.Rect.Height} "
+                + $"变成 ({now.Rect.X},{now.Rect.Y}) {now.Rect.Width}×{now.Rect.Height}");
+        }
+
+        return notes.Count == 0 ? null : $"注意：窗口已变化（{string.Join("；", notes)}）";
+    }
+
+    /// <summary>
+    /// The same check for a named control. Identity is name + role, not the rectangle: a layout shift moves a
+    /// control without replacing it, and the click point is recomputed from the fresh rectangle anyway.
+    /// </summary>
     public static string? RevalidateElement(UiElement seen, DesktopObservation fresh)
     {
         ArgumentNullException.ThrowIfNull(seen);
@@ -282,9 +339,10 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return $"控件 '{seen.Name}' 已经不在了：重新 desktop_observe 再决定";
         }
 
-        return now.Digest == seen.Digest
+        return now.IdentityDigest == seen.IdentityDigest
             ? null
-            : $"控件 '{seen.Name}' 与观察时不同（名称或位置变了）：重新 desktop_observe 再决定";
+            : $"控件 '{seen.Name}' 与观察时不同（名称或类型变了，现在是 '{now.Name}' [{now.Role}]）："
+                + "重新 desktop_observe 再决定";
     }
 
     /// <summary>
@@ -392,7 +450,14 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return $"未注入：{action.GuardReason} · 目标 {who}";
         }
 
-        var injected = action.Injection?.Ok == true ? "注入成功" : $"注入失败（{action.Injection?.Detail}）";
+        var viaPattern = action.Injection?.Detail.StartsWith("uia.", StringComparison.Ordinal) == true;
+        var injected = action.Injection?.Ok == true
+            ? viaPattern ? "已通过界面自动化执行" : "注入成功"
+            : $"{(viaPattern ? "自动化调用失败" : "注入失败")}（{action.Injection?.Detail}）";
+
+        // The user's foreground window moved, so it is said out loud rather than left for them to notice.
+        var raised = action.Raised ? " · 目标原来被挡住，已把它带到前台" : string.Empty;
+
         var verified = action.PostVerify?.Decision switch
         {
             VerifyDecision.AnyChange => "校验：画面已变化",
@@ -401,7 +466,7 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             _ => "校验：未执行",
         };
 
-        return $"{kind} · {injected} · {verified} · 目标 {who}";
+        return $"{kind} · {injected}{raised} · {verified} · 目标 {who}";
     }
 
     /// <summary>What the model asked for, as it arrives from the model.</summary>

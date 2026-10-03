@@ -15,3 +15,7 @@ node_modules/
 
 # Generated at build time: the committed baseline is capabilities/manifest.baseline.json
 capabilities/manifest.json
+
+# Test artifacts: `dotnet test --logger trx` writes one directory per run
+TestResults/
+*.trx

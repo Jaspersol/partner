@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import Icon from '../components/Icon.vue'
 import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState } from '../api'
 
+
+/**
+ * Fallback menu, used only until the server answers. The stored list is what this page edits, so a
+ * hardcoded copy used as the *saved* value would quietly re-add gears the user removed.
+ */
+const DEFAULT_REASONING_GEARS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
 const props = defineProps<{ api: PartnerApiSurface }>()
-const emit = defineEmits<{ context: [value: string] }>()
+const emit = defineEmits<{ context: [value: string]; saved: [] }>()
 
 /** The form is a projection of the stored settings; nothing here is authoritative until it is saved. */
 const form = reactive<RuntimeSettings>({
@@ -29,14 +36,54 @@ const form = reactive<RuntimeSettings>({
   },
   asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false },
+  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS] },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
+
+  // Carried through untouched so the two capability pages' state survives a save made here. Not editable on
+  // this page: a server row and a skill row need more room than a card in a settings form gives them.
+  mcp: { enabled: false, servers: [], allowedTools: [] },
+  skills: { disabled: [] },
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
 const apiKeySet = ref(false)
 const apiKeyDraft = ref('')
 const apiKeyEdited = ref(false)
+
+/**
+ * The settings as last stored, for telling "changed" from "unchanged".
+ *
+ * <para>
+ * A `ref`, not a plain variable, and that is the whole trick. It started as one and the dirty marker never
+ * appeared: `dirty` short-circuits on \`stored === null\`, so on the first evaluation it never called
+ * \`fingerprint()\` — recorded no reactive dependency at all — and so it could never be invalidated by an edit
+ * afterwards. A plain variable that a computed depends on only through a branch it did not take is invisible to
+ * reactivity.
+ * </para>
+ *
+ * <para>
+ * Kept as a snapshot rather than a dirty flag so it survives the two ways this form changes underneath itself:
+ * \`apply()\` rewrites \`form\` after every save, and the API key is write-only and never comes back to be
+ * compared.
+ * </para>
+ */
+const stored = ref<string | null>(null)
+
+function fingerprint(): string {
+  return JSON.stringify({
+    input: form.input,
+    output: form.output,
+    asr: form.asr,
+    tts: form.tts,
+    model: form.model,
+    desktop: form.desktop,
+    // The key is write-only: it is either the draft or nothing, and it is the one field a fingerprint would
+    // otherwise get wrong in both directions.
+    apiKey: apiKeyEdited.value ? apiKeyDraft.value : null,
+  })
+}
+
+const dirty = computed(() => stored.value !== null && fingerprint() !== stored.value)
 
 /** Titles are edited as one comma-separated line; empty entries are dropped rather than stored. */
 function onTitlesInput(event: Event) {
@@ -58,6 +105,7 @@ const probing = ref(false)
 
 const inputOptions = computed(() => withStored(devices.value.inputs, form.input.deviceId))
 const outputOptions = computed(() => withStored(devices.value.outputs, form.output.deviceId))
+
 
 const modelConfigured = computed(() => (form.model.baseUrl ?? '') !== '' && (form.model.model ?? '') !== '')
 const keyHint = computed(() =>
@@ -103,11 +151,23 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     contextTokens: settings.model.contextTokens,
     supportsImages: settings.model.supportsImages ?? false,
     maxTokens: settings.model.maxTokens,
+    reasoningEffort: settings.model.reasoningEffort ?? 'medium',
+    // A response from an older build carries no list; falling back keeps the editor usable rather than
+    // leaving it with an empty menu that cannot be saved.
+    reasoningGears: settings.model.reasoningGears ?? [...DEFAULT_REASONING_GEARS],
   })
+
+  // Replaced, not merged: the response is the whole truth, and holding on to what arrived earlier would
+  // resurrect a server or a deny entry the person has since removed on their own page.
+  form.mcp = { ...settings.mcp, servers: [...(settings.mcp?.servers ?? [])], allowedTools: [...(settings.mcp?.allowedTools ?? [])] }
+  form.skills = { disabled: [...(settings.skills?.disabled ?? [])] }
 
   apiKeySet.value = 'apiKeySet' in settings.model ? Boolean(settings.model.apiKeySet) : false
   apiKeyDraft.value = ''
   apiKeyEdited.value = false
+  // Everything above is now what the server holds, so this is the point the form stops being dirty — not
+  // `refresh()`, which can fail and leave the form showing edits that were never stored.
+  stored.value = fingerprint()
 }
 
 async function refresh() {
@@ -132,6 +192,10 @@ async function persist() {
     output: { ...form.output },
     asr: { ...form.asr },
     tts: { ...form.tts },
+    // Carried, not edited: these two have pages of their own. Dropping them here would silently undo whatever
+    // was decided there the next time anybody saved a voice setting.
+    mcp: form.mcp,
+    skills: form.skills,
     model: {
       baseUrl: form.model.baseUrl === '' ? null : form.model.baseUrl,
       model: form.model.model === '' ? null : form.model.model,
@@ -139,6 +203,10 @@ async function persist() {
       contextTokens: form.model.contextTokens,
       supportsImages: form.model.supportsImages,
       maxTokens: form.model.maxTokens,
+      reasoningEffort: form.model.reasoningEffort,
+      // A row the user opened and left empty is not a gear. Sending it would put a blank entry in the
+      // picker, which reads as a level that thinks very little — or as a silent no-op.
+      reasoningGears: form.model.reasoningGears.filter((gear) => normalizeGear(gear) !== ''),
     },
   }
 
@@ -158,6 +226,10 @@ async function persist() {
     status.value = saved.compaction
       ? `已保存 · ${at} · ${saved.compaction.reason}`
       : `已保存 · ${at}`
+
+    // The composer's picker is fed from the shell, so it has to hear about the save — otherwise the gears
+    // just edited here would not be the ones offered in the session view.
+    emit('saved')
   } catch (failure) {
     error.value = String(failure)
   }
@@ -168,25 +240,163 @@ function clearKey() {
   apiKeyEdited.value = true
 }
 
-onMounted(refresh)
+/**
+ * The menu is edited as an ordered list because that is the order the composer offers it in. Blanks and
+ * repeats are dropped as each row is committed, so the row the user is looking at is the row that will be
+ * stored.
+ */
+function normalizeGear(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function addGear() {
+  form.model.reasoningGears = [...form.model.reasoningGears, '']
+}
+
+function removeGear(index: number) {
+  form.model.reasoningGears = form.model.reasoningGears.filter((_, at) => at !== index)
+}
+
+function commitGear(index: number, value: string) {
+  const gears = [...form.model.reasoningGears]
+  const gear = normalizeGear(value)
+
+  if (gear === '') {
+    gears.splice(index, 1)
+  } else {
+    gears[index] = gear
+  }
+
+  // A repeat is a menu entry the picker can never land on. The row being edited wins and the earlier copy
+  // goes: keeping the copy the user did not touch would silently discard the value they just typed.
+  form.model.reasoningGears = gears.filter(
+    (entry, at) => at === index || (entry !== gear && gears.indexOf(entry) === at),
+  )
+}
+
+/** Moves a row, so the menu order can be arranged without retyping the whole list. */
+function moveGear(index: number, delta: number) {
+  const target = index + delta
+  const gears = [...form.model.reasoningGears]
+  if (target < 0 || target >= gears.length) {
+    return
+  }
+
+  const [gear] = gears.splice(index, 1)
+  gears.splice(target, 0, gear)
+  form.model.reasoningGears = gears
+}
+
+function useAsDefault(index: number) {
+  form.model.reasoningEffort = normalizeGear(form.model.reasoningGears[index] ?? '')
+}
+
+/**
+ * Which groups are folded away.
+ *
+ * <para>
+ * Persisted, because the views are `v-if`: without it, folding the three cards nobody touches would have to be
+ * redone on every tab switch, and a control that forgets itself is worse than no control.
+ * </para>
+ *
+ * <para>
+ * Everything is open on a first visit. Folding by default would shorten the page but hide five of six groups
+ * from someone who came to change one thing — and the reader is the only one who knows which thing.
+ * </para>
+ */
+const GROUPS = ['input', 'output', 'asr', 'tts', 'desktop', 'model'] as const
+const FOLDED_KEY = 'partner.settings.folded'
+
+const folded = ref<Record<string, boolean>>({})
+
+function readFolded(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(FOLDED_KEY)
+    if (raw === null) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    // Only known names: a stale key from a build whose groups differed must not come back as a state.
+    const known: Record<string, boolean> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if ((GROUPS as readonly string[]).includes(key) && typeof value === 'boolean') known[key] = value
+    }
+    return known
+  } catch {
+    return {}
+  }
+}
+
+function writeFolded(): void {
+  try {
+    window.localStorage.setItem(FOLDED_KEY, JSON.stringify(folded.value))
+  } catch {
+    // A sandbox without storage still folds; it just forgets.
+  }
+}
+
+function toggleGroup(id: string): void {
+  folded.value = { ...folded.value, [id]: folded.value[id] !== true }
+  writeFolded()
+}
+
+function setAll(collapsed: boolean): void {
+  folded.value = Object.fromEntries(GROUPS.map((id) => [id, collapsed]))
+  writeFolded()
+}
+
+const allFolded = computed(() => GROUPS.every((id) => folded.value[id] === true))
+
+onMounted(() => {
+  folded.value = readFolded()
+  void refresh()
+})
+
+/** Asked by the shell before it switches away: the views are `v-if`, so leaving discards every edit. */
+function hasUnsavedChanges(): boolean {
+  return dirty.value
+}
+
+defineExpose({ refresh, hasUnsavedChanges })
 </script>
 
 <template>
   <div class="view">
     <div class="toolbar">
       <button data-test="settings-reload" @click="refresh">重载</button>
+      <button class="ghost" data-test="settings-fold-all" @click="setAll(!allFolded)">
+        {{ allFolded ? '展开全部' : '折叠全部' }}
+      </button>
       <span class="spacer" />
+      <!--
+        Unsaved changes are said out loud, because this page is now save-on-button and the button is at the
+        bottom of a long form. Without this the reader finds out by switching tabs — the views are `v-if`, so
+        that discards the edits silently, turning one surprise (some switches saving, some not) into another
+        (none of them saving, and no word about it).
+      -->
+      <span v-if="dirty" class="muted" data-test="settings-dirty">有未保存的修改</span>
       <span class="muted" data-test="settings-status">{{ status }}</span>
     </div>
 
     <div class="scroll">
       <div class="cards">
-        <section class="card">
-          <h2>语音输入</h2>
+        <section class="card" :class="{ 'is-folded': folded.input === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-input'"
+              :aria-expanded="folded.input !== true"
+              aria-controls="settings-body-input"
+              @click="toggleGroup('input')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              语音输入
+            </button>
+          </h2>
+          <div v-show="folded.input !== true" :id="'settings-body-input'" class="card-body">
           <p class="card-note">关闭会立即释放麦克风设备（不保留占用）。</p>
           <label class="field">
             <span>启用麦克风输入</span>
-            <input type="checkbox" v-model="form.input.enabled" data-test="input-enabled" @change="persist" />
+            <input type="checkbox" v-model="form.input.enabled" data-test="input-enabled" />
           </label>
           <label class="field">
             <span>静音阈值 (0-1)</span>
@@ -213,7 +423,7 @@ onMounted(refresh)
           </label>
           <label class="field">
             <span>流式识别</span>
-            <input type="checkbox" v-model="form.input.asrStream" @change="persist" />
+            <input type="checkbox" v-model="form.input.asrStream" data-test="input-asr-stream" />
           </label>
           <label class="field">
             <span>输入设备</span>
@@ -226,18 +436,31 @@ onMounted(refresh)
           </label>
 
           <p class="card-note" data-test="input-effect">
-            <template v-if="voice?.input.running">运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段</template>
-            <template v-else-if="voice">未运行 · {{ voice.input.reason }}</template>
+            <template v-if="voice?.input?.running">运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段</template>
+            <template v-else-if="voice?.input">未运行 · {{ voice.input.reason }}</template>
             <template v-else>（保存后查看运行状态）</template>
           </p>
+          </div>
         </section>
 
-        <section class="card">
-          <h2>语音输出</h2>
+        <section class="card" :class="{ 'is-folded': folded.output === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-output'"
+              :aria-expanded="folded.output !== true"
+              aria-controls="settings-body-output"
+              @click="toggleGroup('output')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              语音输出
+            </button>
+          </h2>
+          <div v-show="folded.output !== true" :id="'settings-body-output'" class="card-body">
           <p class="card-note">播放期间停听麦克风，避免把自身语音当成输入。</p>
           <label class="field">
             <span>启用语音输出</span>
-            <input type="checkbox" v-model="form.output.enabled" @change="persist" />
+            <input type="checkbox" v-model="form.output.enabled" data-test="output-enabled" />
           </label>
           <label class="field">
             <span>音色</span>
@@ -263,7 +486,7 @@ onMounted(refresh)
           </label>
           <label class="field">
             <span>播放时停听麦克风</span>
-            <input type="checkbox" v-model="form.output.muteDuringTts" @change="persist" />
+            <input type="checkbox" v-model="form.output.muteDuringTts" data-test="output-mute-during-tts" />
           </label>
           <label class="field">
             <span>输出设备</span>
@@ -279,10 +502,23 @@ onMounted(refresh)
             <template v-else-if="voice">未运行 · {{ voice.output.reason }}</template>
             <template v-else>（保存后查看运行状态）</template>
           </p>
+          </div>
         </section>
 
-        <section class="card">
-          <h2>语音识别（ASR）</h2>
+        <section class="card" :class="{ 'is-folded': folded.asr === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-asr'"
+              :aria-expanded="folded.asr !== true"
+              aria-controls="settings-body-asr"
+              @click="toggleGroup('asr')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              语音识别（ASR）
+            </button>
+          </h2>
+          <div v-show="folded.asr !== true" :id="'settings-body-asr'" class="card-body">
           <p class="card-note">OpenAI 兼容的识别端点。留空表示不配置——此时麦克风输入不会转写。</p>
           <label class="field">
             <span>服务地址</span>
@@ -310,10 +546,23 @@ onMounted(refresh)
             <span>采样率</span>
             <input type="number" v-model.number="form.asr.sampleRate" />
           </label>
+          </div>
         </section>
 
-        <section class="card">
-          <h2>语音合成（TTS）</h2>
+        <section class="card" :class="{ 'is-folded': folded.tts === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-tts'"
+              :aria-expanded="folded.tts !== true"
+              aria-controls="settings-body-tts"
+              @click="toggleGroup('tts')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              语音合成（TTS）
+            </button>
+          </h2>
+          <div v-show="folded.tts !== true" :id="'settings-body-tts'" class="card-body">
           <p class="card-note">留空表示不配置——此时助手回复不会朗读。</p>
           <label class="field">
             <span>服务地址</span>
@@ -341,13 +590,26 @@ onMounted(refresh)
             <span>播放块大小 (ms)</span>
             <input type="number" v-model.number="form.tts.chunkMs" />
           </label>
+          </div>
         </section>
 
-        <section class="card">
-          <h2>桌面（M9）</h2>
+        <section class="card" :class="{ 'is-folded': folded.desktop === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-desktop'"
+              :aria-expanded="folded.desktop !== true"
+              aria-controls="settings-body-desktop"
+              @click="toggleGroup('desktop')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              桌面（M9）
+            </button>
+          </h2>
+          <div v-show="folded.desktop !== true" :id="'settings-body-desktop'" class="card-body">
           <p class="card-note">
-            本仓库里唯一**不可逆**的能力：打开后模型可以观察窗口，并请求移动指针或发按键。即使打开，
-            **每个动作都要人工批准**（会话里弹出「允许 / 拒绝」，无人应答即拒绝），所以打开只是让模型
+            本仓库里唯一<strong>不可逆</strong>的能力：打开后模型可以观察窗口，并请求移动指针或发按键。即使打开，
+            <strong>每个动作都要人工批准</strong>（会话里弹出「允许 / 拒绝」，无人应答即拒绝），所以打开只是让模型
             能问，不是让它能做。关闭时工具根本不注册给模型。
           </p>
           <label class="field">
@@ -374,12 +636,25 @@ onMounted(refresh)
             />
           </label>
           <p class="muted">窗口标题子串、不区分大小写。真正拦住动作的是批准；这个列表只是把安装范围收窄。</p>
+          </div>
         </section>
 
-        <section class="card">
-          <h2>模型（对话）</h2>
+        <section class="card" :class="{ 'is-folded': folded.model === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-model'"
+              :aria-expanded="folded.model !== true"
+              aria-controls="settings-body-model"
+              @click="toggleGroup('model')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              模型（对话）
+            </button>
+          </h2>
+          <div v-show="folded.model !== true" :id="'settings-body-model'" class="card-body">
           <p class="card-note">
-            这里是执行队列的那个模型。保存后会**立即重启消费者**；留空则退回环境变量
+            这里是执行队列的那个模型。保存后会<strong>立即重启消费者</strong>；留空则退回环境变量
             <code>PARTNER_LLM_BASE_URL</code> / <code>PARTNER_LLM_MODEL</code>。
           </p>
           <label class="field">
@@ -431,7 +706,7 @@ onMounted(refresh)
             <input type=checkbox v-model=form.model.supportsImages data-test=model-supports-images />
           </label>
           <p class=muted>
-            打开后，UIA 看不见的应用（Electron、游戏、画布）走**截图给模型看**这条路，不再需要 OCR——
+            打开后，UIA 看不见的应用（Electron、游戏、画布）走<strong>截图给模型看</strong>这条路，不再需要 OCR——
             模型自己读图比本地识别准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败。
           </p>
 
@@ -441,11 +716,90 @@ onMounted(refresh)
             <span class="source">单次补全的上限，必须小于上下文大小</span>
           </label>
 
+          <div class="field">
+            <span>思考挡位</span>
+
+            <!--
+              The default and the menu are shown together because they are one setting seen from two sides:
+              the composer offers this list, and this value is what it preselects. Editing either without
+              the other would let the two disagree on screen.
+            -->
+            <label class="gear-default">
+              <span class="muted">默认</span>
+              <input
+                type="text"
+                v-model="form.model.reasoningEffort"
+                placeholder="medium"
+                data-test="model-reasoning-effort"
+              />
+            </label>
+
+            <ul class="gear-list" data-test="model-reasoning-gears">
+              <li v-for="(gear, index) in form.model.reasoningGears" :key="index" class="gear-row">
+                <input
+                  :value="gear"
+                  :aria-label="`第 ${index + 1} 档`"
+                  data-test="model-gear"
+                  @change="commitGear(index, ($event.target as HTMLInputElement).value)"
+                />
+                <!-- The cell is always present so the row's four buttons stay in one column; only the
+                     default row has anything to say in it. -->
+                <span class="badge" :data-test="gear === form.model.reasoningEffort ? 'model-gear-default' : undefined">
+                  {{ gear === form.model.reasoningEffort ? '默认' : '' }}
+                </span>
+                <button
+                  class="ghost"
+                  :disabled="gear === form.model.reasoningEffort || normalizeGear(gear) === ''"
+                  :aria-label="`把第 ${index + 1} 档设为默认`"
+                  data-test="model-gear-set-default"
+                  @click="useAsDefault(index)"
+                >
+                  <Icon name="star" :size="14" />
+                </button>
+                <button
+                  class="ghost"
+                  :disabled="index === 0"
+                  :aria-label="`上移第 ${index + 1} 档`"
+                  data-test="model-gear-up"
+                  @click="moveGear(index, -1)"
+                >
+                  <Icon name="arrow-up" :size="14" />
+                </button>
+                <button
+                  class="ghost"
+                  :disabled="index === form.model.reasoningGears.length - 1"
+                  :aria-label="`下移第 ${index + 1} 档`"
+                  data-test="model-gear-down"
+                  @click="moveGear(index, 1)"
+                >
+                  <Icon name="arrow-down" :size="14" />
+                </button>
+                <button
+                  class="ghost"
+                  :aria-label="`删除第 ${index + 1} 档`"
+                  data-test="model-gear-remove"
+                  @click="removeGear(index)"
+                >
+                  ×
+                </button>
+              </li>
+            </ul>
+
+            <button class="ghost" data-test="model-gear-add" @click="addGear">＋ 加一档</button>
+
+            <span class="source">
+              随每次请求发 <code>reasoning_effort</code>；随消息发的那一档覆盖这里。清单是菜单不是限制——
+              服务端认的别的词（minimal、none…）加进来即可，<code>off</code> 表示<strong>不发这个字段</strong>。
+              会话里的下拉按这个顺序显示。保存后立即重启消费者。
+            </span>
+          </div>
+
           <p class="card-note" data-test="model-effect">
             <template v-if="consumer?.running">消费者运行中 · {{ consumer.model ?? '模型' }}（{{ consumer.reason }}）</template>
             <template v-else-if="modelConfigured">已填好地址与模型名，保存后生效</template>
             <template v-else>未配置模型：队列不会被执行</template>
           </p>
+          </div>
         </section>
       </div>
     </div>
@@ -458,17 +812,6 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.view {
-  display: flex;
-  flex-direction: column;
-  min-block-size: 0;
-  block-size: 100%;
-}
-
-.spacer {
-  flex: 1;
-}
-
 .footer-actions {
   border-block-start: 1px solid var(--line);
   border-block-end: none;
@@ -478,7 +821,51 @@ onMounted(refresh)
   padding: 0.1em 0.3em;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--surface-0);
   font-size: 0.92em;
+}
+
+.gear-default {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.gear-default input {
+  inline-size: 12ch;
+}
+
+.gear-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* The rows are a control group, so they read as one block rather than as loose list items. */
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  background: var(--surface-1);
+}
+
+/* A grid, not a flex row: the default badge is present on only one row, and with flex the buttons on
+   every other row would slide left to close the gap. Named tracks keep each column in line. */
+.gear-row {
+  display: grid;
+  grid-template-columns: 14ch 3em repeat(4, 2.25em);
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.gear-row input {
+  min-inline-size: 0;
+}
+
+.gear-row .badge {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  text-align: start;
+  white-space: nowrap;
 }
 </style>

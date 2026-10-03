@@ -13,80 +13,15 @@ namespace Partner.Api.Tests;
 /// Discovery endpoints: what the UI can offer as a choice instead of asking the user to type it. Both are
 /// proxies, because neither the model endpoint nor the audio devices are reachable from the webview.
 /// </summary>
-public sealed class DiscoveryEndpointTests : IAsyncLifetime
+public sealed class DiscoveryEndpointTests : ApiFixture
 {
-    private string _workspace = string.Empty;
-    private ApiContext _context = null!;
-    private ConsumerHost _consumer = null!;
-    private VoiceHost _voice = null!;
-    private WebApplication _app = null!;
-    private Task _run = null!;
-    private HttpClient _http = null!;
-    private SyntheticVoice _components = null!;
-    private int _port;
-    private string _token = string.Empty;
+    private readonly SyntheticVoice _components = new();
 
-    public async Task InitializeAsync()
-    {
-        _workspace = Path.Combine(Path.GetTempPath(), "partner-discovery-tests", Guid.NewGuid().ToString("N"));
-        _port = FreePort();
-        _token = TokenAuth.Generate();
-        _components = new SyntheticVoice();
+    protected override string WorkspaceName => "partner-discovery-tests";
 
-        var (app, context, consumer, voice) = await ApiHost.BuildAsync(
-            _workspace, _port, _token, clock: null, llm: null, components: _components);
+    protected override IVoiceComponents Components => _components;
 
-        _app = app;
-        _context = context;
-        _consumer = consumer;
-        _voice = voice;
-        _run = _app.RunAsync();
-
-        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-
-        for (var attempt = 0; attempt < 60; attempt++)
-        {
-            try
-            {
-                using var probe = await _http.GetAsync("/api/voice/devices");
-                if (probe.IsSuccessStatusCode)
-                {
-                    break;
-                }
-            }
-            catch (HttpRequestException)
-            {
-                // Not listening yet.
-            }
-
-            await Task.Delay(50);
-        }
-    }
-
-    public async Task DisposeAsync()
-    {
-        _http.Dispose();
-        await _app.StopAsync();
-        await _run;
-        await _voice.DisposeAsync();
-        await _consumer.DisposeAsync();
-        await _context.DisposeAsync();
-
-        if (Directory.Exists(_workspace))
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-    }
-
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
+    protected override string ReadinessPath => "/api/voice/devices";
 
     [Fact]
     public async Task Devices_are_listed_for_both_directions()

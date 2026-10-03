@@ -51,6 +51,34 @@ internal sealed class ThrowingLlmClient(string message) : ILlmClient
         throw new InvalidOperationException(message);
 }
 
+/// <summary>
+/// A model call that never returns and never notices being told to stop — the shape of the hang this loop
+/// has to survive, since no budget inside a turn can catch it.
+/// </summary>
+internal sealed class UnstoppableLlmClient : ILlmClient
+{
+    public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+        throw new InvalidOperationException("unreachable");
+    }
+}
+
+/// <summary>A tool that awaits something with no deadline and no regard for its token.</summary>
+internal sealed class EndlessTool : ITool
+{
+    public ToolSpec Spec { get; } = new(
+        "endless",
+        "永不返回的工具。",
+        """{"type":"object","properties":{},"additionalProperties":false}""");
+
+    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    {
+        await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+        throw new InvalidOperationException("unreachable");
+    }
+}
+
 /// <summary>Acceptance tests for the single-consumer loop (design doc §2.2, §2.9).</summary>
 public sealed class TurnLoopTests : IDisposable
 {
@@ -72,6 +100,33 @@ public sealed class TurnLoopTests : IDisposable
             new AllowListGovernance(Array.Empty<string>()),
             new DenyAllApprovalHandler(),
             new HookRegistry());
+
+    private static AgentTurnRunner Runner(
+        ISessionStore session,
+        ILlmClient llm,
+        TimeSpan turnTimeout) =>
+        new(
+            session,
+            llm,
+            new InMemoryToolRegistry(),
+            new AllowListGovernance(Array.Empty<string>()),
+            new DenyAllApprovalHandler(),
+            new HookRegistry(),
+            options: new AgentTurnOptions { TurnTimeout = turnTimeout });
+
+    private static AgentTurnRunner Runner(
+        ISessionStore session,
+        ILlmClient llm,
+        AgentTurnOptions options,
+        InMemoryToolRegistry? tools = null) =>
+        new(
+            session,
+            llm,
+            tools ?? new InMemoryToolRegistry(),
+            new AllowListGovernance(tools?.Specs.Select(spec => spec.Name).ToArray() ?? Array.Empty<string>()),
+            new DenyAllApprovalHandler(),
+            new HookRegistry(),
+            options: options);
 
     private static InputItem Input(string itemId, string payload, long seq) => new()
     {
@@ -95,6 +150,21 @@ public sealed class TurnLoopTests : IDisposable
         }
 
         return status;
+    }
+
+    /// <summary>The error the log carries for an item, if it settled as failed.</summary>
+    private static async Task<string?> StatusErrorAsync(IInputQueue queue, string itemId)
+    {
+        string? error = null;
+        await foreach (var entry in queue.ReadLogAsync())
+        {
+            if (entry.ItemId == itemId && entry.Error is not null)
+            {
+                error = entry.Error;
+            }
+        }
+
+        return error;
     }
 
     private static async Task<List<SessionEventKind>> KindsAsync(ISessionStore session)
@@ -287,6 +357,99 @@ public sealed class TurnLoopTests : IDisposable
 
         var userEvents = (await KindsAsync(store)).Count(kind => kind == SessionEventKind.User);
         Assert.Equal(1, userEvents);
+    }
+
+    /// <summary>
+    /// A turn that will not finish settles its item and lets the queue move, instead of holding the only
+    /// reader this queue has forever.
+    /// <para>
+    /// The client here ignores its token entirely — the exact shape of the bug that parked this queue: every
+    /// budget inside a turn is a request to the code being called, and only the loop can say the request was
+    /// not honoured. Without this ceiling the item stays <c>Running</c>, every message behind it waits, and the
+    /// UI reports "running" for something that is not running and cannot be stopped from inside.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_turn_that_outlasts_its_budget_settles_the_item_and_the_loop_keeps_going()
+    {
+        var (session, _) = JsonlSessionStore.Open(_dir);
+        await using var store = session;
+        await using var queue = new JsonlInputQueue(_dir);
+
+        await queue.EnqueueAsync(Input("item-1", "wedges", 1));
+        await queue.EnqueueAsync(Input("item-2", "next", 2));
+
+        // Claimed and driven one at a time rather than through RunAsync: a background loop would be racing
+        // this test for the second item, and what is under test is ProcessAsync's patience, not the loop's.
+        var wedged = new TurnLoop(queue, Runner(store, new UnstoppableLlmClient(), TimeSpan.FromMilliseconds(200)), store);
+        await wedged.ProcessAsync((await queue.TakeAsync())!);
+
+        Assert.Equal(1, wedged.Stats.Failed);
+
+        // And the queue is not blocked behind it: the next item still gets its turn.
+        var next = new TurnLoop(queue, Runner(store, new ScriptedLlmClient(new[]
+        {
+            new LlmResponse("after the wedge", Array.Empty<LlmToolCall>(), "stop"),
+        })), store);
+        await next.ProcessAsync((await queue.TakeAsync())!);
+
+        Assert.Equal(InputItemStatus.Failed, await StatusAsync(queue, "item-1"));
+        Assert.Equal(InputItemStatus.Done, await StatusAsync(queue, "item-2"));
+
+        var failure = await StatusErrorAsync(queue, "item-1");
+        Assert.Contains("未结束", failure);
+
+        // The turn still ended in the log, so a restart does not hand the same work back to the loop.
+        var ends = (await KindsAsync(store)).Count(kind => kind == SessionEventKind.TurnEnd);
+        Assert.Equal(1, ends);
+    }
+
+    /// <summary>A turn that blows the budget because a tool ignored its token is reported as such.</summary>
+    [Fact]
+    public async Task A_turn_whose_tool_never_returns_is_reported_as_a_tool_timeout_not_a_wedged_turn()
+    {
+        var (session, _) = JsonlSessionStore.Open(_dir);
+        await using var store = session;
+        await using var queue = new JsonlInputQueue(_dir);
+
+        await queue.EnqueueAsync(Input("item-1", "calls a tool that never returns", 1));
+
+        var tools = new InMemoryToolRegistry();
+        tools.Register(new EndlessTool());
+
+        var loop = new TurnLoop(
+            queue,
+            Runner(
+                store,
+                new ScriptedLlmClient(new[]
+                {
+                    new LlmResponse(null, new[] { new LlmToolCall("call-1", "endless", "{}") }, "tool_calls"),
+                    new LlmResponse("the tool did not come back", Array.Empty<LlmToolCall>(), "stop"),
+                }),
+                new AgentTurnOptions
+                {
+                    ToolDispatchTimeout = TimeSpan.FromMilliseconds(200),
+                    TurnTimeout = TimeSpan.FromMinutes(5),
+                },
+                tools),
+            store);
+
+        await loop.ProcessAsync((await queue.TakeAsync())!);
+
+        // The dispatch budget is the one that fires: the turn itself is nowhere near its own ceiling.
+        Assert.Equal(InputItemStatus.Done, await StatusAsync(queue, "item-1"));
+
+        string? toolResult = null;
+        await foreach (var e in store.ReadAllAsync())
+        {
+            if (e.Kind == SessionEventKind.ToolResult)
+            {
+                toolResult = e.Body;
+            }
+        }
+
+        Assert.NotNull(toolResult);
+        Assert.Contains("timeout", toolResult, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

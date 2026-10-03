@@ -4,8 +4,10 @@ using Partner.Core.Agent;
 using Partner.Api.Voice;
 using Partner.Core.Contracts;
 using Partner.Core.Memory;
+using Partner.Core.Media;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
+using Partner.Core.Agent.Skills;
 
 namespace Partner.Api.Endpoints;
 
@@ -15,7 +17,7 @@ namespace Partner.Api.Endpoints;
 /// </summary>
 public static class ViewEndpoints
 {
-    public static void Map(WebApplication app)
+    public static void Map(WebApplication app, ApiContext ctx, string workspace)
     {
         MapInput(app);
         MapMedia(app);
@@ -24,6 +26,7 @@ public static class ViewEndpoints
         MapQueue(app);
         MapMemory(app);
         MapSettings(app);
+        MapSkills(app, ctx, workspace);
         MapProjections(app);
         MapDiscovery(app);
     }
@@ -72,10 +75,15 @@ public static class ViewEndpoints
                 var models = await client.ListModelsAsync(ct).ConfigureAwait(false);
                 return Results.Ok(new { baseUrl, models });
             }
-            catch (Exception error) when (error is HttpRequestException or InvalidOperationException or TaskCanceledException)
+            catch (Exception error) when (
+                error is HttpRequestException
+                    or InvalidOperationException
+                    or TaskCanceledException
+                    or ModelCallFailure)
             {
-                // The reason travels: "the endpoint says 404" and "the endpoint is unreachable" need
-                // different fixes, and an empty dropdown would say neither.
+                // The reason travels: "the endpoint says 404" and "the endpoint is unreachable" need different
+                // fixes, and an empty dropdown would say neither. ModelCallFailure carries the same answer in a
+                // better shape, and is caught here for the same reason — a probe that 500s teaches nothing.
                 return Results.Ok(new { baseUrl, models = Array.Empty<string>(), error = error.Message });
             }
         });
@@ -105,7 +113,22 @@ public static class ViewEndpoints
             var unknown = mediaIds.Where(id => ctx.Media.TryRead(id) is null).ToList();
             if (unknown.Count > 0)
             {
-                return Results.BadRequest(new { error = $"未知的附图：{string.Join(", ", unknown)}" });
+                return Results.BadRequest(new { error = $"未知的附件：{string.Join(", ", unknown)}" });
+            }
+
+            // Blank means "the message did not choose", which leaves the configured default in place. A named
+            // gear must exist in the list, so the menu can never offer something the runner would reject.
+            var gear = ReasoningEfforts.Normalize(request.ReasoningEffort);
+            if (gear.Length > 0)
+            {
+                var known = ctx.Settings.Load().Model.ReasoningGears;
+                if (!known.Contains(gear, StringComparer.OrdinalIgnoreCase))
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = $"未知的思考挡位 '{gear}'；可用：{string.Join("、", known)}",
+                    });
+                }
             }
 
             var suppliedKey = !string.IsNullOrWhiteSpace(request.IdempotencyKey);
@@ -123,6 +146,7 @@ public static class ViewEndpoints
                 Payload = request.Payload,
                 MediaIds = mediaIds,
                 IdempotencyKey = key,
+                ReasoningEffort = gear,
             }, ct).ConfigureAwait(false);
 
             // The queue is the only place this lands: no consumer runs in this process, so the item waits here
@@ -150,24 +174,37 @@ public static class ViewEndpoints
         return false;
     }
 
-    // ---- attachments (图片输入) --------------------------------------------------------------------
+    // ---- attachments (图片与文档) -------------------------------------------------------------------
     private static void MapMedia(WebApplication app)
     {
         // The bytes come in as the raw body with the type in the header: no multipart parsing, and the UI can
-        // send a File straight through.
+        // send a File straight through. The name travels in a header rather than the body, so a File is still a
+        // File and the body stays a byte range.
         app.MapPost("/api/media", async (HttpRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             var contentType = (request.ContentType ?? string.Empty).Split(';')[0].Trim();
+            // The client percent-encodes: a header can only carry ASCII, and a Chinese file name is the norm
+            // here. A name that is not valid encoding is simply not a usable name — the store falls back to one.
+            var encodedName = request.Headers["X-File-Name"].ToString();
+            var fileName = encodedName.Contains('%')
+                ? Uri.UnescapeDataString(encodedName)
+                : encodedName;
 
             try
             {
-                var mediaId = await ctx.Media.SaveAsync(contentType, request.Body, ct).ConfigureAwait(false);
+                var mediaId = await ctx.Media
+                    .SaveAsync(contentType, fileName, request.Body, ct)
+                    .ConfigureAwait(false);
                 var attachment = ctx.Media.TryRead(mediaId)!;
 
                 return Results.Ok(new
                 {
                     mediaId,
                     contentType = attachment.ContentType,
+                    // The name and the path are what the model is told; without them an attachment is an id it
+                    // cannot act on, and the message body would have to invent a location.
+                    fileName = attachment.FileName,
+                    path = attachment.LocalPath,
                     bytes = attachment.Bytes.Length,
                 });
             }
@@ -185,14 +222,27 @@ public static class ViewEndpoints
         app.MapGet("/api/media/{mediaId}", (string mediaId, ApiContext ctx) =>
             ctx.Media.TryRead(mediaId) is { } attachment
                 ? Results.Bytes(attachment.Bytes, attachment.ContentType)
-                : Results.NotFound(new { error = $"未知的附图 '{mediaId}'" }));
+                : Results.NotFound(new { error = $"未知的附件 '{mediaId}'" }));
+
+        // What this store will hold. A client that has to guess would rather be refused up front than after the
+        // upload, and the browser's file picker needs the list to filter on.
+        app.MapGet("/api/media/types", () => Results.Ok(new { types = FileMediaStore.Types }));
     }
 
     public sealed record InputRequest(
         string? Source,
         string? Payload,
         string? IdempotencyKey,
-        IReadOnlyList<string>? Media = null);
+        IReadOnlyList<string>? Media = null,
+
+        /// <summary>
+        /// 这一条消息选的思考挡位。缺省 = 用设置里的默认挡位。
+        /// <para>
+        /// 校验的是「在清单里」，不是「在内置词表里」：清单是用户自己维护的，删掉一个词只会让它从菜单消失，
+        /// 不会让服务端拒绝它。
+        /// </para>
+        /// </summary>
+        string? ReasoningEffort = null);
 
     // ---- session view (查看 + 编辑 + 编辑历史) ----------------------------------------------------
     private static void MapSession(WebApplication app)
@@ -218,6 +268,11 @@ public static class ViewEndpoints
                     // A tool call and its result are two events; the meta is what lets the UI pair them into
                     // one card (id/name/args/ok) instead of showing two unrelated rows.
                     meta = i.Meta,
+
+                    // Only ever set on a live row; a logged Thinking event carries its text in the body like
+                    // every other event, and inventing a second place for it would mean two sources of truth.
+                    reasoning = (string?)null,
+                    reasoningSince = (string?)null,
                 })
                 .ToList();
 
@@ -225,6 +280,9 @@ public static class ViewEndpoints
             // half-written answer is not an event of record — so it carries seq 0 and disappears the moment
             // the real Assistant event lands. The view is already a mix of log and runtime (context below is
             // measured, not stored), so this is the same contract, not a new one.
+            //
+            // Reasoning rides on the same row rather than as a second one: a turn that is thinking has not yet
+            // started answering, and a view that showed two live rows would be claiming two things are moving.
             if (consumer.LiveAssistant is { } live)
             {
                 items.Add(new
@@ -238,8 +296,39 @@ public static class ViewEndpoints
                     revisionCount = 0,
                     streaming = true,
                     meta = (IReadOnlyDictionary<string, string>?)null,
+
+                    // What the model is thinking right now. The row's own `at` is when the answer started,
+                    // and ReasoningSince is when the thinking did — null means the thinking is over and only
+                    // the answer is coming, which is the difference a reader can see.
+                    reasoning = live.Reasoning,
+                    reasoningSince = live.ReasoningSince?.ToString("O"),
                 });
             }
+
+            // Reasoning being streamed is not in the log yet either, so it gets the same treatment as the
+            // answer: a row of its own, with seq 0, which the finished Thinking event replaces. While the model
+            // is thinking there is no answer text yet, so this is the only live row there is.
+            if (consumer.LiveAssistant is { Reasoning: { } thinking, ReasoningSince: { } since })
+            {
+                items.Add(new
+                {
+                    seq = 0L,
+
+                    // `at` **is** the start of the thinking here, so the same field a client already reads off
+                    // every row carries the clock. One source, not a second one that can disagree with it.
+                    at = since,
+                    kind = "ThinkingStreaming",
+                    source = "Text",
+                    body = thinking,
+                    originalBody = (string?)null,
+                    revisionCount = 0,
+                    streaming = true,
+                    meta = (IReadOnlyDictionary<string, string>?)null,
+                    reasoning = (string?)null,
+                    reasoningSince = (string?)null,
+                });
+            }
+
 
             // The window's occupancy is measured the same way a turn would assemble it, so the number the UI
             // shows is the number that decides whether history has to be folded.
@@ -312,12 +401,19 @@ public static class ViewEndpoints
 
             var purged = await ctx.Session.PurgeAsync(seq, seq, ct).ConfigureAwait(false);
 
+            // What was remembered from the deleted event goes with it. A record left behind would still be
+            // recalled, and injected into a prompt weeks later, to a conversation where it was never said.
+            var remembered = await MemoryDeletion
+                .CascadeAsync(ctx.Memory, seq, seq, Actor.Human, ct)
+                .ConfigureAwait(false);
+
             return Results.Ok(new
             {
                 removedFrom = seq,
                 removedTo = seq,
                 purgedEvents = purged.RemovedEvents,
                 purgedRevisions = purged.RemovedRevisions,
+                purgedMemories = remembered,
                 eventSeq = purged.TombstoneSeq,
             });
         });
@@ -334,12 +430,19 @@ public static class ViewEndpoints
             var toSeq = ctx.Session.LastSeq;
             var purged = await ctx.Session.PurgeAsync(seq, toSeq, ct).ConfigureAwait(false);
 
+            // Same cascade as a single delete, over the whole truncated span: a retraction that emptied the
+            // conversation must not leave its memories behind to be recalled later.
+            var remembered = await MemoryDeletion
+                .CascadeAsync(ctx.Memory, seq, toSeq, Actor.Human, ct)
+                .ConfigureAwait(false);
+
             return Results.Ok(new
             {
                 removedFrom = seq,
                 removedTo = toSeq,
                 purgedEvents = purged.RemovedEvents,
                 purgedRevisions = purged.RemovedRevisions,
+                purgedMemories = remembered,
                 eventSeq = purged.TombstoneSeq,
             });
         });
@@ -353,6 +456,18 @@ public static class ViewEndpoints
         before.Enabled != after.Enabled
         || !before.AllowedWindowTitles.SequenceEqual(after.AllowedWindowTitles, StringComparer.Ordinal);
 
+    /// <summary>
+    /// Whether the MCP section changed in a way the running consumer cannot absorb.
+    /// <para>
+    /// The allow list is deliberately excluded: governance reads it live, like the desktop approval gear, so
+    /// changing it must not kill the servers and re-run every handshake. The server list and the on/off switch
+    /// do restart, because they decide <em>which processes exist</em> — and a tool table is built at start.
+    /// </para>
+    /// </summary>
+    private static bool McpNeedsRestart(McpSettings before, McpSettings after) =>
+        before.Enabled != after.Enabled
+        || !before.Servers.SequenceEqual(after.Servers);
+
     /// <summary>Only events the caller can currently see may be removed; removing a hidden seq is a mistake.</summary>
     private static async Task<bool> ExistsAsync(ApiContext ctx, long seq, CancellationToken ct)
     {
@@ -363,19 +478,14 @@ public static class ViewEndpoints
     // ---- queue view (查看 + 取消) ------------------------------------------------------------------
     private static void MapQueue(WebApplication app)
     {
-        app.MapGet("/api/queue", async (ApiContext ctx, CancellationToken ct) =>
+        // No await: the answer is already in memory, which is the point.
+        app.MapGet("/api/queue", (ApiContext ctx) =>
         {
-            var items = new List<InputItem>();
-            await foreach (var item in ctx.Queue.ReadLogAsync(ct).ConfigureAwait(false))
-            {
-                items.Add(item);
-            }
-
-            // The log holds every transition; the view wants the latest state per item.
-            var latest = items
-                .GroupBy(i => i.ItemId, StringComparer.Ordinal)
-                .Select(g => g.OrderBy(i => i.Seq).Last())
-                .OrderBy(i => i.Seq)
+            // From memory, not from the log. The log records every transition of every item this installation
+            // has ever accepted; the queue is the items still in play. Reading the log here meant a full file
+            // read — under the queue lock — every five seconds, growing forever, to hand back a list the queue
+            // already held.
+            var latest = ctx.Queue.ActiveItems()
                 .Select(i => new
                 {
                     itemId = i.ItemId,
@@ -389,6 +499,9 @@ public static class ViewEndpoints
                     error = i.Error,
                     payload = i.Payload,
                     mediaIds = i.MediaIds,
+                    // The gear a sender chose, so a stalled or failed turn can be traced back to the
+                    // request that asked for it. Null means the message did not choose one.
+                    reasoningEffort = string.IsNullOrEmpty(i.ReasoningEffort) ? null : i.ReasoningEffort,
                 });
 
             var state = ctx.Queue.Snapshot();
@@ -433,6 +546,48 @@ public static class ViewEndpoints
                 editedBy = r.EditedBy?.ToString(),
                 importance = r.Importance,
             }));
+        });
+
+
+        // The full list, including what has been retired. A memory view that hides invalidated records cannot
+        // be "fully visible": the interesting question is usually "what replaced this", and that answer lives
+        // on the row that was superseded.
+        app.MapGet("/api/memory/all", async (ApiContext ctx, CancellationToken ct) =>
+        {
+            var records = await ctx.Memory.ListAsync(new MemoryQuery(IncludeInvalidated: true, Limit: 1000), ct)
+                .ConfigureAwait(false);
+
+            return Results.Ok(records.Select(r => new
+            {
+                recordId = r.RecordId,
+                tier = r.Tier.ToString(),
+                scope = r.Scope.ToString(),
+                body = r.Body,
+                createdAt = r.CreatedAt,
+                lastRecalledAt = r.LastRecalledAt,
+                validTo = r.ValidTo,
+                supersededBy = r.SupersededBy,
+                editedBy = r.EditedBy?.ToString(),
+                importance = r.Importance,
+            }));
+        });
+
+        // Tier is editable, because "this is a fact I rely on" and "this is something I once guessed" are
+        // judgements only the person can make, and the whole demotion rule works off them.
+        app.MapPost("/api/memory/{recordId}/tier", async (string recordId, TierRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            if (!Enum.TryParse<MemoryTier>(request.Tier, ignoreCase: true, out var tier))
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"tier must be one of {string.Join(", ", Enum.GetNames<MemoryTier>())}",
+                });
+            }
+
+            var changed = await ctx.Memory.SetTierAsync(recordId, tier, ct).ConfigureAwait(false);
+            return changed
+                ? Results.Ok(new { recordId, tier = tier.ToString() })
+                : Results.NotFound(new { error = $"未知的记忆 '{recordId}'" });
         });
 
         app.MapPost("/api/memory/recall", async (RecallRequest request, ApiContext ctx, CancellationToken ct) =>
@@ -498,6 +653,42 @@ public static class ViewEndpoints
         });
     }
 
+    /// <summary>Body for a tier change: which tier the person is putting this record in.</summary>
+    public sealed record TierRequest(string? Tier);
+
+    /// <summary>
+    /// What skills the workspace holds, and which are switched off.
+    /// <para>
+    /// Read-only on purpose: a skill is a <c>SKILL.md</c> in the workspace, and writing one is a job for
+    /// whatever produced it. What belongs here is the judgement that is this installation's — whether a
+    /// given skill is used — which is why the disable list is in settings and the content is not here.
+    /// </para>
+    /// </summary>
+    private static void MapSkills(WebApplication app, ApiContext ctx, string workspace)
+    {
+        app.MapGet("/api/skills", () =>
+        {
+            var disabled = ctx.Settings.Load().Skills.Disabled.ToHashSet(StringComparer.Ordinal);
+            var loaded = new SkillLoader().Load(workspace);
+
+            return Results.Ok(new
+            {
+                skills = loaded.Skills.Select(skill => new
+                {
+                    skillId = skill.SkillId,
+                    name = skill.Name,
+                    description = skill.Description,
+                    enabled = !disabled.Contains(skill.SkillId),
+
+                    // Carried so the view can show what a skill says without opening the file. A skill list
+                    // that only shows names cannot be judged on whether to switch it on.
+                    instructions = skill.Instructions,
+                }),
+                warnings = loaded.Warnings,
+            });
+        });
+    }
+
     // ---- settings view ----------------------------------------------------------------------------
     private static void MapSettings(WebApplication app)
     {
@@ -523,8 +714,12 @@ public static class ViewEndpoints
             //
             // The desktop section is the exception among those: it decides which tools are registered and with
             // which window policy, and both are built when the consumer starts. The approval gear is *not* part
-            // of that — governance reads it live — so changing only the gear does not restart anything.
-            if (ModelConfig.Differs(before.Model, stored.Model) || DesktopNeedsRestart(before.Desktop, stored.Desktop))
+            // of that — governance reads it live — so changing only the gear does not restart anything. MCP is
+            // the same shape twice over: the server list decides which processes exist, and the allow list
+            // does not, so only the former restarts.
+            if (ModelConfig.Differs(before.Model, stored.Model)
+                || DesktopNeedsRestart(before.Desktop, stored.Desktop)
+                || McpNeedsRestart(before.Mcp, stored.Mcp))
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);

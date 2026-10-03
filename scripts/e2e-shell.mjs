@@ -20,7 +20,15 @@ const repoRoot = join(import.meta.dirname, '..')
 
 // The release shell is the real product: it embeds the built frontend and bundles the published API. A debug
 // shell would instead need a running vite dev server, which is a different thing to verify.
-const shellExe = process.env.PARTNER_SHELL_EXE ?? join(repoRoot, 'src-tauri', 'target', 'release', 'partner-shell.exe')
+// The debug shell, not the release one.
+//
+// It used to default to `target/release`, while the error below told people to run `cargo build --manifest-path
+// src-tauri/Cargo.toml` — which produces `target/debug`. The two contradicted each other, and the failure mode
+// is silent: a release shell embeds whatever `ui/dist` looked like on the day it was built and prefers its
+// bundled API over the build output, so the whole run quietly tested a build from whenever that was. Three
+// assertions failed against code that was demonstrably correct on disk, all of them explained by one stale
+// executable. Set `PARTNER_SHELL_EXE` to test a release shell on purpose.
+const shellExe = process.env.PARTNER_SHELL_EXE ?? join(repoRoot, 'src-tauri', 'target', 'debug', 'partner-shell.exe')
 
 const diagnostics = []
 const failures = []
@@ -112,7 +120,10 @@ async function waitFor(cdp, expression, label) {
 
 async function main() {
   if (!existsSync(shellExe)) {
-    throw new Error(`missing ${shellExe} — run "cargo build --manifest-path src-tauri/Cargo.toml" first`)
+    throw new Error(
+      `missing ${shellExe} — run "cargo build --manifest-path src-tauri/Cargo.toml" first, ` +
+        'and touch src-tauri/tauri.conf.json if you changed ui/ (a rebuild that skips the frontend still serves the last embedded one)',
+    )
   }
 
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'partner-e2e-'))
@@ -183,7 +194,15 @@ async function main() {
     await cdp.send('Runtime.enable')
     await cdp.send('Log.enable')
 
-    // The token is injected by the shell, not read from anywhere by the test.
+    // The token is injected by the shell, not read from anywhere by the test — and it is injected *late*, by
+    // the page's own init script. Reading it once here races that: a run that got there first saw
+    // `port=undefined` and then died further down on `http://127.0.0.1:undefined/...`, which reads like an app
+    // failure and is not one. Wait for it instead.
+    await waitFor(
+      cdp,
+      'typeof window.__PARTNER_TOKEN__ === "string" && Number.isInteger(window.__PARTNER_PORT__)',
+      'the shell to inject a token and a port',
+    )
     const token = await evaluate(cdp, 'window.__PARTNER_TOKEN__')
     const port = await evaluate(cdp, 'window.__PARTNER_PORT__')
     apiPort = port
@@ -216,8 +235,62 @@ async function main() {
     )
     check('a folded tool call opens on click', foldOpened, `open=${foldOpened}`)
 
+    // The queue holds only what is still in play, so the seeded failed item is compacted away at start-up and
+    // there is no failure count to show. The failure is real — it is in the seeded *session* log — but it is
+    // read there, not here.
     const blocked = await evaluate(cdp, 'document.querySelector(\'[data-test="blocked"]\').textContent')
-    check('the status bar surfaces blocked work', blocked.includes('失败 1'), blocked.trim())
+
+    // A probe, not an assertion: three elements in one component were reporting three different things about
+    // one prop, which no version of this code can do. Before guessing which build the webview loaded, ask it.
+    const probe = await evaluate(
+      cdp,
+      `(() => {
+        const badge = document.querySelector('[data-test="blocked"]')
+        const announcer = document.querySelector('[data-test="blocked-announcer"]')
+        return {
+          scripts: [...document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src')).join(','),
+          badgeHtml: badge?.outerHTML ?? null,
+          announcerHtml: announcer?.outerHTML ?? null,
+          announcerExists: announcer !== null,
+          badgesOnPage: document.querySelectorAll('[data-test="blocked"]').length,
+        }
+      })()`,
+    )
+    console.log('    probe:', JSON.stringify(probe).slice(0, 700))
+
+    check(
+      'the top bar badge reports what is in play, and no failure count it no longer has',
+      blocked.includes('队列') && !blocked.includes('失败'),
+      blocked.trim(),
+    )
+
+    // The inspector now starts closed, so open it the way a reader would: through its own toolbar button.
+    //
+    // This is not ceremony. `element.click()` in a script fires on a `display: none` element perfectly
+    // happily, so driving the editor without opening the panel would have kept every assertion below green
+    // while describing a sequence of clicks no person could perform. Anything the script touches has to be
+    // something the script could also *see*.
+    await evaluate(cdp, `document.querySelector('[data-test="session-inspector-toggle"]').click()`)
+    // Re-read after a tick: the click and the re-render are two events, and reading in between them reports the
+    // state before the button was pressed.
+    await waitFor(cdp, 'document.querySelector(".inspector")?.offsetParent !== null', 'the inspector to open')
+
+    const inspectorState = await evaluate(
+      cdp,
+      `(() => {
+        const button = document.querySelector('[data-test="session-inspector-toggle"]')
+        return {
+          expanded: button?.getAttribute('aria-expanded'),
+          text: button?.textContent?.trim(),
+          inspectorRendered: document.querySelector('.inspector')?.offsetParent !== null,
+        }
+      })()`,
+    )
+    check(
+      'the inspector is closed on arrival and its toolbar button opens it',
+      inspectorState.expanded === 'true' && inspectorState.inspectorRendered === true,
+      `aria-expanded=${inspectorState.expanded} label=${inspectorState.text}`,
+    )
 
     // Select the first event: the editor must fill from the API, not from local state.
     await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\')[0].click()')
@@ -250,24 +323,17 @@ async function main() {
     const unauthorized = await fetch(`http://127.0.0.1:${port}/api/session`)
     check('the running shell API still rejects an unauthenticated call', unauthorized.status === 401, `status=${unauthorized.status}`)
 
-    // Tab switching now goes through the sidebar; every view must render against the same live API.
-    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-队列"]\').click()')
-    // The summary element exists before the fetch resolves, so the wait is on the data, not on the element.
-    await waitFor(
-      cdp,
-      'document.querySelector(\'[data-test="queue-summary"]\')?.textContent.includes("失败 1") === true',
-      'the queue view to load',
-    )
-    const queueSummary = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-summary"]\').textContent')
-    const queueRows = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="queue-list"] li\').length')
-    const queueEmpty = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-empty"]\')?.textContent ?? ""')
-
-    // The tab is the queue, not its history: the seeded item is failed, so it is counted here and listed
-    // nowhere — what the page shows is only what is still waiting to go in.
+    // The queue page is gone; the queue is the composer's own strip. The seeded failed item is compacted away
+    // at start-up, so there is nothing in play and — deliberately — no expander to open: the toggle only
+    // exists when there is something to show. That the strip says so is the thing worth asserting here; the
+    // case where the list *does* open is covered further down, by a real delivered item.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
+    await waitFor(cdp, 'document.querySelector(\'[data-test="composer-strip"]\') !== null', 'the composer strip')
+    const strip = await evaluate(cdp, 'document.querySelector(\'[data-test="composer-strip"]\')?.textContent ?? ""')
     check(
-      'the queue view counts blocked work without listing finished work',
-      queueSummary.includes('失败 1') && queueRows === 0 && queueEmpty.includes('当前没有待输入的内容'),
-      `${queueSummary.trim()} rows=${queueRows}`,
+      'the queue lives in the composer strip, and offers nothing to expand when nothing is in play',
+      !strip.includes('失败') && !(await evaluate(cdp, 'document.querySelector(\'[data-test="composer-queue-toggle"]\') !== null')),
+      strip.replace(/\s+/g, ' ').trim().slice(0, 90),
     )
 
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-设置"]\').click()')
@@ -275,9 +341,19 @@ async function main() {
     const gap = await evaluate(cdp, 'document.querySelector(\'[data-test="utterance-gap"]\').value')
     check('the settings view loads the stored value', Number(gap) === 1200, `utteranceGapMs=${gap}`)
 
-    // The top bar must carry blocked work, since the status bar is no longer where it lives.
+    // The top bar carries the queue. It no longer counts failures — the queue holds only what is still in
+    // play, so a settled failure is read in the conversation instead — but it must still report a depth and
+    // announce that work is running.
     const badge = await evaluate(cdp, 'document.querySelector(\'[data-test="blocked"]\').textContent')
-    check('the top bar badge shows the queue without opening the queue view', badge.includes('失败 1'), badge.trim())
+    const announced = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="blocked-announcer"]\')?.textContent ?? ""',
+    )
+    check(
+      'the top bar badge reports what is in play, and says so out loud',
+      badge.includes('队列') && announced.trim() !== '',
+      `badge=${badge.trim()} announced=${announced.trim()}`,
+    )
 
     // Delivering from the composer: it lands in the queue, and the session is untouched.
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
@@ -306,16 +382,20 @@ async function main() {
     const notice = await evaluate(cdp, 'document.querySelector(\'[data-test="session-notice"]\').textContent')
     check('the composer says the work is queued rather than done', notice.includes('等待执行'), notice.trim())
 
-    // And the queue tab is where that pending text can be read: the item is still Queued (no consumer yet).
-    await evaluate(cdp, 'document.querySelector(\'[data-test="tab-队列"]\').click()')
+    // And the pending text can be read where the queue now lives: the composer's own list. The item is still
+    // Queued (no consumer yet), so it is exactly what the queue holds.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="composer-queue-toggle"]\').click()')
     await waitFor(
       cdp,
-      'document.querySelectorAll(\'[data-test="queue-list"] li\').length === 1',
+      'document.querySelectorAll(\'[data-test="composer-queue-item"]\').length === 1',
       'the queued item to appear',
     )
-    const queuedRow = await evaluate(cdp, 'document.querySelector(\'[data-test="queue-list"] li\').textContent')
+    const queuedRow = await evaluate(
+      cdp,
+      'document.querySelector(\'[data-test="composer-queue-item"]\').textContent',
+    )
     check(
-      'the queue tab shows the pending input content',
+      'the queue in the composer shows the pending input content',
       queuedRow.includes('delivered from the shell'),
       queuedRow.trim().slice(0, 80),
     )
@@ -328,6 +408,114 @@ async function main() {
     // otherwise a delivered message that never moves looks like a broken app.
     const consumerNote = await evaluate(cdp, 'document.querySelector(\'[data-test="composer-consumer"]\')?.textContent ?? ""')
     check('the UI explains that nothing is executing the queue', consumerNote.includes('未执行'), consumerNote.trim())
+
+    // ---- layout: the two things a component test cannot see --------------------------------------
+    //
+    // Everything above this line asserts on content. These two assert on *geometry*, which is why they live
+    // here and not in ui/tests: happy-dom parses the CSS but has no layout engine, so a track that scrolls
+    // its own grid out of the window looks exactly like a correct one until someone runs the real thing.
+    // Both of these were real bugs found by looking at the screen on 2026-10-01, and both were invisible to
+    // 138 passing tests.
+
+    // 1. Collapsing the inspector used to squeeze its track to zero rather than remove the panel, so the
+    //    panel's 1px leading border and its content were scrollable overflow of the grid: one scrollbar on
+    //    each axis, from an action that should have produced neither.
+    //
+    //    Both directions are checked, because "no scrollbar when closed" is only half a statement — a panel
+    //    that also scrolls the window when it is *open* is the same bug with the opposite default.
+    // Read after the render, not after the click. A `click()` and the re-render it causes are two separate
+    // events, and reading in the same task as the click reports the state from *before* the button was pressed
+    // — which is how this check came to claim the inspector was not rendered in either state.
+    const readInspectorState = () => evaluate(
+      cdp,
+      `(() => {
+        const shell = document.documentElement
+        return {
+          collapsed: document.querySelector('.split')?.classList.contains('is-inspector-collapsed') === true,
+          // clientWidth/Height never exceed scrollWidth/Height without a scrollbar; a two-point gap is
+          // sub-pixel rounding, the ~17px one is a real bar.
+          hOverflow: shell.scrollWidth - shell.clientWidth,
+          vOverflow: shell.scrollHeight - shell.clientHeight,
+          rendered: document.querySelector('.inspector')?.offsetParent !== null,
+        }
+      })()`,
+    )
+
+    // Whichever state it arrived in, get to closed first.
+    const beforeToggle = await readInspectorState()
+    if (!beforeToggle.collapsed) {
+      await evaluate(cdp, `document.querySelector('[data-test="session-inspector-toggle"]').click()`)
+      await waitFor(
+        cdp,
+        `document.querySelector('.split')?.classList.contains('is-inspector-collapsed') === true`,
+        'the inspector to close',
+      )
+    }
+
+    const closed = await readInspectorState()
+
+    await evaluate(cdp, `document.querySelector('[data-test="session-inspector-toggle"]').click()`)
+    await waitFor(
+      cdp,
+      `document.querySelector('.inspector')?.offsetParent !== null`,
+      'the inspector to open',
+    )
+    const open = await readInspectorState()
+    const scrollbarsInBothStates = { closed, open }
+    check(
+      'no scrollbar in either inspector state',
+      scrollbarsInBothStates.closed.hOverflow <= 2 &&
+        scrollbarsInBothStates.closed.vOverflow <= 2 &&
+        !scrollbarsInBothStates.closed.rendered &&
+        scrollbarsInBothStates.open.hOverflow <= 2 &&
+        scrollbarsInBothStates.open.vOverflow <= 2 &&
+        scrollbarsInBothStates.open.rendered,
+      `closed(h=${scrollbarsInBothStates.closed.hOverflow},v=${scrollbarsInBothStates.closed.vOverflow},shown=${scrollbarsInBothStates.closed.rendered}) ` +
+        `open(h=${scrollbarsInBothStates.open.hOverflow},v=${scrollbarsInBothStates.open.vOverflow},shown=${scrollbarsInBothStates.open.rendered})`,
+    )
+
+    // 2. A thinking row used to wrap its prose at about half the width it had. The cause was not the scroller
+    //    and not the measure: the component's `.body` was the same class name as the shell's `.body`, and a
+    //    scoped rule that sets only colour and font-size does not stop `display: grid` and
+    //    `grid-template-columns: minmax(0, var(--sidebar)) minmax(0, 1fr)` from applying. So the prose landed
+    //    in the first column, at the sidebar's width, while the collapsed summary line above it — which is a
+    //    flex row — ran the full width. Half a line, then a wrap, with nothing on screen to explain it.
+    //
+    //    This asserts the *symptom*, not the cause. The earlier version of this check asserted `overflowY`,
+    //    which was the first hypothesis and was wrong — asserting on a cause is how you end up green over a
+    //    bug that is still on screen.
+    const thinkingWrap = await evaluate(
+      cdp,
+      `(() => {
+        const rows = [...document.querySelectorAll('[data-test="session-list"] li')]
+        const thought = rows.find((li) => li.querySelector('[data-test="session-thinking"]'))
+        if (!thought) return { found: false }
+        const details = thought.querySelector('details')
+        details.open = true
+        const prose = thought.querySelector('.markdown')
+        if (!prose) return { found: true, prose: false }
+        // The row's content box is the width a line of prose is entitled to. The 40px tolerance covers the
+        // row's own inline padding, which is not the bug.
+        const rowInner = thought.clientWidth
+        const proseWidth = prose.getBoundingClientRect().width
+        return {
+          found: true,
+          prose: true,
+          ratio: rowInner === 0 ? 0 : proseWidth / rowInner,
+          display: getComputedStyle(prose.parentElement).display,
+          rowInner,
+          proseWidth,
+        }
+      })()`,
+    )
+    check(
+      'an expanded thought fills the row instead of wrapping at half of it',
+      thinkingWrap.found !== true ||
+        (thinkingWrap.prose === true && thinkingWrap.ratio > 0.9 && thinkingWrap.display !== 'grid'),
+      thinkingWrap.found === false
+        ? 'no thinking row in this fixture'
+        : `prose=${thinkingWrap.proseWidth}px of row=${thinkingWrap.rowInner}px (${Math.round((thinkingWrap.ratio ?? 0) * 100)}%) parent=${thinkingWrap.display}`,
+    )
 
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-设置"]\').click()')
     await waitFor(cdp, 'document.querySelector(\'[data-test="model-base-url"]\') !== null', 'the settings page')
@@ -469,7 +657,28 @@ async function main() {
 
     const beforeDelete = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
     await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\')[0].click()')
-    await evaluate(cdp, 'document.querySelector(\'[data-test="session-delete"]\').click()')
+    // The row's own buttons, not the `⋯` menu. The actions used to live only in that menu, and the reason was
+    // the long labels covering the row; with short labels they are back on the row, which is where a reader
+    // reaching for 「删除」 expects them.
+    await waitFor(cdp, `document.querySelector('[data-test="session-row-delete-inline"]') !== null`, 'the row actions')
+    // Two presses: the first arms, the second confirms. That was deliberate — and it has to survive being
+    // hover-revealed, so the armed label has to stay on screen with the pointer nowhere near the row.
+    await evaluate(cdp, 'document.querySelector(\'[data-test="session-row-delete-inline"]\').click()')
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-test="session-row-delete-inline"]')?.textContent.trim() === '确认删除'`,
+      'the delete to arm',
+    )
+    const armedStillShown = await evaluate(
+      cdp,
+      `getComputedStyle(document.querySelector('[data-test="session-row-actions"]')).display !== 'none'`,
+    )
+    check(
+      'an armed confirmation does not disappear when the pointer leaves the row',
+      armedStillShown,
+      `visible=${armedStillShown}`,
+    )
+    await evaluate(cdp, 'document.querySelector(\'[data-test="session-row-delete-inline"]\').click()')
     await waitFor(
       cdp,
       `document.querySelectorAll('[data-test=session-list] li').length === ${beforeDelete - 1}`,
@@ -491,8 +700,14 @@ async function main() {
     // The retraction asks twice: the first click only arms it.
     const beforeRetract = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
     await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\')[0].click()')
-    await evaluate(cdp, 'document.querySelector(\'[data-test="session-retract"]\').click()')
-    const armed = await evaluate(cdp, 'document.querySelector(\'[data-test="session-retract-confirm"]\') !== null')
+    await waitFor(cdp, `document.querySelector('[data-test="session-row-retract-inline"]') !== null`, 'the row actions')
+    await evaluate(cdp, `document.querySelector('[data-test="session-row-retract-inline"]').click()`)
+    // Arming renames the item in place rather than adding a confirm button, so wait for the armed label.
+    const armed = await waitFor(
+      cdp,
+      `document.querySelector('[data-test="session-row-retract-inline"]')?.textContent.trim() === '确认删除之后'`,
+      'the retraction to arm',
+    )
     const stillThere = await evaluate(cdp, 'document.querySelectorAll(\'[data-test="session-list"] li\').length')
     check(
       'retracting asks for a second confirmation before removing anything',
@@ -500,7 +715,7 @@ async function main() {
       `armed=${armed} rows=${stillThere}`,
     )
 
-    await evaluate(cdp, 'document.querySelector(\'[data-test="session-retract-confirm"]\').click()')
+    await evaluate(cdp, `document.querySelector('[data-test="session-row-retract-inline"]').click()`)
     await waitFor(
       cdp,
       'document.querySelector(\'[data-test="session-list"] li\') === null',
@@ -569,6 +784,10 @@ async function main() {
         return true
       })()`,
     )
+    // Save before expecting the device to change. Saving is explicit now — every switch on this page waits for
+    // the button at the bottom, because a page where some switches save themselves and some do not is one
+    // nobody can predict. The e2e has to press the button a reader would press.
+    await evaluate(cdp, `document.querySelector('[data-test="settings-save"]').click()`)
     await waitFor(
       cdp,
       `!document.querySelector('[data-test="input-effect"]').textContent.includes('未启用')`,
@@ -582,22 +801,36 @@ async function main() {
       inputEffect.trim(),
     )
 
-    // Sidebar collapse is shell state; the sidebar must actually leave the layout.
+    // Sidebar collapse is shell state; the sidebar must actually leave the layout. Whichever way it starts,
+    // one press has to change the width — and each click is followed by a wait, because a click and the
+    // re-render it causes are two separate events.
     await evaluate(cdp, 'document.querySelector(\'[data-test="tab-会话"]\').click()')
-    await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')
-    const sidebarHidden = await evaluate(
+    await waitFor(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\') !== null', 'the sidebar toggle')
+    await waitFor(cdp, 'document.querySelector(\'[data-test="sidebar"]\') !== null', 'the sidebar')
+
+    const widthBefore = await evaluate(
       cdp,
-      `(() => {
-        const sidebar = document.querySelector('[data-test="sidebar"]')
-        return sidebar.getBoundingClientRect().width
-      })()`,
+      `document.querySelector('[data-test="sidebar"]').getBoundingClientRect().width`,
     )
-    await evaluate(cdp, 'document.querySelector(\'[data-test="sidebar-toggle"]\').click()')
-    const sidebarShown = await evaluate(
+    await evaluate(cdp, `document.querySelector('[data-test="sidebar-toggle"]').click()`)
+    await waitFor(
+      cdp,
+      `document.querySelector('[data-test="sidebar"]').getBoundingClientRect().width !== ${widthBefore}`,
+      'the sidebar to change width',
+    )
+    const widthAfter = await evaluate(
       cdp,
       'document.querySelector(\'[data-test="sidebar"]\').getBoundingClientRect().width',
     )
-    check('collapsing the sidebar changes the layout', sidebarShown > sidebarHidden, `${sidebarHidden} -> ${sidebarShown}`)
+
+    // Two states, 56px and 240px (--rail / --rail-expanded). A change alone would pass if the toggle merely
+    // nudged something, so the two values are pinned as well.
+    const sorted = [widthBefore, widthAfter].sort((a, b) => a - b)
+    check(
+      'the sidebar toggle switches between the rail and the labelled panel',
+      sorted[0] === 56 && sorted[1] === 240,
+      `${widthBefore} -> ${widthAfter}`,
+    )
 
     // Theme is pure frontend: it must apply without a round trip.
     const themeBefore = await evaluate(cdp, 'document.documentElement.dataset.theme ?? "auto"')

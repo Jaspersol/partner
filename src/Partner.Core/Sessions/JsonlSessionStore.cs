@@ -18,6 +18,39 @@ public sealed class JsonlSessionStore : ISessionStore
     private readonly bool _flushOnAppend;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
 
+    /// <summary>
+    /// Bumped by every mutation of the underlying log. A cached projection is only reusable while this is
+    /// unchanged, so the whole cache is one integer's worth of trust rather than a diff against the log.
+    /// </summary>
+    private long _version;
+
+    /// <summary>
+    /// The last built projection, kept for as long as the log has not moved.
+    /// </summary>
+    /// <para>
+    /// <c>ProjectAsync</c> reads the entire log, deserialises every line and replays the projection rules. It
+    /// used to be called four times per turn — to decide whether the turn already finished, to decide whether
+    /// the message is already logged, by the memory hook, and twice by the prompt assembler — plus once every
+    /// 400 ms from the session view while a turn is running. All of that work is a pure function of the log,
+    /// and the store is the only thing that writes it, so the result can be held until a write lands.
+    /// </para>
+    /// </remarks>
+    private SessionView? _cachedProjection;
+    private long _cachedVersion = -1;
+    private readonly object _cacheGate = new();
+
+    /// <summary>
+    /// Past this many events the projection is rebuilt every time instead of being held.
+    /// </summary>
+    /// <para>
+    /// A retained projection keeps every parsed event alive for the life of the process, and the pathological
+    /// case is a very long log — which is exactly when re-reading is what you least want. But past this size
+    /// the memory stops being a single conversation's worth, and trading it back for the read is the safer
+    /// default. Nothing in this app's own usage comes close.
+    /// </para>
+    /// </summary>
+    private const int CacheCeiling = 20_000;
+
     /// <summary>Last seq handed out by <see cref="AppendAsync"/> (may be ahead of durability in buffered mode).</summary>
     private long _assignedSeq;
 
@@ -89,6 +122,10 @@ public sealed class JsonlSessionStore : ISessionStore
         var record = sessionEvent with { Seq = next, At = sessionEvent.At == default ? _clock.GetUtcNow() : sessionEvent.At };
         var durableBefore = _sink.DurableLength;
         _sink.Append(SessionJson.Serialize(record));
+
+        // Bumped before the flush, so a flush that faults and rolls back cannot leave a cache that claims to
+        // describe a record the log no longer has. `RollBackAndFault` bumps again for the same reason.
+        InvalidateProjection();
 
         if (_flushOnAppend)
         {
@@ -182,6 +219,7 @@ public sealed class JsonlSessionStore : ISessionStore
             }
 
             _sink.Rewrite(survivors);
+            InvalidateProjection();
 
             var tombstone = await AppendCoreAsync(
                 new SessionEvent
@@ -264,13 +302,63 @@ public sealed class JsonlSessionStore : ISessionStore
 
     public async Task<SessionView> ProjectAsync(CancellationToken ct = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfFaulted();
+
+        var version = Interlocked.Read(ref _version);
+
+        lock (_cacheGate)
+        {
+            if (_cachedProjection is not null && _cachedVersion == version)
+            {
+                return _cachedProjection;
+            }
+        }
+
         var events = new List<SessionEvent>();
         await foreach (var e in ReadAllAsync(ct).ConfigureAwait(false))
         {
             events.Add(e);
         }
 
-        return SessionProjection.Build(events);
+        return Cache(events, version);
+    }
+
+    /// <summary>
+    /// Builds the projection and holds it, unless the log moved while we were reading it or it is too big to
+    /// keep. Both refusals are deliberate: a stale cache would be a correctness bug, and an unbounded one
+    /// would trade a slow read for a slow process.
+    /// </summary>
+    private SessionView Cache(List<SessionEvent> events, long version)
+    {
+        var view = SessionProjection.Build(events);
+
+        if (events.Count > CacheCeiling)
+        {
+            return view;
+        }
+
+        lock (_cacheGate)
+        {
+            // Re-read the version: a write that landed mid-read leaves this view short of it, and caching it
+            // would make a temporary gap permanent. Returning it is still fine — it is a consistent view of the
+            // log as of when it was read, which is what the caller would have got anyway.
+            if (Interlocked.Read(ref _version) != version)
+            {
+                return view;
+            }
+
+            _cachedProjection = view;
+            _cachedVersion = version;
+        }
+
+        return view;
+    }
+
+    /// <summary>Marks the log as changed, so the next <see cref="ProjectAsync"/> rebuilds rather than reusing.</summary>
+    private void InvalidateProjection()
+    {
+        Interlocked.Increment(ref _version);
     }
 
     public ValueTask DisposeAsync()
@@ -446,6 +534,9 @@ public sealed class JsonlSessionStore : ISessionStore
         {
             // Best effort: the store is faulted either way.
         }
+
+        // The log changed underneath whatever was cached — a record went in, or came back out.
+        InvalidateProjection();
 
         // Discard seqs that were handed out but never became durable.
         Interlocked.Exchange(ref _assignedSeq, Interlocked.Read(ref _durableSeq));

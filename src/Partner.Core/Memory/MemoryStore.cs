@@ -30,8 +30,24 @@ public sealed class MemoryStore : IMemoryStore
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
         _db.Open();
         Execute(MemorySchema.Ddl);
-    }
 
+        // A column added after a store was created does not reach it through the DDL above — IF NOT EXISTS
+        // leaves the existing table alone — so each migration is attempted and its "already there" failure
+        // ignored. The alternative is a workspace that opens fine and then misbehaves on a column nobody
+        // remembered to add.
+        foreach (var migration in MemorySchema.Migrations)
+        {
+            try
+            {
+                Execute(migration);
+            }
+            catch (SqliteException)
+            {
+                // Duplicate column, or the table does not exist yet for some other reason. Either way the DDL
+                // above already established what exists; a column that is already there is not a failure.
+            }
+        }
+    }
     public async Task<string> WriteAsync(MemoryRecord record, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -39,9 +55,112 @@ public sealed class MemoryStore : IMemoryStore
         // Design doc §2.5.6 ③: every write path consolidates eligible working records before committing.
         await PromoteEligibleAsync(ct).ConfigureAwait(false);
 
+        // A newer statement about the same thing retires the older one. Doing it here rather than at recall
+        // means the list a person reads already shows the truth, instead of the prompt quietly hiding one half
+        // of a contradiction. The retired record is marked, not deleted: it stays visible and editable.
+        await SupersedeConflictingAsync(record, ct).ConfigureAwait(false);
+
         await InsertAsync(record, ct).ConfigureAwait(false);
         await LogAsync(record.RecordId, "write", record.Tier.ToString(), ct).ConfigureAwait(false);
         return record.RecordId;
+    }
+
+    /// <summary>
+    /// Retires live records that the incoming one contradicts.
+    /// <para>
+    /// Only records in the same tier are compared: a semantic fact does not contradict a working note, and
+    /// demotion moves things between tiers anyway, so comparing across them would invalidate a record for
+    /// the wrong reason.
+    /// </para>
+    /// </summary>
+    private async Task SupersedeConflictingAsync(MemoryRecord incoming, CancellationToken ct)
+    {
+        // Two coarse filters for the same reason a recall needs two: a contradiction shares a subject and
+        // differs on one point, so it shares no whole substring — matching the sentence finds nothing and
+        // leaves both halves of the disagreement in the store.
+        //
+        // Bigrams for CJK, and the FTS expression for Latin, which has no bigrams to cut but a real
+        // tokenizer. Whichever this body can use, the decision is still made by word overlap below.
+        var cjk = ContainsCjk(incoming.Body);
+        var match = cjk ? null : BuildMatchExpression(incoming.Body);
+        var like = cjk ? BuildLikePattern(incoming.Body) : null;
+
+        var candidates = await LoadCandidatesAsync(match, like, ct).ConfigureAwait(false);
+        var now = _clock.GetUtcNow();
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Tier != incoming.Tier)
+            {
+                continue;
+            }
+
+            if (!MemoryLifecycle.Conflicts(incoming.Body, candidate.Body))
+            {
+                continue;
+            }
+
+            await using var cmd = _db.CreateCommand();
+            cmd.CommandText =
+                "UPDATE memories SET valid_to = $now, superseded_by = $by, edited_by = 'Agent' "
+                + "WHERE record_id = $id AND valid_to IS NULL";
+            cmd.Parameters.AddWithValue("$now", Iso(now));
+            cmd.Parameters.AddWithValue("$by", incoming.RecordId);
+            cmd.Parameters.AddWithValue("$id", candidate.RecordId);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            await LogAsync(candidate.RecordId, "supersede", incoming.RecordId, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Marks what was just handed out as used, and demotes what has gone quiet.
+    /// <para>
+    /// Both happen on the recall path because that is the only place "used" is observable, and demotion needs a
+    /// moment when the store is already open. A record nobody found for three months is not something to keep
+    /// handing to a model at full trust.
+    /// </para>
+    /// </summary>
+    private async Task MaintainAsync(IReadOnlyList<string> recalled, CancellationToken ct)
+    {
+        var now = _clock.GetUtcNow();
+
+        foreach (var recordId in recalled)
+        {
+            await using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE memories SET last_recalled_at = $now WHERE record_id = $id";
+            cmd.Parameters.AddWithValue("$now", Iso(now));
+            cmd.Parameters.AddWithValue("$id", recordId);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        await DemoteIdleAsync(now, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Drops each idle record one tier: Semantic → Episodic → Working. Working then falls to the existing
+    /// trim, so a record nobody has used in a year eventually leaves on its own.
+    /// </summary>
+    private async Task DemoteIdleAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        var cutoff = now - MemoryLifecycle.IdleBeforeDemotion;
+
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText =
+            "UPDATE memories SET tier = CASE tier WHEN 'Semantic' THEN 'Episodic' ELSE 'Working' END "
+            + "WHERE valid_to IS NULL AND tier != 'Working' "
+            + "AND (last_recalled_at IS NULL OR last_recalled_at <= $cutoff)";
+        cmd.Parameters.AddWithValue("$cutoff", Iso(cutoff));
+
+        var demoted = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (demoted > 0)
+        {
+            await LogAsync(
+                $"demote:{demoted}",
+                "demote",
+                $"idle > {MemoryLifecycle.IdleBeforeDemotion.TotalDays:0} 天",
+                ct).ConfigureAwait(false);
+        }
     }
 
     public async Task WriteBatchAsync(IEnumerable<MemoryRecord> records, CancellationToken ct = default)
@@ -72,6 +191,18 @@ public sealed class MemoryStore : IMemoryStore
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = $"{SelectColumns} WHERE record_id = $id";
         cmd.Parameters.AddWithValue("$id", recordId);
+
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadRecord(reader) : null;
+    }
+
+    public async Task<MemoryRecord?> FindBySourceAsync(long sourceEventSeq, CancellationToken ct = default)
+    {
+        // Ordered so a repeated write of the same event finds the *oldest* one: a second write would otherwise
+        // find its own predecessor and report success while leaving two rows behind.
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = $"{SelectColumns} WHERE source_event_seq = $seq AND valid_to IS NULL ORDER BY created_at, record_id";
+        cmd.Parameters.AddWithValue("$seq", sourceEventSeq);
 
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadRecord(reader) : null;
@@ -117,34 +248,54 @@ public sealed class MemoryStore : IMemoryStore
     public async Task<IReadOnlyList<MemoryHit>> RecallAsync(string query, int? limit = null, CancellationToken ct = default)
     {
         var take = Math.Max(1, limit ?? _options.RecallLimit);
-        var match = BuildMatchExpression(query);
-        if (match is null)
+
+        // Two coarse filters, because the index cannot serve Chinese. unicode61 treats a whole CJK sentence as
+        // one token, so an FTS match for a differently-worded question finds nothing — and the tokenizer cannot
+        // be swapped underneath existing stores (there is no schema versioning). So a CJK query is matched
+        // against its own bigrams with OR: 我不太喜欢被打断 and 用户不喜欢被反复确认 share 喜欢/不被打,
+        // and that overlap is enough to bring the record in. The scorer still decides relevance; this is only
+        // a coarse filter.
+        var cjk = ContainsCjk(query);
+        var match = cjk ? null : BuildMatchExpression(query);
+        var like = cjk ? BuildLikePattern(query) : null;
+
+        if (match is null && like is null)
         {
             return Array.Empty<MemoryHit>();
         }
 
-        var candidates = await LoadCandidatesAsync(match, ct).ConfigureAwait(false);
+        var candidates = await LoadCandidatesAsync(match, like, ct).ConfigureAwait(false);
         if (candidates.Count == 0)
         {
             return Array.Empty<MemoryHit>();
         }
-
         var embeddings = await LoadEmbeddingsAsync(candidates.Select(c => c.RecordId).ToList(), ct)
             .ConfigureAwait(false);
         var queryEmbedding = await TryEmbedAsync(query, ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
 
-        return candidates
+        var result = candidates
             .Select(candidate =>
             {
                 embeddings.TryGetValue(candidate.RecordId, out var candidateEmbedding);
                 var score = _options.Scorer.Score(candidate, query, queryEmbedding, candidateEmbedding, now);
-                return new MemoryHit(candidate.RecordId, candidate.Body, score, _options.Scorer.Explain(score));
+                return new MemoryHit(
+                    candidate.RecordId,
+                    candidate.Body,
+                    score,
+                    _options.Scorer.Explain(score),
+                    candidate.CreatedAt,
+                    candidate.Tier,
+                    now);
             })
             .OrderByDescending(h => h.Score.Total)
             .ThenBy(h => h.RecordId, StringComparer.Ordinal)
             .Take(take)
             .ToList();
+
+        // What was actually handed out is what counts as used — not what merely became a candidate.
+        await MaintainAsync(result.Select(hit => hit.RecordId).ToList(), ct).ConfigureAwait(false);
+        return result;
     }
 
     public async Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default)
@@ -429,9 +580,9 @@ public sealed class MemoryStore : IMemoryStore
         cmd.CommandText = (insertOrIgnore ? "INSERT OR IGNORE INTO memories(" : "INSERT INTO memories(") + """
             record_id, tier, scope, body, source_event_seq, created_at, valid_from, valid_to,
                                  ttl_expires_at, consolidated_at, confidence, importance, veracity, superseded_by,
-                                 edited_by, pending_compact)
+                                 edited_by, pending_compact, last_recalled_at)
             VALUES ($id, $tier, $scope, $body, $seq, $created, $from, $to, $ttl, $consolidated, $confidence,
-                    $importance, $veracity, $superseded, $edited, 0)
+                    $importance, $veracity, $superseded, $edited, 0, $recalled)
             """;
         cmd.Parameters.AddWithValue("$id", record.RecordId);
         cmd.Parameters.AddWithValue("$tier", record.Tier.ToString());
@@ -449,6 +600,9 @@ public sealed class MemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$veracity", record.Veracity);
         cmd.Parameters.AddWithValue("$superseded", (object?)record.SupersededBy ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$edited", record.EditedBy is null ? DBNull.Value : record.EditedBy.Value.ToString());
+        cmd.Parameters.AddWithValue(
+            "$recalled", record.LastRecalledAt is null ? DBNull.Value : Iso(record.LastRecalledAt.Value));
+
 
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
@@ -461,6 +615,34 @@ public sealed class MemoryStore : IMemoryStore
             }
         }
     }
+
+    /// <summary>
+    /// Moves a record to another tier, on a person's judgement.
+    /// <para>
+    /// Exposed because "this is a fact I rely on" and "this is something I once guessed" are judgements no
+    /// scorer can make: a preference promoted to <c>Semantic</c> is one the demotion rule will then protect,
+    /// and a guess left there is one it will eventually take away. Returns false for an id this store has
+    /// never seen, so a caller can tell a rejected edit from a silent one.
+    /// </para>
+    /// </summary>
+    public async Task<bool> SetTierAsync(string recordId, MemoryTier tier, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordId);
+
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = "UPDATE memories SET tier = $tier, edited_by = 'Human' WHERE record_id = $id";
+        cmd.Parameters.AddWithValue("$tier", tier.ToString());
+        cmd.Parameters.AddWithValue("$id", recordId);
+
+        if (await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 0)
+        {
+            return false;
+        }
+
+        await LogAsync(recordId, "tier", tier.ToString(), ct).ConfigureAwait(false);
+        return true;
+    }
+
 
     private async Task StoreEmbeddingAsync(string recordId, float[] vector, CancellationToken ct, SqliteTransaction? tx)
     {
@@ -532,19 +714,55 @@ public sealed class MemoryStore : IMemoryStore
         return result;
     }
 
-    private async Task<List<MemoryCandidate>> LoadCandidatesAsync(string match, CancellationToken ct)
+    /// <summary>
+    /// The rows a query could plausibly want.
+    /// <para>
+    /// FTS when the query is Latin — bm25-ranked and fast. A character scan when it is CJK, because the index
+    /// holds whole sentences there and would match only the exact one. Both paths are bounded by the same
+    /// candidate limit, so this stays a coarse filter and the scorer still decides what is actually relevant.
+    /// </para>
+    /// </summary>
+    private async Task<List<MemoryCandidate>> LoadCandidatesAsync(
+        string? match,
+        IReadOnlyList<string>? bigrams,
+        CancellationToken ct)
     {
         await using var cmd = _db.CreateCommand();
-        cmd.CommandText = """
-            SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                   bm25(memory_fts) AS rank
-            FROM memory_fts
-            JOIN memories m ON m.rowid = memory_fts.rowid
-            WHERE memory_fts MATCH $q AND m.valid_to IS NULL
-            ORDER BY rank
-            LIMIT $candidates
-            """;
-        cmd.Parameters.AddWithValue("$q", match);
+
+        if (match is not null)
+        {
+            cmd.CommandText = """
+              SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
+                     bm25(memory_fts) AS rank
+              FROM memory_fts
+              JOIN memories m ON m.rowid = memory_fts.rowid
+              WHERE memory_fts MATCH $q AND m.valid_to IS NULL
+              ORDER BY rank
+              LIMIT $candidates
+              """;
+            cmd.Parameters.AddWithValue("$q", match);
+        }
+        else
+        {
+            // One parameter per bigram, OR-ed together. Every user-supplied string is still a bound parameter —
+            // the clause shape is fixed, only the count varies.
+            var clause = string.Join(" OR ", Enumerable.Range(0, bigrams!.Count).Select(i => $"body LIKE $b{i} ESCAPE '\\'"));
+
+            cmd.CommandText = $"""
+              SELECT record_id, body, tier, scope, created_at, importance, veracity, confidence,
+                     0.0 AS rank
+              FROM memories
+              WHERE valid_to IS NULL AND ({clause})
+              ORDER BY importance DESC, created_at DESC
+              LIMIT $candidates
+              """;
+
+            for (var i = 0; i < bigrams.Count; i++)
+            {
+                cmd.Parameters.AddWithValue($"$b{i}", "%" + Escape(bigrams[i]) + "%");
+            }
+        }
+
         cmd.Parameters.AddWithValue("$candidates", _options.CandidateLimit);
 
         var candidates = new List<MemoryCandidate>();
@@ -564,6 +782,69 @@ public sealed class MemoryStore : IMemoryStore
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Escapes the LIKE wildcards, so a query containing <c>%</c> or <c>_</c> searches for them instead of
+    /// turning into a match-everything pattern.
+    /// </summary>
+    private static string Escape(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal)
+             .Replace("%", "\\%", StringComparison.Ordinal)
+             .Replace("_", "\\_", StringComparison.Ordinal);
+
+    /// <summary>Whether the text contains a CJK character, and so cannot be served by the index.</summary>
+    private static bool ContainsCjk(string text) => text.Any(IsCjk);
+
+    /// <summary>
+    /// The query's bigrams, each of which becomes one OR-ed LIKE.
+    /// <para>
+    /// All of them, not the most frequent: 我不太喜欢被打断 and 用户不喜欢被反复确认 share no substring, and
+    /// the bigrams they have in common are 喜欢 and 欢被. Picking by frequency picks 不太 — the negation, which
+    /// appears in neither the record nor anything it is about. Every bigram is tried and the scorer decides.
+    /// </para>
+    /// <para>
+    /// Each becomes a bound parameter, not an interpolated fragment: the clause's shape is fixed and only the
+    /// parameter count varies, so no user text reaches the SQL text itself.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string>? BuildLikePattern(string query)
+    {
+        var tokens = Bigrams(query).Distinct(StringComparer.Ordinal).ToList();
+        return tokens.Count == 0 ? null : tokens;
+    }
+
+    /// <summary>Overlapping character pairs — what lets two differently-worded sentences intersect at all.</summary>
+    private static IEnumerable<string> Bigrams(string text)
+    {
+        var run = new StringBuilder();
+
+        foreach (var ch in text)
+        {
+            if (IsCjk(ch))
+            {
+                run.Append(ch);
+                continue;
+            }
+
+            if (run.Length >= 2)
+            {
+                for (var i = 0; i + 1 < run.Length; i++)
+                {
+                    yield return run.ToString(i, 2);
+                }
+            }
+
+            run.Clear();
+        }
+
+        if (run.Length >= 2)
+        {
+            for (var i = 0; i + 1 < run.Length; i++)
+            {
+                yield return run.ToString(i, 2);
+            }
+        }
     }
 
     private async Task<List<string>> QueryIdsAsync(
@@ -627,8 +908,15 @@ public sealed class MemoryStore : IMemoryStore
     };
 
     /// <summary>
-    /// Turns free text into a safe FTS5 MATCH expression: quoted tokens joined by OR. Returns null when the
-    /// query has no usable token (never builds a syntax-erroring expression out of user input).
+    /// Turns free text into a safe FTS5 MATCH expression: quoted tokens joined by OR, or null when the query
+    /// has no usable token — so a syntax error is never built out of user input.
+    /// <para>
+    /// Latin runs are split on non-alphanumerics. Chinese has no spaces, so a whole sentence would become one
+    /// token and match nothing but itself: "我不太喜欢被打断" would not find a record reading
+    /// "用户不喜欢被反复确认". A run that is entirely CJK is therefore cut into character bigrams, which is
+    /// the cheapest thing that makes the two overlap. A real segmenter is better and is a separate decision,
+    /// but without this the recall path is dead for the language this project is written in.
+    /// </para>
     /// </summary>
     internal static string? BuildMatchExpression(string query)
     {
@@ -658,7 +946,8 @@ public sealed class MemoryStore : IMemoryStore
             tokens.Add(current.ToString());
         }
 
-        var usable = tokens.Where(t => t.Length >= 2).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var expanded = tokens.SelectMany(SplitRun).Where(t => t.Length >= 2).ToList();
+        var usable = expanded.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (usable.Count == 0)
         {
             return null;
@@ -666,6 +955,37 @@ public sealed class MemoryStore : IMemoryStore
 
         return string.Join(" OR ", usable.Select(t => "\"" + t.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""));
     }
+
+    /// <summary>
+    /// Splits one run into searchable pieces: a CJK run into bigrams, anything else left whole.
+    /// <para>
+    /// A single CJK character is kept as itself, because it is a word often enough (「钱」「好」) and dropping it
+    /// would throw away the shortest queries.
+    /// </para>
+    /// </summary>
+    private static IEnumerable<string> SplitRun(string run)
+    {
+        if (run.Length < 2 || !run.All(IsCjk))
+        {
+            return new[] { run };
+        }
+
+        if (run.Length == 2)
+        {
+            return new[] { run };
+        }
+
+        var pieces = new List<string>(run.Length - 1);
+        for (var i = 0; i + 1 < run.Length; i++)
+        {
+            pieces.Add(run.Substring(i, 2));
+        }
+
+        return pieces;
+    }
+
+    private static bool IsCjk(char ch) =>
+        ch is >= '一' and <= '鿿' || ch is >= '぀' and <= 'ヿ';
 
     private static string Iso(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);

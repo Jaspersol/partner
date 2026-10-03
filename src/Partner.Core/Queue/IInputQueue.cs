@@ -22,6 +22,20 @@ public interface IInputQueue : IAsyncDisposable
     QueueState Snapshot();
 
     /// <summary>
+    /// 还在队列里的项：已排队，以及正在跑的那一项。
+    /// </summary>
+    /// <para>
+    /// 这就是队列<em>本身</em>，而不是它接受过的所有东西。一项落定就立即离开这个集合（见
+    /// <see cref="CompleteAsync"/>），所以答案已经在内存里，取它只花一把锁；反过来从日志里读，每次轮询
+    /// 都要读一遍完整文件。
+    /// </para>
+    /// <para>
+    /// 按到达顺序返回：那就是它们将被执行的顺序，也是读者正在看的顺序。
+    /// </para>
+    /// </summary>
+    IReadOnlyList<InputItem> ActiveItems();
+
+    /// <summary>
     /// 取消一项。<c>Queued</c>：置为 <c>Canceled</c> 并持久化（该项永不交给消费者），返回 <c>true</c>；
     /// <c>Running</c>：触发 <c>RunningToken</c> 取消并返回 <c>true</c>（状态由消费者用 <see cref="CompleteAsync"/> 落定）；
     /// 未知或已终态的项返回 <c>false</c>。

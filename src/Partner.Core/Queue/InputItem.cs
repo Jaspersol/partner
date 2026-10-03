@@ -33,6 +33,15 @@ public sealed record InputItem
     /// </summary>
     public IReadOnlyList<string> MediaIds { get; init; } = Array.Empty<string>();
 
+    /// <summary>
+    /// 这一条消息选的思考挡位（<c>reasoning_effort</c>）。空 = 用设置里的默认挡位。
+    /// <para>
+    /// 随项走而不是随全局设置走：挡位是**逐条消息**的选择，一句话重一点还是轻一点由发消息的人决定，
+    /// 改了设置也不该把已经排队的那些条目的挡位改掉——它们入队时的选择是那一条消息的一部分。
+    /// </para>
+    /// </summary>
+    public string ReasoningEffort { get; init; } = string.Empty;
+
     /// <summary>幂等键（非空）：去重依据，跨重启生效。</summary>
     public string IdempotencyKey { get; init; } = string.Empty;
 

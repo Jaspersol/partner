@@ -15,77 +15,19 @@ namespace Partner.Api.Tests;
 /// it must not claim to be running when no model is configured, and it must not leave work queued forever
 /// when one is.
 /// </summary>
-public sealed class ConsumerEndpointTests : IAsyncLifetime
+public sealed class ConsumerEndpointTests : ApiFixture
 {
-    private string _workspace = string.Empty;
-    private ApiContext _context = null!;
-    private ConsumerHost _consumer = null!;
-    private VoiceHost _voice = null!;
-    private WebApplication _app = null!;
-    private Task _run = null!;
-    private HttpClient _http = null!;
-    private string _token = string.Empty;
-    private int _port;
+    protected override string WorkspaceName => "partner-consumer-tests";
+
+    protected override ILlmClient Llm => new ScriptedLlmClient(new[]
+    {
+        new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
+    });
 
     private static readonly string[] Scripted =
     {
         """{"choices":[{"message":{"content":"书房的灯已经打开了。"},"finish_reason":"stop"}]}""",
     };
-
-    public async Task InitializeAsync()
-    {
-        _workspace = Path.Combine(Path.GetTempPath(), "partner-consumer-tests", Guid.NewGuid().ToString("N"));
-        _port = FreePort();
-        _token = TokenAuth.Generate();
-
-        var llm = new ScriptedLlmClient(new[]
-        {
-            new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
-        });
-
-        var (app, context, consumer, voice) = await ApiHost.BuildAsync(_workspace, _port, _token, clock: null, llm: llm);
-        _app = app;
-        _context = context;
-        _consumer = consumer;
-        _voice = voice;
-        _run = _app.RunAsync();
-
-        _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _token);
-
-        for (var attempt = 0; attempt < 60; attempt++)
-        {
-            try
-            {
-                using var probe = await _http.GetAsync("/api/consumer");
-                if (probe.IsSuccessStatusCode)
-                {
-                    break;
-                }
-            }
-            catch (HttpRequestException)
-            {
-                // Not listening yet.
-            }
-
-            await Task.Delay(50);
-        }
-    }
-
-    public async Task DisposeAsync()
-    {
-        _http.Dispose();
-        await _app.StopAsync();
-        await _run;
-        await _voice.DisposeAsync();
-        await _consumer.DisposeAsync();
-        await _context.DisposeAsync();
-
-        if (Directory.Exists(_workspace))
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-    }
 
     /// <summary>Streams two pieces with a gate between them, so a test can look at the session mid-turn.</summary>
     private sealed class GatedStreamingLlm(string first, string second) : ILlmClient
@@ -127,37 +69,49 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
     public async Task The_session_shows_the_reply_while_it_is_being_written()
     {
         var llm = new GatedStreamingLlm("正在", "回复");
-        await _consumer.ReconfigureAsync(config: null, reason: "streaming test", injected: llm);
 
-        await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "写点什么" });
+        try
+        {
+            await _consumer.ReconfigureAsync(config: null, reason: "streaming test", injected: llm);
 
-        // Mid-turn: the partial text is on the wire, flagged as streaming, and the view says it is busy. It is
-        // not in the log — the log only ever holds the finished answer.
-        var live = await WaitForSessionAsync(session => session.GetProperty("items").EnumerateArray()
-            .Any(item => item.GetProperty("streaming").GetBoolean()));
+            await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "写点什么" });
 
-        Assert.True(live.GetProperty("busy").GetBoolean());
-        var streaming = live.GetProperty("items").EnumerateArray()
-            .First(item => item.GetProperty("streaming").GetBoolean());
-        Assert.Equal("正在", streaming.GetProperty("body").GetString());
-        Assert.Equal(0, streaming.GetProperty("seq").GetInt64());
-        Assert.Equal("AssistantStreaming", streaming.GetProperty("kind").GetString());
+            // Mid-turn: the partial text is on the wire, flagged as streaming, and the view says it is busy.
+            // It is not in the log — the log only ever holds the finished answer.
+            var live = await WaitForSessionAsync(session => session.GetProperty("items").EnumerateArray()
+                .Any(item => item.GetProperty("streaming").GetBoolean()));
 
-        llm.Release.SetResult();
+            Assert.True(live.GetProperty("busy").GetBoolean());
+            var streaming = live.GetProperty("items").EnumerateArray()
+                .First(item => item.GetProperty("streaming").GetBoolean());
+            Assert.Equal("正在", streaming.GetProperty("body").GetString());
+            Assert.Equal(0, streaming.GetProperty("seq").GetInt64());
+            Assert.Equal("AssistantStreaming", streaming.GetProperty("kind").GetString());
 
-        // After: the live row is gone, and the complete answer is an ordinary event.
-        var settled = await WaitForSessionAsync(session =>
-            !session.GetProperty("busy").GetBoolean()
-            && session.GetProperty("items").EnumerateArray()
-                .Any(item => item.GetProperty("kind").GetString() == "Assistant"));
+            llm.Release.SetResult();
 
-        Assert.DoesNotContain(
-            settled.GetProperty("items").EnumerateArray(),
-            item => item.GetProperty("streaming").GetBoolean());
-        var assistant = settled.GetProperty("items").EnumerateArray()
-            .First(item => item.GetProperty("kind").GetString() == "Assistant");
-        Assert.Equal("正在回复", assistant.GetProperty("body").GetString());
+            // After: the live row is gone, and the complete answer is an ordinary event.
+            var settled = await WaitForSessionAsync(session =>
+                !session.GetProperty("busy").GetBoolean()
+                && session.GetProperty("items").EnumerateArray()
+                    .Any(item => item.GetProperty("kind").GetString() == "Assistant"));
+
+            Assert.DoesNotContain(
+                settled.GetProperty("items").EnumerateArray(),
+                item => item.GetProperty("streaming").GetBoolean());
+            var assistant = settled.GetProperty("items").EnumerateArray()
+                .First(item => item.GetProperty("kind").GetString() == "Assistant");
+            Assert.Equal("正在回复", assistant.GetProperty("body").GetString());
+        }
+        finally
+        {
+            // The turn is parked on this gate; a throw before releasing it would hang the class, not fail it.
+            llm.Release.TrySetResult();
+        }
     }
+
+    // The reasoning counterpart lives in ReasoningStreamTests: reconfiguring this consumer while a gated turn
+    // is still in flight deadlocks, because the gate is only released by the test that is itself waiting.
 
     [Fact]
     public async Task With_a_model_the_consumer_reports_running()
@@ -177,7 +131,7 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
         var itemId = (await submitted.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
         Assert.True(
-            await Eventually.IsTrueAsync(async () => await StatusAsync(itemId!) == "Done"),
+            await Eventually.IsTrueAsync(async () => await HasLeftTheQueueAsync(itemId!)),
             "the consumer never finished the delivered item");
 
         // The whole point of the consumer: the queue drains and the conversation appears.
@@ -205,7 +159,7 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
 
         Assert.True(
-            await Eventually.IsTrueAsync(async () => await StatusAsync(secondId!) == "Canceled"),
+            await Eventually.IsTrueAsync(async () => await HasLeftTheQueueAsync(secondId!)),
             "the cancelled item was not settled as canceled");
 
         var session = await _http.GetFromJsonAsync<JsonElement>("/api/session");
@@ -217,27 +171,20 @@ public sealed class ConsumerEndpointTests : IAsyncLifetime
         Assert.DoesNotContain("second", userBodies);
     }
 
-    private async Task<string?> StatusAsync(string itemId)
+    /// <summary>
+    /// True once the queue no longer holds the item — which is how a finished item now announces itself.
+    /// </summary>
+    /// <remarks>
+    /// It used to report a status, and polled for "Done". It cannot any more: the queue is what is still in
+    /// play, so a settled item is absent rather than marked. That is a stronger statement than "Done" — there
+    /// is no way for it to still be waiting — but it also means <c>/api/queue</c> no longer answers "what
+    /// happened to item X", and anything that needs that has to read the session log or keep its own record.
+    /// </remarks>
+    private async Task<bool> HasLeftTheQueueAsync(string itemId)
     {
         var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
-        foreach (var item in queue.GetProperty("items").EnumerateArray())
-        {
-            if (item.GetProperty("itemId").GetString() == itemId)
-            {
-                return item.GetProperty("status").GetString();
-            }
-        }
-
-        return null;
-    }
-
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
+        return !queue.GetProperty("items").EnumerateArray()
+            .Any(item => item.GetProperty("itemId").GetString() == itemId);
     }
 }
 
@@ -250,7 +197,7 @@ public sealed class UnconfiguredConsumerTests
     public async Task Without_a_model_the_consumer_is_disabled_and_says_why()
     {
         var workspace = Path.Combine(Path.GetTempPath(), "partner-consumer-tests", Guid.NewGuid().ToString("N"));
-        var port = FreePort();
+        var port = ApiFixture.FreePort();
         var token = TokenAuth.Generate();
 
         var previousUrl = Environment.GetEnvironmentVariable(HttpLlmClient.BaseUrlVariable);
@@ -317,22 +264,19 @@ public sealed class UnconfiguredConsumerTests
         }
     }
 
-    private static int FreePort()
-    {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
 }
 
 /// <summary>Waits on a state only the running consumer can reach.</summary>
 internal static class Eventually
 {
-    public static async Task<bool> IsTrueAsync(Func<Task<bool>> condition)
+    /// <param name="attempts">
+    /// 200 polls at 25ms is 5s, which is enough for a turn that fails against a refused endpoint. It is not
+    /// enough when the same machine is also running every other test assembly: give a caller that waits on a
+    /// reconfigure *and* a completed turn more room rather than making every caller wait longer.
+    /// </param>
+    public static async Task<bool> IsTrueAsync(Func<Task<bool>> condition, int attempts = 200)
     {
-        for (var attempt = 0; attempt < 200; attempt++)
+        for (var attempt = 0; attempt < attempts; attempt++)
         {
             if (await condition().ConfigureAwait(false))
             {

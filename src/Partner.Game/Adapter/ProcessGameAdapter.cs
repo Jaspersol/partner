@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Partner.Core.Diagnostics;
 
 namespace Partner.Game.Adapter;
 
@@ -29,13 +30,12 @@ public sealed record ProcessGameAdapterOptions
 /// </summary>
 public sealed class ProcessGameAdapter : IGameAdapter
 {
-    private const int StderrCapacity = 100;
     private static readonly TimeSpan ShutdownGrace = TimeSpan.FromSeconds(2);
 
     private readonly ProcessGameAdapterOptions _options;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
-    private readonly Queue<string> _stderrLines = new();
+    private readonly StderrTailBuffer _stderr = new();
     private readonly object _sync = new();
     private readonly List<double> _latencySamples = new();
 
@@ -144,7 +144,7 @@ public sealed class ProcessGameAdapter : IGameAdapter
             }
 
             _stdoutTask = ReadStdoutAsync(process.StandardOutput, cts.Token);
-            _stderrTask = DrainStderrAsync(process.StandardError, cts.Token);
+            _stderrTask = _stderr.DrainAsync(process.StandardError, cts.Token);
         }
         finally
         {
@@ -240,7 +240,7 @@ public sealed class ProcessGameAdapter : IGameAdapter
         var snapshot = TryReadSnapshot(document.RootElement, DateTimeOffset.UtcNow);
         return snapshot
             ?? throw new InvalidOperationException(
-                $"Game '{GameId}' returned no state for 'observe': {line}{StderrTail()}");
+                $"Game '{GameId}' returned no state for 'observe': {line}{_stderr.Tail()}");
     }
 
     private async Task<string> SendAsync(string command, JsonObject payload, CancellationToken ct)
@@ -280,7 +280,7 @@ public sealed class ProcessGameAdapter : IGameAdapter
                 }
 
                 throw new TimeoutException(
-                    $"Game command '{command}' to '{GameId}' timed out after {_options.CallTimeout}.{StderrTail()}");
+                    $"Game command '{command}' to '{GameId}' timed out after {_options.CallTimeout}.{_stderr.Tail()}");
             }
             finally
             {
@@ -310,7 +310,7 @@ public sealed class ProcessGameAdapter : IGameAdapter
         {
             _dead = true;
             throw new InvalidOperationException(
-                $"Failed to write to game '{GameId}': {ex.Message}{StderrTail()}", ex);
+                $"Failed to write to game '{GameId}': {ex.Message}{_stderr.Tail()}", ex);
         }
     }
 
@@ -347,42 +347,10 @@ public sealed class ProcessGameAdapter : IGameAdapter
             {
                 _dead = true;
                 FailPending(failure is null
-                    ? new InvalidOperationException($"Game '{GameId}' closed its stdout.{StderrTail()}")
+                    ? new InvalidOperationException($"Game '{GameId}' closed its stdout.{_stderr.Tail()}")
                     : new InvalidOperationException(
-                        $"Game '{GameId}' closed its stdout: {failure.Message}{StderrTail()}", failure));
+                        $"Game '{GameId}' closed its stdout: {failure.Message}{_stderr.Tail()}", failure));
             }
-        }
-    }
-
-    private async Task DrainStderrAsync(StreamReader reader, CancellationToken ct)
-    {
-        try
-        {
-            while (true)
-            {
-                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-                if (line is null)
-                {
-                    break;
-                }
-
-                lock (_stderrLines)
-                {
-                    _stderrLines.Enqueue(line);
-                    while (_stderrLines.Count > StderrCapacity)
-                    {
-                        _stderrLines.Dequeue();
-                    }
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal shutdown.
-        }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
-        {
-            // stderr closed; the call path does not depend on it.
         }
     }
 
@@ -593,13 +561,4 @@ public sealed class ProcessGameAdapter : IGameAdapter
         return sorted[Math.Clamp(rank, 0, sorted.Length - 1)];
     }
 
-    private string StderrTail()
-    {
-        lock (_stderrLines)
-        {
-            return _stderrLines.Count == 0
-                ? string.Empty
-                : " stderr: " + string.Join(" | ", _stderrLines);
-        }
-    }
 }

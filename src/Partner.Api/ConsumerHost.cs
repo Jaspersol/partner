@@ -3,6 +3,7 @@ using Partner.Core.Agent;
 using Partner.Core.Agent.Hooks;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Skills;
+using Partner.Core.Agent.Mcp;
 using Partner.Core.Agent.Tools;
 using Partner.Desktop.Tools;
 using Partner.Core.Hosting;
@@ -49,6 +50,34 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private IReadOnlyList<string> _toolNames = Array.Empty<string>();
     private DesktopGovernance? _governance;
     private string _reason = "未启动";
+
+    /// <summary>
+    /// The MCP servers this consumer started, kept so a reconfigure can stop them.
+    /// <para>
+    /// Held on the host rather than dropped after registration: a client that is never stopped leaves a child
+    /// process behind on every settings save, and those accumulate.
+    /// </para>
+    /// </summary>
+    private readonly List<IMcpClient> _mcpClients = new();
+
+    /// <summary>Why MCP is not running, in the terms a person can act on. Null when nothing is configured.</summary>
+    public string? McpNote { get; private set; }
+
+    /// <summary>Used only to timestamp "thinking since"; a display value, not anything the runtime decides on.</summary>
+    private readonly TimeProvider _clock = TimeProvider.System;
+
+    /// <summary>
+    /// What the tools have been failing at, counted. Lives on the host rather than in a turn so it survives a
+    /// restart of the consumer — the failures are the point, and losing them on every model change is what
+    /// makes a recurring problem invisible.
+    /// </summary>
+    private readonly IToolFailureLog _failures = new InMemoryToolFailureLog();
+
+    /// <summary>Tool failures, most frequent first. Bounded by the log's own capacity.</summary>
+    public ToolFailureSummary Failures(int take) => new(
+        _failures.Top(take).Select(f => new ToolFailureView(
+            f.Tool, f.Reason, f.Count, f.LastSeen.ToString("O"), f.LastMessage, f.ItemId)).ToList(),
+        new ToolFailureTotalsView(_failures.Totals.Distinct, _failures.Totals.Occurrences));
 
     /// <summary>
     /// The assistant text of the turn in flight, or null when nothing is being written. Deliberately not the
@@ -108,9 +137,18 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         lock (_liveGate)
         {
-            // A new item starts a new live text; the old one belongs to a step that already ended.
+            // A new item starts a new live text; the old one belongs to a step that already ended. The same is
+            // true of a new step within a turn, which is why the item id is the identity here.
             _live = _live is { } current && current.ItemId == itemId
-                ? current with { Text = current.Text + delta }
+                ? current with
+                {
+                    Text = current.Text + delta,
+
+                    // The first word of an answer ends the thinking: leaving "thinking" running while the
+                    // answer streams would tell the reader it is still working when it is not.
+                    Reasoning = null,
+                    ReasoningSince = null,
+                }
                 : new LiveAssistant(itemId, delta);
         }
     }
@@ -122,6 +160,35 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             if (_live is { } current && current.ItemId == itemId)
             {
                 _live = null;
+            }
+        }
+    }
+
+    void IAssistantStream.OnReasoningDelta(string itemId, string delta)
+    {
+        lock (_liveGate)
+        {
+            var current = _live is { } live && live.ItemId == itemId ? live : null;
+
+            _live = current is null
+                ? new LiveAssistant(itemId, string.Empty, delta, _clock.GetUtcNow())
+                : current with
+                {
+                    Reasoning = (current.Reasoning ?? string.Empty) + delta,
+                    ReasoningSince = current.ReasoningSince ?? _clock.GetUtcNow(),
+                };
+        }
+    }
+
+    void IAssistantStream.OnReasoningCompleted(string itemId)
+    {
+        lock (_liveGate)
+        {
+            // The text stays: the log now holds the finished thinking, but a view that is mid-poll should
+            // still see the last of it rather than the row blinking empty before the answer arrives.
+            if (_live is { } current && current.ItemId == itemId && current.Reasoning is not null)
+            {
+                _live = current with { ReasoningSince = null };
             }
         }
     }
@@ -200,6 +267,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 Model = config.Model,
                 ApiKey = config.ApiKey,
                 Timeout = config.Timeout,
+                ReasoningEffort = config.ReasoningEffort,
             });
 
             llm = client;
@@ -246,6 +314,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             tools.Register(new DesktopClipboardSetTool());
         }
 
+        RegisterMcpTools(tools, _context.Settings.Load().Mcp);
+
         _toolNames = tools.Specs.Select(spec => spec.Name).ToList();
 
         var governance = new DesktopGovernance(_context);
@@ -259,10 +329,12 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             // not a desktop tool is denied because nothing else is registered.
             governance,
             _context.Approvals,
-            SkillHooks(_workspace),
+            TurnHooks(_workspace),
             assembler: assembler,
             options: turnOptions,
-            stream: this);
+            stream: this,
+            failures: _failures,
+            clock: _clock);
 
         _loop = new TurnLoop(_context.Queue, runner, _context.Session);
         _stop = new CancellationTokenSource();
@@ -272,20 +344,121 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         _reason = reason;
     }
 
-    /// <summary>Skills already in the workspace are injected; nothing is fabricated when there are none.</summary>
-    private static HookRegistry SkillHooks(string workspace)
+    /// <summary>
+    /// The hooks a turn runs: what it already knows, and what it leaves behind.
+    /// <para>
+    /// Memory is always registered, unlike skills. Skills need a workspace to load from, but the memory store
+    /// always exists — and registering it only when non-empty is how it stayed empty for so long: there was no
+    /// first record for such a condition to ever notice.
+    /// </para>
+    /// </summary>
+    private HookRegistry TurnHooks(string workspace)
     {
         var hooks = new HookRegistry();
-        var loaded = new SkillLoader().Load(workspace);
 
+        hooks.Register(new MemoryRecallHook(_context.Memory));
+        hooks.Register(new MemoryDistilHook(_context.Memory, _context.Session, _clock));
+
+        var disabled = _context.Settings.Load().Skills.Disabled.ToHashSet(StringComparer.Ordinal);
+        var loaded = new SkillLoader().Load(workspace);
         if (loaded.Skills.Count > 0)
         {
             var registry = new InMemorySkillRegistry();
-            registry.Reload(loaded.Skills);
+
+            // A skill the person switched off is not loaded at all, rather than loaded and filtered at use:
+            // the point of switching one off is that it stops being part of the prompt, not that it becomes
+            // something to reason about excluding.
+            registry.Reload(loaded.Skills.Where(skill => !disabled.Contains(skill.SkillId)).ToList());
             hooks.Register(new SkillInjectionHook(registry));
         }
 
         return hooks;
+    }
+
+    /// <summary>
+    /// Starts the configured MCP servers and offers their tools to the model.
+    /// <para>
+    /// Best-effort per server, and deliberately: one server that will not start must not cost the model the
+    /// tools of the others, nor take the whole consumer down. What went wrong is recorded in
+    /// <see cref="McpNote"/> rather than thrown — a settings save should not fail over a server that happens to
+    /// be down, and "the tool you wanted is missing" is a far worse thing to debug than a line naming the
+    /// server that refused.
+    /// </para>
+    /// </summary>
+    private void RegisterMcpTools(InMemoryToolRegistry tools, McpSettings settings)
+    {
+        McpNote = null;
+
+        if (!settings.Enabled || settings.Servers.Count == 0)
+        {
+            return;
+        }
+
+        var failures = new List<string>();
+
+        foreach (var server in settings.Servers)
+        {
+            IMcpClient client;
+            try
+            {
+                client = new StdioMcpClient(new McpServerConfig
+                {
+                    Name = server.Name,
+                    Command = server.Command,
+                    Arguments = server.Arguments,
+                    WorkingDirectory = server.WorkingDirectory,
+                    CallTimeout = TimeSpan.FromSeconds(Math.Max(1, server.CallTimeoutSeconds)),
+                });
+
+                client.StartAsync().GetAwaiter().GetResult();
+            }
+            catch (Exception error)
+            {
+                failures.Add($"{server.Name}: {error.Message}");
+                continue;
+            }
+
+            _mcpClients.Add(client);
+
+            try
+            {
+                foreach (var descriptor in client.ListToolsAsync().GetAwaiter().GetResult())
+                {
+                    // Namespaced so two servers can offer the same tool name without one shadowing the other,
+                    // and so a reader can tell where a tool came from.
+                    tools.Register(new NamespacedMcpTool(client, server.Name, descriptor));
+                }
+            }
+            catch (Exception error)
+            {
+                failures.Add($"{server.Name}: tools/list 失败（{error.Message}）");
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            McpNote = string.Join("；", failures);
+        }
+    }
+
+    /// <summary>Stops the servers this consumer started, so a reconfigure leaves no child processes behind.</summary>
+    private async Task StopMcpAsync()
+    {
+        foreach (var client in _mcpClients)
+        {
+            try
+            {
+                await client.StopAsync().ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                Console.Error.WriteLine($"mcp server did not stop cleanly: {error.Message}");
+            }
+
+            await client.DisposeAsync().ConfigureAwait(false);
+        }
+
+        _mcpClients.Clear();
     }
 
     /// <summary>
@@ -294,29 +467,31 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// </summary>
     private async Task StopAsync()
     {
-        if (_stop is null || _running is null)
+        if (_stop is not null && _running is not null)
         {
-            return;
+            await _stop.CancelAsync().ConfigureAwait(false);
+
+            try
+            {
+                await _running.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: the loop was waiting for work.
+            }
+
+            _stop.Dispose();
+            _http?.Dispose();
+
+            _stop = null;
+            _running = null;
+            _loop = null;
+            _http = null;
         }
 
-        await _stop.CancelAsync().ConfigureAwait(false);
-
-        try
-        {
-            await _running.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected: the loop was waiting for work.
-        }
-
-        _stop.Dispose();
-        _http?.Dispose();
-
-        _stop = null;
-        _running = null;
-        _loop = null;
-        _http = null;
+        // Outside the guard on purpose: a consumer that never started still may have started servers, and a
+        // child process left behind is invisible until someone notices the machine is busy.
+        await StopMcpAsync().ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

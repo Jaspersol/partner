@@ -14,10 +14,11 @@ import type {
   RuntimeSettings,
 } from '../src/api'
 import MemoryView from '../src/views/MemoryView.vue'
-import QueueView from '../src/views/QueueView.vue'
 import SessionView from '../src/views/SessionView.vue'
 import Composer from '../src/components/Composer.vue'
 import SettingsViewComponent from '../src/views/SettingsView.vue'
+import McpView from '../src/views/McpView.vue'
+import SkillsView from '../src/views/SkillsView.vue'
 
 /**
  * View behaviour with a stub API. The stub implements the same interface the real client does, so the
@@ -33,10 +34,44 @@ interface Calls {
   recalls: string[]
   submits: { payload: string; source: string }[]
   removals: { seq: number; kind: string }[]
+  tierChanges: { recordId: string; tier: string }[]
 }
 
+/**
+ * The settings a stubbed API reports. Module level because a test that changes one segment (a skills deny
+ * list, say) still has to build its override from the whole shape.
+ */
+const SETTINGS_FIXTURE: SettingsView = {
+  input: {
+    enabled: false,
+    deviceId: null,
+    silenceThreshold: 0.03,
+    utteranceGapMs: 1200,
+    sentenceGapMs: 450,
+    windowSeconds: 8,
+    asrStream: false,
+    maxSplitChars: 40,
+  },
+  output: {
+    enabled: false,
+    deviceId: null,
+    voice: null,
+    speed: 1,
+    gapMs: 0,
+    drainMs: 400,
+    sampleRate: 24000,
+    muteDuringTts: true,
+  },
+  asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+  tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+  model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+  desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+  mcp: { enabled: false, servers: [], allowedTools: [] },
+  skills: { disabled: [] },
+};
+
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
-  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [] }
+  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [], tierChanges: [] }
 
   const session: SessionViewData = {
     lastSeq: 3,
@@ -61,32 +96,11 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     { recordId: 'm1', tier: 'Semantic', scope: 'Global', body: 'likes jasmine tea', createdAt: '2026-09-26T10:00:00+00:00', validTo: null, supersededBy: null, editedBy: null, importance: 0.9 },
   ]
 
-  const settings: SettingsView = {
-    input: {
-      enabled: false,
-      deviceId: null,
-      silenceThreshold: 0.03,
-      utteranceGapMs: 1200,
-      sentenceGapMs: 450,
-      windowSeconds: 8,
-      asrStream: false,
-      maxSplitChars: 40,
-    },
-    output: {
-      enabled: false,
-      deviceId: null,
-      voice: null,
-      speed: 1,
-      gapMs: 0,
-      drainMs: 400,
-      sampleRate: 24000,
-      muteDuringTts: true,
-    },
-    asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-    tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-    model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false },
-            desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
-  }
+/**
+ * The settings a stubbed API reports. Module level because a test that changes one segment (a skills deny
+ * list, say) still has to build its override from the whole shape.
+ */
+
 
   const stub: PartnerApiSurface = {
     session: vi.fn(async () => session),
@@ -109,6 +123,11 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
       return itemId !== 'finished'
     }),
     memory: vi.fn(async () => memory),
+    memoryAll: vi.fn(async () => memory),
+    skills: vi.fn(async () => ({ skills: [], warnings: [] })),
+    setMemoryTier: vi.fn(async (recordId: string, tier: string) => {
+      calls.tierChanges.push({ recordId, tier })
+    }),
     recall: vi.fn(async (query: string): Promise<RecallHit[]> => {
       calls.recalls.push(query)
       return [{ recordId: 'm1', body: 'likes jasmine tea', total: 0.75, reasons: ['lexical', 'recency'] }]
@@ -120,17 +139,20 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
       calls.deletes.push(recordId)
     }),
     memoryRevisions: vi.fn(async (): Promise<MemoryRevision[]> => [{ at: '2026-09-26T10:00:09+00:00', before: 'likes tea', after: 'likes jasmine tea', actor: 'Human' }]),
-    settings: vi.fn(async () => settings),
+    settings: vi.fn(async () => SETTINGS_FIXTURE),
     saveSettings: vi.fn(async (patch: RuntimeSettings) => {
       calls.saves.push(patch)
       return {
-        settings: settings as unknown as SettingsView,
+        settings: SETTINGS_FIXTURE as unknown as SettingsView,
         consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
         voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
         compaction: null,
       }
     }),
-    uploadMedia: vi.fn(async () => ({ mediaId: 'm1', contentType: 'image/png', bytes: 2048 })),
+    uploadMedia: vi.fn(async (file: Blob) => {
+      const name = (file as File).name ?? 'a.png'
+      return { mediaId: 'm1', contentType: 'image/png', fileName: name, path: `C:/w/media/m1__${name}`, bytes: 2048 }
+    }),
     approvals: vi.fn(async () => ({ timeoutSeconds: 120, pending: [] })),
     answerApproval: vi.fn(async () => {}),
     desktop: vi.fn(async () => ({ enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [], lastObsId: null, entityCount: 0, entities: [] })),
@@ -239,6 +261,65 @@ describe('context meter', () => {
   })
 })
 
+describe('a view that has not read yet', () => {
+  // The defect: every list starts with empty data, and the empty state was the same row as the pending state.
+  // So the first thing a reader saw was a confident wrong answer — 「（无匹配事件）」 on a session that had not
+  // been asked about yet — said before the request that would have contradicted it even went out.
+
+  it('says it is still reading, rather than that there is nothing', async () => {
+    // Assigned inside the executor, which TypeScript cannot see — so the definite-assignment form rather
+    // than a nullable that would be narrowed to `null` and then called.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+
+    const { stub } = createStub({
+      session: vi.fn(async () => {
+        await held
+        return { lastSeq: 0, items: [] } as unknown as SessionViewData
+      }),
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+
+    // Before the answer arrives.
+    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(true)
+    expect(wrapper.find('.empty').exists()).toBe(false)
+
+    release()
+    await flushPromises()
+
+    // After it, the same empty list is a real answer and says so.
+    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(false)
+    expect(wrapper.find('.empty').text()).toContain('无匹配事件')
+  })
+
+  it('does not fall back to "still reading" when a poll fails after a good one', async () => {
+    // A failed refresh must leave the last good list on screen with an error beside it. Replacing a
+    // conversation with a spinner would be a worse answer than the stale one.
+    let call = 0
+    const { stub } = createStub({
+      session: vi.fn(async () => {
+        call++
+        if (call === 1) return { lastSeq: 1, items: [{ seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'kept', originalBody: null, revisionCount: 0 }] } as unknown as SessionViewData
+        throw new Error('boom')
+      }),
+    })
+
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(false)
+
+    await wrapper.vm.$.exposed?.refresh?.()
+    await flushPromises()
+
+    expect(wrapper.find('[data-test=error]').text()).toContain('boom')
+    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="session-list"] li').length).toBe(1)
+  })
+})
+
 describe('session removal', () => {
   it('deletes the selected event and clears the selection', async () => {
     const { stub, calls } = createStub()
@@ -248,7 +329,12 @@ describe('session removal', () => {
     await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
     await flushPromises()
 
+    // Physical and irreversible, so the panel arms first; a single click must not reach the server.
     await wrapper.find('[data-test="session-delete"]').trigger('click')
+    await flushPromises()
+    expect(calls.removals).toEqual([])
+
+    await wrapper.find('[data-test="session-delete-confirm"]').trigger('click')
     await flushPromises()
 
     expect(calls.removals).toEqual([{ seq: 3, kind: 'delete' }])
@@ -279,6 +365,7 @@ describe('session removal', () => {
   })
 
   it('can be backed out of', async () => {
+
     const { stub, calls } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -295,6 +382,88 @@ describe('session removal', () => {
     expect(wrapper.find('[data-test="session-retract-confirm"]').exists()).toBe(false)
   })
 
+  it('deletes from a row without selecting it first', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-test="session-list"] li')
+    await rows[1]?.find('[data-test="session-row-menu"]').trigger('click')
+    await rows[1]?.find('[data-test="session-row-delete"]').trigger('click')
+    await rows[1]?.find('[data-test="session-row-delete"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([{ seq: 3, kind: 'delete' }])
+    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已删除 #3')
+  })
+
+  it('puts the outcome line where it can be seen, not below the composer', async () => {
+    // It used to come after the composer, at the very bottom of the window: in a session a few hundred events
+    // long, the one line saying what just happened was the first thing to scroll out of sight. The toolbar does
+    // not scroll, so anything directly under it stays on screen for as long as the view is open.
+    const { stub } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="session-delete"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="session-delete-confirm"]').trigger('click')
+    await flushPromises()
+
+    const order = [...wrapper.element.querySelectorAll('[data-test]')].map((node) =>
+      node.getAttribute('data-test'),
+    )
+    expect(order.indexOf('session-notice')).toBeGreaterThan(-1)
+    expect(order.indexOf('session-notice')).toBeLessThan(order.indexOf('session-list'))
+    expect(order.indexOf('session-notice')).toBeLessThan(order.indexOf('composer'))
+  })
+
+  it('puts the reader\'s own removed message back in the box', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    // A retraction is physical: the text leaves the log for good, and the only copy left is the one the
+    // composer is holding. seq 1 is the reader's own message; the assistant's reply must not be resendable.
+    const rows = wrapper.findAll('[data-test="session-list"] li')
+    // The row's actions sit behind one affordance (S4), so the menu is opened the way a reader opens it.
+    await rows[0]?.find('[data-test="session-row-menu"]').trigger('click')
+    await rows[0]?.find('[data-test="session-restore"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('first')
+    // Closing the menu is what proves the assistant's reply is not resendable: the row is no longer open.
+    expect(rows[1]?.find('[data-test="session-restore"]').exists()).toBe(false)
+  })
+
+  it('hides the tool cards in results-only mode and shows them again', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: 4,
+        busy: false,
+        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
+        items: [
+          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'ask', originalBody: null, revisionCount: 0 },
+          { seq: 2, at: '2026-09-26T10:00:01+00:00', kind: 'ToolCall', source: 'Text', body: 'bash', originalBody: null, revisionCount: 0, meta: { id: 'c1', name: 'bash', args: '{}' } },
+          { seq: 4, at: '2026-09-26T10:00:03+00:00', kind: 'Assistant', source: 'Text', body: 'done', originalBody: null, revisionCount: 0 },
+        ],
+      })),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
+    await wrapper.find('[data-test="session-results-only"]').trigger('click')
+    expect(wrapper.findAll('[data-tool]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('ask')
+    expect(wrapper.text()).toContain('done')
+
+    await wrapper.find('[data-test="session-results-only"]').trigger('click')
+    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
+  })
+
   it('surfaces a refusal instead of pretending it worked', async () => {
     const { stub } = createStub({
       deleteEvent: vi.fn(async () => {
@@ -307,9 +476,50 @@ describe('session removal', () => {
     await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="session-delete"]').trigger('click')
+    await wrapper.find('[data-test="session-delete-confirm"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-test="error"]').text()).toContain('404')
+  })
+
+  it('lets an armed delete be backed out of', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-test="session-delete"]').trigger('click')
+    await wrapper.find('[data-test="session-delete-cancel"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([])
+    expect(wrapper.find('[data-test="session-delete"]').exists()).toBe(true)
+  })
+
+  it('shows a thinking row folded once the answer has landed', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: 5,
+        busy: false,
+        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
+        items: [
+          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: '几点了', originalBody: null, revisionCount: 0 },
+          { seq: 2, at: '2026-09-26T10:00:04+00:00', kind: 'Thinking', source: 'Text', body: '先确认时区', originalBody: null, revisionCount: 0 },
+          { seq: 5, at: '2026-09-26T10:00:05+00:00', kind: 'Assistant', source: 'Text', body: '下午三点', originalBody: null, revisionCount: 0 },
+        ],
+      })),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    // Folded: the reasoning is there to be consulted, not to be re-read on every scrollback. The answer is
+    // what the reader came for, and the reasoning sits next to it.
+    const row = wrapper.find('[data-test="session-thinking"]')
+    expect(row.exists()).toBe(true)
+    expect(row.attributes('open')).toBeUndefined()
+    expect(wrapper.text()).toContain('下午三点')
   })
 })
 
@@ -511,65 +721,6 @@ describe('session refresh cadence', () => {
   })
 })
 
-describe('queue view', () => {
-  it('summarises pending and failed work', async () => {
-    const { stub } = createStub()
-    const wrapper = mount(QueueView, { props: { api: stub } })
-    await flushPromises()
-
-    const summary = wrapper.find('[data-test="queue-summary"]').text()
-    expect(summary).toContain('待处理 1')
-    expect(summary).toContain('失败 1')
-  })
-
-  it('lists only what is still waiting to go in', async () => {
-    const { stub } = createStub()
-    const wrapper = mount(QueueView, { props: { api: stub } })
-    await flushPromises()
-
-    // The tab is the queue, not its history: the finished item is counted, never listed.
-    const rows = wrapper.findAll('[data-test=queue-list] li')
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.text()).toContain('pending work')
-    expect(wrapper.text()).not.toContain('disk unwritable')
-
-    const summary = wrapper.find('[data-test=queue-summary]').text()
-    expect(summary).toContain('待处理 1')
-    expect(summary).toContain('失败 1')
-  })
-
-  it('says so when nothing is queued, even with failures on the books', async () => {
-    const { stub } = createStub({
-      queue: vi.fn(async () => ({
-        headSeq: 2,
-        runningItemId: null,
-        depth: 0,
-        items: [
-          { itemId: 'q2', seq: 2, source: 'Text', status: 'Failed', enqueuedAt: '2026-09-26T10:00:00+00:00', startedAt: null, finishedAt: null, attempt: 2, error: 'disk unwritable', payload: 'backup' },
-        ],
-      })),
-    })
-    const wrapper = mount(QueueView, { props: { api: stub } })
-    await flushPromises()
-
-    expect(wrapper.findAll('[data-test=queue-list] li')).toHaveLength(0)
-    expect(wrapper.find('[data-test=queue-empty]').text()).toContain('当前没有待输入的内容')
-    expect(wrapper.find('[data-test=queue-summary]').text()).toContain('失败 1')
-  })
-
-  it('cancels an item and reports an item that is already finished', async () => {
-    const { stub, calls } = createStub({ cancel: vi.fn(async () => false) })
-    const wrapper = mount(QueueView, { props: { api: stub } })
-    await flushPromises()
-
-    await wrapper.findAll('[data-test="queue-cancel"]')[0]?.trigger('click')
-    await flushPromises()
-
-    expect(calls.cancels).toHaveLength(0)
-    expect(wrapper.find('[data-test="error"]').text()).toContain('无法取消')
-  })
-})
-
 describe('memory view', () => {
   it('marks validity and switches the list to recall hits', async () => {
     const { stub, calls } = createStub()
@@ -608,6 +759,142 @@ describe('memory view', () => {
     expect(calls.deletes).toEqual(['m1'])
     expect(wrapper.find('[data-test="memory-target"]').text()).toBe('未选中')
   })
+
+  it('lists retired memories and says what replaced them', async () => {
+    // "Fully visible" means the retired record is still there: the useful answer to a conflict is "what changed
+    // it", and that answer lives on the row that was replaced.
+    const { stub } = createStub({
+      memoryAll: vi.fn(async () => [
+        {
+          recordId: 'm1',
+          tier: 'Working',
+          scope: 'Recall',
+          body: '用户用 pnpm 作为包管理器',
+          createdAt: '2026-09-26T10:00:00+00:00',
+          lastRecalledAt: '2026-09-27T10:00:00+00:00',
+          validTo: '2026-09-28T10:00:00+00:00',
+          supersededBy: 'm2',
+          editedBy: 'Agent',
+          importance: 0.4,
+        },
+        {
+          recordId: 'm2',
+          tier: 'Semantic',
+          scope: 'Recall',
+          body: '用户改用 npm 作为包管理器了',
+          createdAt: '2026-09-28T10:00:00+00:00',
+          lastRecalledAt: null,
+          validTo: null,
+          supersededBy: null,
+          editedBy: null,
+          importance: 0.4,
+        },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-test="memory-list"] li')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.text()).toContain('已失效 → m2')
+    expect(rows[1]?.text()).toContain('有效')
+
+    // The tier is named, not shown as an enum value: "暂记" and "确定" answer questions a reader has.
+    expect(rows[0]?.find('[data-test="memory-row-tier"]').text()).toContain('暂记')
+    expect(rows[1]?.find('[data-test="memory-row-tier"]').text()).toContain('确定')
+  })
+
+  it('lets a person move a memory between tiers and re-reads afterwards', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-list"] li').trigger('click')
+    await flushPromises()
+
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-set-tier"]').setValue('Semantic')
+    await flushPromises()
+
+    expect(calls.tierChanges).toEqual([{ recordId: 'm1', tier: 'Semantic' }])
+    // The norm (ui.md): what is on screen is what the server kept, not what was sent.
+    expect(stub.memoryAll).toHaveBeenCalledTimes(2)
+  })
+})
+describe('skills view', () => {
+  it('lists a workspace skill and says whether it is in use', async () => {
+    const { stub } = createStub({
+      // Beta is switched off, and the deny list is what the page reads: a skill the server reports as disabled
+      // but the settings do not list would be saved straight back on, which is the bug this guards.
+      settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, skills: { disabled: ['beta'] } })),
+      skills: vi.fn(async () => ({
+        skills: [
+          { skillId: 'alpha', name: 'Alpha', description: '做某件事的做法', enabled: true, instructions: '第一步…' },
+          { skillId: 'beta', name: 'Beta', description: '另一件事', enabled: false, instructions: '别的…' },
+        ],
+        warnings: ['skills/broken: 缺少 SKILL.md'],
+      })),
+    })
+
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+
+    const items = wrapper.findAll('[data-test="skills-item"]')
+    expect(items).toHaveLength(2)
+    expect(wrapper.text()).toContain('做某件事的做法')
+    expect(wrapper.text()).toContain('1 / 2 启用')
+
+    // A skill that did not load is otherwise invisible, and "it just is not there" is the worst way to find out
+    // you wrote the front matter wrong.
+    expect(wrapper.text()).toContain('缺少 SKILL.md')
+  })
+
+  it('shows what a disabled skill still says, because that is what the choice is judged on', async () => {
+    const { stub } = createStub({
+      skills: vi.fn(async () => ({
+        skills: [{ skillId: 'alpha', name: 'Alpha', description: '做法', enabled: true, instructions: '第一步：先读 SKILL.md' }],
+        warnings: [],
+      })),
+    })
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('第一步：先读 SKILL.md')
+    await wrapper.find('[data-test="skills-instructions-toggle"]').trigger('click')
+    expect(wrapper.text()).toContain('第一步：先读 SKILL.md')
+  })
+})
+
+describe('mcp view', () => {
+
+  it('refuses to save a server with no command, rather than failing later at start-up', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(McpView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="mcp-server-add"]').trigger('click')
+    await wrapper.find('[data-test="mcp-save"]').trigger('click')
+    await flushPromises()
+
+    // A blank command would otherwise start a process nobody can identify, and the failure would be one line
+    // in a log at a moment when the reason is not obvious.
+    expect(calls.saves).toEqual([])
+    expect(wrapper.find('[data-test="error"]').text()).toContain('名字和命令')
+  })
+
+  it('saves a configured server as a settings change', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(McpView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="mcp-server-add"]').trigger('click')
+    await wrapper.find('[data-test="mcp-server-name"]').setValue('files')
+    await wrapper.find('[data-test="mcp-server-command"]').setValue('node')
+    await wrapper.find('[data-test="mcp-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves).toHaveLength(1)
+    expect(calls.saves[0]?.mcp.servers[0]?.name).toBe('files')
+  })
 })
 
 describe('settings view', () => {
@@ -643,6 +930,89 @@ describe('settings view', () => {
     expect(calls.saves[0]?.model.supportsImages).toBe(true)
   })
 
+  it('edits the gear menu itself: add, rename, reorder, remove, and set the default', async () => {
+    // The menu is stored state now, not a constant in the file, so the editor has to round-trip the order
+    // it was given and put the default on a gear that is actually in the list.
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const rows = () => wrapper.findAll('[data-test="model-gear"]')
+    expect(rows().map((node) => (node.element as HTMLInputElement).value))
+      .toEqual(['off', 'low', 'medium', 'high'])
+
+    // Rename is committed on change and lower-cased: casing is not a different gear.
+    await rows()[1].setValue('  MINIMAL ')
+    await rows()[1].trigger('change')
+    expect(rows().map((node) => (node.element as HTMLInputElement).value))
+      .toEqual(['off', 'minimal', 'medium', 'high'])
+
+    // The default moves to a gear in the list rather than being typed blind.
+    await wrapper.findAll('[data-test="model-gear-set-default"]')[3].trigger('click')
+    expect(wrapper.find<HTMLInputElement>('[data-test="model-reasoning-effort"]').element.value).toBe('high')
+
+    // Moving the first row down swaps it with its neighbour; the rest keep their order.
+    await wrapper.findAll('[data-test="model-gear-down"]')[0].trigger('click')
+    expect(rows().map((node) => (node.element as HTMLInputElement).value))
+      .toEqual(['minimal', 'off', 'medium', 'high'])
+
+    await wrapper.find('[data-test="model-gear-add"]').trigger('click')
+    expect(rows()).toHaveLength(5)
+
+    // The new row is empty; typing into it is what makes it a gear.
+    await rows()[4].setValue('turbo')
+    await rows()[4].trigger('change')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[0]?.model.reasoningGears).toEqual(['minimal', 'off', 'medium', 'high', 'turbo'])
+    expect(calls.saves[0]?.model.reasoningEffort).toBe('high')
+  })
+
+  it('drops a duplicate rather than storing a menu entry that can never be chosen', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const rows = () => wrapper.findAll('[data-test="model-gear"]')
+
+    // Renaming the third row to "off" makes it a repeat. The row the user just typed wins and the earlier
+    // copy goes, so the caret stays in a row that still holds what they entered.
+    await rows()[2].setValue('off')
+    await rows()[2].trigger('change')
+    expect(rows().map((node) => (node.element as HTMLInputElement).value)).toEqual(['low', 'off', 'high'])
+
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[0]?.model.reasoningGears).toEqual(['low', 'off', 'high'])
+  })
+
+  it('drops a row that was left blank instead of storing a gap in the menu', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="model-gear-add"]').trigger('click')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    // The added row is empty and never reaches the server: a blank entry would be a menu item that reads
+    // as a level that thinks very little, or as a silent no-op.
+    expect(calls.saves[0]?.model.reasoningGears).toEqual(['off', 'low', 'medium', 'high'])
+  })
+
+  it('marks which gear is the default instead of leaving it to be inferred', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // The stored default is "medium"; the row next to it says so, so the two cannot silently disagree.
+    const marks = wrapper.findAll('[data-test="model-gear-default"]')
+    expect(marks).toHaveLength(1)
+    expect(wrapper.findAll('[data-test="model-gear"]')[2].element.parentElement?.textContent).toContain('默认')
+  })
+
   it('never fills the key field from the server and says whether one is stored', async () => {
     const { stub } = createStub({
       settings: vi.fn(async () => ({
@@ -650,8 +1020,10 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false },
-    desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+      desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+      mcp: { enabled: false, servers: [], allowedTools: [] },
+      skills: { disabled: [] },
       })),
     })
 
@@ -671,8 +1043,10 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false },
-    desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+      desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+      mcp: { enabled: false, servers: [], allowedTools: [] },
+      skills: { disabled: [] },
       })),
     })
 
@@ -746,8 +1120,10 @@ describe('settings view', () => {
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false },
-            desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+        desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+        mcp: { enabled: false, servers: [], allowedTools: [] },
+        skills: { disabled: [] },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -820,8 +1196,10 @@ describe('settings view', () => {
             output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
             asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
             tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
-            model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens, supportsImages: patch.model.supportsImages },
+            model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens, supportsImages: patch.model.supportsImages, reasoningEffort: patch.model.reasoningEffort, reasoningGears: patch.model.reasoningGears },
             desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
+            mcp: { enabled: false, servers: [], allowedTools: [] },
+            skills: { disabled: [] },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
@@ -845,6 +1223,96 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test=settings-status]').text()).toContain('压缩')
   })
 
+  it('waits for the button for every field, including the switches', async () => {
+    // Four toggles saved themselves the moment they were flipped while the rest waited for the button at the
+    // bottom. Nothing on the page said which was which, so "why did this one apply and that one not" had no
+    // answer available to the reader. Now the page saves or it does not.
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    expect(calls.saves).toEqual([])
+
+    for (const field of ['input-enabled', 'input-asr-stream', 'output-enabled', 'output-mute-during-tts']) {
+      const box = wrapper.find(`[data-test="${field}"]`)
+      expect(box.exists()).toBe(true)
+      await box.setValue(true)
+      await flushPromises()
+      expect(calls.saves).toEqual([])
+    }
+
+    // …and the button commits all of them at once.
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves).toHaveLength(1)
+    expect(calls.saves[0]?.input.enabled).toBe(true)
+    expect(calls.saves[0]?.output.muteDuringTts).toBe(true)
+  })
+
+  it('says when there is something to save, and stops saying so once saved', async () => {
+    // Without this, explicit saving just trades one surprise for another: the views are `v-if`, so switching
+    // tabs would throw the edits away with no word. The dirty mark is what makes the state legible.
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
+
+    await wrapper.find<HTMLInputElement>('[data-test="utterance-gap"]').setValue('750')
+    expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    // Saved, so not dirty any more — including because `apply()` rewrote the form underneath it.
+    expect(calls.saves).toHaveLength(1)
+    expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
+
+    // Typing it back to where it was is also not a change.
+    await wrapper.find<HTMLInputElement>('[data-test="utterance-gap"]').setValue('1200')
+    expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
+  })
+
+  it('folds groups away, and remembers which ones between visits', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // Open on arrival: folding by default would hide five of six groups from someone who came to change one
+    // thing, and only the reader knows which thing.
+    const asr = () => wrapper.find('[data-test="settings-group-asr"]')
+    expect(asr().attributes('aria-expanded')).toBe('true')
+
+    await asr().trigger('click')
+    expect(asr().attributes('aria-expanded')).toBe('false')
+    // The inline style rather than `isVisible()`: happy-dom does not fold 's \n    // into its visibility calculation, so `isVisible()` would report a folded group as visible.
+    expect(wrapper.find('#settings-body-asr').attributes('style')).toContain('display: none')
+
+    // Remembered, because the views are `v-if` — a control that forgets itself on every tab switch is worse
+    // than no control.
+    const second = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    expect(second.find('[data-test="settings-group-asr"]').attributes('aria-expanded')).toBe('false')
+    second.unmount()
+
+    await wrapper.find('[data-test="settings-group-asr"]').trigger('click')
+    expect(wrapper.find('#settings-body-asr').attributes('style') ?? '').not.toContain('display: none')
+  })
+
+  it('folds and unfolds everything at once', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="settings-fold-all"]').trigger('click')
+    const expanded = () => wrapper.findAll('[aria-expanded="true"]').length
+    expect(expanded()).toBe(0)
+
+    // The label says what the button will do, not what just happened.
+    expect(wrapper.find('[data-test="settings-fold-all"]').text()).toContain('展开全部')
+    await wrapper.find('[data-test="settings-fold-all"]').trigger('click')
+    expect(expanded()).toBe(6)
+  })
+
   it('loads the stored values and shows what the API kept', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
@@ -861,5 +1329,33 @@ describe('settings view', () => {
     const status = wrapper.find('[data-test="settings-status"]').text()
     expect(status).toContain('已保存')
     expect(status).toMatch(/\d{2}:\d{2}:\d{2}/)
+  })
+
+  it('saves a voice change without erasing the servers and skills decided on their own pages', async () => {
+    // The whole settings object goes out in one PUT, so a segment this page never reads comes back empty
+    // unless it was read. Saving a voice setting would then silently delete every MCP server and every
+    // skill the person had switched off.
+    const { stub, calls } = createStub({
+      settings: vi.fn(async () => ({
+        ...SETTINGS_FIXTURE,
+        mcp: {
+          enabled: true,
+          servers: [{ name: 'files', command: 'node', arguments: ['server.js'], workingDirectory: null, callTimeoutSeconds: 30 }],
+          allowedTools: ['read_file'],
+        },
+        skills: { disabled: ['greet'] },
+      })),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLInputElement>('[data-test="utterance-gap"]').setValue('900')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves).toHaveLength(1)
+    expect(calls.saves[0]?.mcp.servers.map((server) => server.name)).toEqual(['files'])
+    expect(calls.saves[0]?.mcp.allowedTools).toEqual(['read_file'])
+    expect(calls.saves[0]?.skills.disabled).toEqual(['greet'])
   })
 })

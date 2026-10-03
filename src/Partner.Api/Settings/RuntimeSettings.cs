@@ -1,3 +1,5 @@
+using Partner.Core.Agent.Llm;
+
 namespace Partner.Api.Settings;
 
 /// <summary>
@@ -21,6 +23,9 @@ public sealed record RuntimeSettings
     public ModelSettings Model { get; init; } = new();
 
     public DesktopSettings Desktop { get; init; } = new();
+
+    public McpSettings Mcp { get; init; } = new();
+    public SkillSettings Skills { get; init; } = new();
 
     public static RuntimeSettings Default { get; } = new();
 }
@@ -83,6 +88,96 @@ public static class ApprovalGears
 
     public static string Normalize(string? value) =>
         Values.FirstOrDefault(gear => string.Equals(gear, value, StringComparison.OrdinalIgnoreCase)) ?? All;
+}
+
+/// <summary>
+/// MCP servers (design doc §2.6.3).
+/// <para>
+/// Off by default, and more strongly so than the desktop: an enabled server <b>starts a child process</b> the
+/// moment the consumer starts, and that process gets whatever it is configured with. Enabling this is not
+/// "let the model ask a tool" — it is "let something run".
+/// </para>
+/// <para>
+/// So the tools reach the model through the same governance as everything else: an MCP tool is a
+/// <c>ToolDecision.Ask</c> unless the gear says otherwise, and the settings below say which.
+/// </para>
+/// </summary>
+public sealed record McpSettings
+{
+    /// <summary>Whether configured servers are started and their tools offered to the model.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>The servers to start. Empty is the default, and means this capability does nothing at all.</summary>
+    public IReadOnlyList<McpServerSettings> Servers { get; init; } = Array.Empty<McpServerSettings>();
+
+    /// <summary>
+    /// Which MCP tools may run without asking. Same reading as the desktop gear: a tool is asked for unless it
+    /// is on the allow list, so an unconfigured server is still ask-everything rather than run-anything.
+    /// </summary>
+    public IReadOnlyList<string> AllowedTools { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Value equality that compares the lists. Same reason as <see cref="DesktopSettings.Equals"/>: a record
+    /// holding a list compares it by reference, so two defaults would look different and every settings save
+    /// would restart the consumer — which here means killing child processes.
+    /// </summary>
+    public bool Equals(McpSettings? other) =>
+        other is not null
+        && Enabled == other.Enabled
+        && Servers.SequenceEqual(other.Servers)
+        && AllowedTools.SequenceEqual(other.AllowedTools, StringComparer.Ordinal);
+
+    public override int GetHashCode() => HashCode.Combine(Enabled, Servers.Count, AllowedTools.Count);
+}
+
+/// <summary>One MCP server, in the shape the settings file stores it.</summary>
+public sealed record McpServerSettings : IEquatable<McpServerSettings>
+{
+    public required string Name { get; init; }
+
+    public required string Command { get; init; }
+
+    public IReadOnlyList<string> Arguments { get; init; } = Array.Empty<string>();
+
+    public string? WorkingDirectory { get; init; }
+
+    /// <summary>Per-call timeout, seconds. A server that never answers must not park the turn.</summary>
+    public int CallTimeoutSeconds { get; init; } = 30;
+
+    public bool Equals(McpServerSettings? other) =>
+        other is not null
+        && Name == other.Name
+        && Command == other.Command
+        && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
+        && WorkingDirectory == other.WorkingDirectory
+        && CallTimeoutSeconds == other.CallTimeoutSeconds;
+
+    public override int GetHashCode() =>
+        HashCode.Combine(Name, Command, Arguments.Count, WorkingDirectory, CallTimeoutSeconds);
+}
+
+/// <summary>
+/// Which workspace skills are switched off.
+/// <para>
+/// Stored here rather than written into each <c>SKILL.md</c>: a skill is a file in the workspace that
+/// somebody else may be editing, and "I do not want this one right now" is a decision about this installation
+/// rather than a fact about the skill. Keeping them apart also means replacing a skill file does not silently
+/// re-enable something a person deliberately turned off.
+/// </para>
+/// <para>
+/// A deny list rather than an allow list, so a skill added later is on by default: a new skill that first had
+/// to be switched on to do anything would be an unpleasant surprise.
+/// </para>
+/// </summary>
+public sealed record SkillSettings
+{
+    /// <summary>Skill ids to skip when loading. An id that no longer exists is simply never read.</summary>
+    public IReadOnlyList<string> Disabled { get; init; } = Array.Empty<string>();
+
+    public bool Equals(SkillSettings? other) =>
+        other is not null && Disabled.SequenceEqual(other.Disabled, StringComparer.Ordinal);
+
+    public override int GetHashCode() => HashCode.Combine(Disabled.Count);
 }
 
 /// <summary>Mirrors <c>VoiceInputSetting</c>.</summary>
@@ -195,7 +290,30 @@ public sealed record ModelSettings
     /// </para>
     /// </summary>
     public bool SupportsImages { get; init; }
+
+    /// <summary>
+    /// 默认思考挡位，随 <c>reasoning_effort</c> 出现在每次补全里——包括用户没有为这一条消息另选的情况。
+    /// <para>
+    /// 它必须出现在 <see cref="ReasoningGears"/> 里（保存时校验），否则会话里的下拉预选不到任何一项。
+    /// 单独一条消息可以用别的挡位，见 <see cref="InputItem.ReasoningEffort"/>。
+    /// </para>
+    /// <para>
+    /// 值本身**不被**限制在 <see cref="ReasoningEfforts.Values"/>：端点可以自造词，拒掉一个服务端本会
+    /// 认的词比原样发出去更糟。<c>off</c>（或留空）表示**不发这个字段**，而不是发一个值。
+    /// </para>
+    /// </summary>
+    public string ReasoningEffort { get; init; } = ReasoningEfforts.Default;
+
+    /// <summary>
+    /// 挡位清单：UI 里能选的那些词，按展示顺序。用户在设置里增删改。
+    /// <para>
+    /// 这是**菜单**不是约束——<see cref="ReasoningEffort"/> 仍然是自由文本，删掉一个词只会让它不再出现在
+    /// 菜单里，已经用这个词发出去的消息不受影响。清单为空时 UI 回退到内置默认清单，否则会给出空菜单。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> ReasoningGears { get; init; } = ReasoningEfforts.Values;
 }
+
 
 /// <summary>What the API returns: the same shape, minus the secret, plus whether one is stored.</summary>
 public sealed record ModelSettingsView
@@ -214,6 +332,11 @@ public sealed record ModelSettingsView
     public int MaxTokens { get; init; } = 4096;
 
     public bool SupportsImages { get; init; }
+
+    public string ReasoningEffort { get; init; } = ReasoningEfforts.Default;
+
+    /// <summary>The gears the UI offers, in order. See <see cref="ModelSettings.ReasoningGears"/>.</summary>
+    public IReadOnlyList<string> ReasoningGears { get; init; } = ReasoningEfforts.Values;
 }
 
 public sealed record SettingsView
@@ -230,6 +353,10 @@ public sealed record SettingsView
 
     public DesktopSettings Desktop { get; init; } = new();
 
+    public McpSettings Mcp { get; init; } = new();
+
+    public SkillSettings Skills { get; init; } = new();
+
     public static SettingsView From(RuntimeSettings settings) => new()
     {
         Input = settings.Input,
@@ -245,10 +372,21 @@ public sealed record SettingsView
             ContextTokens = settings.Model.ContextTokens,
             MaxTokens = settings.Model.MaxTokens,
             SupportsImages = settings.Model.SupportsImages,
+            ReasoningEffort = ReasoningEfforts.Normalize(settings.Model.ReasoningEffort),
+            // Normalized here too, so the list the editor writes back is exactly what it was handed.
+            ReasoningGears = settings.Model.ReasoningGears
+                .Select(ReasoningEfforts.Normalize)
+                .Where(gear => gear.Length > 0)
+                .ToArray(),
         },
+        // Without these the settings response drops the sections, and the UI — which refills its form from the
+        // response — flips the switches back to off the moment it is saved.
+        Desktop = settings.Desktop,
+
+        Mcp = settings.Mcp,
 
         // Without this the settings response drops the section, and the UI — which refills its form from the
-        // response — flips the switch back to off the moment it is saved.
-        Desktop = settings.Desktop,
+        // response — forgets which skills were switched off the moment it is saved.
+        Skills = settings.Skills,
     };
 }

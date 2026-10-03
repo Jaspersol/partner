@@ -36,8 +36,6 @@ public sealed class FileAppendOnlySink : IAppendOnlySink
         return stream;
     }
 
-    public string FilePath => _path;
-
     public long Length => DurableLength + _buffer.Count;
 
     public long DurableLength { get; private set; }

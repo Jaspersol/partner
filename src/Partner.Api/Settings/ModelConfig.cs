@@ -17,7 +17,8 @@ public sealed record ModelConfig(
     TimeSpan Timeout,
     string Origin,
     int ContextTokens = 32768,
-    int MaxTokens = 4096)
+    int MaxTokens = 4096,
+    string ReasoningEffort = ReasoningEfforts.Default)
 {
     public static (ModelConfig? Config, string Reason) Resolve(RuntimeSettings settings)
     {
@@ -33,7 +34,8 @@ public sealed record ModelConfig(
                 TimeSpan.FromSeconds(fromSettings.TimeoutSeconds),
                 "设置",
                 fromSettings.ContextTokens,
-                fromSettings.MaxTokens), "运行中（设置）");
+                fromSettings.MaxTokens,
+                fromSettings.ReasoningEffort), "运行中（设置）");
         }
 
         var (options, reason) = HttpLlmClient.OptionsFromEnvironment();
@@ -42,7 +44,13 @@ public sealed record ModelConfig(
             return (null, $"{reason}；设置里也没有填 model.baseUrl 与 model.model");
         }
 
-        return (new ModelConfig(options.BaseUrl, options.Model, options.ApiKey, options.Timeout, "环境变量"), "运行中（环境变量）");
+        return (new ModelConfig(
+            options.BaseUrl,
+            options.Model,
+            options.ApiKey,
+            options.Timeout,
+            "环境变量",
+            ReasoningEffort: options.ReasoningEffort), "运行中（环境变量）");
     }
 
     /// <summary>True when the two describe a different endpoint, so a restart is warranted.</summary>
@@ -57,5 +65,11 @@ public sealed record ModelConfig(
         || left.MaxTokens != right.MaxTokens
         // Whether the model takes pictures decides which tools exist (the screenshot fallback), and the tool
         // table is built at start — so this belongs with the rest of what a restart is for.
-        || left.SupportsImages != right.SupportsImages;
+        || left.SupportsImages != right.SupportsImages
+        // The thinking gear is part of the client the consumer builds, so it takes a restart like the rest of
+        // the endpoint's shape — unlike the desktop approval gear, which governance reads live.
+        || !string.Equals(
+            ReasoningEfforts.Normalize(left.ReasoningEffort),
+            ReasoningEfforts.Normalize(right.ReasoningEffort),
+            StringComparison.Ordinal);
 }

@@ -71,8 +71,57 @@ public sealed record MemoryScore(
     }
 }
 
-/// <summary>A scored, explainable retrieval hit.</summary>
-public sealed record MemoryHit(string RecordId, string Body, MemoryScore Score, IReadOnlyList<string> Reasons);
+/// <summary>
+/// A scored, explainable retrieval hit.
+/// <para>
+/// Carries when it was recorded and which tier it came from, because a hook that injects it into a prompt has
+/// to be able to say how old it is. "The user prefers dark mode" read as fact is different from the same line
+/// read as something from three months ago that may since have changed — and the model can only weigh that if
+/// it is told.
+/// </para>
+/// </summary>
+public sealed record MemoryHit(
+    string RecordId,
+    string Body,
+    MemoryScore Score,
+    IReadOnlyList<string> Reasons,
+    DateTimeOffset CreatedAt,
+    MemoryTier Tier,
+    DateTimeOffset Now);
+
+/// <summary>How old a recalled memory is, in the words a reader would use.</summary>
+public static class MemoryAge
+{
+    /// <summary>
+    /// A short phrase for a record's age, relative to <paramref name="now"/>.
+    /// <para>
+    /// Deliberately vague past a month. "42 days ago" invites the model to reason about a day count it cannot
+    /// use, whereas "recorded a while ago" correctly signals that this is background rather than a fact the
+    /// person just stated.
+    /// </para>
+    /// </summary>
+    public static string Describe(DateTimeOffset createdAt, DateTimeOffset now)
+    {
+        var age = now - createdAt;
+
+        if (age < TimeSpan.FromHours(1))
+        {
+            return "刚刚";
+        }
+
+        if (age < TimeSpan.FromDays(1))
+        {
+            return $"{Math.Max(1, (int)age.TotalHours)} 小时前";
+        }
+
+        if (age < TimeSpan.FromDays(30))
+        {
+            return $"{Math.Max(1, (int)age.TotalDays)} 天前";
+        }
+
+        return "很久以前";
+    }
+}
 
 /// <summary>Tunables of <see cref="MemoryScorer"/>.</summary>
 public sealed record MemoryScorerOptions
@@ -87,7 +136,4 @@ public sealed record MemoryScorerOptions
 
     /// <summary>Half-life for temporal decay.</summary>
     public TimeSpan TemporalHalfLife { get; init; } = TimeSpan.FromDays(30);
-
-    /// <summary>Minimum total score for a hit to be returned.</summary>
-    public double MinScore { get; init; } = 0.0;
 }

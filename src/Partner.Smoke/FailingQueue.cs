@@ -23,6 +23,8 @@ internal sealed class FailOnceQueue(IInputQueue inner) : IInputQueue
 
     public QueueState Snapshot() => inner.Snapshot();
 
+    public IReadOnlyList<InputItem> ActiveItems() => inner.ActiveItems();
+
     public Task<bool> CancelAsync(string itemId, CancellationToken ct = default) => inner.CancelAsync(itemId, ct);
 
     public Task CompleteAsync(string itemId, InputItemStatus status, string? error = null, CancellationToken ct = default) =>

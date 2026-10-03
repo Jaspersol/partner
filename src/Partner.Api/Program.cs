@@ -1,5 +1,10 @@
 using Partner.Api;
 using Partner.Api.Auth;
+using Partner.Desktop.Windows;
+
+// First statement in the process on purpose: Windows fixes DPI awareness the first time it is decided, and
+// the desktop layer's coordinates, captures and UI Automation rectangles are all read in that space.
+DpiAwareness.EnsurePerMonitorV2();
 
 var workspace = args.Length > 0
     ? args[0]

@@ -142,6 +142,7 @@ describe('the API contract the UI binds to', () => {
     expect(typeof settings.asr.model).toBe('string')
     expect(typeof settings.tts.chunkMs).toBe('number')
     expect(typeof settings.model.apiKeySet).toBe('boolean')
+    expect(typeof settings.model.reasoningEffort).toBe('string')
   })
 
   it('keeps the original body when a session event is edited', async () => {
@@ -182,6 +183,26 @@ describe('the API contract the UI binds to', () => {
 
     const reloaded = await api.settings()
     expect(reloaded.asr.model).toBe('contract-asr')
+  })
+
+  it('round-trips the thinking gear and stores it normalized', async () => {
+    // The gear is free text (an endpoint may understand a word the menu does not offer), so what the round
+    // trip has to prove is that it survives — and that its shape is normalized, so `HIGH` and `high` are one
+    // setting rather than two.
+    const current = await api.settings()
+    const saved = await api.saveSettings({
+      ...current,
+      model: { ...current.model, reasoningEffort: '  HIGH ' },
+    })
+
+    expect(saved.settings.model.reasoningEffort).toBe('high')
+
+    const cleared = await api.saveSettings({
+      ...current,
+      model: { ...current.model, reasoningEffort: 'off' },
+    })
+
+    expect(cleared.settings.model.reasoningEffort).toBe('off')
   })
 
   it('never echoes the API key back', async () => {

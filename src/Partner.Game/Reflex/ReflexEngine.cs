@@ -63,8 +63,6 @@ public sealed class ReflexEngine
         }
     }
 
-    public IReadOnlyList<IReflexBehavior> Behaviors => _behaviors;
-
     public void Register(IReflexBehavior behavior)
     {
         ArgumentNullException.ThrowIfNull(behavior);

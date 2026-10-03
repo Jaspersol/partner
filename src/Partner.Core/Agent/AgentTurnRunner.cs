@@ -19,8 +19,39 @@ public sealed record AgentTurnOptions
 
     public TimeSpan ToolTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>The model's context window in tokens; the prompt budget is this minus <see cref="MaxTokens"/>.</summary>
+    /// <summary>
+    /// How long one approval question stays open before it is denied. Mirrors
+    /// <see cref="Tools.QueuedApprovalHandler"/>'s own default so a caller that overrides one does not
+    /// silently get the other's answer.
+    /// </summary>
+    public TimeSpan ApprovalTimeout { get; init; } = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// The ceiling on one step's whole tool dispatch — every call, in parallel, including the wait for a human.
+    /// <para>
+    /// Not redundant with <see cref="ToolTimeout"/>. Results are gathered with <c>Task.WhenAll</c>, which
+    /// returns when the <i>slowest</i> call returns, and a per-call budget only binds a call that honours its
+    /// own token. One tool that awaits something unbounded therefore withholds every result, and with it the
+    /// step, the turn, and the single-reader consumer behind that — which is how a queue ends up reporting
+    /// "running" with nothing running. This is the bound that does not assume the tools are well behaved.
+    /// </para>
+    /// </summary>
+    public TimeSpan ToolDispatchTimeout { get; init; } = TimeSpan.FromSeconds(180);
+
+    /// <summary>
+    /// The model's context window in tokens; the prompt budget is this minus <see cref="MaxTokens"/>.</summary>
     public int ContextWindowTokens { get; init; } = 32768;
+
+    /// <summary>
+    /// A ceiling on one turn, enforced by the consumer loop rather than from in here.
+    /// <para>
+    /// Eight steps of a model call plus a tool call is minutes of legitimate work, so this is set well above
+    /// what a real turn costs and exists only to catch the wedge: no inner budget is a guarantee, and the
+    /// queue is single-reader, so a turn that never returns parks every message behind it with no way out but
+    /// killing the process. Exposed for <see cref="Hosting.TurnLoop"/> to apply.
+    /// </para>
+    /// </summary>
+    public TimeSpan TurnTimeout { get; init; } = TimeSpan.FromMinutes(10);
 
     public string? BaseSystemPrompt { get; init; }
 }
@@ -57,6 +88,8 @@ public sealed class AgentTurnRunner
     private readonly IContextAssembler _assembler;
     private readonly AgentTurnOptions _options;
     private readonly IAssistantStream? _stream;
+    private readonly IToolFailureLog? _failures;
+    private readonly TimeProvider _clock;
 
     public AgentTurnRunner(
         ISessionStore session,
@@ -67,7 +100,9 @@ public sealed class AgentTurnRunner
         IHookRegistry hooks,
         IContextAssembler? assembler = null,
         AgentTurnOptions? options = null,
-        IAssistantStream? stream = null)
+        IAssistantStream? stream = null,
+        IToolFailureLog? failures = null,
+        TimeProvider? clock = null)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _llm = llm ?? throw new ArgumentNullException(nameof(llm));
@@ -79,7 +114,17 @@ public sealed class AgentTurnRunner
         _stream = stream;
         _assembler = assembler ?? new SessionWindowContextAssembler(
             session, _options.ContextWindowTokens, _options.MaxTokens, baseSystemPrompt: _options.BaseSystemPrompt);
+
+        // Optional: a caller that wants the summary supplies a log, and one that does not pays nothing for it.
+        // The clock is here for the same reason — "last seen" has to be a real instant, not a guess.
+        _failures = failures;
+        _clock = clock ?? TimeProvider.System;
     }
+
+    /// <summary>
+    /// The consumer loop's ceiling on one turn, applied there because a turn cannot be trusted to return.
+    /// </summary>
+    public TimeSpan TurnTimeout => _options.TurnTimeout;
 
     public async Task<TurnResult> RunAsync(InputItem item, CancellationToken ct = default)
     {
@@ -93,6 +138,36 @@ public sealed class AgentTurnRunner
         }
 
         _hooks.ResetTurn();
+
+        // Whether this turn's own message is already in the log, **read from the log** rather than from a
+        // local flag.
+        //
+        // The input queue re-runs an interrupted `Running` item on restart (that is what at-least-once means
+        // here), and a re-run is not a resume: nothing records which tool calls already happened, so the turn
+        // starts over. With a local flag the re-run appended a *second* `User` event — same payload, same
+        // meta.itemId, new seq — and that broke two things at once:
+        //
+        //   - the conversation showed the reader's message twice;
+        //   - memory's at-least-once guard, which asks "is there already a record distilled from this event
+        //     seq?", stopped matching, because the seq had moved. The fact was then stored twice and recall
+        //     returned it as two independent pieces of evidence.
+        //
+        // Deriving it means a re-run reuses the original seq, so the guard matches again and nothing is
+        // appended twice. The cost is one projection scan, and the memory hook in the same turn already does
+        // exactly this scan.
+        var projected = await _session.ProjectAsync(ct).ConfigureAwait(false);
+        var messageAlreadyLogged = false;
+        foreach (var logged in projected.Items)
+        {
+            if (logged.Kind == SessionEventKind.User
+                && logged.Meta is not null
+                && logged.Meta.TryGetValue("itemId", out var loggedItemId)
+                && string.Equals(loggedItemId, item.ItemId, StringComparison.Ordinal))
+            {
+                messageAlreadyLogged = true;
+                break;
+            }
+        }
 
         var ctx = new HookContext
         {
@@ -133,7 +208,12 @@ public sealed class AgentTurnRunner
                     .AssembleInitialAsync(item, ctx.InjectedPrompts, ct)
                     .ConfigureAwait(false)).ToList();
 
-                var userLogged = false;
+                // Empty means the message did not choose one, which leaves the configured default in place.
+                var gear = string.IsNullOrWhiteSpace(item.ReasoningEffort) ? null : item.ReasoningEffort;
+
+                // Seeded from the log, not from zero: this is the line that makes a retried turn reuse the
+                // message it already logged instead of appending a second copy of it.
+                var userLoggedHere = messageAlreadyLogged;
                 var systemLogged = false;
 
                 while (steps < _options.MaxSteps)
@@ -144,11 +224,11 @@ public sealed class AgentTurnRunner
                     await _session.AppendAsync(Event(SessionEventKind.StepStart, item.Source, $"step {steps}", item), ct)
                         .ConfigureAwait(false);
 
-                    if (!userLogged)
+                    if (!userLoggedHere)
                     {
                         await _session.AppendAsync(Event(SessionEventKind.User, item.Source, item.Payload, item), ct)
                             .ConfigureAwait(false);
-                        userLogged = true;
+                        userLoggedHere = true;
                     }
 
                     if (!systemLogged && ctx.InjectedPrompts.Count > 0)
@@ -159,14 +239,35 @@ public sealed class AgentTurnRunner
                         systemLogged = true;
                     }
 
-                    var request = new LlmRequest(conversation, _tools.Specs, _options.MaxTokens);
+                    // Every step of this turn uses the gear the message carried, so a tool loop cannot
+                    // silently drop back to the global default halfway through.
+                    var request = new LlmRequest(
+                        conversation,
+                        _tools.Specs,
+                        _options.MaxTokens,
+                        ReasoningEffort: gear);
                     var streamed = _stream is null
                         ? null
                         : new Action<string>(delta => _stream.OnAssistantDelta(item.ItemId, delta));
+                    var reasoningDelta = _stream is null
+                        ? null
+                        : new Action<string>(delta => _stream.OnReasoningDelta(item.ItemId, delta));
 
                     var response = streamed is null
                         ? await _llm.CompleteAsync(request, ct).ConfigureAwait(false)
-                        : await _llm.StreamAsync(request, streamed, ct).ConfigureAwait(false);
+                        : await _llm.StreamWithReasoningAsync(request, streamed, reasoningDelta!, ct).ConfigureAwait(false);
+
+                    // Reasoning is recorded, not just shown live. A thinking row that only existed while the
+                    // model was writing it would vanish the moment it answered — and "why did it do that" is
+                    // exactly the question a reader has afterwards.
+                    if (!string.IsNullOrWhiteSpace(response.Reasoning))
+                    {
+                        await _session.AppendAsync(
+                            Event(SessionEventKind.Thinking, item.Source, response.Reasoning!, item), ct)
+                            .ConfigureAwait(false);
+                    }
+
+                    _stream?.OnReasoningCompleted(item.ItemId);
 
                     if (!string.IsNullOrEmpty(response.Text))
                     {
@@ -211,6 +312,24 @@ public sealed class AgentTurnRunner
                                     ["name"] = call.Name,
                                     ["ok"] = result.Ok ? "true" : "false",
                                 }), ct).ConfigureAwait(false);
+
+                            // Counted here, not in the tool: `Ok == false` is the runtime saying the call did
+                            // not happen the way it was asked to. A command that ran and exited non-zero is
+                            // a *result* — that is the answer to a question, not a broken tool — so only
+                            // what reaches this as a failure is a failure.
+                            if (!result.Ok)
+                            {
+                                // The item id rides along so a summary row can be tied to the durable record of the
+                                // same moment — the ToolResult event in the session log, whose `at` is within
+                                // milliseconds of this. The queue log is not that record: a tool failing does
+                                // not finish the turn, so the item stays Running and has no finishedAt at all.
+                                _failures?.Record(
+                                    call.Name,
+                                    ToolFailureReason.From(result.Content),
+                                    result.Content,
+                                    _clock.GetUtcNow(),
+                                    item.ItemId);
+                            }
 
                             conversation.Add(new LlmMessage("tool", result.Content, ToolCallId: call.Id, Name: call.Name));
 
@@ -291,7 +410,7 @@ public sealed class AgentTurnRunner
                 try
                 {
                     await _session.AppendAsync(
-                        Event(SessionEventKind.System, item.Source, $"error: {ex.Message}", item),
+                        Event(SessionEventKind.System, item.Source, $"error: {ex.Message}", item, ErrorMetaOf(ex)),
                         CancellationToken.None).ConfigureAwait(false);
                     await AppendTurnEndBestEffortAsync(item, TurnEndReason.Error, ctx, CancellationToken.None)
                         .ConfigureAwait(false);
@@ -329,6 +448,39 @@ public sealed class AgentTurnRunner
             .ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The parts of a model failure that do not fit on one line: what kind, and the id to quote.
+    ///
+    /// <para>
+    /// Kept in the event's meta rather than folded into the body, because the body is what a reader scans
+    /// and these are what a reader looks up. Null for anything that is not a model failure — the keys must not
+    /// exist when there is nothing behind them.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ErrorMetaOf(Exception error)
+    {
+        if (error is not ModelCallFailure failure)
+        {
+            return null;
+        }
+
+        var meta = new Dictionary<string, string>
+        {
+            ["error.kind"] = failure.Kind.ToString().ToLowerInvariant(),
+            ["error.what"] = failure.What,
+            ["error.reason"] = failure.Reason,
+            ["error.next"] = failure.NextStep,
+        };
+
+        if (failure.RequestId is not null)
+        {
+            // The id is what the provider's support asks for first; without it a report is unactionable.
+            meta["error.requestId"] = failure.RequestId;
+        }
+
+        return meta;
+    }
+
     private async Task<HookOutcome> RunPhaseAsync(AgentPhase phase, HookContext ctx, CancellationToken ct)
     {
         return await _hooks.RunAsync(phase, ctx, ct).ConfigureAwait(false);
@@ -342,6 +494,12 @@ public sealed class AgentTurnRunner
         IReadOnlyList<LlmToolCall> calls,
         CancellationToken ct)
     {
+        // One budget for the dispatch rather than one per call: see ToolDispatchTimeout. It also covers the
+        // approval wait, so a step cannot sit on a question that nobody is going to answer.
+        using var dispatch = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        dispatch.CancelAfter(_options.ToolDispatchTimeout);
+        var token = dispatch.Token;
+
         var gate = new SemaphoreSlim(Math.Max(1, _options.MaxParallelToolCalls));
         var tasks = new Task<ToolResult>[calls.Count];
 
@@ -350,10 +508,10 @@ public sealed class AgentTurnRunner
             var call = calls[i];
             tasks[i] = Task.Run(async () =>
             {
-                await gate.WaitAsync(ct).ConfigureAwait(false);
+                await gate.WaitAsync(token).ConfigureAwait(false);
                 try
                 {
-                    return await ExecuteOneAsync(call, ct).ConfigureAwait(false);
+                    return await ExecuteOneAsync(call, token).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -364,9 +522,31 @@ public sealed class AgentTurnRunner
 
         try
         {
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+            // Bounded <i>wait</i>, not just a cancelled token. Cancelling asks a tool to stop; it does not
+            // make a tool that is parked on something unbounded come back, and `Task.WhenAll` returns only
+            // when the slowest call does. So the aggregate is waited on alongside the clock: whichever arrives
+            // first decides. Without this, one tool with an unbounded await withholds every result in the
+            // step, and with it the turn and the queue behind the turn — which is the hang, exactly.
+            var all = Task.WhenAll(tasks);
+            var finished = await Task
+                .WhenAny(all, Task.Delay(_options.ToolDispatchTimeout, CancellationToken.None))
+                .ConfigureAwait(false);
+
+            if (finished != all)
+            {
+                foreach (var task in tasks)
+                {
+                    Forget(task);
+                }
+
+                // Whatever finished in time is still a real answer and is kept: reporting a timeout for a
+                // call that demonstrably happened would be its own kind of lie to the model.
+                return Settled(tasks, calls, $"timeout after {_options.ToolDispatchTimeout.TotalSeconds:0}s: ");
+            }
+
+            await all.ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Cancellation never fabricates success (design doc §2.9.5).
             return calls.Select(c => new ToolResult(false, $"canceled before completion: {c.Name}")).ToList();
@@ -376,13 +556,30 @@ public sealed class AgentTurnRunner
             gate.Dispose();
         }
 
-        // Read in model order — completion order is irrelevant.
+        return Settled(tasks, calls, "no result for ");
+    }
+
+    /// <summary>
+    /// Keeps a tool call that will not finish from resurfacing as an unobserved task exception. Deliberately
+    /// not awaited: the dispatch has moved on, and a fault on a task nobody is waiting for would otherwise be
+    /// reported to nobody while still being reported somewhere.
+    /// </summary>
+    private static void Forget(Task abandoned) =>
+        abandoned.ContinueWith(
+            static faulted => _ = faulted.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+    /// <summary>Reads results in <b>model order</b> — completion order is irrelevant to the conversation.</summary>
+    private static IReadOnlyList<ToolResult> Settled(Task<ToolResult>[] tasks, IReadOnlyList<LlmToolCall> calls, string missing)
+    {
         var results = new List<ToolResult>(calls.Count);
         for (var i = 0; i < tasks.Length; i++)
         {
             results.Add(tasks[i].IsCompletedSuccessfully
                 ? tasks[i].Result
-                : new ToolResult(false, $"no result for {calls[i].Name}"));
+                : new ToolResult(false, missing + calls[i].Name));
         }
 
         return results;
@@ -403,7 +600,16 @@ public sealed class AgentTurnRunner
                 return new ToolResult(false, $"denied: {decision.Reason}");
 
             case ToolDecision.Ask:
-                var approved = await _approval.RequestAsync(call.Name, call.ArgumentsJson, ct).ConfigureAwait(false);
+                // Bounded here as well as in the handler: the handler's own clock is a default, and a caller
+                // that injected a handler without one must not be able to park the dispatch indefinitely.
+                bool approved;
+                using (var question = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    question.CancelAfter(_options.ApprovalTimeout);
+                    approved = await _approval.RequestAsync(call.Name, call.ArgumentsJson, question.Token)
+                        .ConfigureAwait(false);
+                }
+
                 if (!approved)
                 {
                     return new ToolResult(false, $"approval denied: {decision.Reason}");

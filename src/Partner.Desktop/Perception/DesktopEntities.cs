@@ -67,8 +67,27 @@ public sealed record UiEntity
 
     public required double Confidence { get; init; }
 
-    /// <summary>Digest of the entity's content: the same id in the same generation with different content is a different target.</summary>
-    public required string EvidenceDigest { get; init; }
+    /// <summary>
+    /// Identity of the window: handle + owning process + when that process started.
+    /// <para>
+    /// Deliberately <b>not</b> the title or the rectangle. A music player retitles itself on every track, a
+    /// browser on every tab change, an editor on its dirty marker — and a window that is restored, moved or
+    /// resized keeps its identity. Folding either into identity is how "act only on what you saw" turns into
+    /// "you may never act at all" on exactly the applications people want to control. Compare
+    /// <see cref="LayoutDigest"/> for position instead, and treat a difference there as drift to report
+    /// rather than a reason to refuse.
+    /// </para>
+    /// </summary>
+    public required string IdentityDigest { get; init; }
+
+    /// <summary>Digest of the rectangle alone, so a move/resize is detectable as drift.</summary>
+    public required string LayoutDigest { get; init; }
+
+    /// <summary>The owning process, part of identity so a recycled handle is not mistaken for the same window.</summary>
+    public required int ProcessId { get; init; }
+
+    /// <summary>UTC ticks of the owning process's start; null when it refuses to say (elevated).</summary>
+    public long? ProcessStartTicks { get; init; }
 
     public required DateTimeOffset ObservedAtMs { get; init; }
 }
@@ -98,10 +117,37 @@ public sealed record DesktopObservation
     public UiEntity? Find(string entityId) =>
         Entities.FirstOrDefault(e => string.Equals(e.EntityId, entityId, StringComparison.Ordinal));
 
-    /// <summary>Stable digest used to detect content mutation between observations.</summary>
-    public static string Digest(string label, string? value, PixelRect rect)
+    /// <summary>
+    /// Identity digest of a window: handle + process + process start time.
+    /// <para>
+    /// Title and rectangle are excluded on purpose — see <see cref="UiEntity.IdentityDigest"/>. The label is
+    /// carried alongside as <see cref="UiEntity.Label"/> so the model can still read it; it is simply not what
+    /// makes a window *that* window.
+    /// </para>
+    /// </summary>
+    public static string Identity(string entityId, int processId, long? processStartTicks, string? processName)
     {
-        var payload = $"{label}\u001f{value}\u001f{rect.X},{rect.Y},{rect.Width},{rect.Height}";
+        var payload = $"{entityId}\u001f{processId}\u001f{processStartTicks?.ToString() ?? "?"}\u001f{processName ?? "?"}";
+        return Hash(payload);
+    }
+
+    /// <summary>Digest of a rectangle alone — drift to report, not a reason to refuse.</summary>
+    public static string Layout(PixelRect rect) =>
+        Hash($"{rect.X},{rect.Y},{rect.Width},{rect.Height}");
+
+    /// <summary>
+    /// Identity digest of a control inside a window: the window, its name and its role.
+    /// <para>
+    /// The rectangle is excluded here too, and for the same reason: a layout shift moves a button without
+    /// replacing it, and the caller recomputes the click point from the <i>fresh</i> rectangle anyway.
+    /// The value is excluded as before — typing into a field must not make the field look like a different one.
+    /// </para>
+    /// </summary>
+    public static string ElementIdentity(string windowId, string name, string role) =>
+        Hash($"{windowId}\u001f{name}\u001f{role}");
+
+    private static string Hash(string payload)
+    {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
         return Convert.ToHexString(hash.AsSpan(0, 8));
     }
@@ -116,7 +162,8 @@ public sealed record EntityLease
 
     public required string TargetGeneration { get; init; }
 
-    public required string EvidenceDigest { get; init; }
+    /// <summary>Identity of the leased window — handle + process, not its title or rectangle.</summary>
+    public required string IdentityDigest { get; init; }
 
     public required DateTimeOffset IssuedAt { get; init; }
 

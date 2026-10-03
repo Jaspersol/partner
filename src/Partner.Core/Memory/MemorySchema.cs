@@ -33,7 +33,8 @@ internal static class MemorySchema
             veracity         REAL    NOT NULL,
             superseded_by    TEXT,
             edited_by        TEXT,
-            pending_compact  INTEGER NOT NULL DEFAULT 0
+            pending_compact  INTEGER NOT NULL DEFAULT 0,
+            last_recalled_at TEXT
         );
 
         CREATE INDEX IF NOT EXISTS ix_memories_tier        ON memories(tier);
@@ -93,4 +94,17 @@ internal static class MemorySchema
 
         CREATE INDEX IF NOT EXISTS ix_consolidation_action ON consolidation_log(action);
         """;
+
+    /// <summary>
+    /// One-off column additions for stores created before the column existed.
+    /// <para>
+    /// `CREATE TABLE IF NOT EXISTS` silently leaves an existing table alone, so a new column reaches new
+    /// workspaces and never old ones. Each statement therefore has to be run separately and tolerate failing —
+    /// SQLite has no `ADD COLUMN IF NOT EXISTS`, and the failure of "duplicate column" is the answer we want.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<string> Migrations { get; } = new[]
+    {
+        "ALTER TABLE memories ADD COLUMN last_recalled_at TEXT",
+    };
 }

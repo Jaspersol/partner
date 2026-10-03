@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Partner.Core.Agent.Llm;
 
 namespace Partner.Api.Settings;
 
@@ -62,7 +63,21 @@ public sealed class SettingsStore
         var stored = Load();
         var merged = incoming with
         {
-            Model = incoming.Model with { ApiKey = ResolveKey(incoming.Model.ApiKey, stored.Model.ApiKey) },
+            Model = incoming.Model with
+            {
+                ApiKey = ResolveKey(incoming.Model.ApiKey, stored.Model.ApiKey),
+                // The gear is free text by design (an endpoint may understand a word the menu does not offer),
+                // so only its shape is normalized here — casing and stray spaces are not a different setting.
+                ReasoningEffort = ReasoningEfforts.Normalize(incoming.Model.ReasoningEffort),
+
+                // Same rule for the list: normalize, drop blanks, and de-duplicate while keeping the order
+                // the user arranged — the order is the menu order, so preserving it is the point.
+                // An empty list falls back to the built-in one: an empty menu is not a usable setting. The
+                // default is re-added if the user dropped it, so the value stays selectable in the picker.
+                ReasoningGears = NormalizeGears(
+                    incoming.Model.ReasoningGears,
+                    incoming.Model.ReasoningEffort),
+            },
         };
 
         var errors = SettingsValidation.Validate(merged);
@@ -81,6 +96,33 @@ public sealed class SettingsStore
         "" => null,
         _ => incoming,
     };
+
+    /// <summary>
+    /// Trims, lower-cases and de-duplicates the gear list while keeping the user's order, which is the menu
+    /// order. An entry blank after trimming is dropped rather than stored as a gap in the menu, and an
+    /// emptied list falls back to the built-in one: an empty menu is not a usable setting.
+    /// <para>
+    /// The default gear is appended when the user removed it from the list, so the value the model is
+    /// configured with always stays selectable — otherwise renaming a gear would leave the default
+    /// pointing at something the picker cannot show.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<string> NormalizeGears(IReadOnlyList<string> gears, string defaultGear)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var kept = new List<string>(gears.Count + 1);
+
+        foreach (var gear in gears.Append(defaultGear))
+        {
+            var normalized = ReasoningEfforts.Normalize(gear);
+            if (normalized.Length > 0 && seen.Add(normalized))
+            {
+                kept.Add(normalized);
+            }
+        }
+
+        return kept.Count > 0 ? kept : ReasoningEfforts.Values;
+    }
 
     private void Write(RuntimeSettings settings)
     {

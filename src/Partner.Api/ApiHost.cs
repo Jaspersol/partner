@@ -57,7 +57,12 @@ public static class ApiHost
                 "http://tauri.localhost",
                 "https://tauri.localhost",
                 "tauri://localhost",
-                "http://localhost:5173")
+                // The browser dev server and the production preview each have an origin of their own. Without
+                // them a plain-browser session reads as "every request failed" rather than "wrong origin".
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://localhost:4173",
+                "http://127.0.0.1:4173")
             .AllowAnyHeader()
             .AllowAnyMethod()));
 
@@ -70,7 +75,11 @@ public static class ApiHost
         app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
         app.MapGet("/api/consumer", (ConsumerHost host) => Results.Ok(host.State));
         app.MapGet("/api/voice", (VoiceHost host) => Results.Ok(host.State));
-        ViewEndpoints.Map(app);
+
+        // What the tools have been failing at, most frequent first. Separate from /api/consumer because this
+        // is a history rather than a state, and a caller refreshing a badge has no reason to read it.
+        app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
+        ViewEndpoints.Map(app, context, workspace);
 
         return (app, context, consumer, voice);
     }

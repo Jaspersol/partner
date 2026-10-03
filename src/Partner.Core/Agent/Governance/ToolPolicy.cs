@@ -75,6 +75,17 @@ public sealed record ToolPolicy
         var document = JsonSerializer.Deserialize<PolicyDocument>(json, Json)
             ?? throw new ArgumentException("Policy document is empty.", nameof(json));
 
+        // A newer document is refused rather than half-read: governance is fail-closed, and a field this build
+        // does not know about is exactly the one that would be ignored while the tool it constrains runs.
+        // An absent `version` is v1 by construction — the property initialiser answers 1 before anything is set.
+        if (document.Version != PolicyDocument.CurrentVersion)
+        {
+            throw new ArgumentException(
+                $"Policy document version {document.Version} is not readable by this build "
+                + $"(it reads version {PolicyDocument.CurrentVersion}).",
+                nameof(json));
+        }
+
         if (document.Tools is null || document.Tools.Count == 0)
         {
             return Empty;
@@ -144,7 +155,10 @@ public sealed record ToolPolicy
 
     private sealed record PolicyDocument
     {
-        public int Version { get; init; } = 1;
+        /// <summary>The only schema version this build understands.</summary>
+        public const int CurrentVersion = 1;
+
+        public int Version { get; init; } = CurrentVersion;
 
         public Dictionary<string, RawEntry>? Tools { get; init; }
     }

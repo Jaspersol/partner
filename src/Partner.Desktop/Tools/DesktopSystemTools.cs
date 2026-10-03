@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using Partner.Core.Agent.Tools;
 using Partner.Desktop.Interop;
@@ -21,10 +23,18 @@ namespace Partner.Desktop.Tools;
 public sealed class DesktopExecTool : ITool
 {
     /// <summary>Long enough for a real command, short enough that a hung one does not park the turn.</summary>
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>Output beyond this is truncated: a runaway command must not fill the conversation.</summary>
     private const int MaxOutputChars = 8000;
+
+    private readonly TimeSpan _timeout;
+
+    /// <param name="timeout">
+    /// Overridable so the timeout itself is testable — the whole point of this tool's timeout is that it
+    /// cannot be tested without waiting it out, which is why it went untested and then hung a turn for good.
+    /// </param>
+    public DesktopExecTool(TimeSpan? timeout = null) => _timeout = timeout ?? DefaultTimeout;
 
     public ToolSpec Spec { get; } = new(
         "desktop_exec",
@@ -37,6 +47,20 @@ public sealed class DesktopExecTool : ITool
         },"required":["command"],"additionalProperties":false}
         """);
 
+    /// <summary>
+    /// Runs one command and reports what it printed.
+    /// <para>
+    /// <b>The deadline covers the output, not just the process.</b> A command that leaves something behind
+    /// holding the inherited pipe — <c>start /b</c>, a service launcher, anything that spawns a background
+    /// child — makes <c>cmd.exe</c> exit immediately while the pipe stays open for as long as that child
+    /// lives. Waiting for the <i>process</i> therefore returns at once and the read that follows blocks for
+    /// minutes, or forever. That is not a slow command: it is an await with no bound on it, and because the
+    /// reads were the only unbounded ones in the tool, a turn that issued one of those sat in "running" until
+    /// the user killed the app. So the reads run under the same deadline as the wait, and each is drained
+    /// incrementally rather than with <c>ReadToEndAsync</c> — which also keeps a runaway command from
+    /// buffering megabytes before anything truncates them.
+    /// </para>
+    /// </summary>
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
         var arguments = Json.Deserialize<ExecArguments>(argumentsJson);
@@ -63,6 +87,11 @@ public sealed class DesktopExecTool : ITool
 
         using var process = new Process { StartInfo = info };
 
+        // Started before the process so the budget covers starting it too: a launch that never completes is
+        // exactly as capable of parking the turn as one that never exits.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(_timeout);
+
         try
         {
             process.Start();
@@ -72,42 +101,119 @@ public sealed class DesktopExecTool : ITool
             return new ToolResult(false, $"无法启动命令：{error.Message}");
         }
 
-        var stdout = process.StandardOutput.ReadToEndAsync(ct);
-        var stderr = process.StandardError.ReadToEndAsync(ct);
+        var outText = new OutputSink();
+        var errText = new OutputSink();
 
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(Timeout);
+        // Both pipes are drained concurrently and for the whole run. Draining only one deadlocks the other:
+        // a child writing more than the pipe buffer holds blocks until somebody reads it.
+        var outTask = outText.DrainAsync(process.StandardOutput, deadline.Token);
+        var errTask = errText.DrainAsync(process.StandardError, deadline.Token);
 
         try
         {
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+            await Task.WhenAll(outTask, errTask).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (Exception error) when (error is InvalidOperationException or NotSupportedException)
-            {
-                // Already gone.
-            }
+            KillQuietly(process);
 
-            return new ToolResult(false, $"命令超过 {Timeout.TotalSeconds:0} 秒未结束，已终止");
+            // Whatever arrived before the deadline is the evidence for why the model reached for this
+            // command, so it is reported rather than thrown away.
+            return new ToolResult(false,
+                $"命令超过 {_timeout.TotalSeconds:0} 秒未结束，已终止"
+                + "（若命令启动了后台进程，管道可能仍未关闭）"
+                + Describe(outText, errText, timedOut: true));
         }
 
-        var outText = await stdout.ConfigureAwait(false);
-        var errText = await stderr.ConfigureAwait(false);
+        return new ToolResult(
+            process.ExitCode == 0,
+            $"exit={process.ExitCode}\n{Describe(outText, errText, timedOut: false)}");
+    }
+
+    private const string Nothing = "(无输出)";
+    private const string TruncationMarker = "…（已截断）";
+
+    /// <summary>
+    /// What the command left behind, capped and labelled. The cap is applied <i>while</i> reading rather than
+    /// after: a command that prints without end used to be buffered whole and truncated only once it had
+    /// finished, so the bound held for the conversation and not for the process.
+    /// </summary>
+    private static string Describe(OutputSink stdout, OutputSink stderr, bool timedOut)
+    {
+        var outText = stdout.Text;
+        var errText = stderr.Text;
 
         var combined = string.IsNullOrWhiteSpace(errText)
             ? outText
             : $"{outText}\n[stderr]\n{errText}";
 
-        var trimmed = combined.Length > MaxOutputChars ? combined[..MaxOutputChars] + "…（已截断）" : combined;
+        if (combined.Length == 0)
+        {
+            return timedOut ? "；无输出" : Nothing;
+        }
 
-        return new ToolResult(
-            process.ExitCode == 0,
-            $"exit={process.ExitCode}\n{(string.IsNullOrWhiteSpace(trimmed) ? "(无输出)" : trimmed)}");
+        if ((stdout.Clipped || stderr.Clipped) && !combined.EndsWith(TruncationMarker, StringComparison.Ordinal))
+        {
+            combined += TruncationMarker;
+        }
+
+        return timedOut ? $"\n截断前的输出：\n{combined}" : combined;
+    }
+
+    /// <summary>
+    /// One pipe's worth of output: kept while it is read, never past the cap.
+    /// </summary>
+    private sealed class OutputSink
+    {
+        private readonly StringBuilder _text = new();
+        private readonly char[] _buffer = new char[1024];
+
+        public bool Clipped { get; private set; }
+
+        public string Text => _text.ToString();
+
+        /// <summary>
+        /// Reads to EOF under <paramref name="ct"/>. The token is the whole point: an unbounded read is what
+        /// made a backgrounded command hang the turn it was issued from.
+        /// </summary>
+        public async Task DrainAsync(StreamReader reader, CancellationToken ct)
+        {
+            while (true)
+            {
+                var read = await reader.ReadAsync(_buffer.AsMemory(), ct).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    return;
+                }
+
+                if (_text.Length < MaxOutputChars)
+                {
+                    _text.Append(_buffer, 0, Math.Min(read, MaxOutputChars - _text.Length));
+                }
+
+                Clipped |= _text.Length >= MaxOutputChars;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Kills the command and everything it started. A failure here is not worth reporting: the tool is
+    /// already returning a timeout, and the process is usually gone by the time we ask.
+    /// </summary>
+    private static void KillQuietly(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception error) when (error is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            // Already gone, or not ours to kill.
+        }
     }
 
     private sealed record ExecArguments(string? Command, string? WorkingDirectory);

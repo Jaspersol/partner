@@ -16,19 +16,27 @@ public sealed class DesktopActGuardTests
         string process = "cloudmusic",
         PixelRect? rect = null,
         bool foreground = false,
-        string? digest = null) => new()
+        string? digest = null)
+    {
+        var bounds = rect ?? new PixelRect(100, 100, 400, 300);
+
+        return new UiEntity
         {
             EntityId = id,
             Generation = "obs-1",
             Role = "window",
             Label = label,
             Value = process,
-            Rect = rect ?? new PixelRect(100, 100, 400, 300),
+            Rect = bounds,
             Confidence = 1.0,
-            EvidenceDigest = digest ?? "digest-a",
+            IdentityDigest = digest ?? "digest-a",
+            // Derived from the rectangle, so a test that moves a window really moves its layout digest.
+            LayoutDigest = DesktopObservation.Layout(bounds),
+            ProcessId = 4242,
             ObservedAtMs = DateTimeOffset.UnixEpoch,
             IsForeground = foreground,
         };
+    }
 
     private static UiElement Element(
         string id = "1a2b:0",
@@ -40,7 +48,7 @@ public sealed class DesktopActGuardTests
         Name: name,
         Role: role,
         Rect: new PixelRect(150, 150, 100, 40),
-        Digest: digest ?? "element-a");
+        IdentityDigest: digest ?? "element-a");
 
     private static DesktopObservation Observation(params UiEntity[] entities) => new()
     {
@@ -82,12 +90,54 @@ public sealed class DesktopActGuardTests
     }
 
     [Fact]
-    public void A_window_that_moved_or_changed_is_refused()
+    public void A_window_that_retitled_itself_is_still_accepted()
     {
-        Assert.Contains(
-            "不同",
-            DesktopActTool.Revalidate(Entity(), Observation(Entity(digest: "digest-b")))!,
-            StringComparison.Ordinal);
+        // A music player retitles itself on every track; a browser on every tab; an editor on its dirty mark.
+        // Identity is handle + process, so none of those makes it a different window — and folding the title
+        // into identity is what made exactly those applications impossible to act on.
+        var seen = Entity(label: "SUBARU AWA 486 - RYKU808");
+        var fresh = Entity(label: "Lunak - Montagem Boomerang");
+
+        Assert.Null(DesktopActTool.Revalidate(seen, Observation(fresh)));
+        Assert.Contains("标题从", DesktopActTool.DescribeDrift(seen, fresh)!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_window_that_moved_is_still_accepted_but_reported_as_drift()
+    {
+        // Restoring a minimized window moves it by definition, and the model's own focus action is what
+        // restores it. Refusing the next action for that turned the model's successful step into a failure and
+        // burned the turn re-observing.
+        var seen = Entity(rect: new PixelRect(-32000, -32000, 160, 28));
+        var fresh = Entity(rect: new PixelRect(752, 320, 1057, 752));
+
+        Assert.Null(DesktopActTool.Revalidate(seen, Observation(fresh)));
+
+        var drift = DesktopActTool.DescribeDrift(seen, fresh);
+
+        Assert.NotNull(drift);
+        Assert.Contains("矩形从", drift, StringComparison.Ordinal);
+        Assert.Contains("(752,320)", drift, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unchanged_window_has_nothing_to_report()
+    {
+        Assert.Null(DesktopActTool.DescribeDrift(Entity(), Entity()));
+    }
+
+    [Fact]
+    public void A_recycled_handle_is_refused()
+    {
+        // Windows reuses handles: the same handle can name a different window once the first one closed. Same
+        // id, same generation — and a different process is not the window the model decided about.
+        var seen = Entity();
+        var fresh = Entity(digest: "identity-of-something-else");
+
+        var refusal = DesktopActTool.Revalidate(seen, Observation(fresh));
+
+        Assert.NotNull(refusal);
+        Assert.Contains("别的窗口", refusal, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -109,14 +159,37 @@ public sealed class DesktopActGuardTests
     }
 
     [Fact]
-    public void A_control_that_moved_is_refused()
+    public void A_control_that_moved_is_still_accepted()
     {
-        // The layout changed, so the click point the model saw is no longer where that control is.
+        // Identity is name + role. A layout shift moves a control without replacing it, and the click point is
+        // recomputed from the fresh rectangle — so treating the move as a mismatch refused an action whose
+        // coordinates had already been corrected for it.
+        var seen = Element(digest: "same-identity");
+
+        var moved = new UiElement(
+            ElementId: "1a2b:0",
+            WindowId: "1a2b",
+            Name: "播放",
+            Role: "Button",
+            Rect: new PixelRect(500, 600, 100, 40),
+            IdentityDigest: "same-identity");
+
+        var fresh = WithElements(new[] { Entity() }, new[] { moved });
+
+        Assert.Null(DesktopActTool.RevalidateElement(seen, fresh));
+        // And the point really is the new one.
+        Assert.Equal((550, 620), fresh.FindElement("1a2b:0")!.Centre);
+    }
+
+    [Fact]
+    public void A_control_that_became_something_else_is_refused()
+    {
+        // Same position, different identity: the id now names a different control.
         Assert.Contains(
             "不同",
             DesktopActTool.RevalidateElement(
                 Element(),
-                WithElements(new[] { Entity() }, new[] { Element(digest: "element-b") }))!,
+                WithElements(new[] { Entity() }, new[] { Element(name: "暂停", digest: "element-b") }))!,
             StringComparison.Ordinal);
     }
 

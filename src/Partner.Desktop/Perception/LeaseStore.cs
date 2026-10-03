@@ -32,7 +32,7 @@ public sealed class LeaseStore
             EntityId = entity.EntityId,
             ViewId = viewId,
             TargetGeneration = entity.Generation,
-            EvidenceDigest = entity.EvidenceDigest,
+            IdentityDigest = entity.IdentityDigest,
             IssuedAt = now,
             ExpiresAt = now.AddMilliseconds(ttlMs),
             TtlMs = ttlMs,
@@ -80,8 +80,11 @@ public sealed class LeaseStore
             return new LeaseValidation(LeaseRejection.EntityNotFound, null);
         }
 
-        // 4) same id, same generation, but the content changed underneath us.
-        if (!string.Equals(entity.EvidenceDigest, lease.EvidenceDigest, StringComparison.Ordinal))
+        // 4) same id, same generation — but is it still the *same window*? Identity is handle + process +
+        // process start time, so this catches a recycled handle (the previous window closed and Windows
+        // handed the same handle to a new one) and a restarted process. Title and geometry are not identity:
+        // a window that retitles itself or moves is still the window the model decided about.
+        if (!string.Equals(entity.IdentityDigest, lease.IdentityDigest, StringComparison.Ordinal))
         {
             return new LeaseValidation(LeaseRejection.DigestMismatch, entity);
         }

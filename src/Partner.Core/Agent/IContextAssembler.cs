@@ -99,8 +99,9 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         ArgumentNullException.ThrowIfNull(injectedPrompts);
 
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
-        var images = ResolveImages(item.MediaIds);
-        var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct, images?.Count ?? 0)
+        var attachments = ResolveAttachments(item.MediaIds);
+        var images = attachments.Where(a => a.IsImage).Select(a => a.ToDataUri()).ToList();
+        var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct, images.Count)
             .ConfigureAwait(false);
 
         var messages = new List<LlmMessage>
@@ -111,31 +112,64 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         messages.AddRange(plan.Turns);
 
         // The current input is the last user message; the window above is history only.
-        messages.Add(new LlmMessage("user", item.Payload, Images: images));
+        messages.Add(new LlmMessage(
+            "user",
+            MessageBody(item.Payload, attachments),
+            Images: images.Count > 0 ? images : null));
         return messages;
     }
 
     /// <summary>
-    /// The attachments of the input being sent, as data URIs. Only this input's: history stays textual, so a
-    /// later question does not re-send megabytes of image the model has already seen.
+    /// The text of the current input, followed by where its non-image attachments are.
+    ///
+    /// <para>
+    /// A document cannot ride an <c>image_url</c> part — that does not degrade, it fails the whole request — so
+    /// it travels as a path instead. That is also the form a tool like <c>read</c> can act on: the model has to
+    /// be able to open the file, not merely be told that it exists.
+    /// </para>
     /// </summary>
-    private IReadOnlyList<string>? ResolveImages(IReadOnlyList<string> mediaIds)
+    private static string MessageBody(string payload, IReadOnlyList<MediaAttachment> attachments)
+    {
+        var documents = attachments.Where(a => !a.IsImage).ToList();
+        if (documents.Count == 0)
+        {
+            return payload;
+        }
+
+        var lines = new List<string> { payload };
+        lines.Add(string.Empty);
+        lines.Add($"（随本条消息附带 {documents.Count} 个文件，已保存在本地，可直接按路径读取）:");
+
+        foreach (var document in documents)
+        {
+            lines.Add($"- {document.FileName} → {document.LocalPath}");
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    /// <summary>
+    /// The attachments of the input being sent. Only this input's: history stays textual, so a later question
+    /// does not re-send megabytes the model has already seen — and does not quote paths that may since have been
+    /// deleted.
+    /// </summary>
+    private IReadOnlyList<MediaAttachment> ResolveAttachments(IReadOnlyList<string> mediaIds)
     {
         if (_media is null || mediaIds.Count == 0)
         {
-            return null;
+            return Array.Empty<MediaAttachment>();
         }
 
-        var images = new List<string>();
+        var resolved = new List<MediaAttachment>();
         foreach (var id in mediaIds)
         {
             if (_media.TryRead(id) is { } attachment)
             {
-                images.Add(attachment.ToDataUri());
+                resolved.Add(attachment);
             }
         }
 
-        return images.Count > 0 ? images : null;
+        return resolved;
     }
 
     /// <summary>

@@ -281,7 +281,7 @@ public sealed class PlaybackGateTests
     public void Engaged_gate_stays_closed_until_everything_drains()
     {
         var gate = new PlaybackGate();
-        gate.Engage(0);
+        gate.Engage();
 
         Assert.False(gate.TryRelease(Clear with { IsPlaying = true }, 1));
         Assert.Equal("playing", gate.LastBlockers);
@@ -296,7 +296,7 @@ public sealed class PlaybackGateTests
     public void Skipped_audio_is_accounted_for_and_flagged_when_it_contained_speech()
     {
         var gate = new PlaybackGate();
-        gate.Engage(0);
+        gate.Engage();
         gate.NoteSkipped(1.5, hadSpeech: true);
         gate.NoteSkipped(0.5, hadSpeech: false);
 

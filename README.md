@@ -22,7 +22,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**553 个 .NET 单测 + 85 个前端测试全绿 / 149 项 smoke 检查 / 56 项能力 `product-supported`**。
+当前基线：**553 个 .NET 单测 + 132 个前端测试全绿 / 149 项 smoke 检查 / 56 项能力 `product-supported`**。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -196,7 +196,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/consumer
 | `output` | 开关、设备、音色、语速、段间静音、drain、采样率、播放期停听 | 语音输出半（**尚无宿主**） |
 | `asr` | 服务地址、模型、语言、连接/读取超时、采样率 | ASR 客户端（**尚无宿主**） |
 | `tts` | 服务地址、语言、采样率、克隆参考音频、超时、播放块 | TTS 客户端（**尚无宿主**） |
-| `model` | 服务地址、模型名、**API Key**、超时 | **消费者（已接线）** |
+| `model` | 服务地址、模型名、**API Key**、超时、上下文大小、输出长度、支持图片、**思考挡位** | **消费者（已接线）** |
 
 ### 名称是拉取的，不是手打的
 
@@ -228,6 +228,16 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/consumer
 `PUT /api/settings` 在**模型段发生变化时重启消费者**（其余段不打断执行中的回合——重启会重置计数，所以是可观测的）。响应带上 `consumer` 状态，界面据此显示「消费中 · 模型名」或「未配置模型：队列不会被执行」。
 
 **优先级**：设置里的 `model` 段 > 环境变量 `PARTNER_LLM_BASE_URL`/`PARTNER_LLM_MODEL` > 不启动。来源会出现在 `/api/consumer` 的 `reason` 里（`运行中（设置）` / `运行中（环境变量）`），免得用户猜为什么改了没反应。
+
+### 思考挡位（`model.reasoningEffort` + `model.reasoningGears`）
+
+每次补全都发 `reasoning_effort`，**默认 `medium`**。`off`（或留空）表示**不发这个字段**，而不是发一个值：不吃这个参数的模型不该收到一个猜的值。形状归一化（`" HIGH "` → `high`），所以大小写和空格不算两个设置。
+
+**清单是菜单，不是约束。** `model.reasoningGears` 是用户自己维护的、**有顺序**的词表：会话里的下拉就按这个顺序显示，删掉一个词只是让它不再出现在菜单里，已经用这个词发出去的消息不受影响。输入框本身是自由文本：端点自己发明的词（`minimal`、`none`…）加进清单即可——把服务端认识的词拒掉，比原样发出去更糟。保存时清单按**规范化 → 去重（保留用户排的顺序）→ 丢空白**处理；存空会回退到内置的 `off / low / medium / high / xhigh / max`（空菜单不是可用的设置）。默认挡位不在清单里时会被**补回**而不是拒绝——否则改个名字就让设置页存不下去。
+
+**逐条消息覆盖**：会话输入区有一个「思考」下拉，选中的那一档随这条消息进队列（`InputItem.ReasoningEffort`），跑这一回合的**每一次**请求都用它，不中途退回默认。缺省 = 用设置里的默认。`/api/input` 会校验它在清单里，不在就 400 并列出可用值——菜单只给清单内的词，所以别的都是过期或手搓的客户端。
+
+链路是 设置 → 消费者构建的客户端 → 请求体（`LlmRequest.ReasoningEffort` 覆盖客户端默认值，`AgentTurnRunner` 把队列项上的挡位灌进每个请求）；smoke 守着最后一跳（`settings: the thinking gear reaches the model request`），Core 测试守着默认值、`off` 的省略、逐条覆盖与工具循环内的一致性，API 测试守着清单的规范化与拒绝逻辑。
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/settings
@@ -374,11 +384,17 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 
 **坐标是屏幕坐标，窗口可以不给。** `desktop_observe` 的 `clickAt` 是屏幕坐标，`desktop_act` 的 `x/y` 也是——同一套约定。模型最自然的调用是「看图 → 算坐标 → 点」，**不带窗口 id**：这时按坐标落在哪个已观察窗口里定目标（绝对坐标点击本来就落到那个点上，不是猜）；跨多个窗口有歧义时**拒绝并列出候选**，而「最后给模型看过的那张图所属窗口」用于打破平局。这条是被日志逼出来的：模型连发四次 `{kind:LeftClick,x:…,y:…}`，每次都被「缺少 entityId」拒掉，最后一步耗尽步数，窗口一动没动。
 
+坐标必须在**虚拟桌面**内（多屏的并集，原点可能是负数）。越界的点会被 `SendInput` 静默截到屏幕边缘，所以宁可**拒绝**：静默夹取会把「点保存」变成「点屏幕边」，而这类安静的错正是这层存在的理由。鼠标事件同时带 `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`，坐标按虚拟桌面归一化到 0..65535——**少了 `ABSOLUTE` 就会把屏幕坐标当成相对位移**，点哪都落到屏幕角上（这是个已经修掉的 bug，见下节的实测）。
+
 **最小化的窗口是一个陷阱。** Windows 把最小化的窗口报成 -32000 处的 160×28 占位矩形：它看起来像一个能点的窗口，点下去落在虚空里；截图也只是一条空白。所以：观察里标 `minimized:true`；截图**拒绝**（先 focus 还原）；指向它的点击**拒绝**；而 `focus` 会**还原**它（`SetForegroundWindow` 只会点亮任务栏按钮）。判断用的是 `IsIconic` 而不是矩形——同一个最小化窗口，位置可能是 -32000，也可能是它原来的位置，只有状态是可靠的。
 
-**为什么是元素而不是坐标。** 一次实测里模型想操作一个没在运行的程序，于是对着别的窗口盲打了按键。窗口级的坐标方案无法阻止这件事；元素级可以：`desktop_observe` 返回「播放」这个按钮及其点击点，`desktop_act` 用 `elementId` 寻址，点击点由服务端算（落在该窗口内是构造保证）。
+**为什么是元素而不是坐标。** 一次实测里模型想操作一个没在运行的程序，于是对着别的窗口盲打了按键。窗口级的坐标方案无法阻止这件事；元素级可以：`desktop_observe` 返回「播放」这个按钮及其点击点，`desktop_act` 用 `elementId` 寻址，点击点由服务端算（落在该窗口内是构造保证）。**点名了控件就优先走 UIA pattern**：按钮走 `InvokePattern`、列表项/页签走 `SelectionItemPattern`、复选框走 `TogglePattern`——**不需要窗口在前台，也不受控件移动的影响**，结果里写明用了哪个（`已通过界面自动化执行 · uia.invoke：…`）；控件没有对应 pattern 时才回落到点它的中心点。`typeText` 刻意**不**走 `ValuePattern.SetValue`：那是整字段覆盖，不是「打这几个字」。
 
 **UIA 盲区：给模型看图，不做 OCR。** 模型卡片里的「支持图片（视觉）」决定这条路是否存在：打开后注册 `desktop_screenshot`，Electron / 游戏 / 画布这类 UIA 看不见的应用就靠**截图 + 模型视觉**，而不是本地 OCR——视觉模型自己读图比任何本地识别都准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败，所以这是一个关于「配的是什么模型」的声明，不是偏好。
+
+- **图上带参考标记。** `desktop_screenshot` 在图上叠**坐标网格**（刻度上的数字就是屏幕坐标）和**控件编号标记**：带标记的控件直接给 `elementId`（点击点由服务端算），没有标记的地方（图标、画布、游戏）就沿网格读出屏幕坐标。只有**能按**的控件才编号：`Document` 不编号——它是编辑器的文本面（也是 Chromium 窗口唯一暴露的元素），矩形是整个内容区，「点它的中心」等于「点文档中间」，编号只会给出一个看着能点、其实不能的标记；一个标记都没有时答案会明说「只有网格可用」。这是被实测逼出来的：模型把播放按钮**用文字描述对了**，报出来的坐标却偏了 334px，落在左侧歌单面板的空白背景上（测得该像素是 `#F7F9FC`）——图没问题，是图上没有任何可量尺的东西。参数 `marks:false` 可以要回不带标注的原图。
+
+**租约认的是「窗口」，不是「窗口当时的样子」。** 租约的身份是 `句柄 + 进程 + 进程启动时间`，**标题和矩形不算身份**。这不是宽松，是必需：网易云音乐的标题就是当前歌名（换首歌就变），浏览器是页签名，编辑器是脏标记，终端是路径——把它们算进身份，这些应用就永远动不了；而 `focus` 会把最小化的窗口**还原**（矩形因此必变），于是模型上一步的成功动作会把它自己的下一步作废。实测就是这么绕死的：`focus` 注入成功、紧接的 `movePointer` 被拒「标题/进程/位置/大小变了」，只能再观察一次，8 步预算耗尽。现在身份变了（句柄被回收 / 进程重启）才拒绝；标题或矩形变了**照常执行**，只在结果里附一句「注意：窗口已变化（…）」，坐标一律按**新**矩形重算（越界仍按新矩形拒绝）。
 
 图片怎么走到模型：工具结果在日志里是文本（记 media id），像素通过 `ToolResult.Images` 随下一次请求作为**用户消息的图像**发出——wire 上 `tool` 角色只能带文本，所以图片必须自己成一条消息。实测：真实窗口的截图到达模型（`data:image/png;base64,…`），日志里只有 media id。
 
@@ -389,11 +405,18 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 - **前台锁**：后台进程直接 `SetForegroundWindow` 会被拒绝，而打字必须前台——所以 focus 走 `AttachThreadInput`：接到**当前前台线程**的输入队列上（接到目标线程没用），借它的权限设前台，再断开。
 - **文本框读回**：RichEdit 这类编辑器不暴露 `ValuePattern`，要用 `TextPattern`（截断到 200 字符）。这是 agent 唯一能验证「我打的字真的到了」的通道——截图看不出来。
 
-**三道护栏**（都在注入之前，所以能被安全地测试）：
+**四道护栏**（都在注入之前，所以能被安全地测试）：
 
-- **重新校验目标**：审批可能比租约活得久，所以动作前重新观察——窗口（以及被点名的控件）与决策时一致才继续，不一致就要求重新观察。租约过期不再是失败。
+- **重新校验目标**：审批可能比租约活得久，所以动作前重新观察——**身份**一致（还是同一个窗口）才继续；标题或位置变了不算不一致，只在结果里提醒一句，坐标按新矩形重算。句柄被别的窗口占用（Windows 会回收句柄）才要求重新观察。租约过期不再是失败。
 - **全局输入**：按键与打字要求目标**已在前台**（否则先 focus），坐标动作必须落在目标矩形内（拖拽两端都查）。
+- **点必须真的能落到目标窗口上**：坐标是全局的，交给谁由系统按 z 序决定——点在目标矩形里仍可能被别的窗口盖住（最常见的就是本应用自己的窗口，因为那正是用户在看的），于是点击被那个窗口收下、目标画面不变、结果却写着「注入成功」。注入前现在先做命中测试（`WindowFromPoint` → `GetAncestor(GA_ROOT)`）：落点不是目标、也不属于目标自己的菜单/弹窗（owner 链），就**先把目标带到前台再点**（`focus` 会 `SetWindowPos(HWND_TOP)` 提到自己那条 z 序带的最上面——「已经在前台」不等于「没被盖住」；结果里写明「目标原来被挡住，已把它带到前台」）。带不动才拒绝并报出挡住的窗口。点名了控件且控件有 UIA pattern 的动作不受这条限制——pattern 直达控件，那正是「按一个被挡住的控件」的唯一办法。
 - **目标写进结果**：`KeyPress · 注入成功 · 校验：画面无变化（效果未被确认） · 目标 '播放' [Button] @ 网易云音乐` —— 「注入成功」和「画面没变」是两件事，挤在一行会读成失败。
+
+**租约从「观察结束」开始计时。** 读九个窗口的 UIA 树要 **10.2 秒**（Chromium 要先发布树、一个窗口顶到 40 元素上限、每个窗口各有超时），而枚举窗口只要几毫秒。时间戳原本打在这段之前，于是 15 秒的租约发出去时已经「用了」10 秒，紧接的动作报 `Expired`——smoke 里稳定复现。现在时间戳打在遍历之后，租约的有效期就是它的 TTL；`observedRoundTripMs` 也改成覆盖整次观察，让「观察慢就放宽租约」这条策略真正起作用。**动作前的重新观察只重走目标窗口那一棵 UIA 树**（`Observe(elementsFor:)`）：被作用的只有一个窗口，其余窗口沿用模型手上那批元素（id 是按窗口编号的，引用不变），于是重新校验的代价从「整个桌面」降到「一个窗口」——同一台机器上应用在跑时整桌面一次 30.2s，而单窗口是几百毫秒量级。
+
+**校验在窗口变形时不再放弃。** 「两次抓帧之间几何变了」原本直接报 `Indeterminate`——而 `focus` 还原一个最小化窗口**就是**几何变化，恰好是最想知道「还原成功了吗」的那一刻。现在按两次抓帧的**重叠部分**比较；只有完全不相交才判无法判断。顺带修了一个坐标系错误：传给校验器的是**屏幕矩形**，而脏区来自**帧内坐标**，两者相交没有意义（窗口在 (752,320) 时任何目标都算成空的）。
+
+**截图必须和窗口矩形对齐。** `PrintWindow` 从**窗口矩形**的原点渲染，而 Win10+ 的窗口矩形比可见边框大一圈不可见 resize 边框（本机 100% DPI 实测左侧 7px）。此前按可见边框开位图直接渲染，于是**整张图的内容偏了 7px**：网格刻度、控件标记都是按可见边框坐标画的，模型照图读出的每个屏幕坐标都同幅偏，点下去正好落到旁边——而全链路没有一处报错（注入成功、画面也真的变了）。现在按窗口矩形渲染、再把不可见边框裁掉；真机测试 `The_picture_of_a_window_is_aligned_with_the_window_rect` 用一个已知颜色的面板量这条对齐（修前 offset `(7,0)`，修后 `0`）。
 
 ### 审批提示在哪
 
@@ -410,41 +433,6 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 读取（观察、读剪贴板）永不需要批准——否则每看一眼都要点一次，纯摩擦且不保护任何东西。
 
 挡位是**决策**而不是**能力**，所以它**实时生效**（治理每次调用时读当前挡位），不会重启消费者、不会打断飞行中的回合。切换开关（启用/停用）或改窗口白名单才重建工具表——那两件改变的是「存在什么」。
-
----
-
-## 工具调用的显示
-
-**一次调用一张卡**（参考 deepseek-harness 的 tool-call 形态）：调用与结果是日志里的两个事件，对读者却是同一件事——此前渲染成两行互不相干的碎片，一轮里调过工具看起来像两段噪音。
-
-| 位置 | 内容 |
-|---|---|
-| 折叠行 | 工具名（accent 色）· 参数摘要（JSON 压成一行、截断）· 状态（进行中 / 完成 / 失败，失败转 error 色） |
-| 展开 | 「参数」区块（JSON 美化，解析失败则原样）与「结果」区块（Markdown 渲染） |
-| 配对键 | 运行器写进两个事件 meta 里的调用 id；**结果找不到调用**（局部删除、旧日志）也会单独成卡，不静默丢弃 |
-
-`/api/session` 因此多带一个 `meta` 字段（工具 id/name/args/ok、回合结束原因等，原样透出）——没有它界面无法把两行配成一张卡。
-
-**「为什么它不干桌面的活」现在会明说。** 桌面能力默认关闭（fail-closed），关闭时工具**根本不注册给模型**——模型看不到，于是它只能回一段文字，看起来像能力坏了。输入区状态条**常显**模型手上的工具表（来自 `/api/consumer` 的 `tools`）：`工具：无 · 桌面未启用（设置 → 桌面）`，或 `工具：desktop_observe、desktop_act（需批准）`。
-
-**改桌面段会重启消费者**（其它段不会）。工具表是在消费者启动时构建的，不重启就会出现「开关打开了、模型手上还是空的」——那正是看起来像坏掉的状态。判定用的是**值相等**：`DesktopSettings` 带一个列表字段，而 record 默认按引用比列表，两个默认值会永远「不相等」，于是每次保存都重启（把飞行中的回合计数也重置）。
-
----
-
-## 桌面操控（M9）
-
-**已接入**：模型可以通过两个工具观察与操作真实桌面，界面可以批准或拒绝。
-
-| 环节 | 做法 |
-|---|---|
-| 观察 | `desktop_observe`：枚举可见窗口（实体 id、标题、进程、矩形）并**发出租约**。只读，无需批准 |
-| 动作 | `desktop_act`：focus / movePointer / leftClick / rightClick / keyPress。**不可逆**，所以治理把它放进 ask 列表——每次调用都要人点头 |
-| 租约 | 动作必须携带最近一次观察发出的租约；TTL 来自设置（`desktop.leaseTtlMs`，受策略上下限约束），过期即拒绝，且**不做任何注入** |
-| 批准 | 会话里弹出「允许 / 拒绝」；**无人应答按拒绝处理**（默认 120s）。窗口关着、页签没在看，都不会让不可逆动作溜过去 |
-| 窗口白名单 | 设置里的标题子串列表（不区分大小写，空=不限）。真正拦住动作的是批准；这个列表只是把安装范围收窄 |
-| 开关 | **默认关闭**。关闭时工具根本不注册给模型——不是「注册了但拒绝」，是模型看不到 |
-
-**没做**：L2 感知（UIA 语义树 / OCR）——感知只到窗口级，所以「点那个按钮」目前只能给坐标。**没在真机验证**：注入的**成功**路径（真的点了一下、校验到变化）只有单测覆盖；smoke 验的是拒绝路径，它不会去动你的鼠标。
 
 ---
 
@@ -465,11 +453,75 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 
 **正文可多行。** 模型回复是 markdown，它的结构**就是**那些换行，所以事件正文原样落库。日志的「一行一条」由**序列化后的记录**保证——JSON 把 `\n` 转义成 `\\n`，落盘时不会出现真实换行；守卫在写入处（sink）检查记录，而不是在正文上。此前正文被压成单行（理由是「日志按行分帧」），代价是界面上所有靠行结构的 markdown——列表、标题、表格、代码块——全部塌成一段。
 
-**图片输入。** 附图走 `POST /api/media` 存到 `<workspace>/media`，投递时只带 id，回合把**当前输入**的附图以 data URI 放进请求（OpenAI 兼容的 `content` 分片数组）。历史保持纯文本：后续提问不会为一张图重发兆级字节。日志（会话与队列）里只有 id，正文永远是可读文本。
+**工具行不进提示词**：装配器与压缩器只取 `IsContent()` 的条目（`IsToolControl()` 的三种被排除：调用、结果、思考）。工具结果由回合运行器喂回它自己那一轮；推理连自己那一轮都不进。历史保持对话本身。界面看得到、模型看不到，是刻意的。
+
+---
+
+## 思考：看得见，但不回灌
+
+推理模型的答案前面往往有一段思考。此前这一段被**直接丢掉**：`ChatDelta` 只认 `Content` 与 `ToolCalls`，`reasoning_content` 分片解析出来就扔了。后果不是少显示一行，而是**「模型想了三分钟然后秒回」看起来和卡死一模一样**。
+
+| 环节 | 做法 |
+|---|---|
+| 线格式 | `reasoning_content`（DeepSeek）与 `reasoning`（OpenAI 的 reasoning 模型）**两个键都读**——只认一个等于不支持另一家 |
+| 分片 | 与文本同样逐帧拼接，且**先于**任何 `content` 到达；`onReasoning` 是独立通道，不混进 `onText` |
+| 返回值 | `LlmResponse.Reasoning`。**没有就是 `null`，不是空串**——「模型没思考」与「端点没给」是同一个答案，界面不该画成两回事 |
+| 落盘 | 运行器把它写成一条 `Thinking` 事件。**记录而不只是实时显示**：只在思考期间存在的思考行，在模型答完的瞬间就没了，而「它当时在算什么」正是读者事后要问的 |
+| 实时 | `LiveAssistant` 带 `Reasoning` 与 `ReasoningSince`，`/api/session` 下发一条 `ThinkingStreaming`（`seq=0`）。答案一开始写 `Reasoning` 即清空——不然界面会在回答已经在流的时候还说「正在思考」 |
+
+**它绝不回灌给模型。** `SessionEventKind.Thinking` 走 `IsToolControl()`（与 `ToolCall`/`ToolResult` 同一族），**不进 `IsContent()`**：投影给界面看，装配器与压缩器都看不见。理由是推理是模型**这一回合**的工作笔记，回灌只花窗口、不换任何东西。
+
+界面（`ui/src/components/ThinkingRow.vue`）：**思考中自动展开并走秒**（取服务端给的起始时刻，不是客户端「发现」的那一刻），答案落地后**收起**——推理是给需要时查的，不是每次回滚都要重读的。长思考块 `max-block-size` + 内部滚动，不把后面的内容顶出屏幕。
+
+`ILlmClient.StreamWithReasoningAsync` 与 `IAssistantStream.OnReasoningDelta/OnReasoningCompleted` 都是**默认方法**，所以只实现 `CompleteAsync` 的既有客户端一行未改仍然可用，且照样能拿到 `LlmResponse.Reasoning`——只是不在过程中看到。
+
+---
+
+## 附件：图片内联，文档给路径
+
+**附件走 `POST /api/media`**，存到 `<workspace>/media`，投递时只带 id。文件按 **`{id}__{名字}`** 落盘，所以模型拿到的是人认得、也**打得开**的名字，而不只是 `{id}`。名字走 `X-File-Name` 头并 percent-encode——HTTP 头只能带 ASCII，而中文文件名是常态；服务端解回来再消毒（只取叶子、去掉控制字符与保留字符、限长 120，**扩展名一定保住**）。
+
+两类附件走**两条不同的路**，这是硬的：
+
+| 类型 | 怎么到模型 | 为什么 |
+|---|---|---|
+| 图片（png/jpeg/webp/gif） | `content` 分片里的 `image_url`，data URI | 视觉模型就是这么收图的 |
+| 文档与其余 | **正文里出现本地路径**，如 `- 季度报表.csv → <workspace>\media\id__季度报表.csv` | PDF 塞进 `image_url` **不会降级，会整条请求失败**；而路径是 `read` 之类的工具能真正打开的形式 |
+
+只发生在**当前输入**上：历史保持纯文本，后续提问不会为一张图或一份报表重发兆级字节，也不会引用一个可能已被删掉的路径。日志（会话与队列）里只有 id，正文永远是可读文本。
+
+`GET /api/media/types` 列出这个 store 收哪些类型；类型认不出**且**文件名也认不出时才拒（400，理由写明是哪一个认不出），不靠猜。
 
 **来源不是用户选的。** 输入区那个 `text / voice / schedule` 下拉已移除：在这里打字就是文本，麦克风的声音由语音宿主自己入队，定时任务来自调度器。语音输入是**设置里打开就监听**（`语音输入` 卡片显示 `运行中 · 设备 · 已识别 N 段`），不是每条消息的选项。
 
-**工具行不进提示词**：装配器与压缩器只取 `IsContent()` 的条目（`IsToolControl()` 的两种被排除）。工具结果由回合运行器喂回它自己那一轮；历史保持对话本身。界面看得到、模型看不到，是刻意的。
+---
+
+## 工具失败：计数，不是第二份日志
+
+会话日志**永久**记着每一次失败——那是记录该待的地方，也是「什么在反复坏」最不该看的地方。所以另有一份摘要：按「工具 + 归约后的原因」分组，最频繁的排最前（`GET /api/tools/failures`）。
+
+**非零退出码不算失败。** 只有 `ToolResult.Ok == false` 进统计：命令跑完返回 exit 1 是**答案**（`grep` 没找到、`git` 报冲突），不是工具坏了。把它们算进去，摘要会被「工具在正常工作」的记录填满，真正坏了的那个反而被埋掉。治理拒绝**算**——工具根本没跑，模型只能重试。
+
+分组是**故意粗的**：键里去掉引号中的参数、路径与数字，所以两次「找不到文件」合成一行而不是两行。保留每个参数的话，摘要就只是会话日志换个写法。**未归约的原文留在 `lastMessage`**——需要知道具体是哪个文件时还在那里。
+
+摘要**有上限**（默认 200 个键，满了挤掉最少见的）：一次性的错误洪水不能把反复出现的那个挤出去。
+
+## 出错时说清楚三件事
+
+`ModelCallFailure` 取代了 `HttpRequestException`，消息固定成一个形状：
+
+```
+模型补全: HTTP 429 (触发限流; 等一会儿再试，或换一个额度更高的 Key) · {"error":{"message":"rate limited for api_key=[redacted] on model qwen3"}}
+<什么>: <值> (<原因>; <下一步>) · <端点原话>
+```
+
+固定形状是因为**读者学一次就会读**；每种错误换个句式，就等于每次都要重读一遍。三段各有分工：值是可查的（状态码、主机、时限），原因是翻译过的（`401` 是「凭据被拒」不是「坏请求」），下一步是真的能做的动作——不是「检查配置」这种等于没说的。
+
+**request id** 从 `x-request-id` / `request-id` / `x-amzn-requestid` / `cf-ray` 里取，写进事件的 meta。这是服务商支持第一个要的东西，丢了就只能重跑一遍再问。非模型异常**不写**这些键：空值等于骗人说服务商给了 id。
+
+**错误正文一律先脱敏**（`DiagnosticText.Sanitize`）。错误体正是那种会把 key 原样吐回来的文本，而会话日志是给人读的文件；规则包括具名赋值（`api_key=…`）、可辨识的 token 形状（`sk-` / `ghp_` / `AKIA…`）、`Bearer` 头，以及用户主目录。脱敏**故意浅**——把正常内容也涂掉会让诊断不可能，那本身就是一种故障。
+
+顺带修掉一处：`/api/models` 的 catch 原本只接 `HttpRequestException`，新类型会漏成 500。探测失败必须仍是 200 + 原因，否则「端点 404」和「端点不可达」在界面上长得一模一样。
 
 ---
 
@@ -488,6 +540,10 @@ npm --prefix ui run test                                          # 前端测试
 npm --prefix ui run test -- tests/views.test.ts                   # 单个前端测试文件
 npm --prefix ui run build                                         # 前端构建
 
+node scripts/check-docs.mjs                                       # 设计文档引用是否还解析得到（~40 处 `ui.md §N`）
+node scripts/check-css-names.mjs                                  # 组件 scoped 类名是否意外继承了全局的盒模型
+node scripts/e2e-shell.mjs                                        # 壳 e2e（需桌面会话，不在 CI）
+
 cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 ```
 
@@ -496,10 +552,11 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
 | .NET 单测（553） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
-| smoke（149 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99 |
+| smoke（149 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99（**先跑 3 次预热再采样**：刚播种完的库头两次要 480–570ms，那是 SQLite 页缓存与 FTS 首次建索引的一次性开销，不是任何人会等到的检索延迟；稳定态中位数 78ms、P99 93ms。把冷启动计入 P99 会让一个每次查询 80ms 的库显示为不达标） |
 | 前端契约测试（15） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点、上下文占用 |
-| 前端视图测试（36） | `ui/tests/views.test.ts` | 四个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随） |
+| 前端视图测试（54） | `ui/tests/views.test.ts` | 六个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随、MCP 服务器增删与「名字和命令」校验、技能启用计数/说明展开/扫描警告、设置页保存不清空另两页的决策） |
 | 前端组件测试（34） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（工具卡配对与状态、流式行与它的 Markdown 渲染） |
+| 前端壳装配测试（2） | `ui/tests/app.test.ts` | 挂载真实 `App.vue`，逐个点开侧栏页签并断言**没有一条 Vue 警告**（模板里写了却没 import 的组件会退化成空自定义元素：类型查不出来、页面全白，只有运行时警告会报）；无令牌时说明原因且不发请求 |
 | **壳的端到端（34）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、**桌面卡片默认关闭且写明需批准**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、**「支持图片」开关落盘并让运行中的消费者注册截图工具**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
 | 能力门禁（56） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
 
@@ -534,9 +591,21 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 |---|---|---|
 | ① 顶栏 | `components/TopBar.vue` | 品牌 / 视图名 / 面包屑 / **队列徽标** / 主题 / 侧栏折叠。内容撑高，无固定高度 |
 | ② 侧栏 | `components/SideBar.vue` | 新建查询 / 视图导航 / 重建投影。轨道 `minmax(0,var(--sidebar))`，折叠后只剩图标 |
-| ③ 内容区 | `views/*.vue` + `components/{EventList,QueueList,MemoryList,Inspector}.vue` | 主区用 `--measure`（68ch）限行宽；会话与记忆是 master–detail。**队列页签只列 `Queued`/`Running`**（当前待输入的内容），已完成项只进摘要与顶栏徽标 |
-| ④ 输入区 | `components/Composer.vue` | 仅会话视图；状态条 + 输入 + 来源选择。状态条与顶栏徽标**同源** |
+| ③ 内容区 | `views/*.vue` + `components/{EventList,MemoryList,Inspector}.vue`（队列清单在 `Composer.vue` 的状态条下） | 主区的**散文**用 `--measure`（68ch）限行宽（只限事件正文，工具卡的 JSON 与代码块保持全宽）；会话与记忆是 master–detail。**队列清单只列 `Queued`/`Running`**（当前待输入的内容）；已完成项另外进摘要与顶栏徽标 |
+| ④ 输入区 | `components/Composer.vue` | 仅会话视图；状态条（**可展开为完整队列清单**）+ 附件 + 输入 + 挡位选择。状态条与顶栏徽标**同源**：两者都来自 `App.vue` 同一轮 `GET /api/queue` |
 | ⑤ 状态栏 | `components/StatusBar.vue` | 连接态（401 单独措辞）+ 阻塞态 + 版本 |
+
+**输入区上的三件新东西**（`ui/src/composerCommand.ts`、`ui/src/toolAppearance.ts`）：
+
+* **`/status`**：整行以 `/` 开头且**恰好**是 `/status` 时展开队列清单，**不发送**。「查一下 /status 的实现」是句子不是命令，仍然照发——命令只在独占整行时才成立。
+* **队列清单**：徽标后面跟的是同一次轮询的完整行，而不是第二次查询。按 `Running → Queued → Failed → 其他` 排列，失败行带失败原因（「失败 1」只说明坏了，不说明坏在哪）。
+* **工具外观**（`ui/src/toolAppearance.ts`）：按工具名前缀归入 8 个族，各有自己的字形与色相（`styles.css` 的 `--tool-*` 令牌，暗色是同一组色相的浅值而不是取反）。**颜色说的是「是哪一族工具」，状态说的是「成没成」**——两件事两个通道，混在一起就没法区分「搜索失败」和「终端成功」。
+
+**会话行的删除、撤回与召回**（`components/EventList.vue`）：鼠标悬停（或键盘聚焦）到任意行，右上角浮现「撤回 / 删除 / 删除此处及之后」，两个删除动作**各自两段式确认**且**互不串台**——「删除」的第一下不能顺带武装「删除此处及之后」，那会让一次点击删掉不同长度的历史。「撤回」只出现在**读者自己键入的消息**上（`kind === User` 且 `source` 是文本）：助手回复回填进输入框会在下一轮被当成人的话发出去，定时任务与语音也不是人能手动重发的。
+
+删掉自己的消息后，**原文自动回填输入框**（`Composer.restore()`）：撤回是物理的——文字在确认的瞬间离开日志，留下的墓碑只有 `purge #a..#b`，没有正文（README §历史）。不回填的话，「撤回」在唯一一种场景下等于「凭记忆重打一遍」。
+
+**错误行常显**：`AgentTurnRunner` 把 `error: <原文>` 写成 `System` 事件落盘，`EventList` 据此给该行加「错误」标记与 error 色条。这条前缀是运行器写的契约，不是可以模糊匹配的词——非失败的 `System` 行（`consumer started`）不带标记，否则这个标记就没有意义了。
 
 **三条规范怎么在画面上成立**：
 
@@ -546,16 +615,23 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 编辑可撤销 | 列表行**常显** `已编辑 N 次 · 原文：…`；检视面板常驻修订历史，每条带「恢复此版本」 |
 | 阻塞可见 | 顶栏徽标 `队列 N · 失败 M · 执行中 X`（失败转 error 色），不切页也看得到；5s 轮询 |
 
-**尺寸纪律**：令牌里只有视觉标量（圆角/间距/字号/阴影，全 `rem`）。布局尺寸一律就地算——内容撑高、`minmax(0,1fr)` 弹性轨道、`clamp()` 比例。自适应用 `@container`（`.body` 为容器），**不写 px 断点**：窄容器检视面板转浮层、再窄侧栏只剩图标、最窄顶栏丢次要元素。暗色只重写令牌，组件不改。
+**尺寸纪律**：令牌里只有视觉标量（圆角/间距/字号/阴影，全 `rem`）。布局尺寸一律就地算——内容撑高、`minmax(0,1fr)` 弹性轨道、`clamp()` 比例。自适应用 `@container`（`.body` 与 `.app` 两个容器，**不写 px 断点**）：窄容器检视面板转浮层、再窄侧栏只剩图标、最窄顶栏丢次要元素。暗色只重写令牌，组件不改。
+
+**旧版令牌规则已被取代**（2026-10-01，见 `ui.md` §8 与 §12）：旧规则是「层次靠 `--bg`/`--pane` 2% 明度差」「不用阴影分层」「统一 1px `--line`」。三条合起来导致**边框成了唯一的分隔手段** —— `.list > li`、`.toolbar`、`.card`、`.inspector`、`.tool`、`.thinking` 六处各自画一条边。实测当时 `--line` 只有 1.42:1（浅）/ 1.31:1（暗），即满屏 1px 线却几乎看不见结构。新规则的分工是：**surface 阶梯负责纵深，阴影负责浮起，边框只在真的需要边界时出现**；同时把 `--line` 拆成装饰用的 `--line` 与表单专用的 `--line-strong`（3.2:1，WCAG 1.4.11）。视觉重构分 S1–S5 五阶段推进，阶段与落地情况见 `ui.md` §12。
 
 ### 与 `ui.md` 的偏差（实现按真实后端能力落地）
 
 | 规格处 | 偏差 | 原因 |
 |---|---|---|
 | §6 输入区「角色：用户 ▾」 | **未实现** | `InputItem` 只有 `Source`（voice/text/schedule）与 `Payload`，没有「角色」字段。造一个纯前端下拉就是假控件 |
-| §6「发送后事件流顶部出现新行」 | 改为「已入队 · 等待执行」 | **队列没有消费者宿主**（`TakeAsync` 只被 smoke 调用）。投递的真实效果是入队，会话要等消费者跑完才有新行 |
+| §6「发送后事件流顶部出现新行」 | 已实现 | **消费者宿主已在**（`Api/ConsumerHost.cs` 跑 `TurnLoop`，`TakeAsync` 不再只被 smoke 调用）。投递仍是「先入队」：回合完成才在会话里出现新行 |
 | §5.6 设置第四组「记忆」 | 未实现 | `VoiceSettings` 里没有记忆相关字段（`injectionTokenLimit` 只在设计文档里，未进 API） |
 | §4 侧栏「用量 / 配额」 | 未实现 | 没有用量接口。宁可少一项，也不放一个永远显示「—」的标签 |
+| §3 顶栏「语言」下拉 | 未实现 | 全应用只有中文文案，没有 i18n 层 |
+| §8 三条令牌规则 | **已取代** | 见上文「旧版令牌规则已被取代」；新系统在 `ui.md` §8，落地进度在 `ui.md` §12 |
+| §5.4 队列视图 | 不再单独成视图 | 队列清单折进输入区状态条（`Composer.vue` 的「队列清单」）；只列 `Queued`/`Running` 与 `ui.md` §5.4 一致 |
+
+完整的偏差与文档漂移记录见 `ui.md` §10 与 §13。
 
 ---
 
@@ -583,7 +659,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M2 队列 | `Core/Queue/`（`JsonlInputQueue`、`InputItem`） |
 | M3 Agent | `Core/Agent/`（`AgentTurnRunner`、`Hooks/`、`Llm/`（含 `HttpLlmClient`）、`Tools/`、`Governance/`、`Mcp/`、`Skills/`）、`Core/Hosting/TurnLoop.cs` |
 | M4 调度 | `Core/Scheduler/`（`JsonlScheduler`、`CronExpression`） |
-| M5 记忆 | `Core/Memory/`（`MemoryStore`、`MemorySchema`、`MemoryScorer`、`Embeddings`、`TokenCounter`） |
+| M5 记忆 | `Core/Memory/`（`MemoryStore`、`MemorySchema`、`MemoryScorer`、`ConversationDistiller`、`MemoryDeletion`、`Embeddings`、`TokenCounter`）；回路在 `Core/Agent/Hooks/MemoryHook.cs` |
 | M6 治理 | `Core/Agent/Governance/`、`Core/Agent/Tools/`（`ToolGovernance`、`InMemoryToolRegistry`） |
 | M7 MCP | `Core/Agent/Mcp/` |
 | M8 Skills | `Core/Agent/Skills/` |
@@ -594,31 +670,31 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 ---
 
-## 已实现能力（53）
+## 已实现能力（58）
 
-括号内是支撑该能力的 smoke 检查数。
+括号内是该能力的登记检查数（来自 smoke 生成的 `capabilities/manifest.json`；`--verify-baseline` 拿它与 baseline 逐条比对）。
 
 | 模块 | 能力 |
 |---|---|
 | M1 会话 | `session.append_only_log`(6)、`session.editable_projection`(5)、`session.removal`(3) |
 | M2 队列 | `queue.single_fifo`(5)、`queue.idempotent_restart`(3)、`queue.crash_recovery`(2) |
-| M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1)、`agent.queue_consumer`(4) |
+| M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1)、`agent.queue_consumer`(34) |
 | M4 调度 | `scheduler.durable_delivery`(3)、`scheduler.receipt_dedup`(1)、`scheduler.failure_retention`(2)、`scheduler.schedule_to_turn`(3) |
 | M5 记忆 | `memory.recall_pipeline`(2)、`memory.offline_degradation`(1)、`memory.privacy_delete`(1)、`memory.promotion`(1)、`memory.injection_budget`(1)、`memory.scale_p99`(1) |
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(1)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_targeting`(2：无 id 的点按坐标定窗口、无窗口覆盖时列出候选)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图)、`desktop.tool_path`(7：模型经工具观察、动作被审批拦住并拒绝、拒绝写进日志) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
-| M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1)、`settings.*`(2) |
+| M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |
 
 ---
 
 ## 必须知道的坑
 
 1. **API 的 token 是 fail-closed 的**：中间件保护**每一个**端点（含 `/api/health`），新增端点自动受保护。token 走环境变量 `PARTNER_API_TOKEN`，**不走命令行**（argv 全机可读）。
-2. **CORS 顺序**：`UseCors()` 必须在 `UseTokenAuth()` **之前**——预检请求不带凭据，否则会被 401 挡掉。白名单是枚举的 Tauri 来源，不是 `*`。
+2. **CORS 顺序与范围**：`UseCors()` 必须在 `UseTokenAuth()` **之前**——预检请求不带凭据，否则会被 401 挡掉。白名单是枚举的 Tauri 来源，不是 `*`；枚举出来的是 Tauri 三个来源加 `localhost:5173` 与 `4173`。**`npm run preview` 跑在 4173**——漏掉它时，浏览器里打开生产构建每个请求都 `ERR_FAILED`，看上去像前端坏了，实际是 `OPTIONS` 预检就没有 `Access-Control-Allow-Origin`。新增任何本地来源时同改 `ApiHost.cs` 这一处。
 3. **前端用 npm，不要用 pnpm**：pnpm 11 默认拦截依赖的构建脚本，esbuild 装不上（`ERR_PNPM_IGNORED_BUILDS`），vite 直接不可用。
 4. **壳的资源必须是整目录**：`partner-api` 是 .NET apphost，需要同目录的 `.dll`；Tauri 的 `resources` 若配成单文件，dev 下会得到"找不到 partner-api.dll"。
 5. **CI 只能在 Windows 跑**（见「环境要求」）。
@@ -626,6 +702,13 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 7. **改完 API 必须重新 `dotnet publish` 再打包**：壳打包的是 publish 快照，不是 Debug 输出。dev 下壳优先用 Debug 输出（改完 `dotnet build` 即生效），release 下只用打包目录。
 8. **`cargo build --release` 需要 `custom-protocol` feature**（已在 `Cargo.toml` 里设为 default）。少了它，release 二进制仍指向 `devUrl`，窗口里是 `ERR_CONNECTION_REFUSED`。`tauri dev` 用 `--no-default-features` 走 dev server，这是设计如此。
 9. **本仓库尚未纳入版本控制**（没有 `.git`）。改动没有回滚点，建议先 `git init` 并提交当前状态。
+10. **dev 壳的侧车路径写死过 TFM**：`api_exe_path()` 找的是 `src/Partner.Api/bin/Debug/net8.0/partner-api.exe`，而 API 的 TFM 是 `net8.0-windows10.0.19041.0` —— 这个路径根本不存在，于是 dev 壳静默回落到 `src-tauri/target/debug/api/`（**上一次 `dotnet publish` 的快照**）。函数的注释写着「prefer the .NET build output, so editing the API and re-running the shell picks up the change instead of silently using whatever the last `dotnet publish` produced」，而那正是它没做到的事：改完 API、重启壳，跑的还是一天前的二进制，看起来像「改的代码没生效」。现在按 `bin/Debug/*/` 扫描、取最新的那个。
+11. **桌面测试必须串行**：它们读的是全局共享的桌面，live 测试还会自己弹一个 TopMost 窗口。并行跑时「第一个前台窗口」会在两次观察之间消失，稳定的测试变成偶发失败。程序集级 `DisableTestParallelization` 就是这个原因。
+12. **跑 smoke 前要把应用停掉**：应用在跑时，桌面多一个 WebView2 窗口，一次 `desktop_observe` 实测 **30.2s**（停掉应用后同一台机器是 **10.2s**）——UIA 遍历每个窗口都要成本。smoke 里那些 25ms 轮询、10s 等图的定时敏感场景会整片失败，连跟桌面无关的 `agent.queue_consumer` 一起降级。别把它当成代码回归。同理，应用在跑时 `cargo build` 会因为 `partner-shell.exe` 被占用而失败（os error 5）。
+13. **`partner-api` 的第一个位置参数是工作区，第二个才是端口**：`partner-api.exe <workspace> [port]`。写成 `--port 5299 <workspace>` 会让 `--port` 当成工作区路径（真的会在那个相对路径下建出一整个 `session/`、`queue/`、`media/`），端口静默退回 5280。
+14. **换模型的测试不能与「停在闸门上的回合」共存**：`ConsumerHost.ReconfigureAsync` 会等飞行中的回合结束，而闸门由**测试自己**在断言中途释放——于是「测试等 reconfigure、reconfigure 等闸门」死锁，整个测试类挂住而不是失败（表现为整轮 `dotnet test` 超时，而不是一个红色断言）。**一个 consumer 同时只有一个回合**；需要看实时行的测试与需要换模型的测试必须分属不同 fixture。判据：`dotnet test --blame-hang-timeout 90s` 会指出是哪个测试。
+15. **`dotnet test` 会并行跑所有测试程序集**：等消费者状态的用例（`Eventually`，默认 200×25ms = 5s）在整机负载下偶尔不够用，表现为 `the consumer did not run the item against the configured endpoint` 之类看着像真回归的失败。`A_delivered_item_is_executed_against_the_configured_endpoint` 要等**一次 reconfigure 加一个跑完的回合**，所以单独给了 15s 预算，而不是把所有调用方一起拖慢。**另一个真会撞的坑**：不要让两轮 `dotnet test` / smoke 同时跑——它们都从临时端口池取 `FreePort()`，撞上时报 `address already in use`，看着同样像回归。
+16. **`dotnet run --project src/Partner.Api` 之后不要加 `--urls`**：`args[0]` 是**工作区路径**（坑 13），`--urls` 会被当成目录名，真的会在 `src/Partner.Api/` 下建出一整个 `session/`、`queue/`、`settings/`。端口用位置参数：`dotnet run --project src/Partner.Api -- <workspace> <port>`。
 
 ---
 
@@ -639,17 +722,32 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 桌面控制的真机验证 | **已跑通**：开记事本 → 观察到 28 个控件（含 `Document:文本编辑器`）→ 聚焦 → unicode 打字 → 用 UIA 读回：正文里有那段字、标签变「已修改」、状态栏「21 个字符」正好等于长度。按名字启动也验过：`网易云音乐` 经开始菜单解析后正常打开 |
 | UIA 盲区的应用 | **已给出路**：Electron 这类只暴露 1 个控件，现在走 `desktop_screenshot` 把画面交给模型（需勾选「支持图片」）。**坐标仍靠模型从图里估**——参考项目的 set-of-marks（画编号徽章）没做，那是精度上的下一步 |
 | OCR | **不做**：盲区交给模型视觉（见上）。本地 OCR 只在没有视觉模型时才有意义，而那时也没有别的兜底 |
-| 桌面注入的**成功**路径 | 未在真机验证。单测覆盖了参数与拒绝路径；smoke 只验拒绝（它不会去动用户的鼠标）。要确认「点一下真的生效」需要在真实窗口上手动跑一次 |
+| 桌面注入的**成功**路径 | ✅ 已实测（`PARTNER_DESKTOP_LIVE=1 dotnet test --filter DesktopLiveInteractionTests`）：指针落到指定屏幕像素（±1px），另一个点复验它不是累积位移；越界点被拒且指针未动。**默认 skip**——它会动光标 |
+| 坐标归一化契约 | ✅ **已修**并实测：原公式按 `65535/(size-1)` 缩放（让两端点都映射到 0/65535），但 Windows 是用 `floor(n×size/65536)` 解析的——实测 2560 宽有 **8 列**、1440 高有 **5 行**落在左边一像素上（2→1、4→3、7→6、9→8、12→11、17→16、22→21、27→26）。1px 在大目标上看不出来，在 3px 宽的控件上就是隔壁控件，而注入照样报「注入成功」。改为 `ceil(p×65536/size)` 后**每个像素都落在自己身上**（`Every_reachable_pixel_lands_on_itself` 逐像素断言 7 种桌面尺寸，含负原点多屏）；真机复验 895 个采样点，0 偏差。往返映射也从「±1px」变成逐像素精确 |
+| 滚轮单位 | ✅ **已修**：`scrollDelta` 原样塞进 `MOUSEINPUT.mouseData`，而 Windows 以 `WHEEL_DELTA`（120）为单位累加——`mouseData=3` 根本不产生滚动，注入却报成功，模型于是以为页面没有更多内容。现在按 `delta×120` 换算（负数=向下，是常见方向，不再被误拒），并拒掉会撑爆 DWORD 的超大值（否则回绕成反方向滚动）。**未在真机验证**：本机会话里滚轮事件到不了测试窗口（直接 `PostMessage(WM_MOUSEWHEEL)` 也不动），结论依据是 Win32 契约，单测锁住换算与正负号 |
+| 控件经 UIA pattern 触发 | ✅ 已实测：真实按钮（测试进程内自建窗口）经 `InvokePattern` 按下，处理函数真的执行且指针没有移动。没有对应 pattern 的动作（滚动、打字、右键…）返回「不适用」回落到注入——这条由 smoke 把关 |
+| 进程 DPI 感知 | 已设为 PerMonitorV2（`DpiAwareness.EnsurePerMonitorV2()`，API 启动的第一条语句）。**本机是单屏 100% DPI，效果无法在此验证**：它保证非 100% 缩放下 `GetWindowRect` / DWM / UIA 矩形与截图像素同处一套物理像素 |
+| 截图上的坐标网格与控件标记 | ✅ 代码侧锁住：单测锁几何（网格落在整数屏幕坐标、缩放后标记跟着走、标记画在**图内**位置而非屏幕位置）；live 测试把标记的点击点与控件自己的 `PointToScreen` 对齐（±2px）；smoke 校验每个标记都指向真实控件且带该控件的居中点。**人眼实测**：对真实窗口出图后照网格读一个按钮，读得 (1100,630)、真值 (1105,628)——约 5px。**未验证**：模型看带网格的图能读多准 |
+| 截图标注用哪个矩形 | ✅ **已修**：网格与标记原本画在**观察时**记录的矩形上，而截图像素是按**截图那一刻**的窗口位置渲染的。窗口在两步之间移动（还原、拖动、贴边）就导致图上每个刻度数字整体偏移，而画面本身完全正常、没有任何一处报错——模型照着读数点下去就是空白处。现在捕获结果带上 `ScreenRect`，按它标注，并在答案里明说窗口已移动。单测用一个「声称窗口在别处」的假捕获锁住 |
+| 租约的时间戳 | ✅ 已修并实测：观察的时间戳打在 UIA 遍历**之后**（修前 smoke 稳定 `Expired`：15s 租约、10.2s 观察）。回归测试断言时间戳落在一次观察的后半程、且 `observedRoundTripMs` 覆盖整次观察 |
+| 校验的坐标系 | ✅ 已修：脏区（帧内坐标）与目标（屏幕坐标）原本相交，窗口不在 (0,0) 时比值无意义。回归测试用带偏移的窗口断言比值 |
+| dev 壳的侧车路径 | ✅ 已修（见下方「必须知道的坑」第 10 条）。**未验证**：release 壳仍走打包快照，未重新打包验证 |
 | 游戏商业目标 | 未接入。当前目标是自研合成网格游戏，用于证明闭环而非证明某个具体游戏 |
 | 游戏浏览器/CDP 通道 | 未验证（环境受阻）。进程边界适配器已跑通并实测延迟 |
 | 反射层真实节奏 | 未实测。单测与 smoke 都是受控节拍，真实游戏里的信号节奏仍需一次实测 |
 | 壳的交互验证 | ✅ 已覆盖：`node scripts/e2e-shell.mjs`（27 项，CDP 驱动真实 webview）。**不在 CI**——需要桌面会话，且 CI 无法断言窗口 |
 | WebView2 的 UI Automation | UIA 看不到 DOM（实测只暴露 16 个元素）；CDP 可以，e2e 就是走 CDP |
 | 生产打包 | ✅ 已跑：`Partner_0.1.0_x64-setup.exe` **63 MB**（含 214 MB 自包含 API，NSIS 压缩）。**未在干净机器上安装验证** |
-| 记忆页签空态 | API 按设计没有「新建记忆」端点（写入来自 Agent），因此该页签在空工作区是空列表 |
-| MCP 工具 | **未接入**：MCP 客户端（`Core/Agent/Mcp/`）已在 smoke 里验证，但没接进宿主。桌面能力走的是自己的两个工具，不经过 MCP |
+| 记忆写入回路 | ✅ **已接通**（此前**完全没有写入方**）：`MemoryDistilHook`（`Finally` 阶段）把回合提炼成 `Working` 记录，`MemoryRecallHook`（`PreAgentBuild`）把召回结果注入系统块。浏览器实跑：说「我用的是公司内网账号 alice」→ 记忆视图出现该条 → 换种措辞问「我的内网账号是哪个」→ 记忆被召回并注入 |
+| 记忆注入的时效 | ✅ **已做**：注入的每条带 `[层级, 多久前]`（`[established, 10 天前]` / `[unconfirmed, 2 小时前]`），表头写明「以对方现在说的为准」。**记忆不是人刚才说的话**——三个月前的偏好可能早变了，模型只有在提示词说明它是背景时才可能这样权衡 |
+| 中文召回 | ✅ **已修**（此前**对中文完全失效**）：FTS 的 `unicode61` 把整句中文当**一个 token**，「我不太喜欢被打断」找不到「用户不喜欢被反复确认」。索引侧无版本机制、不能换分词器，故 CJK 查询改走 bigram 的参数化 `LIKE`（OR）；打分器仍负责排序。现有召回单测**全是英文**，是它一直没被发现的原因 |
+| 记忆的冲突与降级 | ✅ **已做**：① **冲突按最新生效**——写入时与同层旧记录比对词集，重合够多就让旧的 `valid_to` 生效并记 `superseded_by`，**但不删**，两条都在列表里可读可改。② **三个月未被召回就降一级**（`Semantic→Episodic→Working`，之后由既有 Trim 清掉）。③ **层级可手工改**（`POST /api/memory/{id}/tier`）——「这是我依赖的事实」和「这是我以前猜的」不是打分器能判断的，只有人能定。④ `GET /api/memory/all` 返回**含已失效**的全部记录：「完全可见」要求能看到「什么替换了它」 |
+| 记忆的可见性与可编辑 | ✅ **已做**：列表改用 `GET /api/memory/all`（**含已失效**），每行显示**层级的中文名**（`暂记/经过/确定/做法`）而不是枚举值，并把「什么时候被用过」写进有效性行——`已失效 → m9 · 3 天前用过` 一行说清三件事。层级可从面板直接改（`memory-set-tier`），改完按规范重读，不做乐观更新。摘要分开报「N 条生效 · 共 M 条」 |
+| MCP 工具 | ✅ **已接入宿主**（此前**客户端做完但无人调用**）：设置新增「MCP」段（默认关闭——启用即**启动子进程**），配好命令与参数后消费者启动时拉起，并把 `tools/list` 的结果注册进工具表。工具名加 `mcp_{服务器}_` 前缀，避免两台服务器重名互相顶掉。治理默认 **Ask**，列入 `allowedTools` 才直接跑——启用只决定「提供哪些工具」，不决定「哪些可以直接动」。某个服务器起不来不影响其他，原因记在 `ConsumerHost.McpNote`。设置变更里**服务器列表**会重启消费者（进程要重来），**允许清单**不会（治理实时读） |
 | 真实模型供应商往返 | **未验证**：`HttpLlmClient` 用桩 handler 验了线格式，用真 TCP 假端点验了完整往返；没有对真实供应商（OpenAI/Ollama 等）跑过 |
 | 真实音频设备 | 部分验证：e2e 里语音宿主**真的打开了系统麦克风**（报出 `麦克风 (NVIDIA Broadcast)`）；但完整回路（说话→入队→回合→朗读）用的是合成声源/扬声器，**没有对着真麦克风说完一整句** |
 | 真实 ASR / TTS 服务 | **未验证**：本机没有部署 ASR/TTS 服务，识别与合成走脚本实现；`HttpAsrClient`/`HttpTtsClient` 各有契约测试，但没对真实服务跑过 |
-| 回合流式输出 | 未做：一次补全一次返回，界面不做逐字刷新 |
+| 回合流式输出 | ✅ **已做**（这一行此前是错的）：`HttpLlmClient.StreamWithReasoningAsync`（`:307`）解析 SSE 逐帧，服务端对 `stream: true` 返回 4xx 时退回非流式；`ConsumerHost.LiveAssistant` 把正在写的文本作为 `streaming: true`、`seq=0` 的一行随 `/api/session` 下发。会话视图按 400ms/2s 两档轮询 |
+| 思考（Thinking）的解析、落盘与显示 | ✅ **已做**（见下节「思考：看得见，但不回灌」） |
+| 思考的**实时**计时 | ✅ 已做，浏览器实跑验证：思考行在模型思考期间自动展开并走秒（`已思考 00:08`），答案落地后收起 |
 | Phase 5c 帧级闭环 | 未做 |

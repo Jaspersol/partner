@@ -14,6 +14,93 @@ namespace Partner.Desktop.Tests;
 public sealed class DesktopIntegrationTests
 {
     [Fact]
+    public void A_targeted_observation_refreshes_one_window_and_keeps_the_others()
+    {
+        // Acting re-checks one window; walking every window's UIA tree costs seconds (10.2 s for nine windows,
+        // measured). The ids the model holds for the other windows have to survive that, or a screenshot of
+        // one of them would silently lose its marks.
+        using var automation = new DesktopAutomation();
+
+        var full = automation.Observe();
+        var target = full.Entities[0].EntityId;
+        var carried = full.Elements.Where(element => element.WindowId != target).ToList();
+
+        var targeted = automation.Observe(elementsFor: target);
+
+        // A new observation, so every lease issued against the previous generation is invalid.
+        Assert.NotEqual(full.ObsId, targeted.ObsId);
+        Assert.Equal(full.Entities.Count, targeted.Entities.Count);
+        Assert.Equal(full.Entities.Count, automation.Leases.Count);
+
+        // The named window's ids are still positions in its own list, and the others are the elements from
+        // before — same objects, because nothing about them was re-read.
+        Assert.All(
+            targeted.Elements.Where(element => element.WindowId == target),
+            element => Assert.StartsWith(target + ":", element.ElementId, StringComparison.Ordinal));
+        Assert.All(carried, element => Assert.Contains(element, targeted.Elements));
+    }
+
+    [Fact]
+    public void A_cropped_frame_keeps_the_pixel_that_was_at_the_crop_origin()
+    {
+        // PrintWindow renders from the window-rectangle origin, a few pixels outside the visible frame; this
+        // is the arithmetic that moves the picture back onto the rectangle every coordinate is expressed in.
+        var frame = SyntheticFrame(4, 3);
+
+        var cropped = GdiScreenCapture.Crop(frame, 1, 1, 2, 2);
+
+        Assert.True(cropped.Ok, cropped.Error);
+        Assert.Equal(2, cropped.Width);
+        Assert.Equal(2, cropped.Height);
+        Assert.Equal(2 * 2 * 4, cropped.Bgra.Length);
+        Assert.Equal(Pixel(frame, 1, 1), Pixel(cropped, 0, 0));
+        Assert.Equal(Pixel(frame, 2, 2), Pixel(cropped, 1, 1));
+    }
+
+    [Fact]
+    public void A_crop_that_does_not_fit_is_refused_rather_than_returned_misaligned()
+    {
+        var cropped = GdiScreenCapture.Crop(SyntheticFrame(4, 3), 3, 0, 4, 3);
+
+        Assert.False(cropped.Ok);
+        Assert.Contains("visible frame", cropped.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_full_size_crop_is_the_frame_itself()
+    {
+        var frame = SyntheticFrame(4, 3);
+
+        Assert.Same(frame, GdiScreenCapture.Crop(frame, 0, 0, 4, 3));
+    }
+
+    /// <summary>A frame where every pixel encodes its own coordinates.</summary>
+    private static CaptureResult SyntheticFrame(int width, int height)
+    {
+        var pixels = new byte[width * height * 4];
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var i = ((y * width) + x) * 4;
+                pixels[i] = (byte)((y * width) + x);
+                pixels[i + 1] = (byte)x;
+                pixels[i + 2] = (byte)y;
+                pixels[i + 3] = 255;
+            }
+        }
+
+        return new CaptureResult { Ok = true, Width = width, Height = height, Bgra = pixels, Method = "test" };
+    }
+
+    private static int Pixel(CaptureResult frame, int x, int y)
+    {
+        var i = ((y * frame.Width) + x) * 4;
+        return frame.Bgra[i] | frame.Bgra[i + 1] << 8 | frame.Bgra[i + 2] << 16;
+    }
+
+    [Fact]
     public void Window_enumeration_finds_visible_titled_windows()
     {
         var windows = WindowEnumerator.List();
@@ -76,7 +163,8 @@ public sealed class DesktopIntegrationTests
         Assert.All(observation.Entities, e =>
         {
             Assert.Equal(observation.ObsId, e.Generation);
-            Assert.False(string.IsNullOrWhiteSpace(e.EvidenceDigest));
+            Assert.False(string.IsNullOrWhiteSpace(e.IdentityDigest));
+            Assert.False(string.IsNullOrWhiteSpace(e.LayoutDigest));
             Assert.Equal(e.EntityId, automation.Leases.Peek(e.EntityId)!.EntityId);
         });
     }
@@ -105,6 +193,34 @@ public sealed class DesktopIntegrationTests
         Assert.Equal("entity_not_found", action.GuardReason);
         Assert.Null(action.Injection);
         Assert.Null(action.PostVerify);
+    }
+
+    [Fact]
+    public void An_observation_is_stamped_when_it_finishes_not_when_it_starts()
+    {
+        // Reading the UIA trees of every window takes seconds; enumerating the windows takes milliseconds. The
+        // stamp — and therefore every lease's issue time — used to be taken before the walk, so a 15 s lease
+        // was handed out already ~10 s old and the action that followed came back "Expired" on a lease the
+        // caller had just been given.
+        using var automation = new DesktopAutomation();
+
+        var before = DateTimeOffset.UtcNow;
+        var observation = automation.Observe();
+        var elapsed = DateTimeOffset.UtcNow - before;
+
+        // Stamped at the end of the walk, so it sits at least most of the way through an observation that
+        // takes seconds. Capturing it up front put it at the start of that window.
+        Assert.True(
+            observation.Timestamp >= before + TimeSpan.FromMilliseconds(elapsed.TotalMilliseconds * 0.5),
+            $"stamped {(observation.Timestamp - before).TotalMilliseconds:0.0}ms into a "
+                + $"{elapsed.TotalMilliseconds:0}ms observation");
+
+        // And the policy's "how slow is observing" input has to describe the whole observation, or a lease is
+        // never lengthened for the case it was lengthened for.
+        Assert.InRange(
+            automation.Leases.ObservedRoundTripMs!.Value,
+            elapsed.TotalMilliseconds * 0.5,
+            elapsed.TotalMilliseconds + 1);
     }
 
     [Fact]
@@ -168,7 +284,9 @@ public sealed class DesktopIntegrationTests
             Label = "x",
             Rect = new PixelRect(0, 0, 1, 1),
             Confidence = 1,
-            EvidenceDigest = "d1",
+            IdentityDigest = "d1",
+            LayoutDigest = "l1",
+            ProcessId = 1,
             ObservedAtMs = clock,
         };
 

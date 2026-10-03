@@ -123,6 +123,52 @@ public sealed class JsonlSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Projection_is_reused_until_the_log_moves()
+    {
+        // The projection reads the whole log and replays its rules. It used to run four times per turn and
+        // once every 400ms from the session view, so it is now held until a write lands. What matters is not
+        // that it is reused — it is that it is *not* reused one event too long.
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+
+        await store.AppendAsync(Ev(body: "first"));
+        Assert.Single((await store.ProjectAsync()).Items);
+
+        await store.AppendAsync(Ev(body: "second"));
+
+        // Both, not one: a cache that survives its own invalidation is the failure mode that matters, because
+        // it is silent — the reader is simply told the wrong thing about a conversation.
+        Assert.Equal(2, (await store.ProjectAsync()).Items.Count);
+        Assert.Equal(new[] { "first", "second" }, (await store.ProjectAsync()).Items.Select(i => i.Body));
+    }
+
+    [Fact]
+    public async Task Projection_is_rebuilt_after_a_purge_rewrites_the_log()
+    {
+        // A purge does not append — it rewrites the file — so an append-only invalidation would miss it, and
+        // getting that wrong would leave deleted text readable through the cache, which is the exact thing a
+        // purge exists to prevent.
+        //
+        // What this test actually proves is narrower than it looks: the tombstone that PurgeAsync appends
+        // invalidates on its own, so it would pass even with the explicit bump after Rewrite removed. That bump
+        // stays because it closes the window between the rewrite and the tombstone — but the state inside that
+        // window is not reachable from here, so nothing can prove it.
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+
+        await store.AppendAsync(Ev(body: "keep me"));
+        var secretSeq = await store.AppendAsync(Ev(body: "remove me from the log"));
+        await store.AppendAsync(Ev(body: "keep me too"));
+        await store.ProjectAsync();
+
+        await store.PurgeAsync(secretSeq, secretSeq);
+
+        var bodies = (await store.ProjectAsync()).Items.Select(i => i.Body).ToList();
+        Assert.DoesNotContain("remove me from the log", bodies);
+        Assert.Equal(2, bodies.Count);
+    }
+
+    [Fact]
     public async Task A_purge_takes_the_revisions_of_those_events_with_it()
     {
         var sink = new FakeSink();

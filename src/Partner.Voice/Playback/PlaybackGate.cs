@@ -83,10 +83,9 @@ public sealed class PlaybackGate
 
     public string? LastBlockers { get; private set; }
 
-    public void Engage(double nowSeconds)
+    public void Engage()
     {
         Engaged = true;
-        _engagedAt = nowSeconds;
     }
 
     /// <summary>Returns true when every condition is clear; otherwise records why it is still closed.</summary>
@@ -133,8 +132,4 @@ public sealed class PlaybackGate
     }
 
     public double? LastReleasedAt { get; private set; }
-
-    private double _engagedAt;
-
-    public double EngagedFor(double nowSeconds) => Engaged ? nowSeconds - _engagedAt : 0;
 }

@@ -9,20 +9,8 @@ import { computed } from 'vue'
  * That matters here: session bodies are model output, and this view can drive the desktop.
  */
 
-type Inline =
-  | { kind: 'text'; value: string }
-  | { kind: 'code'; value: string }
-  | { kind: 'strong'; value: string }
-  | { kind: 'em'; value: string }
-
-type Block =
-  | { kind: 'paragraph'; lines: Inline[][] }
-  | { kind: 'heading'; level: number; lines: Inline[][] }
-  | { kind: 'quote'; lines: Inline[][] }
-  | { kind: 'code'; text: string; language: string }
-  | { kind: 'list'; ordered: boolean; items: Inline[][] }
-  | { kind: 'table'; header: string[]; rows: string[][] }
-  | { kind: 'rule' }
+import type { Block, Inline } from './markdownTypes'
+import MarkdownInline from './MarkdownInline.vue'
 
 const props = defineProps<{ body: string }>()
 
@@ -40,11 +28,14 @@ function inline(line: string): Inline[] {
 
     const [, code, strong, strongAlt, em, emAlt] = match
     if (code !== undefined) {
+      // A code span is literal: its contents are never re-parsed, so backticks inside stay as text.
       runs.push({ kind: 'code', value: code })
     } else if (strong !== undefined || strongAlt !== undefined) {
-      runs.push({ kind: 'strong', value: strong ?? strongAlt ?? '' })
+      // Emphasis wraps what is inside it, so `**` around `` `x` `` has to parse the inner code span
+      // rather than carry it as raw text — otherwise the backticks reach the reader verbatim.
+      runs.push({ kind: 'strong', runs: inline(strong ?? strongAlt ?? '') })
     } else {
-      runs.push({ kind: 'em', value: em ?? emAlt ?? '' })
+      runs.push({ kind: 'em', runs: inline(em ?? emAlt ?? '') })
     }
 
     cursor = at + match[0].length
@@ -66,7 +57,19 @@ function splitRow(line: string): string[] {
 
 function parse(text: string): Block[] {
   const blocks: Block[] = []
-  const lines = text.split('\n')
+
+  // Carriage returns are normalised here rather than tolerated pattern by pattern, because they are not
+  // whitespace to a regular expression: in JavaScript `.` does not match `\r` — it is a line terminator, like
+  // `\n` — so every pattern whose tail is `(.*)$` stops matching the moment a line ends in CR. A body that
+  // came from a Windows tool (a `desktop_exec` result carrying PowerShell's stderr, for one) is CRLF
+  // throughout, and the damage is silent: the line renders, just as the wrong thing.
+  //
+  // It was also not merely cosmetic. The list branch is what advances the cursor past a bullet line, so when
+  // it stopped matching, *no* branch consumed that line — the paragraph branch below breaks immediately on a
+  // line that "starts a new block", pushes nothing and leaves `index` alone. The loop came back to the same
+  // index with the same line and spun there at full speed, which is a session view that renders its first
+  // screenful and then stops answering anything at all.
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
   let index = 0
 
   while (index < lines.length) {
@@ -145,9 +148,19 @@ function parse(text: string): Block[] {
     const paragraph: Inline[][] = []
     while (index < lines.length && (lines[index] ?? '').trim() !== '') {
       const next = lines[index] ?? ''
-      if (/^(```|#{1,6}\s|>|\s*[-*+]\s|\s*\d+[.)]\s)/.test(next) || /^(---|\*\*\*|___)$/.test(next.trim())) {
+
+      // Only a line that *follows* something may end the paragraph. A line that merely looks like the start of
+      // another block is what makes this loop consume nothing — and a loop that consumes nothing is the whole
+      // failure above: the branches above have all just declined this line, so if this one declines it too,
+      // the outer `while` returns to an unchanged `index` and never leaves. Taking the first line
+      // unconditionally is also the better reading: a line no branch claimed is a paragraph, not nothing.
+      if (
+        paragraph.length > 0 &&
+        (/^(```|#{1,6}\s|>|\s*[-*+]\s|\s*\d+[.)]\s)/.test(next) || /^(---|\*\*\*|___)$/.test(next.trim()))
+      ) {
         break
       }
+
       paragraph.push(inline(next))
       index++
     }
@@ -185,61 +198,45 @@ const blocks = computed(() => parse(props.body))
 
       <blockquote v-else-if="block.kind === 'quote'">
         <p v-for="(line, lineIndex) in block.lines" :key="lineIndex">
-          <template v-for="(run, runIndex) in line" :key="runIndex">
-            <code v-if="run.kind === 'code'">{{ run.value }}</code>
-            <strong v-else-if="run.kind === 'strong'">{{ run.value }}</strong>
-            <em v-else-if="run.kind === 'em'">{{ run.value }}</em>
-            <template v-else>{{ run.value }}</template>
-          </template>
+          <MarkdownInline v-for="(run, runIndex) in line" :key="runIndex" :run="run" />
         </p>
       </blockquote>
 
       <ol v-else-if="block.kind === 'list' && block.ordered">
         <li v-for="(item, itemIndex) in block.items" :key="itemIndex">
-          <template v-for="(run, runIndex) in item" :key="runIndex">
-            <code v-if="run.kind === 'code'">{{ run.value }}</code>
-            <strong v-else-if="run.kind === 'strong'">{{ run.value }}</strong>
-            <em v-else-if="run.kind === 'em'">{{ run.value }}</em>
-            <template v-else>{{ run.value }}</template>
-          </template>
+          <MarkdownInline v-for="(run, runIndex) in item" :key="runIndex" :run="run" />
         </li>
       </ol>
 
       <ul v-else-if="block.kind === 'list'">
         <li v-for="(item, itemIndex) in block.items" :key="itemIndex">
-          <template v-for="(run, runIndex) in item" :key="runIndex">
-            <code v-if="run.kind === 'code'">{{ run.value }}</code>
-            <strong v-else-if="run.kind === 'strong'">{{ run.value }}</strong>
-            <em v-else-if="run.kind === 'em'">{{ run.value }}</em>
-            <template v-else>{{ run.value }}</template>
-          </template>
+          <MarkdownInline v-for="(run, runIndex) in item" :key="runIndex" :run="run" />
         </li>
       </ul>
 
-      <component v-else-if="block.kind === 'heading'" :is="`h${Math.min(block.level + 2, 6)}`">
-        <template v-for="(run, runIndex) in block.lines[0] ?? []" :key="runIndex">
-          <code v-if="run.kind === 'code'">{{ run.value }}</code>
-          <strong v-else-if="run.kind === 'strong'">{{ run.value }}</strong>
-          <em v-else-if="run.kind === 'em'">{{ run.value }}</em>
-          <template v-else>{{ run.value }}</template>
-        </template>
+      <component v-else-if="block.kind === 'heading'" :is="`h${block.level}`">
+        <MarkdownInline v-for="(run, runIndex) in block.lines[0] ?? []" :key="runIndex" :run="run" />
       </component>
 
       <p v-else v-for="(line, lineIndex) in block.kind === 'paragraph' ? block.lines : []" :key="lineIndex">
-        <template v-for="(run, runIndex) in line" :key="runIndex">
-          <code v-if="run.kind === 'code'">{{ run.value }}</code>
-          <strong v-else-if="run.kind === 'strong'">{{ run.value }}</strong>
-          <em v-else-if="run.kind === 'em'">{{ run.value }}</em>
-          <template v-else>{{ run.value }}</template>
-        </template>
+        <MarkdownInline v-for="(run, runIndex) in line" :key="runIndex" :run="run" />
       </p>
     </template>
   </div>
 </template>
 
 <style scoped>
+/* Long identifiers must wrap in prose, but never mid-token inside code or a table cell: a wrapped
+   identifier reads as two different ones. */
 .markdown {
   overflow-wrap: anywhere;
+}
+
+.markdown pre,
+.markdown code,
+.markdown td,
+.markdown th {
+  overflow-wrap: normal;
 }
 
 .markdown p {
@@ -251,8 +248,8 @@ const blocks = computed(() => parse(props.body))
   padding: var(--space-1) var(--space-3);
   border-inline-start: 0.2em solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--muted);
+  background: var(--surface-0);
+  color: var(--text-2);
 }
 
 .markdown blockquote p:last-child {
@@ -262,17 +259,18 @@ const blocks = computed(() => parse(props.body))
 .markdown code {
   padding: 0.1em 0.35em;
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--surface-0);
   border: 1px solid var(--line);
-  font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 0.92em;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
 }
 
 .markdown pre {
   margin: 0 0 var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  background: var(--surface-0);
   border: 1px solid var(--line);
   overflow: auto;
 }
@@ -297,7 +295,7 @@ const blocks = computed(() => parse(props.body))
 }
 
 .markdown th {
-  background: var(--bg);
+  background: var(--surface-0);
   font-weight: 600;
 }
 

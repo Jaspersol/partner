@@ -83,7 +83,7 @@ public sealed class LeaseTtlPolicyTests
             EntityId = "e",
             ViewId = "v",
             TargetGeneration = "g",
-            EvidenceDigest = "d",
+            IdentityDigest = "d",
             IssuedAt = issued,
             ExpiresAt = issued.AddMilliseconds(10_000),
             TtlMs = 10_000,
@@ -114,7 +114,9 @@ public sealed class LeaseStoreTests
         Label = "Notepad",
         Rect = new PixelRect(10, 10, 100, 100),
         Confidence = 1.0,
-        EvidenceDigest = digest,
+        IdentityDigest = digest,
+        LayoutDigest = "layout-" + digest,
+        ProcessId = 4242,
         ObservedAtMs = Now,
     };
 
@@ -209,7 +211,7 @@ public sealed class LeaseStoreTests
         var second = store.Issue(Entity(digest: "d2"), "v2", Now.AddSeconds(1), 10_000);
 
         Assert.Equal(1, store.Count);
-        Assert.NotEqual(first.EvidenceDigest, second.EvidenceDigest);
+        Assert.NotEqual(first.IdentityDigest, second.IdentityDigest);
         Assert.Equal("v2", store.Peek("e1")!.ViewId);
     }
 }
@@ -318,7 +320,30 @@ public sealed class PostActionVerifierTests
     }
 
     [Fact]
-    public async Task Geometry_change_between_frames_is_indeterminate()
+    public async Task A_resize_between_frames_is_measured_not_given_up_on()
+    {
+        // A window that was restored, moved or resized changes the frame between the two captures — and for a
+        // focus that restored it, that change *is* the outcome. Indeterminate there left the model with no
+        // signal about the step it just took.
+        var verifier = new PostActionVerifier(new FixedCapture(Frame(20, 20, (2, 2, 6, 6)), 20, 20));
+
+        var result = await verifier.VerifyAsync(1, new PixelRect(0, 0, 10, 10), new CaptureResult
+        {
+            Ok = true,
+            Width = 10,
+            Height = 10,
+            Bgra = Frame(10, 10),
+            Method = "test",
+        });
+
+        // The change is inside the overlap, so it is a real measurement — reported as a change, not as a
+        // failure to measure.
+        Assert.Equal(VerifyDecision.AnyChange, result.Decision);
+        Assert.Contains("resized", result.Reason!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_resize_with_identical_overlap_still_counts_as_a_change()
     {
         var verifier = new PostActionVerifier(new FixedCapture(Frame(20, 20), 20, 20));
 
@@ -331,8 +356,27 @@ public sealed class PostActionVerifierTests
             Method = "test",
         });
 
-        Assert.Equal(VerifyDecision.Indeterminate, result.Decision);
-        Assert.Contains("geometry changed", result.Reason!, StringComparison.Ordinal);
+        // Nothing differs inside the overlap, but the window changed shape — reporting "nothing changed" would
+        // be a lie about something the model can see, and shape is usually what it just asked for.
+        Assert.Equal(VerifyDecision.AnyChange, result.Decision);
+        Assert.Contains("10×10 → 20×20", result.Reason!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_ratio_is_computed_in_frame_space_not_screen_space()
+    {
+        // The frames are captures of the window, so their origin is the window's top-left. Handing the verifier
+        // a *screen* rectangle intersected two different coordinate spaces: a window at (752,320) made every
+        // target look empty, and the ratio meaningless.
+        var verifier = new PostActionVerifier(new FixedCapture(Frame(64, 64, (20, 20, 8, 8)), 64, 64));
+
+        var result = await verifier.VerifyAsync(
+            1,
+            new PixelRect(0, 0, 64, 64),
+            new CaptureResult { Ok = true, Width = 64, Height = 64, Bgra = Frame(64, 64), Method = "test" });
+
+        Assert.Equal(VerifyDecision.AnyChange, result.Decision);
+        Assert.InRange(result.IntersectedAreaRatio, 0.01, 0.03);
     }
 
     [Fact]

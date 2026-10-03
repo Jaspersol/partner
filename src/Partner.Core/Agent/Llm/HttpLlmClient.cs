@@ -20,6 +20,12 @@ public sealed record HttpLlmOptions
     public string? ApiKey { get; init; }
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// The thinking gear sent as <c>reasoning_effort</c>; <see cref="ReasoningEfforts.Off"/> (or blank) sends
+    /// nothing. See <see cref="ReasoningEfforts"/> for why values are passed through rather than clamped.
+    /// </summary>
+    public string ReasoningEffort { get; init; } = ReasoningEfforts.Default;
 }
 
 /// <summary>
@@ -146,8 +152,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         if (!response.IsSuccessStatusCode)
         {
             var detail = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
-            throw new HttpRequestException(
-                $"列出模型返回 {(int)response.StatusCode} {response.StatusCode}：{Truncate(detail)}");
+            throw ModelCallFailure.Rejected("列出模型", response.StatusCode, detail, RequestIdOf(response));
         }
 
         var payload = await response.Content.ReadFromJsonAsync<ModelsResponse>(Json, deadline.Token).ConfigureAwait(false);
@@ -274,19 +279,33 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(_options.Timeout);
 
-        using var response = await _http.SendAsync(message, deadline.Token).ConfigureAwait(false);
-
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            var detail = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
-            throw new HttpRequestException(
-                $"模型返回 {(int)response.StatusCode} {response.StatusCode}：{Truncate(detail)}");
+            response = await _http.SendAsync(message, deadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // A refused connection and a refused request are the same failure to the person watching, and the
+            // second is useless without a next step. Both go out in the same shape.
+            // The configured limit rides along: "未在时限内" alone sends the reader to the settings page
+            // without telling them which number to raise.
+            throw ModelCallFailure.From("模型补全", error, _options.Timeout);
         }
 
-        var payload = await response.Content.ReadFromJsonAsync<ChatResponse>(Json, deadline.Token).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("模型返回了空响应体");
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var detail = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
+                throw ModelCallFailure.Rejected("模型补全", response.StatusCode, detail, RequestIdOf(response));
+            }
 
-        return ToResponse(payload);
+            var payload = await response.Content.ReadFromJsonAsync<ChatResponse>(Json, deadline.Token).ConfigureAwait(false)
+                ?? throw ModelCallFailure.Unreadable("模型补全", "响应体为空");
+
+            return ToResponse(payload);
+        }
     }
 
     /// <summary>
@@ -298,13 +317,22 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     /// the buffered call, so a 4xx falls back to <see cref="CompleteAsync"/> rather than failing the turn.
     /// </para>
     /// </summary>
-    public async Task<LlmResponse> StreamAsync(
+    public Task<LlmResponse> StreamAsync(
         LlmRequest request,
         Action<string> onText,
+        CancellationToken ct = default) =>
+        StreamWithReasoningAsync(request, onText, _ => { }, ct);
+
+    /// <inheritdoc />
+    public async Task<LlmResponse> StreamWithReasoningAsync(
+        LlmRequest request,
+        Action<string> onText,
+        Action<string> onReasoning,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(onText);
+        ArgumentNullException.ThrowIfNull(onReasoning);
 
         var json = JsonSerializer.Serialize(BuildBody(request) with { Stream = true }, Json);
 
@@ -342,11 +370,11 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             }
 
             var detail = await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
-            throw new HttpRequestException(
-                $"模型返回 {(int)response.StatusCode} {response.StatusCode}：{Truncate(detail)}");
+            throw ModelCallFailure.Rejected("模型补全", response.StatusCode, detail, RequestIdOf(response));
         }
 
         var text = new StringBuilder();
+        var reasoning = new StringBuilder();
         var calls = new SortedDictionary<int, ToolCallBuilder>();
         var finish = "stop";
         var nextAnonymousIndex = 0;
@@ -397,6 +425,19 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
                 onText(choice.Delta.Content);
             }
 
+            // Reasoning arrives as its own delta channel, before any answer text, and only when a thinking
+            // gear asked for it. It used to be dropped here — the whole reason a reasoning model looked
+            // instantaneous and unexplainable.
+            if (choice.Delta is { } delta)
+            {
+                var fragment = delta.ReasoningContent ?? delta.Reasoning;
+                if (!string.IsNullOrEmpty(fragment))
+                {
+                    reasoning.Append(fragment);
+                    onReasoning(fragment);
+                }
+            }
+
             if (choice.Delta?.ToolCalls is { Count: > 0 })
             {
                 foreach (var fragment in choice.Delta.ToolCalls)
@@ -441,7 +482,11 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
                 builder.Arguments.Length == 0 ? "{}" : builder.Arguments.ToString()))
             .ToList();
 
-        return new LlmResponse(text.Length == 0 ? null : text.ToString(), assembled, finish);
+        return new LlmResponse(
+            text.Length == 0 ? null : text.ToString(),
+            assembled,
+            finish,
+            Reasoning: reasoning.Length == 0 ? null : reasoning.ToString());
     }
 
     private sealed class ToolCallBuilder
@@ -461,7 +506,10 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             : request.Tools.Select(tool => new ToolPayload(
                 "function",
                 new FunctionPayload(tool.Name, tool.Description, Schema(tool.ParametersJsonSchema)))).ToList(),
-        request.MaxTokens);
+        request.MaxTokens,
+        // The request wins when it carries a gear: a turn may have been sent with one chosen per message.
+        // Absent means "whatever the client was configured with", which is the single global default.
+        ReasoningEfforts.Wire(request.ReasoningEffort ?? _options.ReasoningEffort));
 
     private static JsonElement Schema(string parametersJson)
     {
@@ -530,7 +578,37 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
                 .ToList()
             : (IReadOnlyList<LlmToolCall>)Array.Empty<LlmToolCall>();
 
-        return new LlmResponse(choice.Message.Content, calls, choice.FinishReason ?? "stop");
+        // A buffered reply carries the same reasoning as a streamed one — the endpoint sends it once, in the
+        // message, rather than as deltas — so a server that refuses `stream: true` loses the live view but
+        // keeps the content.
+        var reasoning = choice.Message.ReasoningContent ?? choice.Message.Reasoning;
+
+        return new LlmResponse(
+            choice.Message.Content,
+            calls,
+            choice.FinishReason ?? "stop",
+            Reasoning: string.IsNullOrEmpty(reasoning) ? null : reasoning);
+    }
+
+    /// <summary>
+    /// The provider's own id for the request, from wherever they put it. This is the first thing their
+    /// support asks for, and a failure that has thrown it away is a failure that can only be re-created.
+    /// </summary>
+    private static string? RequestIdOf(HttpResponseMessage response)
+    {
+        foreach (var header in new[] { "x-request-id", "request-id", "x-amzn-requestid", "cf-ray" })
+        {
+            if (response.Headers.TryGetValues(header, out var values))
+            {
+                var value = values.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+        }
+
+        return null;
     }
 
     private static string Truncate(string text) => text.Length <= 400 ? text : text[..400] + "…";
@@ -542,6 +620,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         IReadOnlyList<OutboundMessage> Messages,
         IReadOnlyList<ToolPayload>? Tools,
         int? MaxTokens,
+        string? ReasoningEffort,
         bool? Stream = null);
 
     private sealed record OutboundContentPart(string Type, string? Text, OutboundImageUrl? ImageUrl);
@@ -575,13 +654,25 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
 
     private sealed record ChatChunkChoice(ChatDelta? Delta, string? FinishReason);
 
-    private sealed record ChatDelta(string? Content, IReadOnlyList<ChatDeltaToolCall>? ToolCalls);
+    /// <summary>
+    /// One delta. Reasoning is a channel of its own: the endpoint sends it before the answer, under whichever
+    /// key it uses, and a delta may carry either, both, or neither.
+    /// </summary>
+    private sealed record ChatDelta(
+        string? Content,
+        IReadOnlyList<ChatDeltaToolCall>? ToolCalls,
+        string? ReasoningContent,
+        string? Reasoning);
 
     private sealed record ChatDeltaToolCall(int? Index, string? Id, ChatFunction? Function);
 
     private sealed record ChatChoice(ChatMessage Message, string? FinishReason);
 
-    private sealed record ChatMessage(string? Content, IReadOnlyList<ChatToolCall>? ToolCalls);
+    private sealed record ChatMessage(
+        string? Content,
+        IReadOnlyList<ChatToolCall>? ToolCalls,
+        string? ReasoningContent,
+        string? Reasoning);
 
     private sealed record ChatToolCall(string Id, ChatFunction Function);
 

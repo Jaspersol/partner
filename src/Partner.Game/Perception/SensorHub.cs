@@ -53,8 +53,6 @@ public sealed class SensorHub
         _clock = clock ?? TimeProvider.System;
     }
 
-    public TimeSpan SensorDebounce => _sensorDebounce;
-
     public IReadOnlyList<RawSignal> Accepted => _accepted;
 
     public IReadOnlyList<RawSignal> Dropped => _dropped;
@@ -115,8 +113,6 @@ public sealed class SensorHub
 public sealed class ConsciousGate
 {
     private readonly List<RawSignal> _escalated = new();
-
-    public IReadOnlyList<RawSignal> Escalated => _escalated;
 
     public int EscalationCount => _escalated.Count;
 

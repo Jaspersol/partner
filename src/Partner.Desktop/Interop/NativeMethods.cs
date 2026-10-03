@@ -39,6 +39,26 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();
 
+    /// <summary>The window a point is delivered to, by the same hit-test the mouse uses.</summary>
+    [DllImport("user32.dll")]
+    internal static extern nint WindowFromPoint(Point point);
+
+    /// <summary>Walks up to an ancestor; <see cref="GaRoot"/> resolves a child control to its top-level window.</summary>
+    [DllImport("user32.dll")]
+    internal static extern nint GetAncestor(nint hWnd, uint flags);
+
+    internal const uint GaRoot = 2;
+
+    /// <summary>Walks the parent <i>and</i> owner chains: a menu or popup answers its owning window.</summary>
+    internal const uint GaRootOwner = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetForegroundWindow(nint hWnd);
@@ -59,10 +79,14 @@ internal static class NativeMethods
     internal static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);
 
     [DllImport("user32.dll")]
-    internal static extern nint GetDesktopWindow();
-
-    [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int index);
+
+    // The bounding box of every monitor in one coordinate space — the space SendInput's absolute mouse
+    // coordinates are normalized against.
+    internal const int SmXVirtualScreen = 76;
+    internal const int SmYVirtualScreen = 77;
+    internal const int SmCxVirtualScreen = 78;
+    internal const int SmCyVirtualScreen = 79;
 
     [DllImport("dwmapi.dll")]
     internal static extern int DwmGetWindowAttribute(nint hWnd, int attribute, out Rect value, int size);
@@ -88,9 +112,6 @@ internal static class NativeMethods
     internal static extern bool PrintWindow(nint hWnd, nint hdc, uint flags);
 
     internal const uint PwRenderFullContent = 0x00000002;
-
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern nint GetWindowDC(nint hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern nint GetDC(nint hWnd);
@@ -159,6 +180,16 @@ internal static class NativeMethods
 
     // ---- focus ----------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Opts the process into per-monitor DPI awareness. Must be the process's first DPI decision: Windows
+    /// fixes the mode once and answers <c>E_ACCESSDENIED</c> (returning false) to every later attempt.
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetProcessDpiAwarenessContext(nint context);
+
+    internal const int DpiAwarenessContextPerMonitorAwareV2 = -4;
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(nint hwnd, nint processId);
 
@@ -170,6 +201,17 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool BringWindowToTop(nint hwnd);
+
+    /// <summary>Reorders a window in the z-order without moving, resizing or activating it.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
+
+    /// <summary>Top of the z-order <i>within the window's own band</i> — it does not make a window topmost.</summary>
+    internal static readonly nint HwndTop = 0;
+
+    internal const uint SwpNosize = 0x0001;
+    internal const uint SwpNomove = 0x0002;
+    internal const uint SwpNoactivate = 0x0010;
 
     // ---- clipboard ------------------------------------------------------------------------------
     [DllImport("user32.dll", SetLastError = true)]
@@ -211,8 +253,16 @@ internal static class NativeMethods
     internal const uint MouseeventfLeftup = 0x0004;
     internal const uint MouseeventfRightdown = 0x0008;
     internal const uint MouseeventfRightup = 0x0010;
-    internal const uint MouseeventfVirtualdesk = 0x4000;
     internal const uint MouseeventfWheel = 0x0800;
+    internal const uint MouseeventfVirtualdesk = 0x4000;
+
+    /// <summary>
+    /// Makes <c>dx</c>/<c>dy</c> mean "a position in the 0..65535 coordinate range" instead of "how far to
+    /// move". Required for <see cref="MouseeventfVirtualdesk"/> to have any effect: the documentation for
+    /// that flag says it must be combined with this one, and without it a screen coordinate is applied as
+    /// a relative mouse delta.
+    /// </summary>
+    internal const uint MouseeventfAbsolute = 0x8000;
 
     internal const uint KeyeventfKeyup = 0x0002;
     internal const uint KeyeventfUnicode = 0x0004;

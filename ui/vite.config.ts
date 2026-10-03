@@ -17,6 +17,16 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+
+    // The API is same-origin inside the Tauri webview, so it sends no CORS headers and needs none. Opening
+    // the dev server in a normal browser is the other way to look at this UI, and there the two are on
+    // different ports; the proxy makes the dev server the origin so the app code is identical either way.
+    proxy: {
+      '/api': {
+        target: `http://127.0.0.1:${process.env.PARTNER_PORT ?? '5280'}`,
+        changeOrigin: false,
+      },
+    },
   },
 
   test: {

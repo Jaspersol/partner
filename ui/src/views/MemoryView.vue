@@ -1,14 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { MemoryRevision, PartnerApiSurface } from '../api'
-import { memoryRowFromHit, memoryRowFromItem, type MemoryRow } from '../memoryRow'
+import { memoryRowFromHit, memoryRowFromItem, MEMORY_TIERS, tierLabel, type MemoryRow } from '../memoryRow'
+import { useOverlayMode } from '../narrow'
 import Inspector from '../components/Inspector.vue'
+import Icon from '../components/Icon.vue'
 import MemoryList from '../components/MemoryList.vue'
 
 const props = defineProps<{ api: PartnerApiSurface }>()
 const emit = defineEmits<{ context: [value: string]; changed: [] }>()
 
 const rows = ref<MemoryRow[]>([])
+
+/**
+ * Whether the list has ever come back. See SessionView's copy of this — the two states ("no memories" and
+ * "has not asked yet") were sharing one message, and the second of those was being reported as the first.
+ */
+const loaded = ref(false)
 const selected = ref<MemoryRow | null>(null)
 const draft = ref('')
 const revisions = ref<MemoryRevision[]>([])
@@ -21,7 +29,11 @@ const query = ref('')
 const tier = ref('all')
 const summary = ref('')
 const error = ref('')
-const inspectorCollapsed = ref(false)
+/** Closed on arrival, like the session view's: the list is what a reader opens this page for. */
+const inspectorCollapsed = ref(true)
+
+/** See SessionView: the handle is only honest while the panel is a column rather than an overlay. */
+const { isOverlay } = useOverlayMode()
 
 /** True while the list shows recall hits rather than the stored records. */
 const recalling = ref(false)
@@ -47,10 +59,47 @@ const note = computed(() => {
 async function refresh() {
   error.value = ''
   try {
-    rows.value = (await props.api.memory()).map(memoryRowFromItem)
+    // The full list, retired records included: a memory view that hides what a later statement replaced cannot
+    // answer "why does it now believe the opposite", which is the question a conflict raises.
+    const all = await props.api.memoryAll()
+    rows.value = all.map((item) => memoryRowFromItem(item))
+    loaded.value = true
     recalling.value = false
-    summary.value = `${rows.value.length} 条有效记忆`
+
+    const live = rows.value.filter((row) => !row.retired).length
+    summary.value = `${live} 条生效 · 共 ${rows.value.length} 条`
     emit('context', `记忆 · ${rows.value.length} 条`)
+  } catch (failure) {
+    error.value = String(failure)
+  }
+}
+
+/**
+ * Moves the selected record between tiers, then re-reads.
+ *
+ * <para>
+ * A person's call, not the scorer's: "this is a fact I rely on" and "this is something I once guessed" are
+ * exactly the distinction the demotion rule works off, and no score can tell them apart. The re-read is the
+ * norm (ui.md): the row on screen is what the server kept, not what was sent.
+ * </para>
+ */
+async function setTier(tier: string) {
+  const row = selected.value
+  if (!row) {
+    error.value = '先选中一条记忆'
+    return
+  }
+
+  error.value = ''
+  try {
+    await props.api.setMemoryTier(row.recordId, tier)
+    await refresh()
+
+    const updated = rows.value.find((candidate) => candidate.recordId === row.recordId)
+    if (updated) {
+      await select(updated)
+    }
+    emit('changed')
   } catch (failure) {
     error.value = String(failure)
   }
@@ -133,14 +182,38 @@ async function remove() {
 }
 
 onMounted(refresh)
-defineExpose({ refresh })
+
+/** For Ctrl+K. See SessionView's copy of this — it is the same contract. */
+const searchInput = ref<HTMLInputElement | null>(null)
+
+function focusSearch() {
+  query.value = ''
+  searchInput.value?.focus()
+}
+
+function collapseInspector() {
+  inspectorCollapsed.value = true
+}
+
+defineExpose({ refresh, focusSearch, collapseInspector })
 </script>
 
 <template>
   <div class="view">
     <div class="toolbar">
       <button data-test="memory-refresh" @click="refresh">刷新</button>
-      <input v-model="query" placeholder="⌕ 检索…" data-test="memory-query" @keydown.enter="recall" />
+      <label class="search-field">
+        <Icon name="search" :size="14" class="search-glyph" />
+        <input
+          ref="searchInput"
+          v-model="query"
+          placeholder="检索记忆…"
+          title="Ctrl+K"
+          aria-label="检索记忆"
+          data-test="memory-query"
+          @keydown.enter="recall"
+        />
+      </label>
       <button data-test="memory-recall" @click="recall">检索</button>
       <select v-model="tier" data-test="memory-tier" aria-label="层级">
         <option v-for="option in tiers" :key="option" :value="option">
@@ -155,7 +228,13 @@ defineExpose({ refresh })
       >
         返回全量
       </button>
-      <button class="ghost" data-test="memory-inspector-toggle" @click="inspectorCollapsed = !inspectorCollapsed">
+      <button
+        class="ghost"
+        data-test="memory-inspector-toggle"
+        aria-controls="memory-inspector"
+        :aria-expanded="!inspectorCollapsed"
+        @click="inspectorCollapsed = !inspectorCollapsed"
+      >
         {{ inspectorCollapsed ? '‹ 展开检视' : '› 收起检视' }}
       </button>
       <span class="spacer" />
@@ -166,10 +245,29 @@ defineExpose({ refresh })
       <div v-if="!inspectorCollapsed" class="inspector-scrim" @click="inspectorCollapsed = true" />
       <div class="scroll">
         <MemoryList :rows="visible" :selected-id="selected?.recordId ?? null" @select="select" />
-        <p v-if="visible.length === 0" class="muted" style="padding: var(--space-3)">（无记忆）</p>
+        <p v-if="!loaded" class="pending" data-test="memory-pending">正在读取记忆…</p>
+        <p v-else-if="visible.length === 0" class="empty">（无记忆）</p>
       </div>
 
+      <!--
+        The tier is editable because the demotion rule protects what a person marked as established. That
+        makes it a judgement rather than a score, and a judgement belongs to whoever reads the list.
+      -->
+      <div v-if="selected" class="tier-picker">
+        <label for="memory-tier-picker">层级</label>
+        <select
+          id="memory-tier-picker"
+          :value="selected.tier"
+          data-test="memory-set-tier"
+          @change="setTier(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="option in MEMORY_TIERS" :key="option" :value="option">
+            {{ tierLabel(option) }}
+          </option>
+        </select>
+      </div>
       <Inspector
+        id="memory-inspector"
         test-prefix="memory"
         title="编辑选中记忆（旧记录软失效并标记 supersededBy）"
         :target="selected?.recordId ?? '未选中'"
@@ -177,6 +275,7 @@ defineExpose({ refresh })
         :revisions="revisionRows"
         :note="note"
         delete-label="删除"
+        :resizable="!isOverlay"
         @save="save"
         @remove="remove"
       />
@@ -187,25 +286,26 @@ defineExpose({ refresh })
 </template>
 
 <style scoped>
-.view {
-  display: flex;
-  flex-direction: column;
-  min-block-size: 0;
-  block-size: 100%;
-}
-
 .split {
   flex: 1;
   min-block-size: 0;
 }
 
-.spacer {
-  flex: 1;
+.tier-picker {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-block-end: 1px solid var(--line);
+  font-size: var(--fs-meta);
 }
 
-.notice {
-  margin: 0;
-  padding: var(--space-1) var(--space-3);
-  border-block-start: 1px solid var(--line);
+.tier-picker label {
+  color: var(--text-3);
+}
+
+.tier-picker select {
+  font-size: var(--fs-meta);
+  min-inline-size: 0;
 }
 </style>

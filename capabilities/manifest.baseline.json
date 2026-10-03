@@ -536,6 +536,45 @@
           "check": "desktop: input marshalling matches the Win32 contract",
           "ran": true,
           "passed": true
+        },
+        {
+          "check": "desktop: positional input is absolute in the 0..65535 virtual-desktop space",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a point outside the virtual desktop is refused instead of clamped",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.uia_pattern_routing",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: an action a pattern cannot express is routed to injected input",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: a control id that does not resolve is not guessed at",
+          "ran": true,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "id": "desktop.screenshot_marks",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a picture\u0027s marks carry each control\u0027s real screen point",
+          "ran": true,
+          "passed": true
         }
       ]
     },
@@ -583,6 +622,11 @@
         },
         {
           "check": "desktop: a point no window covers is refused with the candidates named",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "desktop: the window under a point is the top-level window that contains it",
           "ran": true,
           "passed": true
         }
@@ -958,6 +1002,21 @@
         },
         {
           "check": "settings: the API key is sent to the model but never echoed back",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "settings: the thinking gear reaches the model request",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "input: a gear chosen for one message wins over the configured default",
+          "ran": true,
+          "passed": true
+        },
+        {
+          "check": "input: a gear that is not on the menu is rejected and lists the ones that are",
           "ran": true,
           "passed": true
         },

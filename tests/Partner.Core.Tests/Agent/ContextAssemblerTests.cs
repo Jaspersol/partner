@@ -1,7 +1,8 @@
-using Partner.Core.Memory;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
+using Partner.Core.Media;
+using Partner.Core.Memory;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
 
@@ -273,6 +274,83 @@ public sealed class ContextAssemblerTests : IDisposable
             // The summary rides in the system block, so the turn budget is spent on turns.
             Assert.Contains("earlier: the user asked about lamps", messages[0].Content!, StringComparison.Ordinal);
             Assert.Contains(messages, m => m.Content == "and now?");
+        }
+    }
+
+    [Fact]
+    public async Task A_document_reaches_the_model_as_a_path_it_can_open()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var media = new FileMediaStore(_dir);
+            using var stream = new MemoryStream("a,b\n1,2\n"u8.ToArray());
+            var mediaId = await media.SaveAsync("text/csv", "报表.csv", stream);
+
+            var messages = await new SessionWindowContextAssembler(store, media: media)
+                .AssembleInitialAsync(Input("看看这个") with { MediaIds = new[] { mediaId } }, Array.Empty<string>());
+
+            var user = messages[^1];
+            Assert.Equal("user", user.Role);
+
+            // A PDF or a CSV in an image part does not degrade, it fails the request — so a document travels as
+            // a path. And the path must be the one the model can actually open, not a name.
+            Assert.Null(user.Images);
+            Assert.Contains("报表.csv", user.Content!, StringComparison.Ordinal);
+            // The store is opened on _dir itself here, so that is the directory the message has to name.
+            Assert.Contains(Path.GetFullPath(_dir), user.Content!, StringComparison.OrdinalIgnoreCase);
+
+            // The path in the message has to exist; one that does not is worse than saying nothing.
+            var path = user.Content!.Split('\n').Last(l => l.Contains('→')).Split('→').Last().Trim();
+            Assert.True(File.Exists(path), $"消息里的路径不存在：{path}");
+        }
+    }
+
+    [Fact]
+    public async Task An_image_still_rides_inline_and_is_not_also_named_as_a_file()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var media = new FileMediaStore(_dir);
+            using var stream = new MemoryStream(new byte[] { 1, 2, 3, 4 });
+            var mediaId = await media.SaveAsync("image/png", "lamp.png", stream);
+
+            var messages = await new SessionWindowContextAssembler(store, media: media)
+                .AssembleInitialAsync(Input("这张图") with { MediaIds = new[] { mediaId } }, Array.Empty<string>());
+
+            var user = messages[^1];
+
+            // The payload must stay the payload: a vision model takes the picture inline, and quoting a path
+            // for a file it is already receiving would only make it think it has to go and fetch it.
+            Assert.Equal("这张图", user.Content);
+            Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<string>>(user.Images!));
+            Assert.StartsWith("data:image/png;base64,", user.Images![0], StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task An_image_and_a_document_travel_by_the_rule_each_one_can_survive()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var media = new FileMediaStore(_dir);
+            using var picture = new MemoryStream(new byte[] { 1, 2, 3, 4 });
+            using var sheet = new MemoryStream("a,b\n"u8.ToArray());
+            var pictureId = await media.SaveAsync("image/png", "lamp.png", picture);
+            var sheetId = await media.SaveAsync("text/csv", "报表.csv", sheet);
+
+            var messages = await new SessionWindowContextAssembler(store, media: media)
+                .AssembleInitialAsync(
+                    Input("两个都看看") with { MediaIds = new[] { pictureId, sheetId } },
+                    Array.Empty<string>());
+
+            var user = messages[^1];
+
+            Assert.Single(user.Images!);
+            Assert.DoesNotContain("lamp.png", user.Content!, StringComparison.Ordinal);
+            Assert.Contains("报表.csv", user.Content!, StringComparison.Ordinal);
         }
     }
 }

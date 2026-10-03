@@ -27,6 +27,12 @@ public sealed record ActionParams
 
     public int Y { get; init; }
 
+    /// <summary>
+    /// The control this action names, when it names one. Present means "act on that control", which lets the
+    /// UI Automation pattern path reach it directly instead of clicking its centre by coordinates.
+    /// </summary>
+    public string? ElementId { get; init; }
+
     /// <summary>Virtual-key code for <see cref="ActionKind.KeyPress"/>.</summary>
     public ushort VirtualKey { get; init; }
 
@@ -59,6 +65,44 @@ public sealed record InjectionResult(bool Ok, uint ErrorCode, string Detail);
 public sealed class InputInjector
 {
     /// <summary>
+    /// The flags every <i>positional</i> mouse event needs.
+    /// <para>
+    /// <c>MOUSEEVENTF_ABSOLUTE</c> is not optional. Without it <c>dx</c>/<c>dy</c> are relative mickeys and
+    /// <c>MOUSEEVENTF_VIRTUALDESK</c> is ignored entirely — so "click (800,600)" was sent as "move by
+    /// 800,600", which lands in the corner of the screen from anywhere other than the origin.
+    /// </para>
+    /// </summary>
+    private const uint PositionalFlags = NativeMethods.MouseeventfMove
+        | NativeMethods.MouseeventfVirtualdesk
+        | NativeMethods.MouseeventfAbsolute;
+
+    private readonly Func<VirtualDesktop> _desktop;
+
+    /// <param name="desktop">Overridable so the coordinate math can be exercised without a real display.</param>
+    public InputInjector(Func<VirtualDesktop>? desktop = null) => _desktop = desktop ?? VirtualDesktop.Current;
+
+    /// <summary>
+    /// Screen point → the 0..65535 pair <c>SendInput</c> wants, or the reason it cannot be delivered.
+    /// A point outside the virtual desktop is refused rather than clamped: silently turning "click the
+    /// button" into "click the screen edge" is the failure this whole layer exists to avoid.
+    /// </summary>
+    private bool TryPosition(int x, int y, out int nx, out int ny, out string? error)
+    {
+        var desktop = _desktop();
+        if (!desktop.Contains(x, y))
+        {
+            nx = ny = 0;
+            error = $"({x},{y}) 不在虚拟桌面 {desktop} 内：这条路只能在屏幕上点，越界会被系统截到边缘";
+            return false;
+        }
+
+        nx = desktop.NormalizeX(x);
+        ny = desktop.NormalizeY(y);
+        error = null;
+        return true;
+    }
+
+    /// <summary>
     /// Brings a window to the foreground.
     /// <para>
     /// Plain <c>SetForegroundWindow</c> is refused when the caller is not already the foreground process — the
@@ -80,7 +124,11 @@ public sealed class InputInjector
         // so "already foreground" must not short-circuit before the restore, or focusing it does nothing at all.
         if (foreground == handle && !NativeMethods.IsIconic(handle))
         {
-            return new InjectionResult(true, 0, "already foreground");
+            // …but "already foreground" is not "already reachable". A topmost window can sit over the active
+            // one, and then the click the model is about to make lands on the cover. Raising within the
+            // window's own band fixes that without changing whether it is always-on-top.
+            Raise(handle);
+            return new InjectionResult(true, 0, "already foreground (raised)");
         }
 
         // Attach to the *foreground* thread, not the target's: the right to set the foreground belongs to
@@ -98,6 +146,10 @@ public sealed class InputInjector
 
             NativeMethods.BringWindowToTop(handle);
             var ok = NativeMethods.SetForegroundWindow(handle);
+            if (ok)
+            {
+                Raise(handle);
+            }
 
             return new InjectionResult(
                 ok,
@@ -115,73 +167,60 @@ public sealed class InputInjector
         }
     }
 
-    public InjectionResult MovePointer(int x, int y)
-    {
-        var inputs = new[]
-        {
-            new NativeMethods.Input
-            {
-                Type = NativeMethods.InputMouse,
-                Union = new NativeMethods.InputUnion
-                {
-                    Mouse = new NativeMethods.MouseInput
-                    {
-                        Dx = x,
-                        Dy = y,
-                        Flags = NativeMethods.MouseeventfMove | NativeMethods.MouseeventfVirtualdesk,
-                    },
-                },
-            },
-        };
+    /// <summary>
+    /// Puts the window at the top of its own z-order band without activating it, moving it or changing
+    /// whether it is always-on-top. Focus is not only "give it the keyboard": a window can be the active one
+    /// and still be covered, and then the click the caller makes next lands on the cover.
+    /// </summary>
+    private static void Raise(nint handle) =>
+        NativeMethods.SetWindowPos(
+            handle,
+            NativeMethods.HwndTop,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNomove | NativeMethods.SwpNosize | NativeMethods.SwpNoactivate);
 
-        return Send(inputs, $"move to ({x},{y})");
+    /// <summary>
+    /// The records a pointer event would send, without sending them.
+    /// <para>
+    /// The flags and the normalized coordinates <i>are</i> the contract — and this is where they were wrong:
+    /// every positional event was missing <c>MOUSEEVENTF_ABSOLUTE</c>, so a screen coordinate was applied as
+    /// a mouse delta. Exposing the built records is what lets a test pin that down without moving anyone's
+    /// cursor.
+    /// </para>
+    /// </summary>
+    internal bool TryBuildPointer(
+        int x,
+        int y,
+        uint buttonFlags,
+        out NativeMethods.Input[] inputs,
+        out string? error)
+    {
+        if (!TryPosition(x, y, out var nx, out var ny, out error))
+        {
+            inputs = [];
+            return false;
+        }
+
+        inputs = [MouseAt(nx, ny, PositionalFlags | buttonFlags)];
+        return true;
     }
 
-    public InjectionResult LeftClick(int x, int y)
-    {
-        var inputs = new[]
-        {
-            new NativeMethods.Input
-            {
-                Type = NativeMethods.InputMouse,
-                Union = new NativeMethods.InputUnion
-                {
-                    Mouse = new NativeMethods.MouseInput
-                    {
-                        Dx = x,
-                        Dy = y,
-                        Flags = NativeMethods.MouseeventfMove | NativeMethods.MouseeventfVirtualdesk
-                            | NativeMethods.MouseeventfLeftdown | NativeMethods.MouseeventfLeftup,
-                    },
-                },
-            },
-        };
+    public InjectionResult MovePointer(int x, int y) => Positional(x, y, 0, $"move to ({x},{y})");
 
-        return Send(inputs, $"left click at ({x},{y})");
-    }
+    public InjectionResult LeftClick(int x, int y) =>
+        Positional(x, y, NativeMethods.MouseeventfLeftdown | NativeMethods.MouseeventfLeftup, $"left click at ({x},{y})");
 
-    public InjectionResult RightClick(int x, int y)
-    {
-        var inputs = new[]
-        {
-            new NativeMethods.Input
-            {
-                Type = NativeMethods.InputMouse,
-                Union = new NativeMethods.InputUnion
-                {
-                    Mouse = new NativeMethods.MouseInput
-                    {
-                        Dx = x,
-                        Dy = y,
-                        Flags = NativeMethods.MouseeventfMove | NativeMethods.MouseeventfVirtualdesk
-                            | NativeMethods.MouseeventfRightdown | NativeMethods.MouseeventfRightup,
-                    },
-                },
-            },
-        };
+    public InjectionResult RightClick(int x, int y) =>
+        Positional(x, y, NativeMethods.MouseeventfRightdown | NativeMethods.MouseeventfRightup, $"right click at ({x},{y})");
 
-        return Send(inputs, $"right click at ({x},{y})");
-    }
+    /// <summary>One positional event, refused before anything is injected when the point is off-screen.</summary>
+    private InjectionResult Positional(int x, int y, uint buttonFlags, string detail) =>
+        TryBuildPointer(x, y, buttonFlags, out var inputs, out var error)
+            ? Send(inputs, detail)
+            : new InjectionResult(false, 0, error!);
 
     /// <summary>
     /// Types text as unicode input. Character by character rather than by keyboard layout: the point is to
@@ -217,16 +256,48 @@ public sealed class InputInjector
         },
     };
 
-    /// <summary>The wheel at the pointer's current position; positive notches scroll up.</summary>
-    public InjectionResult Scroll(int delta)
+    /// <summary>
+    /// The wheel at the pointer's current position, measured in notches; positive is up.
+    /// <para>
+    /// A notch is not the number in <c>MOUSEINPUT.mouseData</c>. Windows expresses the wheel in units of
+    /// <c>WHEEL_DELTA</c> (120), and a control accumulates what arrives until it has a whole unit — which is
+    /// why <c>mouseData = 3</c> scrolls nothing at all, and why passing the model's number straight through
+    /// turns "scroll down 3" into no movement with the injection still reporting success. The delta is scaled
+    /// here, at the one place that knows the unit.
+    /// </para>
+    /// </summary>
+    public InjectionResult Scroll(int delta) =>
+        TryBuildWheel(delta, out var inputs, out var error)
+            ? Send(inputs, $"scroll {delta} notches")
+            : new InjectionResult(false, 0, error!);
+
+    /// <summary>
+    /// The records a wheel would send, without sending them. Exposed for the same reason as
+    /// <see cref="TryBuildPointer"/>: the unit conversion is the contract, and asserting it on the record
+    /// keeps the test off the user's scroll wheel.
+    /// </summary>
+    internal bool TryBuildWheel(int delta, out NativeMethods.Input[] inputs, out string? error)
     {
+        inputs = [];
+
         if (delta == 0)
         {
-            return new InjectionResult(false, 0, "no delta");
+            error = "no delta";
+            return false;
         }
 
-        var inputs = new[]
+        // mouseData is a DWORD that Windows reads as a *signed* delta, so a negative count is legitimate —
+        // scrolling down is the common case, not an error. What must be refused is a value that does not
+        // fit: it would be truncated, and a truncated negative delta arrives as a scroll the other way.
+        var wheel = (long)delta * WheelDelta;
+        if (wheel is < int.MinValue or > int.MaxValue)
         {
+            error = $"scroll {delta} notches is out of range";
+            return false;
+        }
+
+        inputs =
+        [
             new NativeMethods.Input
             {
                 Type = NativeMethods.InputMouse,
@@ -234,43 +305,85 @@ public sealed class InputInjector
                 {
                     Mouse = new NativeMethods.MouseInput
                     {
-                        MouseData = unchecked((uint)delta),
+                        MouseData = (uint)wheel,
                         Flags = NativeMethods.MouseeventfWheel,
                     },
                 },
             },
-        };
+        ];
 
-        return Send(inputs, $"scroll {delta}");
+        error = null;
+        return true;
     }
 
     /// <summary>
-    /// Press at one point, move to another, release. Sent as several events with a pause: a single batch of
-    /// down+move+up is not a drag to most applications, it is a click that moved.
+    /// One wheel notch, in the units <c>MOUSEINPUT.mouseData</c> is measured in. A control counts whole
+    /// units of this, so a partial one is accumulated rather than acted on.
     /// </summary>
-    public InjectionResult Drag(int fromX, int fromY, int toX, int toY)
-    {
-        var steps = new List<NativeMethods.Input>();
-        steps.Add(Mouse(fromX, fromY, NativeMethods.MouseeventfMove | NativeMethods.MouseeventfVirtualdesk | NativeMethods.MouseeventfLeftdown));
+    internal const int WheelDelta = 120;
 
+    /// <summary>
+    /// The records a drag would send, without sending them — every waypoint absolute.
+    /// <para>
+    /// Press at one point, move to another, release, as several events: a single batch of down+move+up is not
+    /// a drag to most applications, it is a click that moved.
+    /// </para>
+    /// </summary>
+    internal bool TryBuildDrag(
+        int fromX,
+        int fromY,
+        int toX,
+        int toY,
+        out NativeMethods.Input[] inputs,
+        out string? error)
+    {
+        inputs = [];
+
+        if (!TryPosition(fromX, fromY, out var fromNx, out var fromNy, out error))
+        {
+            return false;
+        }
+
+        if (!TryPosition(toX, toY, out var toNx, out var toNy, out error))
+        {
+            return false;
+        }
+
+        var desktop = _desktop();
+
+        var steps = new List<NativeMethods.Input>
+        {
+            MouseAt(fromNx, fromNy, PositionalFlags | NativeMethods.MouseeventfLeftdown),
+        };
+
+        // The waypoints are interpolated in screen pixels — that is the path the caller described — and each
+        // one is normalized on the way out. Both endpoints are inside the virtual desktop and that box is
+        // convex, so every point between them is too.
         for (var step = 1; step <= 4; step++)
         {
             var x = fromX + (toX - fromX) * step / 4;
             var y = fromY + (toY - fromY) * step / 4;
-            steps.Add(Mouse(x, y, NativeMethods.MouseeventfMove | NativeMethods.MouseeventfVirtualdesk));
+            steps.Add(MouseAt(desktop.NormalizeX(x), desktop.NormalizeY(y), PositionalFlags));
         }
 
-        steps.Add(Mouse(toX, toY, NativeMethods.MouseeventfMove | NativeMethods.MouseeventfVirtualdesk | NativeMethods.MouseeventfLeftup));
+        steps.Add(MouseAt(toNx, toNy, PositionalFlags | NativeMethods.MouseeventfLeftup));
 
-        return Send(steps.ToArray(), $"drag ({fromX},{fromY}) → ({toX},{toY})");
+        inputs = steps.ToArray();
+        return true;
     }
 
-    private static NativeMethods.Input Mouse(int x, int y, uint flags) => new()
+    public InjectionResult Drag(int fromX, int fromY, int toX, int toY) =>
+        TryBuildDrag(fromX, fromY, toX, toY, out var inputs, out var error)
+            ? Send(inputs, $"drag ({fromX},{fromY}) → ({toX},{toY})")
+            : new InjectionResult(false, 0, error!);
+
+    /// <summary>One absolute mouse event, already normalized by <see cref="TryPosition"/>.</summary>
+    private static NativeMethods.Input MouseAt(int nx, int ny, uint flags) => new()
     {
         Type = NativeMethods.InputMouse,
         Union = new NativeMethods.InputUnion
         {
-            Mouse = new NativeMethods.MouseInput { Dx = x, Dy = y, Flags = flags },
+            Mouse = new NativeMethods.MouseInput { Dx = nx, Dy = ny, Flags = flags },
         },
     };
 

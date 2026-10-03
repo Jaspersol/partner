@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace Partner.Api.Tests;
 
 /// <summary>
-/// Image attachments: the bytes are files in the workspace, and what travels through the log is an id.
+/// Attachments: the bytes are files in the workspace, and what travels through the log is an id.
 /// </summary>
 public sealed partial class ViewEndpointsTests
 {
@@ -13,17 +13,25 @@ public sealed partial class ViewEndpointsTests
     private static byte[] TinyPng() => Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
 
-    private async Task<string> UploadAsync(byte[] bytes, string contentType = "image/png")
+
+    /// <summary>Uploads and asserts it was accepted, returning the parsed body.</summary>
+    private async Task<JsonElement> UploadAsync(byte[] bytes, string contentType = "image/png", string? fileName = null)
     {
         using var content = new ByteArrayContent(bytes);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/media") { Content = content };
+        if (fileName is not null)
+        {
+            // Percent-encoded, exactly as the browser client sends it: a header carries ASCII only.
+            request.Headers.Add("X-File-Name", Uri.EscapeDataString(fileName));
+        }
 
-        var response = await _http.PostAsync("/api/media", content);
+        var response = await _http.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        return body.GetProperty("mediaId").GetString()!;
+        return await response.Content.ReadFromJsonAsync<JsonElement>();
     }
+
 
     /// <summary>The host holds these files open, so a reader has to allow its writer back.</summary>
     private static async Task<string> ReadSharedAsync(string path)
@@ -37,7 +45,8 @@ public sealed partial class ViewEndpointsTests
     public async Task An_uploaded_image_comes_back_by_id()
     {
         var bytes = TinyPng();
-        var mediaId = await UploadAsync(bytes);
+        var uploaded = await UploadAsync(bytes, "image/png", "lamp.png");
+        var mediaId = uploaded.GetProperty("mediaId").GetString()!;
 
         var fetched = await _http.GetAsync($"/api/media/{mediaId}");
 
@@ -47,16 +56,50 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
-    public async Task An_upload_that_is_not_an_image_is_refused()
+    public async Task A_document_is_accepted_and_named_so_the_model_can_open_it()
     {
+        // The point of storing the person's name is that the model is told a path it can read. An attachment
+        // identified only by an opaque id is something it cannot act on, whatever the type.
+        var uploaded = await UploadAsync("col 1\n1,2\n"u8.ToArray(), "text/csv", "季度报表.csv");
+
+        var name = uploaded.GetProperty("fileName").GetString();
+        var path = uploaded.GetProperty("path").GetString();
+
+        Assert.Equal("季度报表.csv", name);
+        Assert.NotNull(path);
+        // The path has to exist, not merely be reported: a message pointing at a missing file is worse than one
+        // that says nothing.
+        Assert.True(File.Exists(path), $"附件路径不存在：{path}");
+        Assert.Equal("col 1\n1,2\n", await File.ReadAllTextAsync(path!));
+
+        var fetched = await _http.GetAsync($"/api/media/{uploaded.GetProperty("mediaId").GetString()}");
+        Assert.Equal("text/csv", fetched.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task A_name_from_the_client_is_a_label_and_not_a_location()
+    {
+        var uploaded = await UploadAsync(new byte[] { 1, 2, 3 }, "application/octet-stream", "..\\..\\escape.txt");
+
+        var path = uploaded.GetProperty("path").GetString()!;
+        Assert.StartsWith(_workspace, path, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("escape.txt", uploaded.GetProperty("fileName").GetString());
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public async Task An_upload_with_no_usable_type_and_no_usable_name_is_refused()
+    {
+        // Refused before it is stored, with the reason: a client that cannot say what it is sending has a bug,
+        // and a file named after a GUID is not a useful answer to "what did you attach".
         using var content = new ByteArrayContent(new byte[] { 1, 2, 3 });
-        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/pdf");
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-nonsense");
 
         var response = await _http.PostAsync("/api/media", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Contains("不支持", body.GetProperty("error").GetString()!, StringComparison.Ordinal);
+        Assert.Contains("无法确定附件类型", body.GetProperty("error").GetString()!, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -72,13 +115,13 @@ public sealed partial class ViewEndpointsTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Contains("未知的附图", body.GetProperty("error").GetString()!, StringComparison.Ordinal);
+        Assert.Contains("未知的附件", body.GetProperty("error").GetString()!, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task An_attachment_is_recorded_as_an_id_not_as_bytes()
     {
-        var mediaId = await UploadAsync(TinyPng());
+        var mediaId = (await UploadAsync(TinyPng())).GetProperty("mediaId").GetString()!;
 
         var delivered = await _http.PostAsJsonAsync("/api/input", new
         {
