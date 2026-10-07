@@ -3,10 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- No remote origins: the UI talks to the local API only. -->
+    <!--
+      No remote origins: the UI talks to the local API only.
+
+      `blob:` is in img-src because an attachment preview is a blob URL and nothing else. The bytes cannot come
+      from the API URL — `<img>` carries no Authorization header, and putting the token in a query string would
+      leak it into logs and history (see Composer.vue / api.ts) — so the composer fetches the bytes and hangs them
+      off an object URL. Without `blob:` here the CSP silently refuses those previews and the attachment chip shows
+      the filename and the byte count with an empty box where the picture was. It fails quietly: the image loads
+      from the server's point of view, and only the rendering is missing.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'"
     />
     <title>Partner</title>
   </head>

@@ -1042,6 +1042,13 @@ describe('composer', () => {
     expect(api.uploadMedia).toHaveBeenCalledWith(file, 'image/png', 'lamp.png')
     expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(true)
 
+    // The picture is a blob URL, not the API URL: an <img> cannot carry the token, so the bytes come back
+    // through the API surface and are hung off an object URL. That is the whole reason img-src has to allow
+    // blob: — see indexCsp.test.ts, which is where that dependency stops being invisible.
+    const preview = wrapper.find<HTMLImageElement>('[data-test="composer-attachment"] img')
+    expect(preview.exists()).toBe(true)
+    expect(preview.attributes('src')).toMatch(/^blob:/)
+
     // An attachment alone is enough to send: a picture with no caption is still a message.
     await wrapper.find('[data-test="composer-send"]').trigger('click')
     await flushPromises()
@@ -1229,6 +1236,21 @@ describe('composer', () => {
 
     expect(api.uploadMedia).toHaveBeenCalledWith(file, 'image/png', 'lamp.png')
     expect(wrapper.find('[data-test="composer-attachment"]').exists()).toBe(true)
+  })
+
+  it('takes a pasted image through the same door, and previews it', async () => {
+    // Pasting a screenshot is the entrance most people use and the only one with no visible affordance, so it
+    // is also the one where "nothing happened" is most likely to be the answer.
+    const api = stubApi()
+    const wrapper = mount(Composer, { props: { api } })
+    await flushPromises()
+
+    const file = new File(['png'], 'image.png', { type: 'image/png' })
+    await wrapper.find('[data-test="composer"]').trigger('paste', { clipboardData: { files: [file] } })
+    await flushPromises()
+
+    expect(api.uploadMedia).toHaveBeenCalledWith(file, 'image/png', 'image.png')
+    expect(wrapper.find<HTMLImageElement>('[data-test="composer-attachment"] img').attributes('src')).toMatch(/^blob:/)
   })
 
   it('names a document instead of hanging an <img> on it, and shows the name the server chose', async () => {
