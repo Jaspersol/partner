@@ -215,6 +215,33 @@ public sealed partial class ViewEndpointsTests : ApiFixture
     }
 
     [Fact]
+    public async Task A_recall_hit_carries_the_record_it_matched()
+    {
+        // The hit used to be four fields: an id, a body, a score and its reasons. That made a hit impossible to
+        // compare with the list it came from — the filters matched nothing, the tier picker showed no selection,
+        // and the retention checkbox said no to a record that was retained. The tier and scope are already on
+        // the record, so the endpoint was simply not passing them on.
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "m1",
+            Tier = MemoryTier.Procedural,
+            Scope = MemoryScope.Retain,
+            Body = "the deploy target is the frankfurt cluster",
+            Importance = 0.9,
+        });
+
+        var response = await _http.PostAsJsonAsync("/api/memory/recall", new { query = "frankfurt" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var hits = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var hit = hits.EnumerateArray().Single();
+
+        Assert.Equal("Procedural", hit.GetProperty("tier").GetString());
+        Assert.Equal("Retain", hit.GetProperty("scope").GetString());
+        Assert.True(hit.GetProperty("createdAt").GetString() is { Length: > 0 });
+    }
+
+    [Fact]
     public async Task Rebuilding_the_index_does_not_change_search_results()
     {
         await _context.Memory.WriteAsync(new MemoryRecord

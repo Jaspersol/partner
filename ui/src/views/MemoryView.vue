@@ -28,7 +28,6 @@ const revisionRows = computed(() =>
 const query = ref('')
 const tier = ref('all')
 const scope = ref('all')
-const summary = ref('')
 const error = ref('')
 /** Closed on arrival, like the session view's: the list is what a reader opens this page for. */
 const inspectorCollapsed = ref(true)
@@ -38,6 +37,34 @@ const { isOverlay } = useOverlayMode()
 
 /** True while the list shows recall hits rather than the stored records. */
 const recalling = ref(false)
+
+/** The query whose hits are on screen. Part of the state, not part of the sentence: see `summary`. */
+const recalled = ref('')
+
+/**
+ * What the summary line says, derived from the list rather than remembered alongside it.
+ *
+ * <para>
+ * It used to be a ref written by whichever call finished last, which made it drift: change a filter after a
+ * search and the count stayed the pre-filter one, so a list of three sat under 「10 条命中」 — and a list of
+ * nothing sat under it too. A number next to a list has to be computed from that list, so this is a computed:
+ * there is no path by which the sentence and the rows disagree.
+ * </para>
+ */
+const summary = computed(() => {
+  if (!loaded.value) {
+    return ''
+  }
+
+  if (!recalling.value) {
+    const live = rows.value.filter((row) => !row.retired).length
+    return `${live} 条生效 · 共 ${rows.value.length} 条`
+  }
+
+  const hits = `检索「${recalled.value}」→ ${rows.value.length} 条命中`
+  // Only when the filters are actually hiding something: two numbers where one would do is its own noise.
+  return visible.value.length === rows.value.length ? hits : `${hits} · 筛选后 ${visible.value.length} 条`
+})
 
 /**
  * All four tiers, always, with a count each.
@@ -81,9 +108,8 @@ async function refresh() {
     rows.value = all.map((item) => memoryRowFromItem(item))
     loaded.value = true
     recalling.value = false
+    recalled.value = ''
 
-    const live = rows.value.filter((row) => !row.retired).length
-    summary.value = `${live} 条生效 · 共 ${rows.value.length} 条`
     emit('context', `记忆 · ${rows.value.length} 条`)
   } catch (failure) {
     error.value = String(failure)
@@ -161,9 +187,9 @@ async function recall() {
 
   try {
     const hits = await props.api.recall(text)
-    rows.value = hits.map(memoryRowFromHit)
+    rows.value = hits.map(hit => memoryRowFromHit(hit))
     recalling.value = true
-    summary.value = `检索「${text}」→ ${hits.length} 条命中`
+    recalled.value = text
   } catch (failure) {
     error.value = String(failure)
   }
@@ -344,7 +370,13 @@ defineExpose({ refresh, focusSearch, collapseInspector })
       <div class="scroll">
         <MemoryList :rows="visible" :selected-id="selected?.recordId ?? null" @select="select" />
         <p v-if="!loaded" class="pending" data-test="memory-pending">正在读取记忆…</p>
-        <p v-else-if="visible.length === 0" class="empty">（无记忆）</p>
+        <!--
+          Two different empties. 「无记忆」 in a search result says the store is empty when it has just reported
+          hits, and 「无命中」 over a filtered list says the same thing about the whole store.
+        -->
+        <p v-else-if="visible.length === 0" class="empty" data-test="memory-empty">
+          {{ recalling ? '（无命中）' : '（无记忆）' }}
+        </p>
       </div>
 
       <!--

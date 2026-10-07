@@ -86,10 +86,15 @@ public sealed record MemoryScore(
 /// <summary>
 /// A scored, explainable retrieval hit.
 /// <para>
-/// Carries when it was recorded and which tier it came from, because a hook that injects it into a prompt has
-/// to be able to say how old it is. "The user prefers dark mode" read as fact is different from the same line
-/// read as something from three months ago that may since have changed — and the model can only weigh that if
-/// it is told.
+/// Carries when it was recorded, which tier it came from and whether it is retained, because a hook that
+/// injects it into a prompt has to be able to say how old it is. "The user prefers dark mode" read as fact is
+/// different from the same line read as something from three months ago that may since have changed — and the
+/// model can only weigh that if it is told.
+/// </para>
+/// <para>
+/// <see cref="Scope"/> rides along for the same reason: a hit is the same record the list shows, so a person
+/// filtering the list by retention has to be able to filter the results by it too. A hit rendered as an
+/// anonymous match cannot be compared with the list it came from.
 /// </para>
 /// </summary>
 public sealed record MemoryHit(
@@ -99,6 +104,7 @@ public sealed record MemoryHit(
     IReadOnlyList<string> Reasons,
     DateTimeOffset CreatedAt,
     MemoryTier Tier,
+    MemoryScope Scope,
     DateTimeOffset Now);
 
 /// <summary>How old a recalled memory is, in the words a reader would use.</summary>

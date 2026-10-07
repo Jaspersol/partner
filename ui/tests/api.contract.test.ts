@@ -279,4 +279,22 @@ describe('the API contract the UI binds to', () => {
   it('rejects an unknown memory record with a 404', async () => {
     await expect(api.editMemory('nope', 'x')).rejects.toMatchObject({ status: 404 })
   })
+
+  it('gives a recall hit the tier and retention the UI filters on', async () => {
+    // The frontend's filter is `row.tier === 'Semantic' && row.scope === 'Retain'` on strings. An enum that
+    // serialises as a number matches neither, and the list empties under a count that still says there are
+    // hits — so this asserts the *string* form against the real server, not against a stub.
+    const created = await api.createMemory({ body: '发布前先跑一次迁移脚本', tier: 'Procedural', scope: 'Retain' })
+    try {
+      const hits = await api.recall('迁移脚本')
+      const hit = hits.find((candidate) => candidate.recordId === created)
+
+      expect(hit).toBeDefined()
+      expect(hit!.tier).toBe('Procedural')
+      expect(hit!.scope).toBe('Retain')
+      expect(Date.parse(hit!.createdAt)).not.toBeNaN()
+    } finally {
+      await api.deleteMemory(created)
+    }
+  })
 })

@@ -670,12 +670,22 @@ public static class ViewEndpoints
         app.MapPost("/api/memory/recall", async (RecallRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             var hits = await ctx.Memory.RecallAsync(request.Query ?? string.Empty, request.Limit, ct).ConfigureAwait(false);
+
+            // Tier and scope ride along because a hit *is* one of the records the list already shows. Without
+            // them the list can only be a plain array of matches, and two things a person does with them
+            // stop working: filtering the results the way they filtered the list, and telling a hit apart
+            // from an anonymous one when the two are side by side.
             return Results.Ok(hits.Select(h => new
             {
                 recordId = h.RecordId,
                 body = h.Body,
                 total = h.Score.Total,
                 reasons = h.Reasons,
+                tier = h.Tier.ToString(),
+                scope = h.Scope.ToString(),
+                // Raw, like `createdAt` on /api/memory/all: the two fields have the same name, so they have to
+                // carry the same shape. System.Text.Json writes it as ISO 8601 with an offset.
+                createdAt = h.CreatedAt,
             }));
         });
 

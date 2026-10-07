@@ -138,7 +138,19 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     recall: vi.fn(async (query: string): Promise<RecallHit[]> => {
       calls.recalls.push(query)
-      return [{ recordId: 'm1', body: 'likes jasmine tea', total: 0.75, reasons: ['lexical', 'recency'] }]
+      // Tier and scope on the hit, because the server sends them: a hit is one of the rows the list shows,
+      // not an anonymous match, and a stub that omits them would let the filters disagree with the server.
+      return [
+        {
+          recordId: 'm1',
+          body: 'likes jasmine tea',
+          total: 0.75,
+          reasons: ['lexical', 'recency'],
+          tier: 'Semantic',
+          scope: 'Recall',
+          createdAt: '2026-09-26T10:00:00+00:00',
+        },
+      ]
     }),
     editMemory: vi.fn(async (recordId: string, body: string) => {
       calls.memoryEdits.push({ recordId, body })
@@ -743,6 +755,110 @@ describe('memory view', () => {
     expect(calls.recalls).toEqual(['jasmine'])
     expect(wrapper.find('[data-test="memory-summary"]').text()).toContain('1 条命中')
     expect(wrapper.find('[data-test="memory-list"] li').text()).toContain('lexical')
+  })
+
+  it('filters hits the way it filters records, because a hit is one of those records', async () => {
+    // The regression: a hit used to arrive as tier 'recall' and scope '-', so any filter the reader had set
+    // matched nothing — the list emptied under a summary that still said there were hits, and the empty state
+    // said 无记忆. The server now sends the record's own tier and scope, so the filters mean something here.
+    const { stub } = createStub({
+      recall: vi.fn(async () => [
+        { recordId: 'm1', body: '部署在阿里云上', total: 0.9, reasons: ['lexical'], tier: 'Semantic', scope: 'Retain', createdAt: '2026-09-26T10:00:00+00:00' },
+        { recordId: 'm2', body: '部署手册在 wiki', total: 0.8, reasons: ['lexical'], tier: 'Procedural', scope: 'Recall', createdAt: '2026-09-26T10:00:00+00:00' },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('Retain')
+    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
+    await wrapper.find('[data-test="memory-recall"]').trigger('click')
+    await flushPromises()
+
+    // The retained one survives the filter; the ordinary one is gone.
+    const rows = wrapper.findAll('[data-test="memory-list"] li')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain('部署在阿里云上')
+
+    // And the count says both numbers, because the list shows one of the two hits.
+    expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中 · 筛选后 1 条')
+  })
+
+  it('says 无命中 rather than 无记忆 when a search filters everything away', async () => {
+    const { stub } = createStub({
+      recall: vi.fn(async () => [
+        { recordId: 'm2', body: '部署手册在 wiki', total: 0.8, reasons: ['lexical'], tier: 'Procedural', scope: 'Recall', createdAt: '2026-09-26T10:00:00+00:00' },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-tier"]').setValue('Procedural')
+    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
+    await wrapper.find('[data-test="memory-recall"]').trigger('click')
+    await flushPromises()
+
+    // Only the matching tier is left empty; the store plainly is not.
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-tier"]').setValue('Working')
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-test="memory-list"] li')).toHaveLength(0)
+    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('（无命中）')
+
+    // Back to the stored records and the same filter shows nothing — which is a different sentence.
+    await wrapper.find('[data-test="memory-back-to-all"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('（无记忆）')
+  })
+
+  it('keeps the summary honest when the filter changes after the search', async () => {
+    // The summary used to be a ref written by whichever call finished last, so a filter change left the
+    // pre-filter count on screen. It is computed now: there is no path by which the sentence and the rows
+    // disagree.
+    const { stub } = createStub({
+      recall: vi.fn(async () => [
+        { recordId: 'm1', body: '一', total: 0.9, reasons: ['lexical'], tier: 'Semantic', scope: 'Retain', createdAt: '2026-09-26T10:00:00+00:00' },
+        { recordId: 'm2', body: '二', total: 0.8, reasons: ['lexical'], tier: 'Procedural', scope: 'Recall', createdAt: '2026-09-26T10:00:00+00:00' },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
+    await wrapper.find('[data-test="memory-recall"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中')
+
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('Retain')
+    await flushPromises()
+    expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中 · 筛选后 1 条')
+
+    // And loosening it again puts the single number back rather than a second one.
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('all')
+    await flushPromises()
+    expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中')
+  })
+
+  it('shows the tier and retention a hit actually has, not a blank', async () => {
+    // With the placeholder tier, selecting a hit left the tier select on no option at all and the retention
+    // checkbox unticked whatever the record actually was — the panel describing something that is not there.
+    const { stub } = createStub({
+      recall: vi.fn(async () => [
+        { recordId: 'm1', body: '部署在阿里云上', total: 0.9, reasons: ['lexical'], tier: 'Semantic', scope: 'Retain', createdAt: '2026-09-26T10:00:00+00:00' },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
+    await wrapper.find('[data-test="memory-recall"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="memory-list"] li').trigger('click')
+    await wrapper.find('[data-test="memory-inspector-toggle"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-set-tier"]').element.value).toBe('Semantic')
+    expect(wrapper.find<HTMLInputElement>('[data-test="memory-retain"]').element.checked).toBe(true)
   })
 
   it('edits and deletes the selected record', async () => {

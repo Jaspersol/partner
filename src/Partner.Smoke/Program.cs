@@ -636,6 +636,13 @@ internal static class Program
             // Offline path: the default store has no embedding provider at all, and recall still works.
             Check("memory: offline (no embeddings) still recalls", hits.Count > 0);
 
+            // A hit is one of the records the list shows, so it has to arrive knowing which one: the view
+            // filters on these two, and a hit that lost them empties the list under a count that still claims
+            // there are hits. The contract test pins the string form over HTTP; this pins the store's own.
+            Check("memory: a hit carries the tier and retention of the record it matched",
+                hits.Count > 0 && hits[0].Tier == MemoryTier.Semantic && hits[0].Scope == MemoryScope.Retain,
+                hits.Count > 0 ? $"tier={hits[0].Tier} scope={hits[0].Scope}" : "(no hits)");
+
             // Privacy delete: four steps, then compaction removes the row entirely.
             await memory.SoftDeleteAsync("pref-1", Actor.Human);
             var purged = await memory.GetAsync("pref-1");
@@ -3563,6 +3570,7 @@ internal static class Program
         {
             "memory: recall finds the relevant record and not the noise",
             "memory: recall is explainable",
+            "memory: a hit carries the tier and retention of the record it matched",
         }),
         ("memory.offline_degradation", "M5", new[]
         {

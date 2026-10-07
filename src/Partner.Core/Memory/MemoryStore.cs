@@ -295,6 +295,7 @@ public sealed class MemoryStore : IMemoryStore
                     _options.Scorer.Explain(score),
                     candidate.CreatedAt,
                     candidate.Tier,
+                    candidate.Scope,
                     now);
             })
             .OrderByDescending(h => h.Score.Total)

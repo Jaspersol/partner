@@ -133,6 +133,10 @@ export interface RecallHit {
   body: string
   total: number
   reasons: string[]
+  /** The record's own tier and retention: a hit is one of the rows the list already shows, not an anonymous match. */
+  tier: string
+  scope: string
+  createdAt: string
 }
 
 export interface MemoryRevision {

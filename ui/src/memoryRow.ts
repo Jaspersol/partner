@@ -91,18 +91,22 @@ export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow
   }
 }
 
-export function memoryRowFromHit(hit: RecallHit, now = Date.now()): MemoryRow {
+/** No `now`: a hit reports why it surfaced, not how old it is, so nothing here needs a clock. */
+export function memoryRowFromHit(hit: RecallHit): MemoryRow {
   return {
     recordId: hit.recordId,
-    tier: 'recall',
-    scope: '-',
+    // The record's own tier and scope, not a placeholder. A hit is the same record the list shows, so writing
+    // 'recall' and '-' here made the two filters match nothing: a reader who had filtered the list down to
+    // retained records saw an empty list and the words 无记忆 right after the app said it had hit one.
+    tier: hit.tier,
+    scope: hit.scope,
     body: hit.body,
-    // A hit is a recall result, not a stored record: it has no tier, no age and no edit history. What it does
-    // have is why it surfaced, which is the part a reader checking the ranking needs.
+    // A hit's why-it-surfaced line, which is the part a reader checking the ranking needs. It replaces the
+    // age line rather than joining it: a hit has no "last used" to report — recalling it is what just happened.
     validity: `命中 ${hit.total.toFixed(3)} · ${hit.reasons.join(', ')}`,
     supersededBy: null,
     editedBy: null,
-    createdAt: new Date(now).toISOString(),
+    createdAt: hit.createdAt,
     lastRecalledAt: null,
     retired: false,
   }
