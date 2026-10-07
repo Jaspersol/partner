@@ -31,10 +31,10 @@
      Three steps, each with a job. --surface-0 is the window behind everything, --surface-1 is any panel or
      card, --surface-2 is a thing resting *on* a surface (a hovered row, an inset block).
 
-     There is deliberately no fourth step. The one thing that genuinely leaves the page today is the
-     narrow-window inspector overlay, and it is separated by --shadow-3 alone — which is how a floating
-     panel is normally drawn, and means a token nobody reads is not sitting here waiting for a popover
-     that does not exist. S4's `⋯` menu is the first thing that would earn one back. */
+     There is deliberately no fourth step. Two things genuinely leave the page today: the narrow-window
+     inspector overlay, and the session row's `⋯` menu — both are separated by --shadow-3, which is how a
+     floating panel is normally drawn. A token nobody reads is not sitting here waiting for a popover that
+     does not exist, and the popover does exist now. */
   --surface-0: #f2f2f4;
   --surface-1: #ffffff;
   --surface-2: #f5f5f7; /* 1.09:1 against --surface-1. Measured, not guessed: the value this
