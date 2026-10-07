@@ -1121,12 +1121,6 @@ h3 {
     gap: var(--space-1);
     padding-inline: var(--space-2);
   }
-
-  /* The rebuild report is four numbers about a rare, destructive action. At this width it is what pushes a
-     toolbar onto a second line, and the thing it reports is available again by pressing the button. */
-  .sidebar .sidebar-extra .meta {
-    display: none;
-  }
 }
 
 /* Narrowest: the top bar drops its secondary items. The top bar sits outside `.body`, so this could never

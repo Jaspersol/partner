@@ -370,13 +370,6 @@ export interface VoiceState {
   output: VoiceHalfState
 }
 
-export interface RebuildReport {
-  sessionItems: number
-  sessionLastSeq: number
-  memoryIndexed: number
-  queueLogEntries: number
-}
-
 /** The queue's shape reduced to what the badge and the status bar show. */
 export interface QueueSummary {
   depth: number
@@ -479,7 +472,6 @@ export interface PartnerApiSurface {
   observeDesktop(): Promise<DesktopObservation>
   setApprovalGear(approval: string): Promise<{ approval: string; changed: boolean }>
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved>
-  rebuild(): Promise<RebuildReport>
 }
 
 export class PartnerApi implements PartnerApiSurface {
@@ -714,12 +706,6 @@ export class PartnerApi implements PartnerApiSurface {
 
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved> {
     return this.request<SettingsSaved>('PUT', '/api/settings', settings)
-  }
-
-  // ---- projections -----------------------------------------------------------------------------
-
-  rebuild(): Promise<RebuildReport> {
-    return this.request<RebuildReport>('POST', '/api/projections/rebuild')
   }
 
   // ---- plumbing --------------------------------------------------------------------------------

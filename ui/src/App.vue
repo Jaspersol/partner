@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import {
   ApiError,
   PartnerApi,
@@ -8,7 +8,6 @@ import {
   type ConsumerState,
   type QueueItem,
   type QueueSummary,
-  type RebuildReport,
   type DesktopState,
   type PendingApproval,
 } from './api'
@@ -91,7 +90,6 @@ const summary = ref<QueueSummary | null>(null)
  */
 const queueItems = ref<QueueItem[]>([])
 const consumer = ref<ConsumerState | null>(null)
-const rebuildReport = ref<RebuildReport | null>(null)
 const context = ref('')
 const connectionError = ref('')
 const endpoint = ref('')
@@ -108,7 +106,6 @@ const api = shallowRef<PartnerApiSurface | null>(null)
  */
 interface ActiveView {
   refresh?: () => Promise<void>
-  focusComposer?: () => void
   focusSearch?: () => void
   collapseInspector?: () => void
   /** True when the view holds edits that only its own Save button can commit. */
@@ -238,25 +235,6 @@ async function refreshGears() {
   } catch (failure) {
     connectionError.value = String(failure)
   }
-}
-
-async function rebuildProjections() {
-  if (!api.value) {
-    return
-  }
-
-  try {
-    rebuildReport.value = await api.value.rebuild()
-    await refreshSummary()
-  } catch (failure) {
-    connectionError.value = String(failure)
-  }
-}
-
-function startNewQuery() {
-  select('session')
-  // The composer, not the search box: a new query is a message, and the reader is about to type it.
-  void nextTick(() => activeView.value?.focusComposer?.())
 }
 
 /**
@@ -395,10 +373,7 @@ onUnmounted(() => {
         :items="NAV"
         :active="active"
         :collapsed="sidebarCollapsed"
-        :rebuild="rebuildReport"
         @select="select"
-        @new-query="startNewQuery"
-        @rebuild="rebuildProjections"
       />
 
       <main class="content">

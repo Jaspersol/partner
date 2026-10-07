@@ -7,7 +7,6 @@ import type {
   PartnerApiSurface,
   QueueView as QueueViewData,
   RecallHit,
-  RebuildReport,
   SessionRevision,
   SessionView as SessionViewData,
   SettingsView,
@@ -168,7 +167,6 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     setApprovalGear: vi.fn(async () => ({ approval: 'all', changed: false })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
-    rebuild: vi.fn(async (): Promise<RebuildReport> => ({ sessionItems: 3, sessionLastSeq: 3, memoryIndexed: 1, queueLogEntries: 2 })),
     ...overrides,
   }
 

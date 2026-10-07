@@ -669,7 +669,6 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
       compaction: null,
     })),
-    rebuild: vi.fn(async () => ({ sessionItems: 0, sessionLastSeq: 0, memoryIndexed: 0, queueLogEntries: 0 })),
     ...overrides,
   }
 }
@@ -834,22 +833,6 @@ describe('top bar', () => {
 })
 
 describe('side bar', () => {
-  it('reports a rebuild report and emits the destructive action', async () => {
-    const wrapper = mount(SideBar, {
-      props: {
-        items: [{ key: 'session', label: '会话', icon: 'chat' }],
-        active: 'session',
-        collapsed: false,
-        rebuild: { sessionItems: 4, sessionLastSeq: 6, memoryIndexed: 1, queueLogEntries: 3 },
-      },
-    })
-
-    expect(wrapper.find('[data-test="sidebar-rebuild-report"]').text()).toContain('会话 4')
-
-    await wrapper.find('[data-test="sidebar-rebuild"]').trigger('click')
-    expect(wrapper.emitted('rebuild')).toHaveLength(1)
-  })
-
   it('marks the active view and hides labels when collapsed', () => {
     const wrapper = mount(SideBar, {
       props: {
@@ -859,7 +842,6 @@ describe('side bar', () => {
         ],
         active: 'queue',
         collapsed: true,
-        rebuild: null,
       },
     })
 

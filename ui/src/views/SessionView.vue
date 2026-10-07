@@ -433,10 +433,6 @@ function answer(approvalId: string, approved: boolean) {
   emit('answer', approvalId, approved)
 }
 
-function focusComposer() {
-  composer.value?.focus()
-}
-
 /**
  * Puts the caret in this view's search box, for Ctrl+K.
  *
@@ -462,7 +458,7 @@ function collapseInspector() {
   inspectorCollapsed.value = true
 }
 
-defineExpose({ refresh, focusComposer, focusSearch, collapseInspector })
+defineExpose({ refresh, focusSearch, collapseInspector })
 </script>
 
 <template>

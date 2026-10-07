@@ -223,12 +223,6 @@ describe('the API contract the UI binds to', () => {
     expect(cleared.settings.model.apiKeySet).toBe(false)
   })
 
-  it('rebuilds projections and reports the result', async () => {
-    const report = await api.rebuild()
-    expect(report.sessionItems).toBeGreaterThan(0)
-    expect(report.sessionLastSeq).toBeGreaterThan(0)
-  })
-
   it('reports how much of the context window the history occupies', async () => {
     const session = await api.session()
     const usage = session.context

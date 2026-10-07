@@ -590,7 +590,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 区域 | 组件 | 关键约束 |
 |---|---|---|
 | ① 顶栏 | `components/TopBar.vue` | 品牌 / 视图名 / 面包屑 / **队列徽标** / 主题 / 侧栏折叠。内容撑高，无固定高度 |
-| ② 侧栏 | `components/SideBar.vue` | 新建查询 / 视图导航 / 重建投影。轨道 `minmax(0,var(--sidebar))`，折叠后只剩图标 |
+| ② 侧栏 | `components/SideBar.vue` | **只有视图导航**。轨道 `minmax(0,var(--sidebar))`，折叠后只剩图标 |
 | ③ 内容区 | `views/*.vue` + `components/{EventList,MemoryList,Inspector}.vue`（队列清单在 `Composer.vue` 的状态条下） | 主区的**散文**用 `--measure`（68ch）限行宽（只限事件正文，工具卡的 JSON 与代码块保持全宽）；会话与记忆是 master–detail。**队列清单只列 `Queued`/`Running`**（当前待输入的内容）；已完成项另外进摘要与顶栏徽标 |
 | ④ 输入区 | `components/Composer.vue` | 仅会话视图；状态条（**可展开为完整队列清单**）+ 附件 + 输入 + 挡位选择。状态条与顶栏徽标**同源**：两者都来自 `App.vue` 同一轮 `GET /api/queue` |
 | ⑤ 状态栏 | `components/StatusBar.vue` | 连接态（401 单独措辞）+ 阻塞态 + 版本 |

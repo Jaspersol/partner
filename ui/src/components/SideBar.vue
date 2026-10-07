@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
-import type { RebuildReport } from '../api'
 import type { IconName } from '../icons'
 import { isActivationKey, rovingTarget } from '../rovingFocus'
 import Icon from './Icon.vue'
@@ -13,12 +12,10 @@ export interface NavItem {
   icon: IconName
 }
 
-const props = defineProps<{ items: NavItem[]; active: string; collapsed: boolean; rebuild: RebuildReport | null }>()
+const props = defineProps<{ items: NavItem[]; active: string; collapsed: boolean }>()
 
 const emit = defineEmits<{
   select: [key: string]
-  'new-query': []
-  rebuild: []
 }>()
 
 /**
@@ -59,7 +56,7 @@ function choose(index: number): void {
 
 <template>
   <!--
-    A rail, and a button.
+    A rail.
 
     <para>
     The obvious alternative was a panel that peeks open on hover. It is the wrong shape: the pointer sits on
@@ -67,15 +64,15 @@ function choose(index: number): void {
     Making it an overlay instead costs a whole second layout mechanism — and one that nothing can test, since
     the only place hover lives is a real browser. So the rail is rail, and one button opens it (ui.md §12 S5).
     </para>
+
+    <para>
+    The rail is navigation and nothing else. It used to carry two more controls — a primary 「新建查询」 and a
+    「重建投影」 behind a divider — and both are gone. The first only switched to the session view and focused the
+    box, which the keyboard already does; the second reported four counts about a rebuild the system performs on
+    its own. A rail that offers actions a reader cannot act on is a rail with false promises on it.
+    </para>
   -->
   <nav class="sidebar" :class="{ 'is-collapsed': collapsed }" data-test="sidebar">
-    <div class="sidebar-head">
-      <button class="primary new-query" data-test="sidebar-new-query" :title="'新建查询'" @click="emit('new-query')">
-        <Icon name="plus" :size="16" />
-        <span class="nav-label">新建查询</span>
-      </button>
-    </div>
-
     <div class="nav-section-title">工作区</div>
 
     <ul ref="listElement" class="nav" role="list" aria-label="视图导航">
@@ -96,20 +93,6 @@ function choose(index: number): void {
         <span class="nav-label">{{ item.label }}</span>
       </li>
     </ul>
-
-    <div class="spacer" />
-
-    <!-- Destructive and rare: kept away from navigation, behind a divider (ui.md §4). -->
-    <div class="sidebar-extra">
-      <button class="ghost" data-test="sidebar-rebuild" title="重建投影" @click="emit('rebuild')">
-        <Icon name="refresh" :size="14" />
-        <span class="nav-label">重建投影</span>
-      </button>
-      <div v-if="rebuild" class="meta" data-test="sidebar-rebuild-report">
-        会话 {{ rebuild.sessionItems }} · 索引 {{ rebuild.memoryIndexed }} · 队列日志
-        {{ rebuild.queueLogEntries }}
-      </div>
-    </div>
   </nav>
 </template>
 
@@ -123,15 +106,6 @@ function choose(index: number): void {
   min-block-size: 0;
   border-inline-end: 1px solid var(--line);
   background: var(--surface-1);
-}
-
-.sidebar-head {
-  display: flex;
-}
-
-.new-query {
-  inline-size: 100%;
-  justify-content: flex-start;
 }
 
 .nav-section-title {
@@ -195,18 +169,6 @@ function choose(index: number): void {
   text-overflow: ellipsis;
 }
 
-.spacer {
-  flex: 1;
-}
-
-.sidebar-extra {
-  border-block-start: 1px solid var(--line);
-  padding-block-start: var(--space-2);
-  display: grid;
-  gap: var(--space-1);
-  justify-items: start;
-}
-
 /* ---- the rail --------------------------------------------------------------------------------
    Collapsed is now the *normal* narrow state rather than a compromise forced on a small window, so it gets
    the same care the expanded panel has: centred icons, a square icon button, and no half-measures like a
@@ -222,16 +184,8 @@ function choose(index: number): void {
   display: none;
 }
 
-.sidebar.is-collapsed .sidebar-head,
-.sidebar.is-collapsed .nav,
-.sidebar.is-collapsed .sidebar-extra {
+.sidebar.is-collapsed .nav {
   inline-size: 100%;
-}
-
-.sidebar.is-collapsed .new-query {
-  inline-size: 100%;
-  padding-inline: 0;
-  justify-content: center;
 }
 
 .sidebar.is-collapsed .nav > li {
@@ -243,13 +197,5 @@ function choose(index: number): void {
 
 .sidebar.is-collapsed .nav > li.active {
   box-shadow: inset 0 0 0 1px var(--accent-pressed);
-}
-
-.sidebar.is-collapsed .sidebar-extra {
-  justify-items: center;
-}
-
-.sidebar.is-collapsed .sidebar-extra .ghost {
-  padding-inline: 0;
 }
 </style>
