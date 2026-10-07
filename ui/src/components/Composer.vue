@@ -437,6 +437,30 @@ defineExpose({ focus, restore })
     </div>
 
     <div class="composer-tools">
+      <label class="ghost attach" :class="{ busy: uploading }" data-test="composer-attach">
+        {{ uploading ? '上传中…' : '＋ 附件' }}
+        <input
+          type="file"
+          multiple
+          data-test="composer-attach-input"
+          @change="onPicked"
+        />
+      </label>
+      <span class="spacer" />
+      <span v-if="!stripOpen && queueStatus" class="meta">{{ queueStatus }}</span>
+      <button
+        v-if="!stripOpen"
+        class="ghost"
+        data-test="composer-strip-toggle"
+        aria-label="展开状态条"
+        @click="stripOpen = true"
+      >
+        <Icon name="chevron-down" :size="14" />
+      </button>
+      <!--
+        The two gears sit next to the send button, where the choice they carry lands: they are read at the
+        moment of sending, so they belong on the same side as the button rather than across the row from it.
+      -->
       <select
         v-if="approval"
         class="gear"
@@ -461,26 +485,6 @@ defineExpose({ focus, restore })
         <option v-for="option in gearOptions" :key="option" :value="option">思考：{{ option }}</option>
       </select>
 
-      <label class="ghost attach" :class="{ busy: uploading }" data-test="composer-attach">
-        {{ uploading ? '上传中…' : '＋ 附件' }}
-        <input
-          type="file"
-          multiple
-          data-test="composer-attach-input"
-          @change="onPicked"
-        />
-      </label>
-      <span class="spacer" />
-      <span v-if="!stripOpen && queueStatus" class="meta">{{ queueStatus }}</span>
-      <button
-        v-if="!stripOpen"
-        class="ghost"
-        data-test="composer-strip-toggle"
-        aria-label="展开状态条"
-        @click="stripOpen = true"
-      >
-        <Icon name="chevron-down" :size="14" />
-      </button>
       <!--
         One button, four states, decided by whether the box has anything in it and whether a turn is running.
         `composer-send` stays on the two states that submit, because that is what the tests drive; the
