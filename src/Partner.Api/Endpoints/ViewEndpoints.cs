@@ -635,15 +635,31 @@ public static class ViewEndpoints
                 });
             }
 
-            var tier = Enum.TryParse<MemoryTier>(request.Tier, ignoreCase: true, out var parsed)
-                ? parsed
-                : MemoryTier.Semantic;
-
+            // Absent means "the default a person means"; present-but-wrong is refused, like /tier and /scope
+            // do. Silently falling back to Semantic would store the record under a tier nobody asked for and
+            // answer 200, which is the one outcome a caller cannot detect.
+            //
             // Semantic, not Working: something a person typed is not a note waiting to be corroborated, and
             // Working carries a TTL that would make the record they just wrote disappear on its own.
-            var scope = Enum.TryParse<MemoryScope>(request.Scope, ignoreCase: true, out var parsedScope)
-                ? parsedScope
-                : MemoryScope.Recall;
+            var tier = MemoryTier.Semantic;
+            if (!string.IsNullOrWhiteSpace(request.Tier)
+                && !Enum.TryParse<MemoryTier>(request.Tier, ignoreCase: true, out tier))
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"tier must be one of {string.Join(", ", Enum.GetNames<MemoryTier>())}",
+                });
+            }
+
+            var scope = MemoryScope.Recall;
+            if (!string.IsNullOrWhiteSpace(request.Scope)
+                && !Enum.TryParse<MemoryScope>(request.Scope, ignoreCase: true, out scope))
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"scope must be one of {string.Join(", ", Enum.GetNames<MemoryScope>())}",
+                });
+            }
 
             // No SourceEventSeq, so the distillation hook's "have I distilled this turn already" check cannot
             // collide with it, and a prefix of its own so the two id spaces cannot overlap.

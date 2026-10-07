@@ -241,6 +241,34 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         Assert.True(hit.GetProperty("createdAt").GetString() is { Length: > 0 });
     }
 
+    [Theory]
+    [InlineData("Global", HttpStatusCode.BadRequest)]
+    [InlineData("nonsense", HttpStatusCode.BadRequest)]
+    public async Task A_hand_written_memory_with_a_value_nobody_defined_is_refused(string scope, HttpStatusCode expected)
+    {
+        // Absent means "the default a person means" and is answered with that default. Present-but-wrong is a
+        // different thing: /tier and /scope reject it, and quietly writing Semantic here would store the record
+        // under a tier nobody asked for while answering 200 — the one outcome a caller cannot detect.
+        var response = await _http.PostAsJsonAsync("/api/memory", new { body = "记得每周五之前提交周报", scope });
+
+        Assert.Equal(expected, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("Recall", error.GetProperty("error").GetString()!);
+        Assert.Contains("Retain", error.GetProperty("error").GetString()!);
+    }
+
+    [Fact]
+    public async Task A_hand_written_memory_with_an_unknown_tier_is_refused_with_the_allowed_names()
+    {
+        var response = await _http.PostAsJsonAsync(
+            "/api/memory",
+            new { body = "记得每周五之前提交周报", tier = "Guess" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("Semantic", error.GetProperty("error").GetString()!);
+    }
+
     [Fact]
     public async Task Rebuilding_the_index_does_not_change_search_results()
     {

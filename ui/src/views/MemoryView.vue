@@ -277,8 +277,13 @@ function openComposer() {
 
 async function create() {
   const body = newBody.value.trim()
-  if (body.length < 4) {
-    error.value = '正文至少 4 个字'
+
+  // Only the empty case is refused here. The length rule belongs to the server — it is the distiller's
+  // `MinBodyLength`, and a second copy of it here is a number that will drift: raise the rule there and this
+  // one keeps rejecting text the store would have accepted. The server's refusal is already surfaced below,
+  // with its own wording.
+  if (body === '') {
+    error.value = '正文不能为空'
     return
   }
 

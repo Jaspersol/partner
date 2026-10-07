@@ -1077,7 +1077,7 @@ describe('memory view', () => {
     expect(stub.memoryAll).toHaveBeenCalledTimes(2)
   })
 
-  it('refuses a hand-written memory that carries nothing worth keeping', async () => {
+  it('refuses to send a hand-written memory with no body at all', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
@@ -1088,8 +1088,34 @@ describe('memory view', () => {
     await wrapper.find('[data-test="memory-new-submit"]').trigger('click')
     await flushPromises()
 
+    // No request: there is nothing here that any rule could accept.
     expect(calls.creates).toEqual([])
-    expect(wrapper.find('[data-test="error"]').text()).toContain('4')
+    expect(wrapper.find('[data-test="error"]').text()).toContain('不能为空')
+  })
+
+  it('sends a short body and shows the server refusal, rather than keeping its own length rule', async () => {
+    // The 4-character minimum belongs to the distiller (`ConversationDistiller.MinBodyLength`) and the server
+    // enforces it. A second copy of the number in the view is a number that will drift: raise the rule there
+    // and this one keeps refusing text the store would have taken. So the view sends and reports.
+    const { stub, calls } = createStub({
+      createMemory: vi.fn(async () => {
+        throw new Error('正文至少 4 个字')
+      }),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-new"]').trigger('click')
+    await flushPromises()
+    await wrapper.find<HTMLTextAreaElement>('[data-test="memory-new-body"]').setValue('啊')
+    await wrapper.find('[data-test="memory-new-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.creates).toEqual([])
+    expect(wrapper.find('[data-test="error"]').text()).toContain('正文至少 4 个字')
+
+    // The panel stays open, so the text is still there to be fixed.
+    expect(wrapper.find('[data-test="memory-composer"]').exists()).toBe(true)
   })
 })
 describe('skills view', () => {

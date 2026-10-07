@@ -297,4 +297,19 @@ describe('the API contract the UI binds to', () => {
       await api.deleteMemory(created)
     }
   })
+
+  it('refuses a tier or retention nobody defined instead of quietly picking one', async () => {
+    // The two sibling routes (/tier, /scope) reject these with the allowed names. Answering 200 here would
+    // store the record under a tier nobody asked for, which is the one outcome a caller cannot detect.
+    await expect(api.createMemory({ body: '记得每周五之前提交周报', tier: 'Guess' }))
+      .rejects.toMatchObject({ status: 400 })
+    await expect(api.createMemory({ body: '记得每周五之前提交周报', scope: 'Global' }))
+      .rejects.toMatchObject({ status: 400 })
+
+    // Absent is still the default rather than a refusal: that is what the plain form sends.
+    const plain = await api.createMemory({ body: '记得每周五之前提交周报' })
+    expect(plain).toMatch(/^m-manual-/)
+    await api.deleteMemory(plain)
+  })
+
 })
