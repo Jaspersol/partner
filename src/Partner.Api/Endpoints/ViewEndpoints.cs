@@ -590,6 +590,83 @@ public static class ViewEndpoints
                 : Results.NotFound(new { error = $"未知的记忆 '{recordId}'" });
         });
 
+        // Retention is the other judgement only a person can make, and the one the clock cannot make for them:
+        // it is the promise that demotion and trimming will not break.
+        //
+        // It deliberately does not touch the tier. Tier is about trust, retention is about time, and neither
+        // implies the other — pinning retention to a single tier would have left Procedural (a way of doing
+        // something, rather than a fact) unprotectable.
+        app.MapPost("/api/memory/{recordId}/scope", async (string recordId, ScopeRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            if (!Enum.TryParse<MemoryScope>(request.Scope, ignoreCase: true, out var scope))
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"scope must be one of {string.Join(", ", Enum.GetNames<MemoryScope>())}",
+                });
+            }
+
+            var changed = await ctx.Memory.SetScopeAsync(recordId, scope, ct).ConfigureAwait(false);
+            return changed
+                ? Results.Ok(new { recordId, scope = scope.ToString() })
+                : Results.NotFound(new { error = $"未知的记忆 '{recordId}'" });
+        });
+
+        // Writing a memory by hand. Until this existed the store had a write path (the distillation hook) and no
+        // way for a person to add one, so the only records a reader could correct were the ones the distiller had
+        // happened to keep.
+        app.MapPost("/api/memory", async (CreateMemoryRequest request, ApiContext ctx, CancellationToken ct) =>
+        {
+            var body = (request.Body ?? string.Empty).Trim();
+
+            if (body.Length < ConversationDistiller.MinBodyLength)
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"正文至少 {ConversationDistiller.MinBodyLength} 个字",
+                });
+            }
+
+            if (body.Length > ConversationDistiller.MaxBodyLength)
+            {
+                return Results.BadRequest(new
+                {
+                    error = $"正文最长 {ConversationDistiller.MaxBodyLength} 个字",
+                });
+            }
+
+            var tier = Enum.TryParse<MemoryTier>(request.Tier, ignoreCase: true, out var parsed)
+                ? parsed
+                : MemoryTier.Semantic;
+
+            // Semantic, not Working: something a person typed is not a note waiting to be corroborated, and
+            // Working carries a TTL that would make the record they just wrote disappear on its own.
+            var scope = Enum.TryParse<MemoryScope>(request.Scope, ignoreCase: true, out var parsedScope)
+                ? parsedScope
+                : MemoryScope.Recall;
+
+            // No SourceEventSeq, so the distillation hook's "have I distilled this turn already" check cannot
+            // collide with it, and a prefix of its own so the two id spaces cannot overlap.
+            var recordId = $"m-manual-{Guid.NewGuid().ToString("n")[..8]}";
+
+            await ctx.Memory.WriteAsync(
+                new MemoryRecord
+                {
+                    RecordId = recordId,
+                    Tier = tier,
+                    Scope = scope,
+                    Body = body,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    // Higher than a distilled note (0.5) because someone wrote this down on purpose.
+                    Importance = 0.7,
+                    Veracity = 1.0,
+                    EditedBy = Actor.Human,
+                },
+                ct).ConfigureAwait(false);
+
+            return Results.Ok(new { recordId, tier = tier.ToString(), scope = scope.ToString() });
+        });
+
         app.MapPost("/api/memory/recall", async (RecallRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             var hits = await ctx.Memory.RecallAsync(request.Query ?? string.Empty, request.Limit, ct).ConfigureAwait(false);
@@ -655,6 +732,15 @@ public static class ViewEndpoints
 
     /// <summary>Body for a tier change: which tier the person is putting this record in.</summary>
     public sealed record TierRequest(string? Tier);
+
+    /// <summary>Body for a retention change: whether this record is allowed to be forgotten.</summary>
+    public sealed record ScopeRequest(string? Scope);
+
+    /// <summary>
+    /// Body for a hand-written memory. Tier and scope are optional and default to what a person writing one
+    /// down would mean: an established fact, subject to the ordinary forgetting rules.
+    /// </summary>
+    public sealed record CreateMemoryRequest(string? Body, string? Tier, string? Scope);
 
     /// <summary>
     /// What skills the workspace holds, and which are switched off.

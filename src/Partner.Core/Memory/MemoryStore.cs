@@ -140,6 +140,15 @@ public sealed class MemoryStore : IMemoryStore
     /// <summary>
     /// Drops each idle record one tier: Semantic → Episodic → Working. Working then falls to the existing
     /// trim, so a record nobody has used in a year eventually leaves on its own.
+    /// <para>
+    /// <see cref="MemoryScope.Retain"/> records are skipped: retention is exactly the promise that the demotion
+    /// rule may not break, and it is the only way a person can protect a fact from the clock.
+    /// </para>
+    /// <para>
+    /// Procedural goes to Episodic rather than to Working. It used to fall through the CASE into Working, which
+    /// skipped a level — and Procedural is the only tier that records a way of doing something rather than a
+    /// fact, so dropping it two notches loses the part that made it worth keeping.
+    /// </para>
     /// </summary>
     private async Task DemoteIdleAsync(DateTimeOffset now, CancellationToken ct)
     {
@@ -147,8 +156,8 @@ public sealed class MemoryStore : IMemoryStore
 
         await using var cmd = _db.CreateCommand();
         cmd.CommandText =
-            "UPDATE memories SET tier = CASE tier WHEN 'Semantic' THEN 'Episodic' ELSE 'Working' END "
-            + "WHERE valid_to IS NULL AND tier != 'Working' "
+            "UPDATE memories SET tier = CASE tier WHEN 'Semantic' THEN 'Episodic' WHEN 'Procedural' THEN 'Episodic' ELSE 'Working' END "
+            + "WHERE valid_to IS NULL AND tier != 'Working' AND scope != 'Retain' "
             + "AND (last_recalled_at IS NULL OR last_recalled_at <= $cutoff)";
         cmd.Parameters.AddWithValue("$cutoff", Iso(cutoff));
 
@@ -446,8 +455,13 @@ public sealed class MemoryStore : IMemoryStore
         var now = _clock.GetUtcNow();
 
         // Only consolidated working records may be trimmed: an unconsolidated one would lose data.
+        //
+        // Retained records are excluded even though they are Working and consolidated, because retention does
+        // not pin the tier — a retained Working record is a legal combination, and it has a TTL this loop would
+        // otherwise act on with a physical DELETE. Retention is the one promise trim must not break.
         var ids = await QueryIdsAsync(
             "SELECT record_id FROM memories WHERE tier = 'Working' AND consolidated_at IS NOT NULL "
+            + "AND scope != 'Retain' "
             + "AND ttl_expires_at IS NOT NULL AND ttl_expires_at <= $now",
             ("$now", Iso(now)),
             ct).ConfigureAwait(false);
@@ -643,6 +657,42 @@ public sealed class MemoryStore : IMemoryStore
         return true;
     }
 
+    /// <summary>
+    /// Marks a record as retained, or puts it back under the ordinary forgetting rules.
+    /// <para>
+    /// The second of the two axes a person controls. Tier says how much a record is trusted; this says whether it
+    /// is allowed to be forgotten, and it is the only defence <see cref="DemoteIdleAsync"/> and
+    /// <see cref="TrimAsync"/> do not have a substitute for — a fact you rely on is exactly the one the 90-day
+    /// clock would otherwise take away from you.
+    /// </para>
+    /// <para>
+    /// Deliberately does not touch the tier. Pinning Retain to a single tier would have been simpler to explain,
+    /// but it would have made the Procedural tier unprotectable: a retained "how to deploy this" note would
+    /// arrive as an established fact. The two axes are independent, so a retained Working record is a legal
+    /// combination — and Trim excludes it for that reason.
+    /// </para>
+    /// <para>
+    /// Returns false for an id this store has never seen, so a caller can tell a rejected edit from a silent one.
+    /// </para>
+    /// </summary>
+    public async Task<bool> SetScopeAsync(string recordId, MemoryScope scope, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recordId);
+
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = "UPDATE memories SET scope = $scope, edited_by = 'Human' WHERE record_id = $id";
+        cmd.Parameters.AddWithValue("$scope", scope.ToString());
+        cmd.Parameters.AddWithValue("$id", recordId);
+
+        if (await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 0)
+        {
+            return false;
+        }
+
+        await LogAsync(recordId, "scope", scope.ToString(), ct).ConfigureAwait(false);
+        return true;
+    }
+
 
     private async Task StoreEmbeddingAsync(string recordId, float[] vector, CancellationToken ct, SqliteTransaction? tx)
     {
@@ -773,7 +823,7 @@ public sealed class MemoryStore : IMemoryStore
                 reader.GetString(0),
                 reader.GetString(1),
                 Enum.Parse<MemoryTier>(reader.GetString(2)),
-                Enum.Parse<MemoryScope>(reader.GetString(3)),
+                ParseScope(reader.GetString(3)),
                 ParseTime(reader.GetString(4)),
                 reader.GetDouble(5),
                 reader.GetDouble(6),
@@ -783,6 +833,20 @@ public sealed class MemoryStore : IMemoryStore
 
         return candidates;
     }
+
+    /// <summary>
+    /// Reads a stored scope, falling back to <see cref="MemoryScope.Recall"/> for a value this build no longer
+    /// has.
+    /// <para>
+    /// The column stores the enum name as text, so shrinking the enum can leave rows behind — the doc's
+    /// <c>Global</c> is the one to worry about. Parsing strictly would throw on the first read and take the whole
+    /// memory view down over one row, and guessing the other way (treating an unknown name as Retain) would hand a
+    /// record a protection nobody asked for. Falling back to the ordinary behaviour is the only option that cannot
+    /// surprise anybody.
+    /// </para>
+    /// </summary>
+    private static MemoryScope ParseScope(string value) =>
+        Enum.TryParse<MemoryScope>(value, ignoreCase: true, out var scope) ? scope : MemoryScope.Recall;
 
     /// <summary>
     /// Escapes the LIKE wildcards, so a query containing <c>%</c> or <c>_</c> searches for them instead of
@@ -893,7 +957,7 @@ public sealed class MemoryStore : IMemoryStore
     {
         RecordId = reader.GetString(0),
         Tier = Enum.Parse<MemoryTier>(reader.GetString(1)),
-        Scope = Enum.Parse<MemoryScope>(reader.GetString(2)),
+        Scope = ParseScope(reader.GetString(2)),
         Body = reader.GetString(3),
         SourceEventSeq = reader.IsDBNull(4) ? null : reader.GetInt64(4),
         CreatedAt = ParseTime(reader.GetString(5)),

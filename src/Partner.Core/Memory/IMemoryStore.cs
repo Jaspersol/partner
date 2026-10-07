@@ -92,4 +92,14 @@ public interface IMemoryStore : IAsyncDisposable
     /// </para>
     /// </summary>
     Task<bool> SetTierAsync(string recordId, MemoryTier tier, CancellationToken ct = default);
+
+    /// <summary>
+    /// Pins a record against forgetting, or releases it back to the ordinary rules. False when the id is unknown.
+    /// <para>
+    /// Independent of the tier: retention is about time, tier is about trust, and neither implies the other.
+    /// Read it as the promise that demotion and trimming will not break — <b>not</b> as protection against being
+    /// corrected, which is a different thing and still happens.
+    /// </para>
+    /// </summary>
+    Task<bool> SetScopeAsync(string recordId, MemoryScope scope, CancellationToken ct = default);
 }

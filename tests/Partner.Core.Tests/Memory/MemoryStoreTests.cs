@@ -47,7 +47,7 @@ public sealed class MemoryStoreTests : IDisposable
         {
             RecordId = "m1",
             Tier = MemoryTier.Semantic,
-            Scope = MemoryScope.Global,
+            Scope = MemoryScope.Retain,
             Body = "the user prefers dark mode",
             SourceEventSeq = 42,
             Importance = 0.8,
@@ -59,7 +59,7 @@ public sealed class MemoryStoreTests : IDisposable
         Assert.NotNull(loaded);
         Assert.Equal("the user prefers dark mode", loaded!.Body);
         Assert.Equal(MemoryTier.Semantic, loaded.Tier);
-        Assert.Equal(MemoryScope.Global, loaded.Scope);
+        Assert.Equal(MemoryScope.Retain, loaded.Scope);
         Assert.Equal(42, loaded.SourceEventSeq);
         Assert.Equal(0.8, loaded.Importance);
         Assert.Equal(0.9, loaded.Confidence);
@@ -337,14 +337,14 @@ public sealed class MemoryStoreTests : IDisposable
     public async Task List_filters_by_tier_and_scope()
     {
         await using var store = Open();
-        await store.WriteAsync(Rec("a", "alpha", MemoryTier.Semantic, MemoryScope.Global));
+        await store.WriteAsync(Rec("a", "alpha", MemoryTier.Semantic, MemoryScope.Retain));
         await store.WriteAsync(Rec("b", "beta", MemoryTier.Episodic, MemoryScope.Recall));
 
         var semantic = await store.ListAsync(new MemoryQuery(Tier: MemoryTier.Semantic));
         Assert.Equal(new[] { "a" }, semantic.Select(r => r.RecordId));
 
-        var global = await store.ListAsync(new MemoryQuery(Scope: MemoryScope.Global));
-        Assert.Equal(new[] { "a" }, global.Select(r => r.RecordId));
+        var retained = await store.ListAsync(new MemoryQuery(Scope: MemoryScope.Retain));
+        Assert.Equal(new[] { "a" }, retained.Select(r => r.RecordId));
     }
 
     [Fact]
@@ -367,6 +367,134 @@ public sealed class MemoryStoreTests : IDisposable
         await store.WriteAsync(Rec("m1", "alpha"));
 
         await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => store.WriteAsync(Rec("m1", "beta")));
+    }
+
+    [Fact]
+    public async Task An_idle_record_is_demoted_but_a_retained_one_is_not()
+    {
+        await using var store = Open();
+        var longAgo = _clock.GetUtcNow() - TimeSpan.FromDays(200);
+
+        await store.WriteAsync(Rec("ordinary", "alpha", MemoryTier.Semantic, MemoryScope.Recall, longAgo));
+        await store.WriteAsync(Rec("retained", "beta", MemoryTier.Semantic, MemoryScope.Retain, longAgo));
+        await store.WriteAsync(Rec("trigger", "gamma marker", MemoryTier.Episodic, MemoryScope.Recall));
+
+        // Demotion rides on the recall path — it is the only moment the store is open when a record is seen to
+        // have gone unused, and being handed out is what marks a record used. So the query has to match some
+        // *other* record: recalling the idle ones would protect them, which is the whole mechanism working.
+        await store.RecallAsync("gamma");
+
+        Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("ordinary"))!.Tier);
+        Assert.Equal(MemoryTier.Semantic, (await store.GetAsync("retained"))!.Tier);
+    }
+
+    [Fact]
+    public async Task An_idle_procedural_record_drops_to_episodic_rather_than_straight_to_working()
+    {
+        await using var store = Open();
+        var longAgo = _clock.GetUtcNow() - TimeSpan.FromDays(200);
+
+        await store.WriteAsync(Rec("howto", "alpha", MemoryTier.Procedural, MemoryScope.Recall, longAgo));
+        await store.WriteAsync(Rec("trigger", "gamma marker", MemoryTier.Episodic, MemoryScope.Recall));
+
+        await store.RecallAsync("gamma");
+
+        // It used to fall through the CASE into Working, skipping a level. Procedural is the only tier that
+        // records a way of doing something rather than a fact, so losing two notches loses the reason to keep it.
+        Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("howto"))!.Tier);
+    }
+
+    [Fact]
+    public async Task A_retained_working_record_survives_the_trim()
+    {
+        await using var store = Open();
+        var created = _clock.GetUtcNow() - TimeSpan.FromDays(30);
+
+        await store.WriteAsync(Rec("kept", "alpha", MemoryTier.Working, MemoryScope.Retain, created));
+        Assert.Equal(1, await store.PromoteEligibleAsync());
+
+        var trimmed = await store.TrimAsync();
+
+        // Retention does not pin the tier, so a retained Working record is legal — and it has a TTL this loop
+        // would otherwise act on with a physical DELETE. Retention is the one promise trim must not break.
+        Assert.Equal(0, trimmed);
+        Assert.NotNull(await store.GetAsync("kept"));
+    }
+
+    [Fact]
+    public async Task A_retained_record_is_still_corrected_by_a_later_statement_in_the_same_tier()
+    {
+        await using var store = Open();
+
+        await store.WriteAsync(Rec(
+            "old",
+            "stage the staging cluster with terraform and then restart the gateway service",
+            MemoryTier.Semantic,
+            MemoryScope.Retain));
+
+        await store.WriteAsync(Rec(
+            "new",
+            "stage the staging cluster with kubectl and then restart the gateway daemon",
+            MemoryTier.Semantic));
+
+        var superseded = await store.GetAsync("old");
+        Assert.NotNull(superseded!.ValidTo);
+        Assert.Equal("new", superseded.SupersededBy);
+
+        // Retention is about time, not about being right. A person who corrects themselves means it, and a store
+        // that argued would be the bug.
+    }
+
+    [Fact]
+    public async Task Set_scope_persists_and_reports_an_unknown_id()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("m1", "alpha"));
+
+        Assert.True(await store.SetScopeAsync("m1", MemoryScope.Retain));
+        Assert.Equal(MemoryScope.Retain, (await store.GetAsync("m1"))!.Scope);
+        Assert.Equal(Actor.Human, (await store.GetAsync("m1"))!.EditedBy);
+
+        Assert.True(await store.SetScopeAsync("m1", MemoryScope.Recall));
+        Assert.Equal(MemoryScope.Recall, (await store.GetAsync("m1"))!.Scope);
+
+        // False rather than a silent no-op, so a caller can tell a rejected edit from one that happened.
+        Assert.False(await store.SetScopeAsync("no-such-record", MemoryScope.Retain));
+    }
+
+    [Fact]
+    public async Task Set_scope_does_not_move_the_record_between_tiers()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("m1", "alpha", MemoryTier.Procedural));
+
+        await store.SetScopeAsync("m1", MemoryScope.Retain);
+
+        // Pinning retention to one tier would have been simpler to explain, but it would have left Procedural
+        // unprotectable: a retained "how to deploy this" note would arrive as an established fact.
+        Assert.Equal(MemoryTier.Procedural, (await store.GetAsync("m1"))!.Tier);
+    }
+
+    [Fact]
+    public async Task An_unknown_stored_scope_reads_as_recall_rather_than_throwing()
+    {
+        await using (var store = Open())
+        {
+            await store.WriteAsync(Rec("m1", "alpha", MemoryTier.Semantic, MemoryScope.Retain));
+        }
+
+        // The column stores the enum name as text, so shrinking the enum can leave rows behind. Reading must not
+        // throw: one stale row must not take the whole memory view down.
+        await using (var db = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        {
+            await db.OpenAsync();
+            await using var cmd = db.CreateCommand();
+            cmd.CommandText = "UPDATE memories SET scope = 'Global' WHERE record_id = 'm1'";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        await using var reopened = Open();
+        Assert.Equal(MemoryScope.Recall, (await reopened.GetAsync("m1"))!.Scope);
     }
 
     private sealed class FailingEmbeddingProvider : IEmbeddingProvider

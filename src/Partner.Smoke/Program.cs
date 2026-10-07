@@ -611,7 +611,7 @@ internal static class Program
             {
                 RecordId = "pref-1",
                 Tier = MemoryTier.Semantic,
-                Scope = MemoryScope.Global,
+                Scope = MemoryScope.Retain,
                 Body = "the user prefers dark mode in every editor",
                 Importance = 0.9,
             });
@@ -619,7 +619,7 @@ internal static class Program
             {
                 RecordId = "noise-1",
                 Tier = MemoryTier.Semantic,
-                Scope = MemoryScope.Global,
+                Scope = MemoryScope.Retain,
                 Body = "the cat sleeps on the keyboard",
             });
 
@@ -675,7 +675,7 @@ internal static class Program
                     {
                         RecordId = $"budget-{i}",
                         Tier = MemoryTier.Semantic,
-                        Scope = MemoryScope.Global,
+                        Scope = MemoryScope.Retain,
                         Body = "alpha beta gamma delta epsilon zeta eta theta iota kappa",
                     });
                 }
@@ -695,7 +695,7 @@ internal static class Program
                 {
                     RecordId = $"bulk-{i}",
                     Tier = MemoryTier.Semantic,
-                    Scope = MemoryScope.Global,
+                    Scope = MemoryScope.Retain,
                     Body = $"record {i} about deployment pipelines and blue green releases in region {i % 16}",
                 });
             }
@@ -1604,7 +1604,7 @@ internal static class Program
             {
                 RecordId = "ui-mem-1",
                 Tier = MemoryTier.Semantic,
-                Scope = MemoryScope.Global,
+                Scope = MemoryScope.Retain,
                 Body = "the user prefers dark mode",
                 Importance = 0.9,
             });

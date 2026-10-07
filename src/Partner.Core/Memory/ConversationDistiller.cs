@@ -29,8 +29,12 @@ public static class ConversationDistiller
     /// <summary>Longest body kept per memory. Long enough for a fact, short enough to be re-injected.</summary>
     public const int MaxBodyLength = 400;
 
-    /// <summary>Turns shorter than this carry no statement worth keeping.</summary>
-    private const int MinBodyLength = 4;
+    /// <summary>
+    /// Turns shorter than this carry no statement worth keeping. Public because a hand-written memory has to
+    /// clear the same bar: the distiller's filter exists to keep the store readable, and a route that accepted
+    /// anything would be a way around it.
+    /// </summary>
+    public const int MinBodyLength = 4;
 
     /// <summary>
     /// Phrases that mark a question <em>about the assistant</em> rather than a fact about the user.

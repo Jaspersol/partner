@@ -457,6 +457,10 @@ export interface PartnerApiSurface {
   memoryAll(): Promise<MemoryItem[]>
   /** Moves a record between tiers on the person's judgement. */
   setMemoryTier(recordId: string, tier: string): Promise<void>
+  /** Pins a record against demotion and trimming. Blocks forgetting, not correction. */
+  setMemoryScope(recordId: string, scope: string): Promise<void>
+  /** Adds a memory the person typed, rather than one the distiller kept. Resolves to the new record id. */
+  createMemory(input: { body: string; tier?: string; scope?: string }): Promise<string>
   /** What skills the workspace holds, plus the scan warnings for the ones that were skipped. */
   skills(): Promise<SkillListView>
   consumer(): Promise<ConsumerState>
@@ -673,6 +677,17 @@ export class PartnerApi implements PartnerApiSurface {
 
   async setMemoryTier(recordId: string, tier: string): Promise<void> {
     await this.request('POST', `/api/memory/${encodeURIComponent(recordId)}/tier`, { tier })
+  }
+
+  /** Pins a record against forgetting, or releases it. Deliberately separate from the tier: trust and time are not the same axis. */
+  async setMemoryScope(recordId: string, scope: string): Promise<void> {
+    await this.request('POST', `/api/memory/${encodeURIComponent(recordId)}/scope`, { scope })
+  }
+
+  /** Writes a memory by hand. The server decides the defaults: an established fact, subject to the ordinary forgetting rules. */
+  async createMemory(input: { body: string; tier?: string; scope?: string }): Promise<string> {
+    const created = await this.request<{ recordId: string }>('POST', '/api/memory', input)
+    return created.recordId
   }
 
   recall(query: string, limit = 20): Promise<RecallHit[]> {

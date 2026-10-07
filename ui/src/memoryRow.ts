@@ -33,6 +33,24 @@ export function tierLabel(tier: string): string {
   return TIER_LABEL[tier] ?? tier
 }
 
+/**
+ * Retention: the only defence the clock does not have.
+ *
+ * <p>Two values on purpose. The design doc's third one (shared across sessions) had nothing to share across —
+ * there is one logical session — and a value every row already has is a filter that cannot filter.
+ */
+export const MEMORY_SCOPES = ['Recall', 'Retain'] as const
+
+const SCOPE_LABEL: Record<string, string> = {
+  Recall: '普通',
+  Retain: '保留',
+}
+
+/** What a row's retention means, in one word. The full promise is spelled out next to the checkbox. */
+export function scopeLabel(scope: string): string {
+  return SCOPE_LABEL[scope] ?? scope
+}
+
 function ago(iso: string | null | undefined, now: number): string {
   if (iso === null || iso === undefined || iso === '') {
     return '从未被召回'

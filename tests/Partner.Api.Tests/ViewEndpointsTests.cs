@@ -85,7 +85,7 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         {
             RecordId = "m1",
             Tier = MemoryTier.Semantic,
-            Scope = MemoryScope.Global,
+            Scope = MemoryScope.Retain,
             Body = "the user prefers dark mode",
         });
 
@@ -102,13 +102,126 @@ public sealed partial class ViewEndpointsTests : ApiFixture
     }
 
     [Fact]
+    public async Task Retention_can_be_set_and_released_on_an_existing_record()
+    {
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "m1",
+            Tier = MemoryTier.Semantic,
+            Scope = MemoryScope.Recall,
+            Body = "the deploy target is the frankfurt cluster",
+        });
+
+        var retain = await _http.PostAsJsonAsync("/api/memory/m1/scope", new { scope = "Retain" });
+        Assert.Equal(HttpStatusCode.OK, retain.StatusCode);
+        Assert.Equal(MemoryScope.Retain, (await _context.Memory.GetAsync("m1"))!.Scope);
+
+        var release = await _http.PostAsJsonAsync("/api/memory/m1/scope", new { scope = "Recall" });
+        Assert.Equal(HttpStatusCode.OK, release.StatusCode);
+        Assert.Equal(MemoryScope.Recall, (await _context.Memory.GetAsync("m1"))!.Scope);
+    }
+
+    [Fact]
+    public async Task Retention_leaves_the_tier_alone()
+    {
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "m1",
+            Tier = MemoryTier.Procedural,
+            Scope = MemoryScope.Recall,
+            Body = "deploy by running the migration before the restart",
+        });
+
+        await _http.PostAsJsonAsync("/api/memory/m1/scope", new { scope = "Retain" });
+
+        // Tier is trust, retention is time. Pinning retention to one tier would have left Procedural — a way of
+        // doing something rather than a fact — unprotectable.
+        Assert.Equal(MemoryTier.Procedural, (await _context.Memory.GetAsync("m1"))!.Tier);
+    }
+
+    [Theory]
+    [InlineData("Global", HttpStatusCode.BadRequest)]
+    [InlineData("nonsense", HttpStatusCode.BadRequest)]
+    public async Task An_unknown_retention_value_is_rejected_with_the_allowed_names(string scope, HttpStatusCode expected)
+    {
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "m1",
+            Tier = MemoryTier.Semantic,
+            Scope = MemoryScope.Recall,
+            Body = "the deploy target is the frankfurt cluster",
+        });
+
+        var response = await _http.PostAsJsonAsync("/api/memory/m1/scope", new { scope });
+
+        Assert.Equal(expected, response.StatusCode);
+        var error = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("Recall", error.GetProperty("error").GetString()!);
+        Assert.Contains("Retain", error.GetProperty("error").GetString()!);
+    }
+
+    [Fact]
+    public async Task Setting_retention_on_an_unknown_record_is_not_found()
+    {
+        var response = await _http.PostAsJsonAsync("/api/memory/ghost/scope", new { scope = "Retain" });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_hand_written_memory_lands_in_the_list_as_an_established_fact()
+    {
+        var response = await _http.PostAsJsonAsync("/api/memory", new { body = "记得每周五之前提交周报" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+        // Semantic, not Working: a Working record carries a TTL and would have made the note someone just typed
+        // disappear on its own.
+        Assert.Equal("Semantic", created.GetProperty("tier").GetString());
+        Assert.Equal("Recall", created.GetProperty("scope").GetString());
+
+        var all = await _http.GetFromJsonAsync<JsonElement>("/api/memory/all");
+        var row = all.EnumerateArray().Single(r => r.GetProperty("recordId").GetString() == created.GetProperty("recordId").GetString());
+        Assert.Equal("记得每周五之前提交周报", row.GetProperty("body").GetString());
+    }
+
+    [Fact]
+    public async Task A_hand_written_memory_can_name_its_tier_and_retention()
+    {
+        var response = await _http.PostAsJsonAsync(
+            "/api/memory",
+            new { body = "发布前先跑一次迁移脚本", tier = "Procedural", scope = "Retain" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var loaded = await _context.Memory.GetAsync(created.GetProperty("recordId").GetString()!);
+
+        Assert.Equal(MemoryTier.Procedural, loaded!.Tier);
+        Assert.Equal(MemoryScope.Retain, loaded.Scope);
+    }
+
+    [Theory]
+    [InlineData("", HttpStatusCode.BadRequest)]
+    [InlineData("  ", HttpStatusCode.BadRequest)]
+    [InlineData("短", HttpStatusCode.BadRequest)]
+    public async Task A_hand_written_memory_has_to_carry_a_statement(string body, HttpStatusCode expected)
+    {
+        // The distiller refuses turns that carry nothing worth keeping; a route that accepted anything would be a
+        // way around that filter rather than a second way through it.
+        var response = await _http.PostAsJsonAsync("/api/memory", new { body });
+
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Rebuilding_the_index_does_not_change_search_results()
     {
         await _context.Memory.WriteAsync(new MemoryRecord
         {
             RecordId = "m1",
             Tier = MemoryTier.Semantic,
-            Scope = MemoryScope.Global,
+            Scope = MemoryScope.Retain,
             Body = "the lamp is in the study",
         });
 
@@ -225,11 +338,15 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         using var edit = await anonymous.PostAsJsonAsync("/api/session/1/edit", new { body = "x", actor = "human" });
         using var cancel = await anonymous.PostAsync("/api/queue/ghost/cancel", content: null);
         using var delete = await anonymous.DeleteAsync("/api/memory/ghost");
+        using var scope = await anonymous.PostAsJsonAsync("/api/memory/ghost/scope", new { scope = "Retain" });
+        using var create = await anonymous.PostAsJsonAsync("/api/memory", new { body = "写入一条记忆" });
         using var rebuild = await anonymous.PostAsync("/api/projections/rebuild", content: null);
 
         Assert.Equal(HttpStatusCode.Unauthorized, edit.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, cancel.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, delete.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, scope.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, create.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, rebuild.StatusCode);
     }
 

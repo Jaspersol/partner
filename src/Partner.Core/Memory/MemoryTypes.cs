@@ -9,12 +9,24 @@ public enum MemoryTier
     Procedural,
 }
 
-/// <summary>Retention/recall scope of a record (design doc §2.5.6).</summary>
+/// <summary>
+/// How long a record is allowed to be forgotten (design doc §2.5.6).
+/// <para>
+/// Deliberately two values and one job. The design doc's third value (<c>Global</c>, shared across sessions)
+/// had nothing to share across — there is one logical session — so keeping it would have left a column whose
+/// every row said the same thing, which is a filter that cannot filter.
+/// </para>
+/// <para>
+/// <b>Retain locks forgetting, not correction.</b> A retained record survives demotion and trimming, but a
+/// later statement in the same tier still supersedes it: a person who corrects themselves means it, and
+/// refusing that would make the store argue with them. Tier says how much a record is trusted; this says
+/// whether it may be forgotten, and the two axes do not overlap.
+/// </para>
+/// </summary>
 public enum MemoryScope
 {
-    Retain,
     Recall,
-    Global,
+    Retain,
 }
 
 /// <summary>A retrieval candidate as loaded from the store (no body rewriting here).</summary>

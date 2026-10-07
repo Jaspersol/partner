@@ -35,6 +35,8 @@ interface Calls {
   submits: { payload: string; source: string }[]
   removals: { seq: number; kind: string }[]
   tierChanges: { recordId: string; tier: string }[]
+  scopeChanges: { recordId: string; scope: string }[]
+  creates: { body: string; tier?: string; scope?: string }[]
 }
 
 /**
@@ -71,7 +73,7 @@ const SETTINGS_FIXTURE: SettingsView = {
 };
 
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
-  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [], tierChanges: [] }
+  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [], tierChanges: [], scopeChanges: [], creates: [] }
 
   const session: SessionViewData = {
     lastSeq: 3,
@@ -93,7 +95,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
   }
 
   const memory: MemoryItem[] = [
-    { recordId: 'm1', tier: 'Semantic', scope: 'Global', body: 'likes jasmine tea', createdAt: '2026-09-26T10:00:00+00:00', validTo: null, supersededBy: null, editedBy: null, importance: 0.9 },
+    { recordId: 'm1', tier: 'Semantic', scope: 'Recall', body: 'likes jasmine tea', createdAt: '2026-09-26T10:00:00+00:00', validTo: null, supersededBy: null, editedBy: null, importance: 0.9 },
   ]
 
 /**
@@ -127,6 +129,13 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
     setMemoryTier: vi.fn(async (recordId: string, tier: string) => {
       calls.tierChanges.push({ recordId, tier })
+    }),
+    setMemoryScope: vi.fn(async (recordId: string, scope: string) => {
+      calls.scopeChanges.push({ recordId, scope })
+    }),
+    createMemory: vi.fn(async (input: { body: string; tier?: string; scope?: string }) => {
+      calls.creates.push(input)
+      return 'm-manual-new'
     }),
     recall: vi.fn(async (query: string): Promise<RecallHit[]> => {
       calls.recalls.push(query)
@@ -818,6 +827,155 @@ describe('memory view', () => {
     expect(calls.tierChanges).toEqual([{ recordId: 'm1', tier: 'Semantic' }])
     // The norm (ui.md): what is on screen is what the server kept, not what was sent.
     expect(stub.memoryAll).toHaveBeenCalledTimes(2)
+  })
+
+  it('lists all four tiers with a count, including the ones with nothing in them', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    const options = wrapper.findAll('[data-test="memory-tier"] option').map((option) => option.text())
+    expect(options).toHaveLength(5) // 全部 + 四层
+
+    // The list used to build this from the tiers the loaded rows happened to have, so an empty tier could not be
+    // selected and the rest showed a bare enum name. "This tier is empty" and "this tier does not exist" are
+    // different facts.
+    expect(options[1]).toContain('暂记')
+    expect(options[2]).toContain('经过')
+    expect(options[3]).toContain('确定')
+    expect(options[4]).toContain('做法')
+    expect(options[2]).toContain('0')
+    expect(options[3]).toContain('1')
+  })
+
+  it('marks a retained row and says what retention does not do', async () => {
+    const { stub } = createStub({
+      memoryAll: vi.fn(async () => [
+        {
+          recordId: 'm1',
+          tier: 'Semantic',
+          scope: 'Retain',
+          body: '部署在阿里云上',
+          createdAt: '2026-09-26T10:00:00+00:00',
+          lastRecalledAt: null,
+          validTo: null,
+          supersededBy: null,
+          editedBy: 'Human',
+          importance: 0.7,
+        },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="memory-list"] li').find('[data-test="memory-row-retain"]').text()).toBe('保留')
+
+    // Retention is about time, not about being right. A person who corrects themselves means it.
+    await wrapper.find('[data-test="memory-list"] li').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="memory-retain-hint"]').text()).toContain('不挡纠正')
+  })
+
+  it('pins a memory against forgetting and releases it again, re-reading each time', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-list"] li').trigger('click')
+    await flushPromises()
+
+    await wrapper.find<HTMLInputElement>('[data-test="memory-retain"]').setValue(true)
+    await flushPromises()
+    expect(calls.scopeChanges).toEqual([{ recordId: 'm1', scope: 'Retain' }])
+
+    await wrapper.find<HTMLInputElement>('[data-test="memory-retain"]').setValue(false)
+    await flushPromises()
+    expect(calls.scopeChanges[1]).toEqual({ recordId: 'm1', scope: 'Recall' })
+
+    // The norm: the row on screen is what the server kept, not what was sent.
+    expect(stub.memoryAll).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps the tier picker usable while a record is retained', async () => {
+    const { stub } = createStub({
+      memoryAll: vi.fn(async () => [
+        {
+          recordId: 'm1',
+          tier: 'Semantic',
+          scope: 'Retain',
+          body: '部署在阿里云上',
+          createdAt: '2026-09-26T10:00:00+00:00',
+          lastRecalledAt: null,
+          validTo: null,
+          supersededBy: null,
+          editedBy: null,
+          importance: 0.7,
+        },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-list"] li').trigger('click')
+    await flushPromises()
+
+    // Trust and time are separate axes, so a retained Working record is legal and there is nothing to lock.
+    // Silently dropping the retention on a tier change would be a state change nobody asked for.
+    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-set-tier"]').element.disabled).toBe(false)
+    expect(wrapper.find('[data-test="memory-set-tier"]').findAll('option')).toHaveLength(4)
+  })
+
+  it('filters by retention', async () => {
+    const { stub } = createStub({
+      memoryAll: vi.fn(async () => [
+        { recordId: 'm1', tier: 'Semantic', scope: 'Retain', body: '保留的那条', createdAt: '2026-09-26T10:00:00+00:00', lastRecalledAt: null, validTo: null, supersededBy: null, editedBy: null, importance: 0.7 },
+        { recordId: 'm2', tier: 'Semantic', scope: 'Recall', body: '普通的那条', createdAt: '2026-09-26T10:00:00+00:00', lastRecalledAt: null, validTo: null, supersededBy: null, editedBy: null, importance: 0.7 },
+      ]),
+    })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('Retain')
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-test="memory-list"] li')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.text()).toContain('保留的那条')
+  })
+
+  it('writes a memory the distiller would not have kept, and selects it afterwards', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-new"]').trigger('click')
+    await flushPromises()
+
+    // The default is an established fact: something a person typed is not a note waiting to be corroborated.
+    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-new-tier"]').element.value).toBe('Semantic')
+    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-new-scope"]').element.value).toBe('Recall')
+
+    await wrapper.find<HTMLTextAreaElement>('[data-test="memory-new-body"]').setValue('每周五之前提交周报')
+    await wrapper.find('[data-test="memory-new-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.creates).toEqual([{ body: '每周五之前提交周报', tier: 'Semantic', scope: 'Recall' }])
+    expect(stub.memoryAll).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a hand-written memory that carries nothing worth keeping', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-new"]').trigger('click')
+    await flushPromises()
+    await wrapper.find<HTMLTextAreaElement>('[data-test="memory-new-body"]').setValue('  ')
+    await wrapper.find('[data-test="memory-new-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.creates).toEqual([])
+    expect(wrapper.find('[data-test="error"]').text()).toContain('4')
   })
 })
 describe('skills view', () => {

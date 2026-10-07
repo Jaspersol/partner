@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { clampIndex, isActivationKey, rovingTarget } from '../rovingFocus'
-import { tierLabel, type MemoryRow } from '../memoryRow'
+import { scopeLabel, tierLabel, type MemoryRow } from '../memoryRow'
 
 const props = defineProps<{ rows: MemoryRow[]; selectedId: string | null }>()
 const emit = defineEmits<{ select: [row: MemoryRow] }>()
@@ -58,6 +58,7 @@ function choose(row: MemoryRow, index: number): void {
       <!-- Tier first and named, because "is this still true" and "how sure am I" are different questions. -->
       <div class="meta break">
         <span class="tier" data-test="memory-row-tier">{{ tierLabel(row.tier) }}</span>
+        <span v-if="row.scope === 'Retain'" class="retain" data-test="memory-row-retain">{{ scopeLabel(row.scope) }}</span>
         <span class="id">{{ row.recordId }}</span>
       </div>
       <div class="break" :class="{ dim: row.retired }">{{ row.body }}</div>
@@ -80,6 +81,15 @@ function choose(row: MemoryRow, index: number): void {
   font-family: var(--font-mono);
   font-size: var(--fs-code);
   line-height: var(--lh-code);
+}
+
+/* Retention is a promise, not a rank, so it is outlined rather than filled: a filled badge next to the tier would
+   read as "a higher tier" rather than "this one will not be forgotten". */
+.retain {
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  color: var(--accent);
 }
 
 /* A retired record stays listed — "fully visible" means being able to see what replaced it — but it must not
