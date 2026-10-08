@@ -1093,6 +1093,20 @@ describe('memory view', () => {
     expect(wrapper.find('[data-test="error"]').text()).toContain('不能为空')
   })
 
+  it('says, while writing a memory, that deleting a conversation will not delete it', async () => {
+    // 「删除之后」 and 「撤回」 take the memories distilled from a turn with them, and this one is deliberately
+    // not one of those — it has no source event, so the cascade cannot find it. That is a defensible choice,
+    // and it is only defensible if the person is told before they assume otherwise.
+    const { stub } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-new"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="memory-new-cascade-hint"]').text()).toContain('删掉对话不会删掉它')
+  })
+
   it('sends a short body and shows the server refusal, rather than keeping its own length rule', async () => {
     // The 4-character minimum belongs to the distiller (`ConversationDistiller.MinBodyLength`) and the server
     // enforces it. A second copy of the number in the view is a number that will drift: raise the rule there

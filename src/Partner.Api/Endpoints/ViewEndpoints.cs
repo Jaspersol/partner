@@ -661,8 +661,17 @@ public static class ViewEndpoints
                 });
             }
 
-            // No SourceEventSeq, so the distillation hook's "have I distilled this turn already" check cannot
-            // collide with it, and a prefix of its own so the two id spaces cannot overlap.
+            // No SourceEventSeq, and that is a decision rather than an omission. It keeps the
+            // distillation hook's "have I distilled this turn already" check from colliding with a hand-written
+            // record, and it gives the record its own id prefix so the two id spaces cannot overlap.
+            //
+            // The consequence is spelled out rather than left to be discovered: 「删除之后」 and 「撤回」 promise
+            // that what was remembered from the deleted turns goes with them, and that cascade
+            // (MemoryDeletion.CascadeAsync) finds memories by walking source_event_seq. A hand-written memory
+            // is therefore NOT removed with the conversation it was written next to — it belongs to the
+            // person, not to that turn. The honest version of this is a sentence in the UI rather than a
+            // fuzzy match on the body (which would delete the wrong record) or a back-link (which would put
+            // back exactly the coupling this deliberately drops).
             var recordId = $"m-manual-{Guid.NewGuid().ToString("n")[..8]}";
 
             await ctx.Memory.WriteAsync(

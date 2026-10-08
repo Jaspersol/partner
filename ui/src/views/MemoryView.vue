@@ -454,6 +454,13 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           </select>
         </label>
         <span class="hint">默认是「确定 · 可以当事实用」—— 手写的不是待印证的东西</span>
+        <!--
+          The one thing this form does not do, said while the reader is here rather than when they are
+          surprised: 「删除之后」 takes the memories distilled from a turn with it, and this one is not one of
+          those. It belongs to the person, so deleting the conversation it was written next to leaves it
+          standing.
+        -->
+        <span class="hint" data-test="memory-new-cascade-hint">它不属于任何一轮对话 —— 删掉对话不会删掉它</span>
         <span class="spacer" />
         <button class="ghost" data-test="memory-new-cancel" @click="composing = false">取消</button>
         <button data-test="memory-new-submit" @click="create">保存</button>
