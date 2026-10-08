@@ -57,7 +57,7 @@ namespace Partner.Smoke;
 /// </summary>
 internal static class Program
 {
-    private static readonly List<(string Name, bool Passed, string? Detail)> Results = new();
+    private static readonly List<(string Name, bool Passed, string? Detail, bool Skipped)> Results = new();
     private static int _failures;
 
     private static async Task<int> Main(string[] args)
@@ -171,9 +171,19 @@ internal static class Program
             Console.WriteLine($"  GATE  {line} (update the baseline to lock it in)");
         }
 
+        // Not fatal, and not hidden: a capability nobody looked at is named on every run, so the green build
+        // cannot be read as "everything was proven" when part of it was opted out.
+        foreach (var line in report.NotVerified)
+        {
+            Console.WriteLine($"  GATE  {line}");
+        }
+
         if (report.Ok)
         {
-            Console.WriteLine($"  GATE  PASS  no capability regressed ({current.Capabilities.Count} capabilities)");
+            var suffix = report.NotVerified.Count > 0
+                ? $", {report.NotVerified.Count} not verified this run"
+                : string.Empty;
+            Console.WriteLine($"  GATE  PASS  no capability regressed ({current.Capabilities.Count} capabilities{suffix})");
             return true;
         }
 
@@ -1103,78 +1113,8 @@ internal static class Program
             offScreenRefused,
             offScreenError ?? "(no error reported)");
 
-        // A minimized window is a trap the observation used to hide: Windows reports it as a 160×28 stub at
-        // -32000,-32000, so a click "inside" it passed every containment check and landed in the void, and a
-        // screenshot of it was a blank sliver the model then reasoned about. This is the state the music app
-        // was in when every click went nowhere.
-        // The state has to be produced — nothing in the product minimizes a window — and it is produced on the
-        // foreground window, so the focus at the end puts the desktop back the way it was.
-        using (var shotAutomation = new DesktopAutomation())
-        {
-            var all = shotAutomation.Observe().Entities;
-
-            // Never the shell's desktop window: it cannot be minimized, and the check would then be about
-            // nothing. A background window is preferred so the minimize is invisible, and the focus at the
-            // end is put back where it was.
-            var original = all.FirstOrDefault(entity => entity.IsForeground && entity.Label != "Program Manager");
-            var target = original
-                ?? all.First(entity => !entity.IsMinimized && entity.Label != "Program Manager");
-            var handle = nint.Parse(target.EntityId, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-
-            WindowProbe.Minimize(handle);
-            await Task.Delay(700);
-
-            var minimized = shotAutomation.Observe().Find(target.EntityId);
-
-            Check("desktop: a minimized window is reported as minimized rather than as a small window",
-                minimized is { IsMinimized: true },
-                $"minimized={minimized?.IsMinimized} rect={minimized?.Rect.X},{minimized?.Rect.Y} {minimized?.Rect.Width}×{minimized?.Rect.Height}");
-
-            if (minimized is not null)
-            {
-                var refused = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
-                    .InvokeAsync($"{{\"entityId\":\"{minimized.EntityId}\"}}");
-
-                Check("desktop: a minimized window is refused as a picture instead of a 160×28 stub",
-                    !refused.Ok && refused.Content.Contains("已最小化", StringComparison.Ordinal),
-                    refused.Content);
-
-                var blocked = DesktopActTool.Guard(
-                    ActionKind.LeftClick,
-                    minimized,
-                    (minimized.Rect.X + 5, minimized.Rect.Y + 5),
-                    new DesktopActTool.DesktopActArguments(
-                        null, null, "LeftClick", minimized.Rect.X + 5, minimized.Rect.Y + 5, null, null, null, null, null));
-
-                Check("desktop: a click into a minimized window's placeholder rect is refused",
-                    blocked is not null && blocked.Contains("已最小化", StringComparison.Ordinal),
-                    blocked ?? "(none)");
-
-                // Focus is what a person does to a minimized window, and it has to mean the same thing here.
-                var focused = await shotAutomation.ActAsync(minimized.EntityId, ActionKind.Focus, new ActionParams());
-                await Task.Delay(700);
-
-                var restored = shotAutomation.Observe().Find(minimized.EntityId);
-
-                Check("desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
-                    focused.Injection?.Ok == true && restored is { IsMinimized: false } && restored.Rect.Y > -32000,
-                    $"injection={focused.Injection?.Detail} minimized={restored?.IsMinimized} rect={restored?.Rect.X},{restored?.Rect.Y}");
-
-                // The log's next trap: the picture was refused from the observation taken *before* the focus,
-                // so a restore that had already happened looked like it had not. The tool has to ask the window.
-                var afterRestore = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
-                    .InvokeAsync($"{{\"entityId\":\"{minimized.EntityId}\"}}");
-
-                Check("desktop: a restored window is screenshot from the stale observation instead of being refused",
-                    afterRestore.Ok && afterRestore.Images is { Count: 1 },
-                    afterRestore.Content[..Math.Min(80, afterRestore.Content.Length)]);
-
-                if (original is not null)
-                {
-                    await shotAutomation.ActAsync(original.EntityId, ActionKind.Focus, new ActionParams());
-                }
-            }
-        }
+        // The minimized-window checks run last, on purpose: they take the reader's focus, and
+        // anything they invalidated would then look like a regression in code it never ran.
 
         // ---- 12. M10/M11: voice, driven by synthetic audio + a fake ASR/TTS server ------
         using (var server = new FakeVoiceServer(transcript: "turn on the desk lamp"))
@@ -2883,6 +2823,9 @@ internal static class Program
                 await loopContext.DisposeAsync();
             }
         }
+
+        // ---- 16. the minimized-window checks, last on purpose ----
+        await MinimizedWindowChecksAsync(root);
     }
 
     /// <summary>
@@ -2890,6 +2833,132 @@ internal static class Program
     /// and the click guard only have to cope with the state — so the smoke produces it, and the check focuses
     /// the window afterwards to put the desktop back.
     /// </summary>
+    /// <summary>
+    /// Everything about a minimized window: is it reported as one, is it refused as a picture, is it refused
+    /// as a click target, and can a person get it back. The last two need a real window with a message pump and
+    /// a session that will grant foreground, so they are opt-in (PARTNER_DESKTOP_LIVE=1); the first three act
+    /// on a window this run created.
+    /// </summary>
+    private static async Task MinimizedWindowChecksAsync(string root)
+    {
+        using (var shotAutomation = new DesktopAutomation())
+        using (var owned = OwnedWindow.Create("Partner smoke — minimized window probe"))
+        {
+            var probe = owned.Created
+                ? shotAutomation.Observe().Entities.FirstOrDefault(entity => entity.Label.Contains("Partner smoke", StringComparison.Ordinal))
+                : null;
+
+            if (probe is null)
+            {
+                var why = owned.Failure ?? "the probe window did not appear in the observation";
+                Skip("desktop: a minimized window is reported as minimized rather than as a small window", why);
+                Skip("desktop: a minimized window is refused as a picture instead of a 160×28 stub", why);
+                Skip("desktop: a click into a minimized window's placeholder rect is refused", why);
+            }
+            else
+            {
+                var handle = nint.Parse(probe.EntityId, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+                WindowProbe.Minimize(handle);
+                await Task.Delay(700);
+
+                var minimized = shotAutomation.Observe().Find(probe.EntityId);
+
+                Check("desktop: a minimized window is reported as minimized rather than as a small window",
+                    minimized is { IsMinimized: true },
+                    $"minimized={minimized?.IsMinimized} rect={minimized?.Rect.X},{minimized?.Rect.Y} {minimized?.Rect.Width}×{minimized?.Rect.Height}");
+
+                if (minimized is not null)
+                {
+                    var refused = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
+                        .InvokeAsync($"{{\"entityId\":\"{minimized.EntityId}\"}}");
+
+                    Check("desktop: a minimized window is refused as a picture instead of a 160×28 stub",
+                        !refused.Ok && refused.Content.Contains("已最小化", StringComparison.Ordinal),
+                        refused.Content);
+
+                    var blocked = DesktopActTool.Guard(
+                        ActionKind.LeftClick,
+                        minimized,
+                        (minimized.Rect.X + 5, minimized.Rect.Y + 5),
+                        new DesktopActTool.DesktopActArguments(
+                            null, null, "LeftClick", minimized.Rect.X + 5, minimized.Rect.Y + 5, null, null, null, null, null));
+
+                    Check("desktop: a click into a minimized window's placeholder rect is refused",
+                        blocked is not null && blocked.Contains("已最小化", StringComparison.Ordinal),
+                        blocked ?? "(none)");
+                }
+            }
+
+            // ---- the two checks that need a real window ----
+            if (!LiveDesktop)
+            {
+                Skip("desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
+                    "PARTNER_DESKTOP_LIVE is not 1 (focusing a window takes the reader's focus)");
+                Skip("desktop: a restored window is screenshot from the stale observation instead of being refused",
+                    "PARTNER_DESKTOP_LIVE is not 1 (needs the focus check above, and a window with a message pump)");
+            }
+            else
+            {
+                // A real window, and never the shell's own: Program Manager cannot be minimized, so the check
+                // would then be about nothing. The focus is handed back at the end.
+                var all = shotAutomation.Observe().Entities;
+                var original = all.FirstOrDefault(entity => entity.IsForeground && entity.Label != "Program Manager");
+                var live = original ?? all.FirstOrDefault(entity => !entity.IsMinimized && entity.Label != "Program Manager");
+
+                if (live is null)
+                {
+                    var why = "no window on this desktop can be minimized";
+                    Skip("desktop: focusing a minimized window restores it instead of only lighting up the taskbar", why);
+                    Skip("desktop: a restored window is screenshot from the stale observation instead of being refused", why);
+                }
+                else
+                {
+                    var liveHandle = nint.Parse(live.EntityId, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+                    WindowProbe.Minimize(liveHandle);
+                    await Task.Delay(700);
+
+                    var stale = shotAutomation.Observe().Find(live.EntityId);
+
+                    if (stale is null)
+                    {
+                        var why = $"'{live.Label}' vanished after being minimized";
+                        Skip("desktop: focusing a minimized window restores it instead of only lighting up the taskbar", why);
+                        Skip("desktop: a restored window is screenshot from the stale observation instead of being refused", why);
+                    }
+                    else
+                    {
+                        // Focus is what a person does to a minimized window, and it has to mean the same thing here.
+                        var focused = await shotAutomation.ActAsync(stale.EntityId, ActionKind.Focus, new ActionParams());
+                        await Task.Delay(700);
+
+                        var restored = shotAutomation.Observe().Find(stale.EntityId);
+
+                        Check("desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
+                            focused.Injection?.Ok == true && restored is { IsMinimized: false } && restored.Rect.Y > -32000,
+                            $"injection={focused.Injection?.Detail} win32={focused.Injection?.ErrorCode} minimized={restored?.IsMinimized} rect={restored?.Rect.X},{restored?.Rect.Y}");
+
+                        // The log's next trap: the picture was refused from the observation taken *before* the
+                        // focus, so a restore that had already happened looked like it had not. The tool has to
+                        // ask the window.
+                        var afterRestore = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
+                            .InvokeAsync($"{{\"entityId\":\"{stale.EntityId}\"}}");
+
+                        Check("desktop: a restored window is screenshot from the stale observation instead of being refused",
+                            afterRestore.Ok && afterRestore.Images is { Count: 1 },
+                            afterRestore.Content[..Math.Min(80, afterRestore.Content.Length)]);
+
+                        if (original is not null)
+                        {
+                            await shotAutomation.ActAsync(original.EntityId, ActionKind.Focus, new ActionParams());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private static class WindowProbe
     {
         [DllImport("user32.dll")]
@@ -2897,6 +2966,214 @@ internal static class Program
 
         /// <summary>SW_MINIMIZE.</summary>
         public static void Minimize(nint handle) => ShowWindow(handle, 6);
+    }
+
+/// <summary>
+    /// A window the smoke run owns, so the minimized-window checks never touch the reader's own.
+    /// <para>
+    /// The state has to be produced — nothing in the product minimizes a window — and it used to be produced
+    /// on whatever was in front, which made the result a property of the machine rather than of the code: a
+    /// fullscreen window takes the focus back the moment it is minimized, and the check reported the product
+    /// broken on a desktop where nothing had changed.
+    /// </para>
+    /// <para>
+    /// It lives on a thread of its own with a real message pump, and both halves of that are load-bearing.
+    /// Without the pump, capturing the window kills it — a GDI capture sends messages to the window's own
+    /// thread and nobody is there to answer, so what comes back is a dead handle rather than pixels. Without
+    /// the dedicated thread, the window belongs to whichever thread happened to call in, which here is a
+    /// thread-pool thread: the runtime retires those, and it takes every window they created with it, at a
+    /// moment of its choosing.
+    /// </para>
+    /// </summary>
+    private sealed class OwnedWindow : IDisposable
+    {
+        private const string ClassName = "PartnerSmokeProbeWindow";
+        private const uint WmClose = 0x0010;
+        private const uint WmQuit = 0x0012;
+        private const uint ErrorClassAlreadyExists = 1410;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegisterClassW")]
+        private static extern ushort RegisterClass(ref WindowClass windowClass);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateWindowExW")]
+        private static extern nint CreateWindowExW(
+            uint extended, string className, string title, uint style,
+            int x, int y, int width, int height, nint parent, nint menu, nint instance, nint param);
+
+        [DllImport("user32.dll")]
+        private static extern bool DestroyWindow(nint handle);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(nint handle, uint message, nint wParam, nint lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetModuleHandleW")]
+        private static extern nint GetModuleHandleW(string? module);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "PostThreadMessageW")]
+        private static extern bool PostThreadMessage(uint threadId, uint message, nint wParam, nint lParam);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetLastError();
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WindowClass
+        {
+            // WNDCLASSW, not WNDCLASSEXW: RegisterClass (not RegisterClassEx) takes no cbSize and no atom,
+            // and getting that layout wrong is ERROR_INVALID_PARAMETER rather than anything readable.
+            public uint Style;
+            public nint WindowProc;
+            public int ClassExtra;
+            public int WindowExtra;
+            public nint Instance;
+            public nint Icon;
+            public nint Cursor;
+            public nint Background;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string? MenuName;
+            [MarshalAs(UnmanagedType.LPWStr)]
+            public string? Name;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeMessage
+        {
+            public nint Window;
+            public uint Value;
+            public nint WParam;
+            public nint LParam;
+            public uint Time;
+            public int PointX;
+            public int PointY;
+        }
+
+        /// <summary>The thread's message pump, kept as a delegate so the window's procedure stays callable.</summary>
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        private delegate nint WindowProcedure(nint handle, uint message, nint wParam, nint lParam);
+
+        [DllImport("user32.dll", EntryPoint = "DefWindowProcW")]
+        private static extern nint DefWindowProc(nint handle, uint message, nint wParam, nint lParam);
+
+        private static readonly WindowProcedure Procedure = DefWindowProc;
+
+        private readonly ManualResetEventSlim _ready = new(false);
+        private Thread? _thread;
+
+        public nint Handle { get; private set; }
+
+        /// <summary>False when the session will not hand this run a window (a locked-down desktop returns none).</summary>
+        public bool Created { get; private set; }
+
+        /// <summary>Why the window is absent, when it is — a skip nobody can act on is a skip that gets ignored.</summary>
+        public string? Failure { get; private set; }
+
+        /// <summary>
+        /// A visible, ordinary, titled window: big enough that Windows gives it a real placement rather than
+        /// the 160×28 taskbar stub, and empty so there is nothing to look at.
+        /// </summary>
+        public static OwnedWindow Create(string title)
+        {
+            var window = new OwnedWindow();
+            nint handle = 0;
+            string? failure = null;
+
+            var thread = new Thread(() =>
+            {
+                var instance = GetModuleHandleW(null);
+                var windowClass = new WindowClass
+                {
+                    Name = ClassName,
+                    WindowProc = Marshal.GetFunctionPointerForDelegate(Procedure),
+                    Instance = instance,
+                    // A plain button face: an empty window is fine, an invisible one would not be findable.
+                    Background = 5,
+                };
+
+                if (RegisterClass(ref windowClass) == 0 && GetLastError() != ErrorClassAlreadyExists)
+                {
+                    failure = $"RegisterClassW failed (win32 {GetLastError()})";
+                    window._ready.Set();
+                    return;
+                }
+
+                // WS_OVERLAPPEDWINDOW | WS_VISIBLE.
+                const uint style = 0x00CF0000 | 0x10000000;
+                handle = CreateWindowExW(0, ClassName, title, style, 120, 120, 480, 240, 0, 0, instance, 0);
+                if (handle == 0)
+                {
+                    failure = $"CreateWindowExW failed (win32 {GetLastError()})";
+                    window._ready.Set();
+                    return;
+                }
+
+                window._ready.Set();
+                Pump(handle);
+            })
+            {
+                IsBackground = true,
+                Name = "partner-smoke-window",
+            };
+
+            window._thread = thread;
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+
+            // Five seconds is generous for a window that either appears or does not; the alternative is a
+            // check that hangs on a locked-down session.
+            if (!window._ready.Wait(TimeSpan.FromSeconds(5)))
+            {
+                failure ??= "the window thread did not answer";
+            }
+
+            window.Handle = handle;
+            window.Created = handle != 0;
+            window.Failure = failure;
+            return window;
+        }
+
+        /// <summary>
+        /// The pump. A close is how this run ends the window; anything else goes to DefWindowProc, which is
+        /// all a bare window needs. It exits on WM_QUIT, which <see cref="Dispose"/> posts by thread id.
+        /// </summary>
+        private static void Pump(nint window)
+        {
+            while (GetMessage(out var message, 0, 0, 0) > 0)
+            {
+                if (message.Value == WmClose)
+                {
+                    DestroyWindow(message.Window);
+                    continue;
+                }
+
+                TranslateMessage(ref message);
+                DispatchMessage(ref message);
+            }
+        }
+
+        [DllImport("user32.dll")]
+        private static extern int GetMessage(out NativeMessage message, nint window, uint min, uint max);
+
+        [DllImport("user32.dll")]
+        private static extern bool TranslateMessage(ref NativeMessage message);
+
+        [DllImport("user32.dll")]
+        private static extern nint DispatchMessage(ref NativeMessage message);
+
+        public void Dispose()
+        {
+            if (Handle != 0)
+            {
+                PostMessage(Handle, WmClose, 0, 0);
+            }
+
+            // WM_QUIT is thread-directed, so it cannot ride along on the window's queue.
+            if (_thread is not null)
+            {
+                PostThreadMessage((uint)_thread.ManagedThreadId, WmQuit, 0, 0);
+                _thread.Join(TimeSpan.FromSeconds(2));
+            }
+
+            _ready.Dispose();
+        }
     }
 
     /// <summary>Synthetic voice components: the whole pipeline without a microphone, a speaker or a service.</summary>
@@ -3466,7 +3743,7 @@ internal static class Program
 
     private static void Check(string what, bool ok, string? detail = null)
     {
-        Results.Add((what, ok, detail));
+        Results.Add((what, ok, detail, Skipped: false));
 
         if (ok)
         {
@@ -3477,6 +3754,30 @@ internal static class Program
         _failures++;
         Console.WriteLine($"  FAIL  {what}{(detail is null ? "" : $"  → {detail}")}");
     }
+
+    /// <summary>
+    /// A check that did not run, and why — reported as neither pass nor fail.
+    /// <para>
+    /// This exists because "the capability regressed" and "this machine's desktop was busy" are different
+    /// facts, and the gate used to hear them as the same one: a check that manipulates the reader's real
+    /// windows fails for reasons that have nothing to do with the code (a fullscreen game takes the focus
+    /// back the moment you minimize it), and a build that goes red on such a machine is a build people learn
+    /// to ignore. A skipped check is not a passed one — the capability it belongs to reports as *not
+    /// verified this round*, which is a state the manifest can say out loud.
+    /// </para>
+    /// </summary>
+    private static void Skip(string what, string reason)
+    {
+        Results.Add((what, true, reason, Skipped: true));
+        Console.WriteLine($"  SKIP  {what}  → {reason}");
+    }
+
+    /// <summary>
+    /// Whether the live desktop checks may run: they move and restore the reader's own windows, so they are
+    /// opt-in, exactly like <c>DesktopLiveInteractionTests</c> (which moves the pointer, so it is gated on the
+    /// same variable). Everything that only reads the desktop still runs by default.
+    /// </summary>
+    private static bool LiveDesktop => Environment.GetEnvironmentVariable("PARTNER_DESKTOP_LIVE") == "1";
 
     /// <summary>
     /// Capability declarations: a capability's level is derived from smoke checks that actually ran —
@@ -3823,13 +4124,25 @@ internal static class Program
 
         var entries = Capabilities.Select(c =>
         {
+            var byEvidence = new Dictionary<string, List<(string Name, bool Passed, string? Detail, bool Skipped)>>(StringComparer.Ordinal);
+            foreach (var name in c.Checks)
+            {
+                byEvidence[name] = byName.TryGetValue(name, out var runs) ? runs : new List<(string, bool, string?, bool)>();
+            }
+
+            // Skipped is neither ran nor missing: the check was named, declared, and deliberately not
+            // executed. Counting it as missing would downgrade the capability, and counting it as passed would
+            // claim evidence that does not exist.
             var missing = c.Checks.Where(n => !byName.ContainsKey(n)).ToArray();
-            var observed = c.Checks.Where(byName.ContainsKey).SelectMany(n => byName[n]).ToList();
+            var observed = byEvidence.Values.SelectMany(r => r).Where(o => !o.Skipped).ToList();
+            var skipped = byEvidence.Values.SelectMany(r => r).Count(o => o.Skipped);
             var failed = observed.Count(o => !o.Passed);
 
+            // A capability reaches product-supported only if every check it names actually ran. Two of the five that were
+            // skipped leave it covered — not supported, and not silently promoted either.
             var level = observed.Count == 0
                 ? CapabilityLevel.NotSupported
-                : missing.Length == 0 && failed == 0
+                : missing.Length == 0 && failed == 0 && skipped == 0
                     ? CapabilityLevel.ProductSupported
                     : failed == observed.Count
                         ? CapabilityLevel.NotSupported
@@ -3842,8 +4155,9 @@ internal static class Program
                 Level = level,
                 Evidence = c.Checks.Select(n => new CapabilityCheckEvidence(
                     n,
-                    byName.ContainsKey(n),
-                    byName.TryGetValue(n, out var runs) && runs.All(r => r.Passed))).ToList(),
+                    byEvidence[n].Count > 0 && byEvidence[n].Any(o => !o.Skipped),
+                    byEvidence[n].Count == 0 || byEvidence[n].All(o => o.Passed),
+                    byEvidence[n].Count > 0 && byEvidence[n].All(o => o.Skipped))).ToList(),
             };
         }).ToList();
 

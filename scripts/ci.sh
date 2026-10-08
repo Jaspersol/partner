@@ -48,6 +48,10 @@ echo "== unit tests =="
 "$DOTNET" test --nologo -v q
 
 echo "== smoke + capability gate =="
+# PARTNER_DESKTOP_LIVE=1 runs the two desktop checks that take the reader's focus (minimize a real window,
+# focus it back). Without it those two are reported as skipped, and the gate names desktop.minimized_window
+# as *not verified* rather than regressed — a gate that goes red because someone's desktop was busy is a gate
+# people learn to ignore. Set it on a quiet desktop to prove the full capability.
 "$DOTNET" run --project src/Partner.Smoke -v q -- --verify-baseline capabilities/manifest.baseline.json
 
 # The frontend's contract test starts the API binary, so it runs after the .NET build above.

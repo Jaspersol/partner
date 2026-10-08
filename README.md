@@ -558,7 +558,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 前端组件测试（34） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（工具卡配对与状态、流式行与它的 Markdown 渲染） |
 | 前端壳装配测试（2） | `ui/tests/app.test.ts` | 挂载真实 `App.vue`，逐个点开侧栏页签并断言**没有一条 Vue 警告**（模板里写了却没 import 的组件会退化成空自定义元素：类型查不出来、页面全白，只有运行时警告会报）；无令牌时说明原因且不发请求 |
 | **壳的端到端（34）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、**桌面卡片默认关闭且写明需批准**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、**「支持图片」开关落盘并让运行中的消费者注册截图工具**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
-| 能力门禁（56） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败 |
+| 能力门禁（58） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败；因 `PARTNER_DESKTOP_LIVE` 未开而没跑到的检查记为 `not verified`，不失败 |
 
 ### 落盘点
 
@@ -641,6 +641,9 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 - 能力**消失或降级** → `GATE FAIL`，退出码 1
 - 能力**新增** → 提示 `update the baseline to lock it in`（不失败）
+- 能力**因检查被选择退出而没跑到基线那一级** → `GATE not verified`，**不算失败**，但每次都会打出来
+
+第三种情况是必要的，因为“能力退化了”和“这次没看”是两件不同的事，把后者报成前者，门禁就会在别人忙着用的机器上变红——而变红的门禁很快就不再被当真。现在只有 `PARTNER_DESKTOP_LIVE=1` 才会走到那里，它管的是那两条会**动读者焦点**的检查（最小化一个真窗口再把它还原）。跑不着的检查记为 `skipped`，能力等级因此停在 `covered` 而不是被悄悄算成 `product-supported`：没看过的东西不能算看过。同时，若同一次运行里还有检查**跑了但失败**，那仍然是回归，不会被“部分跳过”掩盖（`ManifestGateTests` 四条用例锁住这个分界）。
 
 加一条 smoke 检查：
 
@@ -684,7 +687,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |

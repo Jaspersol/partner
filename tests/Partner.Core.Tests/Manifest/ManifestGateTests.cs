@@ -132,4 +132,106 @@ public sealed class ManifestGateTests
         Assert.Throws<JsonException>(
             () => JsonSerializer.Deserialize<CapabilityManifest>(json, CapabilityManifest.Json));
     }
+
+    /// <summary>
+    /// The two cases that are easy to confuse, and the reason they are separated at all.
+    /// <para>
+    /// A capability that dropped because its checks <em>failed</em> is a regression. A capability that dropped
+    /// because its checks were <em>opted out of</em> is a run that did not look — neither a pass nor a
+    /// regression. Reporting the second as the first is what makes a gate untrustworthy: a developer on a busy
+    /// desktop gets red builds that have nothing to do with the code, and then red stops meaning anything.
+    /// </para>
+    /// </summary>
+    private static CapabilityManifest WithEvidence(
+        string id,
+        CapabilityLevel level,
+        params CapabilityCheckEvidence[] evidence) =>
+        new()
+        {
+            ChecksFailed = 0,
+            Capabilities = new List<CapabilityEntry>
+            {
+                new() { Id = id, Owner = "test", Level = level, Evidence = evidence },
+            },
+        };
+
+    [Fact]
+    public void A_drop_caused_only_by_skipped_checks_is_reported_as_not_verified_not_as_a_regression()
+    {
+        var baseline = WithEvidence(
+            "desktop.live",
+            CapabilityLevel.ProductSupported,
+            new CapabilityCheckEvidence("ran", true, true),
+            new CapabilityCheckEvidence("opt-in", true, true));
+
+        var current = WithEvidence(
+            "desktop.live",
+            CapabilityLevel.Covered,
+            new CapabilityCheckEvidence("ran", true, true),
+            new CapabilityCheckEvidence("opt-in", Ran: false, Passed: false, Skipped: true));
+
+        var report = CapabilityManifest.Compare(baseline, current);
+
+        Assert.True(report.Ok);
+        Assert.Empty(report.Regressions);
+        Assert.Contains(report.NotVerified, n => n.Contains("desktop.live") && n.Contains("1 check(s) skipped"));
+    }
+
+    [Fact]
+    public void A_drop_beside_skipped_checks_is_still_a_regression()
+    {
+        // The excuse is for checks that did not run. A check that ran and failed is evidence, and it is
+        // reported — otherwise "partly opted out" would become a way to hide a real one.
+        var baseline = WithEvidence(
+            "desktop.live",
+            CapabilityLevel.ProductSupported,
+            new CapabilityCheckEvidence("ran", true, true),
+            new CapabilityCheckEvidence("opt-in", true, true));
+
+        var current = WithEvidence(
+            "desktop.live",
+            CapabilityLevel.Covered,
+            new CapabilityCheckEvidence("ran", true, false),
+            new CapabilityCheckEvidence("opt-in", Ran: false, Passed: false, Skipped: true));
+
+        var report = CapabilityManifest.Compare(baseline, current);
+
+        Assert.False(report.Ok);
+        Assert.Empty(report.NotVerified);
+        Assert.Contains(report.Regressions, r => r.Contains("downgraded: desktop.live"));
+    }
+
+    [Fact]
+    public void A_check_that_neither_ran_nor_was_skipped_is_not_excused()
+    {
+        // Nothing was skipped and the level still dropped: the checks went missing, which is a regression.
+        var baseline = WithEvidence("desktop.live", CapabilityLevel.ProductSupported, new CapabilityCheckEvidence("ran", true, true));
+        var current = WithEvidence(
+            "desktop.live",
+            CapabilityLevel.Covered,
+            new CapabilityCheckEvidence("ran", true, true),
+            new CapabilityCheckEvidence("vanished", Ran: false, Passed: false));
+
+        var report = CapabilityManifest.Compare(baseline, current);
+
+        Assert.False(report.Ok);
+        Assert.Contains(report.Regressions, r => r.Contains("downgraded: desktop.live"));
+    }
+
+    [Fact]
+    public void A_skipped_check_is_not_counted_as_evidence_of_a_pass()
+    {
+        // The other half of the rule: a capability whose every check was skipped reports nothing at all, so a
+        // green run cannot be read as "proven" for something nobody looked at.
+        var baseline = WithEvidence("desktop.live", CapabilityLevel.ProductSupported, new CapabilityCheckEvidence("opt-in", true, true));
+        var current = WithEvidence(
+            "desktop.live",
+            CapabilityLevel.NotSupported,
+            new CapabilityCheckEvidence("opt-in", Ran: false, Passed: false, Skipped: true));
+
+        var report = CapabilityManifest.Compare(baseline, current);
+
+        Assert.True(report.Ok);
+        Assert.Contains(report.NotVerified, n => n.Contains("desktop.live"));
+    }
 }

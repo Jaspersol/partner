@@ -74,7 +74,7 @@ public sealed record CapabilityEntry
     public required IReadOnlyList<CapabilityCheckEvidence> Evidence { get; init; }
 }
 
-public sealed record CapabilityCheckEvidence(string Check, bool Ran, bool Passed);
+public sealed record CapabilityCheckEvidence(string Check, bool Ran, bool Passed, bool Skipped = false);
 
 public sealed record CapabilityManifest
 {
@@ -101,6 +101,7 @@ public sealed record CapabilityManifest
         var now = current.Capabilities.ToDictionary(c => c.Id, c => c, StringComparer.Ordinal);
         var regressions = new List<string>();
         var improvements = new List<string>();
+        var notVerified = new List<string>();
 
         foreach (var before in baseline.Capabilities)
         {
@@ -112,7 +113,27 @@ public sealed record CapabilityManifest
 
             if (after.Level < before.Level)
             {
-                regressions.Add($"downgraded: {before.Id} {before.Level.ToWire()} → {after.Level.ToWire()}");
+                // A drop caused only by checks that did not run because they were opted out is not a
+                // regression: it is the run saying "I did not check this". Reporting it as a regression is
+                // what makes a gate untrustworthy — a developer who runs it on a busy desktop gets a red build
+                // that has nothing to do with the code, and the next red build stops meaning anything. So the
+                // capability is named as not verified, with the count, and the regression list stays for
+                // evidence that actually failed or went missing.
+                //
+                // Every clause matters: a check that ran and failed is evidence however many others were
+                // skipped, and a check that neither ran nor was skipped has vanished, which is worse.
+                var failed = after.Evidence.Where(e => e.Ran && !e.Passed).ToArray();
+                var absent = after.Evidence.Where(e => !e.Ran && !e.Skipped).ToArray();
+                var skipped = after.Evidence.Count(e => e.Skipped);
+
+                if (failed.Length == 0 && absent.Length == 0 && skipped > 0)
+                {
+                    notVerified.Add($"not verified: {before.Id} ({skipped} check(s) skipped this run; baseline {before.Level.ToWire()})");
+                }
+                else
+                {
+                    regressions.Add($"downgraded: {before.Id} {before.Level.ToWire()} → {after.Level.ToWire()}");
+                }
             }
             else if (after.Level > before.Level)
             {
@@ -131,14 +152,19 @@ public sealed record CapabilityManifest
             .Select(c => $"added: {c.Id} {c.Level.ToWire()}")
             .ToList();
 
-        return new ManifestGateReport(regressions, improvements, added);
+        return new ManifestGateReport(regressions, improvements, added, notVerified);
     }
 }
 
 public sealed record ManifestGateReport(
     IReadOnlyList<string> Regressions,
     IReadOnlyList<string> Improvements,
-    IReadOnlyList<string> Added)
+    IReadOnlyList<string> Added,
+    /// <summary>
+    /// Capabilities whose baseline level was not reached because their checks were opted out of this run
+    /// (<c>PARTNER_DESKTOP_LIVE</c> unset). Reported, never fatal — but also never counted as passed.
+    /// </summary>
+    IReadOnlyList<string> NotVerified)
 {
     public bool Ok => Regressions.Count == 0;
 }

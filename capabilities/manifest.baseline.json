@@ -8,32 +8,38 @@
         {
           "check": "session log opens clean",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session has 6 content events (3 user \u002B 3 assistant)",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "raw log keeps every event (edits included)",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "restart: session log still clean",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "restart: last seq preserved",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "restart: seq continues without reuse",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -45,27 +51,32 @@
         {
           "check": "edit replaces the projected body",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "edit keeps the original body",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "edit is not rendered as its own content",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "revision count is 1",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "projection is rebuildable from the log",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -77,27 +88,32 @@
         {
           "check": "queue depth counts the three distinct items",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "running item is visible while executing",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "consumed in arrival order",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "queue drained",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "no running item after drain",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -109,17 +125,20 @@
         {
           "check": "duplicate idempotency key reuses the seq",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "restart: consumed idempotency key still dedupes",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "restart: new item gets a fresh seq",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -131,12 +150,14 @@
         {
           "check": "crash recovery: interrupted item is re-queued",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "crash recovery: attempt counter advanced",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -148,27 +169,32 @@
         {
           "check": "turn: item is claimed before the turn",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "turn: completes with reason=completed",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "turn: two steps (tool then answer)",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "turn: event order matches the spec (assistant only when the step has text)",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "turn: projection shows the answer but not control events",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -180,7 +206,8 @@
         {
           "check": "turn: one tool call executed",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -192,7 +219,8 @@
         {
           "check": "turn: hook injection is recorded as a system event",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -204,7 +232,8 @@
         {
           "check": "skills: workspace scan finds valid skills and warns about bad ones",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -216,12 +245,14 @@
         {
           "check": "skills: injection reaches the model prompt",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "skills: injection is recorded in the session",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -233,17 +264,20 @@
         {
           "check": "scheduler: task delivers one queue item",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "scheduler: item carries the (taskId, occurrenceAt) key",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "scheduler: task advances to the next occurrence",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -255,7 +289,8 @@
         {
           "check": "scheduler: restart does not re-deliver the same occurrence",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -267,12 +302,14 @@
         {
           "check": "scheduler: failed delivery keeps the obligation",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "scheduler: a failing task is not lost and recovers",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -284,17 +321,20 @@
         {
           "check": "scheduler: scheduled item is claimable",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "scheduler: scheduled item runs as a turn",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "scheduler: session records the schedule turn",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -306,12 +346,20 @@
         {
           "check": "memory: recall finds the relevant record and not the noise",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "memory: recall is explainable",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "memory: a hit carries the tier and retention of the record it matched",
+          "ran": true,
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -323,7 +371,8 @@
         {
           "check": "memory: offline (no embeddings) still recalls",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -335,7 +384,8 @@
         {
           "check": "memory: privacy delete purges, hides from search, then compacts",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -347,7 +397,8 @@
         {
           "check": "memory: promotion preserves content as an episodic copy",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -359,7 +410,8 @@
         {
           "check": "memory: injection respects the token budget",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -371,7 +423,8 @@
         {
           "check": "memory: 100000 records \u2014 retrieval P99 under 500ms",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -383,12 +436,14 @@
         {
           "check": "governance: policy allows a listed tool",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "governance: explicit deny is refused",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -400,7 +455,8 @@
         {
           "check": "governance: unlisted tool is refused (fail-closed)",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -412,7 +468,8 @@
         {
           "check": "governance: target parameter rules reject an out-of-scope target",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -424,7 +481,8 @@
         {
           "check": "governance: denial is enforced inside a real turn",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -436,12 +494,14 @@
         {
           "check": "mcp: test-double server is built",
           "ran": false,
-          "passed": false
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "mcp: server starts and lists tools",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -453,7 +513,8 @@
         {
           "check": "mcp: tool call round-trips through the client",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -465,7 +526,8 @@
         {
           "check": "mcp: mcp tool runs inside a governed turn",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -477,7 +539,8 @@
         {
           "check": "desktop: window enumeration finds visible windows",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -489,7 +552,8 @@
         {
           "check": "desktop: GDI capture returns pixels",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -501,7 +565,8 @@
         {
           "check": "desktop: post-action verification measures rather than assuming",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -513,17 +578,20 @@
         {
           "check": "desktop: lease is issued per entity with a unique generation",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: action on an unknown entity is refused without injecting",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: an expired lease refuses the action without injecting",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -535,17 +603,20 @@
         {
           "check": "desktop: input marshalling matches the Win32 contract",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: positional input is absolute in the 0..65535 virtual-desktop space",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a point outside the virtual desktop is refused instead of clamped",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -557,12 +628,14 @@
         {
           "check": "desktop: an action a pattern cannot express is routed to injected input",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a control id that does not resolve is not guessed at",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -574,7 +647,8 @@
         {
           "check": "desktop: a picture\u0027s marks carry each control\u0027s real screen point",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -586,27 +660,32 @@
         {
           "check": "desktop: a minimized window is reported as minimized rather than as a small window",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a minimized window is refused as a picture instead of a 160\u00D728 stub",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a click into a minimized window\u0027s placeholder rect is refused",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a restored window is screenshot from the stale observation instead of being refused",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -618,17 +697,20 @@
         {
           "check": "desktop: a point with no window id resolves to the window that covers it",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a point no window covers is refused with the candidates named",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the window under a point is the top-level window that contains it",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -640,12 +722,14 @@
         {
           "check": "desktop: a screenshot reaches the model as an image",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the log records the screenshot by media id, not by pixels",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -657,12 +741,14 @@
         {
           "check": "voice: speech followed by silence produces one utterance",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: the utterance becomes a queue item with a boot-scoped key",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -674,7 +760,8 @@
         {
           "check": "voice: the ASR request carried a 16 kHz mono WAV",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -686,22 +773,26 @@
         {
           "check": "voice: playback closed the gate",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: input during playback is discarded and reported",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: reopening the gate reports the discarded audio",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: gate reports its blockers while closed",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -713,7 +804,8 @@
         {
           "check": "voice: output speaks sentences in order, cleaned of markdown",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -725,7 +817,8 @@
         {
           "check": "voice: a threshold at or below the noise floor is detected",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -737,12 +830,14 @@
         {
           "check": "voice: an unreachable ASR service is reported and produces no utterance",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: a dead TTS service fails visibly without stalling playback",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -754,7 +849,8 @@
         {
           "check": "voice: output disabled means no synthesis and no playback",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -766,22 +862,26 @@
         {
           "check": "voice: enabling the halves starts them on the configured devices",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: an utterance is answered by a turn and the answer is spoken",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: the utterance is consumed and the halves stay up",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "voice: a device that will not open is reported without stopping the other half",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -793,17 +893,20 @@
         {
           "check": "game: adapter attaches to a real game process and reads its state",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "game: the action outcome carries the post-action state",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "game: detaching stops the child process",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -815,12 +918,14 @@
         {
           "check": "game: a reflex behavior acts and the world changes",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "game: an async reflex behavior is not preempted mid-run",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -832,7 +937,8 @@
         {
           "check": "game: sensor chatter debounces while action signals never do",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -844,7 +950,8 @@
         {
           "check": "game: latency is measured, not assumed",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -856,12 +963,14 @@
         {
           "check": "ui: an unauthenticated request is rejected on every endpoint",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "ui: a wrong token is rejected and the right one is accepted",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -873,172 +982,206 @@
         {
           "check": "consumer: without a model it is disabled, says why, and leaves work queued",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "consumer: with a model the delivered input becomes a turn in the session",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "consumer: the queue drains and the loop counts what it handled",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "consumer: a real HTTP model call completes a turn end to end",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session: the reply is visible while it is still being written",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session: the client asks the model to stream",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session: the finished reply replaces the live row, whole",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session: tool calls and results reach the view",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "image: an upload comes back as an id",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "image: the model receives the attachment inline",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "image: the logs keep the id, not the bytes",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a key press waits for approval",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: an approved action looks again instead of trusting a dead lease",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a screenshot reaches the model as an image",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the log records the screenshot by media id, not by pixels",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the default gear asks for every action but never for looking",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the middle gear frees the GUI and still gates commands",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the open gear asks for nothing",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the capability reports itself enabled",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the model can observe through its tool",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: an action waits for approval instead of running",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the approval queue surfaces the parked action",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: answering the queue settles it",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: a denied action is refused, not performed",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "desktop: the refusal is in the log with the tool\u0027s name",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: pointing the model settings at an endpoint re-points the consumer",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: the API key is sent to the model but never echoed back",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: the thinking gear reaches the model request",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "input: a gear chosen for one message wins over the configured default",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "input: a gear that is not on the menu is rejected and lists the ones that are",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: the model listing is pulled through the API",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: an unreachable model endpoint returns a reason, not a silent empty list",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: shrinking the context compacts the history once",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "settings: the compaction leaves exactly one summary standing in for the history",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1050,17 +1193,20 @@
         {
           "check": "session: deleting one event takes its text out of the log",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session: retracting removes the selected event and takes its text out of the log",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "session: events after a retraction stay visible",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1072,7 +1218,8 @@
         {
           "check": "ui: submitting from the composer queues work without executing it",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1084,7 +1231,8 @@
         {
           "check": "ui: session view shows the edit, keeps the original, and re-runs nothing",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1096,12 +1244,14 @@
         {
           "check": "ui: memory edit records the actor and the revision",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         },
         {
           "check": "ui: memory delete removes it from search and from the list",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1113,7 +1263,8 @@
         {
           "check": "ui: queue view shows state and honours cancel",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1125,7 +1276,8 @@
         {
           "check": "ui: settings round-trip every section through the API",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -1137,7 +1289,8 @@
         {
           "check": "ui: rebuilding projections reproduces the same session view",
           "ran": true,
-          "passed": true
+          "passed": true,
+          "skipped": false
         }
       ]
     }
