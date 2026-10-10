@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Partner.Core.Agent.Tools;
+using Partner.Desktop.Perception;
 
 namespace Partner.Desktop.Tools;
 
@@ -29,28 +30,40 @@ public sealed class DesktopLaunchTool : ITool
 
     private readonly IReadOnlyList<string> _roots;
 
-    public DesktopLaunchTool(IReadOnlyList<string>? startMenuRoots = null)
+    /// <summary>
+    /// Where launched debug ports are recorded. Null leaves the DOM path off, which is the honest default for a
+    /// tool built without one: a window launched with a flag nobody recorded has an unreachable DOM, and that
+    /// looks exactly like an application with no controls.
+    /// </summary>
+    private readonly CdpRegistry? _ports;
+
+    public DesktopLaunchTool(IReadOnlyList<string>? startMenuRoots = null, CdpRegistry? ports = null)
     {
         _roots = startMenuRoots ?? DefaultRoots;
+        _ports = ports;
     }
 
     public ToolSpec Spec { get; } = new(
         "desktop_launch",
         "启动一个程序或打开一个 URI。可以是可执行文件路径、URI，或**开始菜单里的程序名**（例如 '网易云音乐'、'记事本'）。"
-        + "启动之后先用 desktop_observe 看它是否出现，再对它的窗口动手。",
+        + "启动之后先用 desktop_observe 看它是否出现，再对它的窗口动手。"
+        + "浏览器/Electron 程序（chrome、msedge、electron 等）会附带开一个页面调试端口，于是它的按钮、链接、"
+        + "输入框会作为控件出现在 desktop_observe 里，可以直接按名字点，而不用靠坐标。"
+        + "别的 Electron 程序（比如网易云音乐的 cloudmusic.exe）名字里看不出引擎，在 arguments 里自己传 "
+        + "--remote-debugging-port=9222 也一样能用。",
         """
         {"type":"object","properties":{
           "target":{"type":"string","description":"可执行文件、文档、URI 或开始菜单程序名"},
-          "arguments":{"type":"string","description":"可选命令行参数"}
+          "arguments":{"type":"string","description":"可选命令行参数；要读取 Electron 程序的页面控件，就在这里传 --remote-debugging-port=9222"}
         },"required":["target"],"additionalProperties":false}
         """);
 
-    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
         var arguments = Json.Deserialize<LaunchArguments>(argumentsJson);
         if (arguments is null || string.IsNullOrWhiteSpace(arguments.Target))
         {
-            return Task.FromResult(new ToolResult(false, "缺少 target"));
+            return new ToolResult(false, "缺少 target");
         }
 
         var target = arguments.Target.Trim();
@@ -58,33 +71,147 @@ public sealed class DesktopLaunchTool : ITool
 
         if (resolved is null)
         {
-            return Task.FromResult(new ToolResult(false, NotFound(target)));
+            return new ToolResult(false, NotFound(target));
         }
 
         try
         {
-            var info = new ProcessStartInfo(resolved.Value.Path)
-            {
-                UseShellExecute = true,
-            };
-
-            if (!string.IsNullOrWhiteSpace(arguments.Arguments))
-            {
-                info.Arguments = arguments.Arguments;
-            }
-
-            using var started = Process.Start(info);
-
-            return Task.FromResult(new ToolResult(
-                true,
-                $"已启动 '{target}'"
-                + (resolved.Value.Note is null ? string.Empty : $"（{resolved.Value.Note}）")
-                + $"（pid {started?.Id.ToString() ?? "未知"}）：接下来用 desktop_observe 找它的窗口"));
+            return await LaunchAsync(target, resolved.Value, arguments.Arguments, ct).ConfigureAwait(false);
         }
         catch (Exception error)
         {
-            return Task.FromResult(new ToolResult(false, $"启动失败：{error.Message}"));
+            return new ToolResult(false, $"启动失败：{error.Message}");
         }
+    }
+
+    /// <summary>
+/// The port a caller already asked for, if the arguments carry one.
+/// <para>
+/// This is what makes an Electron application reachable whatever it is called. The names
+/// <see cref="CdpRegistry.IsChromiumFamily"/> recognises are only the ones that can be told on sight; an
+/// Electron app is named after its product — 网易云音乐 is <c>cloudmusic.exe</c>, and nothing in that string
+/// says Chromium — so without reading the flag here that application's DOM stays unreachable however many
+/// names are added to a list. It is also the honest way to reach an application the user chose to start with
+/// the flag themselves.
+/// </para>
+/// </summary>
+internal static int? RequestedPort(string? arguments)
+{
+    if (string.IsNullOrWhiteSpace(arguments))
+    {
+        return null;
+    }
+
+    // Both spellings exist in the wild: --remote-debugging-port=9222 and --remote-debugging-port 9222.
+    var match = System.Text.RegularExpressions.Regex.Match(
+        arguments,
+        @"--remote-debugging-port[= ](\d{1,5})",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    return match.Success && int.TryParse(match.Groups[1].Value, out var port) && port is > 0 and <= 65535
+        ? port
+        : null;
+}
+
+/// <summary>
+    /// Starts the program and, for a browser, waits for the port it was asked to open.
+    /// <para>
+    /// The wait is bounded and its failure is reported, because the likeliest reason is not a bug: a
+    /// single-instance application that was already running takes the new command line and never opens a port.
+    /// Saying so is the difference between "this application has no controls" and "close it and start it
+    /// through me".
+    /// </para>
+    /// </summary>
+    private async Task<ToolResult> LaunchAsync(
+        string target,
+        (string Path, string? Note) resolved,
+        string? arguments,
+        CancellationToken ct)
+    {
+        var info = new ProcessStartInfo(resolved.Path)
+        {
+            UseShellExecute = true,
+        };
+
+        if (!string.IsNullOrEmpty(arguments))
+        {
+            info.Arguments = arguments;
+        }
+
+        // A port the caller already asked for is used as it stands. Adding a second one would be a duplicate
+        // flag, and which of the two an application honours is not worth guessing.
+        var asked = RequestedPort(arguments);
+        var port = asked ?? 0;
+        var chromium = asked is not null || CdpRegistry.IsChromiumFamily(resolved.Path);
+
+        if (chromium && asked is null)
+        {
+            port = CdpRegistry.FreePort();
+            info.Arguments = string.IsNullOrEmpty(info.Arguments)
+                ? $"--remote-debugging-port={port}"
+                : $"{info.Arguments} --remote-debugging-port={port}";
+        }
+
+        using var started = Process.Start(info);
+
+        if (started is null)
+        {
+            return new ToolResult(false, $"启动 '{target}' 失败：系统没有返回进程");
+        }
+
+        if (!chromium)
+        {
+            return BuildResult(target, resolved.Note, started.Id, chromium: false, opened: false, port: 0);
+        }
+
+        // Recorded only once the port has actually answered: registering the intention would leave a window
+        // whose DOM is claimed to be readable and is not.
+        var opened = _ports is not null
+            && await _ports.WaitForPortAsync(started.Id, port, ct).ConfigureAwait(false);
+
+        if (opened)
+        {
+            _ports!.Register(started.Id, port);
+        }
+
+        return BuildResult(target, resolved.Note, started.Id, chromium: true, opened, port);
+    }
+
+    /// <summary>
+    /// What the launch says, including whether the DOM ended up reachable.
+    /// <para>
+    /// Pure so the three outcomes can be asserted without starting anything: the port opened, the flag was
+    /// handed to an already-running single-instance process, or this is not a browser at all and the flag was
+    /// never attempted. Only the middle one is a problem, and it says what to do about it.
+    /// </para>
+    /// </summary>
+    public static ToolResult BuildResult(
+        string target,
+        string? note,
+        int processId,
+        bool chromium,
+        bool opened,
+        int port)
+    {
+        var head = $"已启动 '{target}'"
+            + (note is null ? string.Empty : $"（{note}）")
+            + $"（pid {processId}）";
+
+        if (!chromium)
+        {
+            return new ToolResult(true, $"{head}：接下来用 desktop_observe 找它的窗口");
+        }
+
+        return opened
+            ? new ToolResult(
+                true,
+                $"{head}，页面调试端口 {port} 已打开：它的按钮、链接、输入框会作为控件出现在 desktop_observe 里，"
+                + "直接按名字用 elementId 点即可，不需要窗口在前台。")
+            : new ToolResult(
+                true,
+                $"{head}，已请求 --remote-debugging-port={port} 但端口没有打开——最常见的原因是**这个程序是单实例的、"
+                + "已经在运行**：新命令行被交给了已在运行的进程，它不会新开端口。此时它的控件仍要走坐标路径；"
+                + "把它关掉，再用 desktop_launch 启动，页面控件就会出现。");
     }
 
     /// <summary>

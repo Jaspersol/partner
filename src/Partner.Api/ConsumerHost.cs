@@ -308,7 +308,10 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             }
 
             tools.Register(new DesktopActTool(_context.Desktop, policy));
-            tools.Register(new DesktopLaunchTool());
+            // The automation's own launch tool, so the port it opens is one the observation can read: a
+            // browser launched without that link gets the flag and nothing else, and its buttons stay invisible
+            // for the rest of the process's life — which looks exactly like an app with no controls.
+            tools.Register(_context.Desktop.LaunchTool ?? new DesktopLaunchTool());
             tools.Register(new DesktopExecTool());
             tools.Register(new DesktopClipboardGetTool());
             tools.Register(new DesktopClipboardSetTool());

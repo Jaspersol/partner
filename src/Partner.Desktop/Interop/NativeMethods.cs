@@ -39,6 +39,18 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();
 
+    /// <summary>
+    /// A window's client area in screen coordinates — where its content starts.
+    /// <para>
+    /// The frame's top-left is not this: a window's content sits inside its borders and title bar, by an amount
+    /// that varies with the theme and the DPI. A page reports its own elements relative to the viewport, which
+    /// begins at the client area, so this is the one number that can convert between the two.
+    /// </para>
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ClientToScreen(nint hWnd, ref Point point);
+
     /// <summary>The window a point is delivered to, by the same hit-test the mouse uses.</summary>
     [DllImport("user32.dll")]
     internal static extern nint WindowFromPoint(Point point);

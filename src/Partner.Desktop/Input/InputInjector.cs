@@ -19,6 +19,43 @@ public enum ActionKind
 
     /// <summary>Press, move, release — a real drag, not a teleport.</summary>
     Drag,
+
+    /// <summary>
+    /// Press and release twice, so Windows sees two clicks in time.
+    /// <para>
+    /// Distinct from <see cref="LeftClick"/> because "two clicks in time" is what Windows assembles a double
+    /// click from, and a folder that opens on the second press does not see one click sent twice.
+    /// </para>
+    /// </summary>
+    DoubleClick,
+
+    /// <summary>
+    /// Scroll a control into view and stop there.
+    /// <para>
+    /// Its own kind rather than a scroll with a guess at an amount: how far something needs to scroll depends on
+    /// where it is, and the only number that works is the one the control itself reports.
+    /// </para>
+    /// </summary>
+    ScrollIntoView,
+}
+
+/// <summary>
+/// A pointer position inside a control, as a fraction of its own size.
+/// <para>
+/// Fractions rather than pixels because the caller knows the control's rectangle and not the geometry: "the
+/// right-hand quarter" is expressible, and "x = 431" is not something a model works out reliably. Both ends are
+/// inside the control by construction, so an offset can never become a click somewhere else.
+/// </para>
+/// </summary>
+public sealed record RelativePoint(double X, double Y)
+{
+    /// <summary>The control's centre — what an unspecified offset means.</summary>
+    public static RelativePoint Centre { get; } = new(0.5, 0.5);
+
+    /// <summary>Whether both axes are within the control.</summary>
+    public bool IsInside => X is >= 0 and <= 1 && Y is >= 0 and <= 1;
+
+    public override string ToString() => $"({X:0.###},{Y:0.###}) of the control";
 }
 
 public sealed record ActionParams
@@ -26,6 +63,15 @@ public sealed record ActionParams
     public int X { get; init; }
 
     public int Y { get; init; }
+
+    /// <summary>
+    /// Where inside a named control to act, as a fraction of its size. Null means its centre, which is what an
+    /// unspecified offset has to mean — "somewhere in this control", never a corner of the screen.
+    /// </summary>
+    public RelativePoint? Within { get; init; }
+
+    /// <summary>How many clicks: 1 or 2. Only meaningful for <see cref="ActionKind.LeftClick"/>.</summary>
+    public int ClickCount { get; init; } = 1;
 
     /// <summary>
     /// The control this action names, when it names one. Present means "act on that control", which lets the
@@ -39,6 +85,12 @@ public sealed record ActionParams
     /// <summary>Text for <see cref="ActionKind.TypeText"/>.</summary>
     public string? Text { get; init; }
 
+    /// <summary>
+    /// Keys held down around the key being pressed — virtual-key codes, not names. Empty means none, and none
+    /// is a decision rather than an omission.
+    /// </summary>
+    public IReadOnlyList<ushort> Modifiers { get; init; } = Array.Empty<ushort>();
+
     /// <summary>Wheel notches for <see cref="ActionKind.Scroll"/>; positive is up.</summary>
     public int ScrollDelta { get; init; }
 
@@ -48,12 +100,14 @@ public sealed record ActionParams
     public int ToY { get; init; }
 
     public string Describe() => VirtualKey != 0
-        ? $"vk={VirtualKey}"
+        ? $"vk={VirtualKey}{(Modifiers.Count == 0 ? string.Empty : $" + {string.Join("+", Modifiers)}")}"
         : !string.IsNullOrEmpty(Text)
             ? $"text={Text.Length} chars"
             : ScrollDelta != 0
                 ? $"scroll={ScrollDelta}"
-                : $"({X},{Y})";
+                : ClickCount == 2
+                    ? $"double click ({X},{Y})"
+                    : $"({X},{Y})";
 }
 
 public sealed record InjectionResult(bool Ok, uint ErrorCode, string Detail);
@@ -208,17 +262,103 @@ public sealed class InputInjector
         return true;
     }
 
-    public InjectionResult MovePointer(int x, int y) => Positional(x, y, 0, $"move to ({x},{y})");
+    public InjectionResult MovePointer(int x, int y) => Positional(x, y, 0, 0, $"move to ({x},{y})");
 
     public InjectionResult LeftClick(int x, int y) =>
-        Positional(x, y, NativeMethods.MouseeventfLeftdown | NativeMethods.MouseeventfLeftup, $"left click at ({x},{y})");
+        Positional(
+            x, y,
+            NativeMethods.MouseeventfLeftdown, NativeMethods.MouseeventfLeftup,
+            $"left click at ({x},{y})",
+            count: 1);
 
     public InjectionResult RightClick(int x, int y) =>
-        Positional(x, y, NativeMethods.MouseeventfRightdown | NativeMethods.MouseeventfRightup, $"right click at ({x},{y})");
+        Positional(
+            x, y,
+            NativeMethods.MouseeventfRightdown, NativeMethods.MouseeventfRightup,
+            $"right click at ({x},{y})",
+            count: 1);
+
+    /// <summary>A press and release, twice, separated by <see cref="DoubleClickDelayMs"/>.</summary>
+    public InjectionResult DoubleClick(int x, int y) =>
+        Positional(
+            x, y,
+            NativeMethods.MouseeventfLeftdown, NativeMethods.MouseeventfLeftup,
+            $"double click at ({x},{y})",
+            count: 2);
+
+    /// <summary>
+    /// The records a click of a given count would send, without sending them.
+    /// <para>
+    /// A double click is two complete down/up pairs separated by a pause, not one down/up/down/up: Windows
+    /// assembles a double click from two <i>clicks</i> in time, and a control that opens on the second press
+    /// — a folder, a link — does not see a four-event burst as one.
+    /// </para>
+    /// <para>
+    /// The pause is where the hardware's own setting would normally decide, which is exactly the wrong place to
+    /// look: two clicks one millisecond apart may register as four, and the model has no way to know the
+    /// machine's double-click speed. It is expressed in milliseconds and named here so both sides agree.
+    /// </para>
+    /// </summary>
+    internal bool TryBuildClick(
+        int x,
+        int y,
+        uint downFlag,
+        uint upFlag,
+        int count,
+        out NativeMethods.Input[] inputs,
+        out string? error)
+    {
+        if (!TryPosition(x, y, out var nx, out var ny, out error))
+        {
+            inputs = [];
+            return false;
+        }
+
+        if (count is < 1 or > 2)
+        {
+            inputs = [];
+            error = $"click count {count} is not supported (1 = single, 2 = double)";
+            return false;
+        }
+
+        var click = new List<NativeMethods.Input>
+        {
+            MouseAt(nx, ny, PositionalFlags | downFlag),
+            MouseAt(nx, ny, PositionalFlags | upFlag),
+        };
+
+        if (count == 2)
+        {
+            click.Add(KeyboardDelay());
+            click.Add(MouseAt(nx, ny, PositionalFlags | downFlag));
+            click.Add(MouseAt(nx, ny, PositionalFlags | upFlag));
+        }
+
+        inputs = click.ToArray();
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// The gap between the two clicks of a double click, in <see cref="NativeMethods.InputKeyboard"/>'s own
+    /// time unit (milliseconds). Comfortably inside the double-click time Windows recognises and comfortably
+    /// outside the interval at which clicks start being read as separate presses.
+    /// </summary>
+    internal const int DoubleClickDelayMs = 60;
+
+    /// <summary>A do-nothing keyboard event that exists only to spend time.</summary>
+    private static NativeMethods.Input KeyboardDelay() => new()
+    {
+        Type = NativeMethods.InputKeyboard,
+        Union = new NativeMethods.InputUnion
+        {
+            Keyboard = new NativeMethods.KeyboardInput { ScanCode = 0xFFFF },
+        },
+    };
 
     /// <summary>One positional event, refused before anything is injected when the point is off-screen.</summary>
-    private InjectionResult Positional(int x, int y, uint buttonFlags, string detail) =>
-        TryBuildPointer(x, y, buttonFlags, out var inputs, out var error)
+    private InjectionResult Positional(int x, int y, uint downFlag, uint upFlag, string detail, int count = 1) =>
+        TryBuildClick(x, y, downFlag, upFlag, count, out var inputs, out var error)
             ? Send(inputs, detail)
             : new InjectionResult(false, 0, error!);
 
@@ -387,39 +527,119 @@ public sealed class InputInjector
         },
     };
 
-    public InjectionResult KeyPress(ushort virtualKey)
+    public InjectionResult KeyPress(ushort virtualKey, IReadOnlyList<ushort>? modifiers = null)
     {
-        if (virtualKey == 0)
+        if (!TryBuildKeyPress(virtualKey, modifiers, out var inputs, out var error))
         {
-            return new InjectionResult(false, 0, "no virtual key");
+            return new InjectionResult(false, 0, error!);
         }
 
-        var inputs = new[]
-        {
-            new NativeMethods.Input
-            {
-                Type = NativeMethods.InputKeyboard,
-                Union = new NativeMethods.InputUnion
-                {
-                    Keyboard = new NativeMethods.KeyboardInput { VirtualKey = virtualKey },
-                },
-            },
-            new NativeMethods.Input
-            {
-                Type = NativeMethods.InputKeyboard,
-                Union = new NativeMethods.InputUnion
-                {
-                    Keyboard = new NativeMethods.KeyboardInput
-                    {
-                        VirtualKey = virtualKey,
-                        Flags = NativeMethods.KeyeventfKeyup,
-                    },
-                },
-            },
-        };
-
-        return Send(inputs, $"key {virtualKey}");
+        var held = modifiers is { Count: > 0 } ? $" with {string.Join("+", modifiers.Select(m => ModifierName(m)))}" : string.Empty;
+        return Send(inputs, $"key {virtualKey}{held}");
     }
+
+    /// <summary>
+    /// The records a key press would send, without sending them.
+    /// <para>
+    /// A modifier is not part of the key: Windows delivers "Ctrl+C" as C pressed <i>while Ctrl is down</i>,
+    /// and a single event carrying both virtual keys is a chord the target will not recognise. So a modifier
+    /// is pressed first and released last, around the key — and if anything is dropped mid-batch, SendInput's
+    /// count says so and the caller sees a failure rather than a Ctrl stuck down for the rest of the session.
+    /// </para>
+    /// <para>
+    /// Holding a modifier while pressing the same modifier is refused: it sends a key down that nothing will
+    /// ever release in the intended order, and no chord means it. Holding one while pressing another is
+    /// ordinary — Ctrl+Shift+V is a chord people use.
+    /// </para>
+    /// </summary>
+    internal bool TryBuildKeyPress(
+        ushort virtualKey,
+        IReadOnlyList<ushort>? modifiers,
+        out NativeMethods.Input[] inputs,
+        out string? error)
+    {
+        inputs = [];
+
+        if (virtualKey == 0)
+        {
+            error = "no virtual key";
+            return false;
+        }
+
+        var held = modifiers ?? Array.Empty<ushort>();
+
+        if (held.Contains(virtualKey))
+        {
+            error = $"virtual key {virtualKey} is already held as a modifier";
+            return false;
+        }
+
+        var batch = new List<NativeMethods.Input>(held.Count * 2 + 2);
+
+        foreach (var modifier in held)
+        {
+            batch.Add(Key(modifier, keyUp: false));
+        }
+
+        batch.Add(Key(virtualKey, keyUp: false));
+        batch.Add(Key(virtualKey, keyUp: true));
+
+        // Released in reverse, so nested holds unwind the way they were stacked.
+        for (var index = held.Count - 1; index >= 0; index--)
+        {
+            batch.Add(Key(held[index], keyUp: true));
+        }
+
+        inputs = batch.ToArray();
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a virtual key is one of the four modifiers — the keys that mean "the next key is different".
+    /// </summary>
+    internal static bool IsModifier(ushort virtualKey) => virtualKey is VirtualShift or VirtualControl or VirtualMenu or VirtualWin;
+
+    /// <summary>
+    /// The virtual keys that mean "the next key is different", so a chord can be expressed.
+    /// </summary>
+    public const ushort VirtualShift = 0x10;
+    public const ushort VirtualControl = 0x11;
+    public const ushort VirtualMenu = 0x12;
+    public const ushort VirtualWin = 0x5B;
+
+    /// <summary>The names a model writes, mapped to the keys they mean.</summary>
+    public static IReadOnlyDictionary<string, ushort> ModifierKeys { get; } = new Dictionary<string, ushort>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["shift"] = VirtualShift,
+        ["ctrl"] = VirtualControl,
+        ["control"] = VirtualControl,
+        ["alt"] = VirtualMenu,
+        ["menu"] = VirtualMenu,
+        ["win"] = VirtualWin,
+    };
+
+    private static string ModifierName(ushort virtualKey) => virtualKey switch
+    {
+        VirtualShift => "shift",
+        VirtualControl => "ctrl",
+        VirtualMenu => "alt",
+        VirtualWin => "win",
+        _ => virtualKey.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
+
+    private static NativeMethods.Input Key(ushort virtualKey, bool keyUp) => new()
+    {
+        Type = NativeMethods.InputKeyboard,
+        Union = new NativeMethods.InputUnion
+        {
+            Keyboard = new NativeMethods.KeyboardInput
+            {
+                VirtualKey = virtualKey,
+                Flags = keyUp ? NativeMethods.KeyeventfKeyup : 0,
+            },
+        },
+    };
 
     /// <summary>Size of one <c>INPUT</c> record as Windows expects it — asserted by the tests.</summary>
     public static int InputSize => Marshal.SizeOf<NativeMethods.Input>();

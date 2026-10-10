@@ -55,10 +55,16 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
     public ToolSpec Spec { get; } = new(
         "desktop_observe",
         "看当前桌面：可见窗口（entityId、标题、进程、矩形）以及窗口内的可交互控件（elementId、名称、类型、点击点）。"
-        + "动作只能针对这里返回的 entityId / elementId。若你要操作的程序不在列表里，它就没在运行：先用 desktop_launch 打开它，不要对别的窗口动手。",
-        """{"type":"object","properties":{},"additionalProperties":false}""");
+        + "动作只能针对这里返回的 entityId / elementId。若你要操作的程序不在列表里，它就没在运行：先用 desktop_launch 打开它，不要对别的窗口动手。"
+        + "只想看一个窗口时传 entityId 或 titleContains——不传就是整桌面，每个窗口的每个控件都在里面，又慢又贵。",
+        """
+        {"type":"object","properties":{
+          "entityId":{"type":"string","description":"只看这一个窗口（来自上一次观察）"},
+          "titleContains":{"type":"string","description":"只看标题包含这个文字的窗口"}
+        },"additionalProperties":false}
+        """);
 
-    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
         DesktopObservation observation;
         try
@@ -67,11 +73,42 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         }
         catch (Exception error)
         {
-            return Task.FromResult(new ToolResult(false, $"观察失败：{error.Message}"));
+            return new ToolResult(false, $"观察失败：{error.Message}");
         }
 
-        var entities = observation.Entities
+        var filter = DesktopObserveFilter.Parse(argumentsJson);
+
+        // A browser page's own controls, for the windows that have one. Read after the window walk because it
+        // is a network round trip on top of it — and its absence changes nothing, since those windows were
+        // already reachable by coordinate.
+        var domElements = 0;
+
+        try
+        {
+            domElements = await automation.AddDomElementsAsync(filter.EntityId, ct).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            domElements = 0;
+        }
+
+        // Narrowed before serializing, not after: the point of the filter is that a nine-window desktop does
+        // not have to arrive as nine windows' worth of controls in every turn.
+        var visible = observation.Entities
             .Where(entity => policy.Allows(entity.Label))
+            .Where(filter.Matches)
+            .ToList();
+
+        if (visible.Count == 0 && !filter.IsEmpty)
+        {
+            return new ToolResult(
+                false,
+                $"没有窗口匹配这个筛选（{filter.Describe()}）：本次观察到 "
+                + $"{string.Join("；", observation.Entities.Take(6).Select(entity => $"'{entity.Label}'"))}"
+                + (observation.Entities.Count > 6 ? $"；…共 {observation.Entities.Count} 个" : string.Empty));
+        }
+
+        var entities = visible
             .Select(entity => new
             {
                 entityId = entity.EntityId,
@@ -79,6 +116,9 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                 process = entity.Value,
                 foreground = entity.IsForeground,
                 minimized = entity.IsMinimized ? true : (bool?)null,
+                // A window cut off mid-walk has not been fully seen, and saying so is the difference between
+                // "there is no such control" and "we stopped looking".
+                elementsIncomplete = entity.ElementsTruncated ? true : (bool?)null,
                 rect = new
                 {
                     x = entity.Rect.X,
@@ -94,16 +134,66 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                         name = element.Name,
                         role = element.Role,
                         value = element.Value ?? null,
+                        // Its click point is outside the window, so it is not somewhere to click yet — it is
+                        // somewhere to scroll to first.
+                        offscreen = element.IsOffscreen ? true : (bool?)null,
                         clickAt = new { x = element.Centre.X, y = element.Centre.Y },
                     })
                     .ToList(),
             })
             .ToList();
 
-        return Task.FromResult(new ToolResult(
+        return new ToolResult(
             true,
-            JsonSerializer.Serialize(new { obsId = observation.ObsId, count = entities.Count, entities }, Json)));
+            JsonSerializer.Serialize(new { obsId = observation.ObsId, count = entities.Count, entities }, Json)
+            + (domElements > 0
+                ? $"\n（其中 {domElements} 个控件来自浏览器页面的 DOM：直接用 elementId 按名字点就行，"
+                    + "不需要窗口在前台，也不受窗口被别的程序挡住影响。）"
+                : string.Empty));
     }
+
+    /// <summary>
+    /// Which windows this observation is about.
+    /// <para>
+    /// A filter is a statement about what the model is looking for, so one that matches nothing is answered
+    /// with what <i>is</i> on screen rather than an empty list — an empty list reads as "the desktop is
+    /// empty", which sends the model off launching programs that are already running.
+    /// </para>
+    /// </summary>
+    public sealed record DesktopObserveFilter(string? EntityId, string? TitleContains)
+    {
+        public bool IsEmpty => EntityId is not { Length: > 0 } && TitleContains is not { Length: > 0 };
+
+        /// <summary>What was asked for, for the refusal that says nothing matched it.</summary>
+        public string Describe() =>
+            (EntityId is { Length: > 0 } ? $"entityId={EntityId}" : string.Empty) +
+            (TitleContains is { Length: > 0 } ? $"标题包含'{TitleContains}'" : string.Empty);
+
+        public bool Matches(UiEntity entity) =>
+            (EntityId is not { Length: > 0 } || string.Equals(EntityId, entity.EntityId, StringComparison.Ordinal))
+            && (TitleContains is not { Length: > 0 }
+                || (entity.Label ?? string.Empty).Contains(TitleContains, StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>A malformed call widens rather than narrows: guessing a filter would hide windows.</summary>
+        /// <remarks>
+        /// Parsed with the same options the answer is written with, so <c>entityId</c> here means the same
+        /// <c>entityId</c> that comes back out — a filter silently matching nothing is worse than no filter.
+        /// </remarks>
+        public static DesktopObserveFilter Parse(string argumentsJson)
+        {
+            try
+            {
+                var arguments = JsonSerializer.Deserialize<ObserveArguments>(argumentsJson, Json);
+                return new DesktopObserveFilter(arguments?.EntityId, arguments?.TitleContains);
+            }
+            catch (JsonException)
+            {
+                return new DesktopObserveFilter(null, null);
+            }
+        }
+    }
+
+    private sealed record ObserveArguments(string? EntityId, string? TitleContains);
 }
 
 /// <summary>
@@ -126,28 +216,35 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     public ToolSpec Spec { get; } = new(
         "desktop_act",
         "对 desktop_observe 返回的窗口或控件执行一次动作。kind 取 focus / movePointer / leftClick / rightClick / "
-        + "keyPress / typeText / scroll / drag。给了 elementId 就按控件操作（leftClick / focus 优先走 UI Automation 的 "
-        + "Invoke / Select / Toggle / SetFocus，**不需要该窗口在前台**；控件没有对应 pattern 时才点它的中心点），不必再给坐标；"
+        + "doubleClick / keyPress / typeText / scroll / scrollIntoView / drag。"
+        + "给了 elementId 就按控件操作（leftClick / focus / scrollIntoView 优先走 UI Automation 的 "
+        + "Invoke / Select / Toggle / SetFocus / ScrollItem，**不需要该窗口在前台**；控件没有对应 pattern 时才点它的中心点），不必再给坐标；"
         + "否则用 x/y——"
         + "**屏幕坐标**（desktop_observe 的 clickAt 就是屏幕坐标，可直接用），且必须落在虚拟桌面范围内。"
         + "x/y 落在哪个已观察窗口里，就作用于那个窗口；跨多个窗口有歧义时会拒绝并列出候选，此时要显式传 entityId。"
         + "点还必须真的能落到目标窗口上：若该点被别的窗口挡住（包括本应用自己的窗口），会拒绝并报出挡住的窗口——"
         + "先对目标 focus 把它带到前台，再点。"
-        + "typeText 需要 text，keyPress 需要 virtualKey（该窗口须已在前台，否则先 focus），"
-        + "scroll 需要 scrollDelta（**格数**：正数向上滚，负数向下滚，一次 3 格比较合适），drag 需要 x/y + toX/toY。"
+        + "offset 是控件内部的相对位置（0..1，左上角为 0,0）：拆分按钮的箭头这类「一个控件里两个作用」才需要它，"
+        + "不传就是控件中心。"
+        + "typeText 需要 text；keyPress 需要 virtualKey，可选 modifiers（[\"ctrl\"]、[\"ctrl\",\"shift\"] 这样的组合键）；"
+        + "scroll 需要 scrollDelta（**格数**：正数向上滚，负数向下滚，一次 3 格比较合适）；"
+        + "scrollIntoView 只需 elementId（由控件自己报距离，不用猜滚多少）；drag 需要 x/y + toX/toY。"
         + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id；给了 elementId 或 x/y 时可省略"},
           "elementId":{"type":"string","description":"控件 id，来自 desktop_observe"},
-          "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","KeyPress","TypeText","Scroll","Drag"]},
+          "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","DoubleClick","KeyPress","TypeText","Scroll","ScrollIntoView","Drag"]},
           "x":{"type":"integer","description":"屏幕坐标 x"},
           "y":{"type":"integer","description":"屏幕坐标 y"},
           "toX":{"type":"integer","description":"拖拽终点屏幕坐标 x"},
           "toY":{"type":"integer","description":"拖拽终点屏幕坐标 y"},
           "virtualKey":{"type":"integer"},
           "text":{"type":"string"},
-          "scrollDelta":{"type":"integer","description":"滚轮格数：正数向上，负数向下，一次 3 格比较合适"}
+          "modifiers":{"type":"array","items":{"type":"string","enum":["shift","ctrl","alt","win"]},"description":"按住不放的修饰键，如 [\"ctrl\"]"},
+          "scrollDelta":{"type":"integer","description":"滚轮格数：正数向上，负数向下，一次 3 格比较合适"},
+          "offset":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"description":"控件内部的相对位置 0..1，不传就是控件中心"},
+          "clickCount":{"type":"integer","enum":[1,2],"description":"1 = 单击，2 = 双击（仅 leftClick）"}
         },"required":["kind"],"additionalProperties":false}
         """);
 
@@ -221,6 +318,19 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             return new ToolResult(false, stale);
         }
 
+        // The page's own controls, re-read for the same reason the UI Automation tree was: the element the
+        // model named is a marker in a document that may have re-rendered, and a stale marker is reported by
+        // the act rather than resolved to whatever now sits at that index.
+        try
+        {
+            await automation.AddDomElementsAsync(entityId, ct).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // A browser that stopped answering leaves the previous answer in place, which is what the re-check
+            // above will then refuse against — a stale control, refused rather than clicked.
+        }
+
         var target = fresh.Find(entityId)!;
 
         if (seenElement is not null && RevalidateElement(seenElement, fresh) is { } staleElement)
@@ -235,22 +345,39 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         var drift = DescribeDrift(seenWindow, target);
 
         // A named control carries its own click point: the model should not have to do geometry, and the point
-        // is inside the window by construction. Otherwise the point is the model's own screen coordinate —
-        // absent when it did not give one, which the guard treats as a malformed call rather than (0,0).
-        var resolved = element?.Centre ?? point;
+        // is inside the window by construction. An offset moves it within the control — the only case where
+        // "inside" is not enough, because a split button's arrow and its text are one element.
+        var resolved = element is null
+            ? point
+            : Within(element, arguments.Offset);
 
         if (Guard(kind, target, resolved, arguments) is { } blocked)
         {
             return new ToolResult(false, blocked);
         }
 
+        // A control that is below the fold has a click point outside the window, so every containment check
+        // would either refuse it for the wrong reason or, worse, pass once the window is tall enough. Scrolling
+        // it into view is the action that means "make this reachable", and the control reports the distance.
+        if (element is { IsOffscreen: true }
+            && kind is not (ActionKind.ScrollIntoView or ActionKind.Focus))
+        {
+            return new ToolResult(
+                false,
+                $"'{element.Name}' [{element.Role}] 不在可见区域（点击点 ({element.Centre.X},{element.Centre.Y}) 在窗口外）："
+                + $"先 desktop_act kind=scrollIntoView elementId={element.ElementId}，滚进视野后再操作");
+        }
+
         var parameters = new ActionParams
         {
             X = resolved?.X ?? 0,
             Y = resolved?.Y ?? 0,
+            Within = arguments.Offset is { } offset && element is not null ? offset : null,
+            ClickCount = arguments.ClickCount ?? 1,
             ElementId = seenElement?.ElementId,
             VirtualKey = arguments.VirtualKey ?? 0,
             Text = arguments.Text,
+            Modifiers = Modifiers(arguments.Modifiers),
             ScrollDelta = arguments.ScrollDelta ?? 0,
             ToX = arguments.ToX ?? 0,
             ToY = arguments.ToY ?? 0,
@@ -358,12 +485,17 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
     {
         // A minimized window's rect is a 160×28 stub at -32000,-32000, so a point "inside" it passes every
         // containment check and still lands in the void. Focus first — that also restores it.
-        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll or ActionKind.Drag
+        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll
+            or ActionKind.Drag or ActionKind.DoubleClick
             when target.IsMinimized =>
             $"'{target.Label}' 已最小化（矩形是 -32000 处的占位值）：先对它执行 focus 还原，再操作",
 
-        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll when point is null =>
+        ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll
+            or ActionKind.DoubleClick when point is null =>
             $"{kind} 需要 elementId 或 x/y（屏幕坐标）",
+
+        ActionKind.ScrollIntoView when arguments.ElementId is not { Length: > 0 } =>
+            "scrollIntoView 需要 elementId：滚动到某个控件，由控件自己报距离，不需要猜滚多少",
 
         ActionKind.Drag when point is null || arguments.ToX is null || arguments.ToY is null =>
             "drag 需要 x/y（起点）+ toX/toY（终点），都是屏幕坐标",
@@ -372,6 +504,7 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             $"'{target.Label}' 不在前台，输入会打到别的窗口：先对它执行 focus",
 
         ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll
+            or ActionKind.DoubleClick
             when !target.Rect.Contains(point!.Value.X, point.Value.Y) =>
             $"({point!.Value.X},{point.Value.Y}) 不在 '{target.Label}' 的矩形内：坐标是屏幕坐标，会点到别处",
 
@@ -383,8 +516,62 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         ActionKind.TypeText when string.IsNullOrEmpty(arguments.Text) => "typeText 需要 text",
         ActionKind.Scroll when arguments.ScrollDelta is null or 0 => "scroll 需要 scrollDelta",
 
+        ActionKind.LeftClick or ActionKind.DoubleClick
+            when arguments.ClickCount is { } count && count is not (1 or 2) =>
+            $"clickCount 只能是 1（单击）或 2（双击），收到 {count}",
+
+        _ when arguments.Offset is { } offset && !offset.IsInside =>
+            $"offset ({offset.X:0.###},{offset.Y:0.###}) 不在 0..1 之间：它是控件内部的相对位置，超出就不是这个控件了",
+
+        _ when UnknownModifiers(arguments.Modifiers) is { Count: > 0 } unknown =>
+            $"修饰键只能是 {string.Join("/", InputInjector.ModifierKeys.Keys)}，不认识：{string.Join("、", unknown)}",
+
         _ => null,
     };
+
+    /// <summary>
+    /// Where inside a control to click, given as a fraction of its size.
+    /// <para>
+    /// Both ends are inside the control by construction — a fraction below 0 or above 1 is not clamped but
+    /// refused by the guard, because a clamped offset is an offset the caller did not ask for, landing
+    /// somewhere they did not name. And the fallback is the centre, never a corner of the screen: "this
+    /// control" with no position in it means the middle of the control.
+    /// </para>
+    /// </summary>
+    public static (int X, int Y) Within(UiElement element, RelativePoint? offset)
+    {
+        var at = offset ?? RelativePoint.Centre;
+        return (
+            element.Rect.X + (int)Math.Round(element.Rect.Width * at.X),
+            element.Rect.Y + (int)Math.Round(element.Rect.Height * at.Y));
+    }
+
+    /// <summary>
+    /// The modifier names a caller wrote, as virtual keys — and the ones that are not modifiers are refused
+    /// rather than passed on.
+    /// <para>
+    /// Silently dropping a misspelt modifier would send a plain "C" and report a Ctrl+C; and a name that is a
+    /// real key ("a") is not a modifier at all, so it must not become "Ctrl held down, then nothing".
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<ushort> Modifiers(IReadOnlyList<string>? names)
+    {
+        if (names is not { Count: > 0 })
+        {
+            return Array.Empty<ushort>();
+        }
+
+        return names
+            .Where(name => InputInjector.ModifierKeys.ContainsKey(name ?? string.Empty))
+            .Select(name => InputInjector.ModifierKeys[name])
+            .ToList();
+    }
+
+    /// <summary>Which of the modifier names a caller wrote are not modifiers.</summary>
+    public static IReadOnlyList<string> UnknownModifiers(IReadOnlyList<string>? names) =>
+        names is not { Count: > 0 }
+            ? Array.Empty<string>()
+            : names.Where(name => !InputInjector.ModifierKeys.ContainsKey(name ?? string.Empty)).ToList();
 
     /// <summary>
     /// Which window a bare point belongs to. An absolute-coordinate click physically goes to whatever is at
@@ -461,7 +648,15 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         var verified = action.PostVerify?.Decision switch
         {
             VerifyDecision.AnyChange => "校验：画面已变化",
-            VerifyDecision.NoChange => "校验：画面无变化（动作已发出，但效果未被确认）",
+
+            // The one sentence an agent cannot act on, so it carries what to do about it. "Nothing changed" is
+            // three different problems — the click missed, the control needs a hover first, or the effect is
+            // somewhere this measurement does not look — and the result says which to try rather than leaving
+            // the next turn to guess.
+            VerifyDecision.NoChange => action.PostVerify?.IntersectedAreaRatio > 0
+                ? "校验：画面有变化但不在目标控件上（点偏了或效果在别处）"
+                : "校验：画面无变化（效果未被确认）· 可以试：先 movePointer 到它再点；或用 scrollIntoView 先滚进视野再点；或重新 desktop_observe 拿新的点击点",
+
             VerifyDecision.Indeterminate => $"校验：无法判断（{action.PostVerify?.Reason}）",
             _ => "校验：未执行",
         };
@@ -484,5 +679,8 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         int? ToY,
         ushort? VirtualKey,
         string? Text,
-        int? ScrollDelta);
+        int? ScrollDelta,
+        IReadOnlyList<string>? Modifiers = null,
+        RelativePoint? Offset = null,
+        int? ClickCount = null);
 }

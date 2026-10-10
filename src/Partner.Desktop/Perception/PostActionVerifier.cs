@@ -64,11 +64,42 @@ public sealed class PostActionVerifier
     /// intersected two different coordinate spaces and made the ratio meaningless. The frame's own rectangle
     /// is what a window-level action means.
     /// </param>
-    public async Task<VerifyResult> VerifyAsync(
+    public Task<VerifyResult> VerifyAsync(
         nint handle,
         PixelRect target,
         CaptureResult? before,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        VerifyCoreAsync(handle, target, screenRegion: null, before, ct);
+
+    /// <summary>
+    /// Judges one region of the window, named in <b>screen</b> coordinates.
+    /// <para>
+    /// This is the honest form for a region that came from an observation, because a screen rectangle is what
+    /// the element list and the model both speak, while the frames are cropped to their own origins.
+    /// </para>
+    /// <para>
+    /// It matters for precision as much as for correctness: the decision is a fraction of the judged region's
+    /// area, so judging a whole window makes a small control's change too small to register. A button that
+    /// changed 1800 pixels reads as no change at all in a 1200×800 window, and the result then says the click
+    /// was not confirmed — the one sentence an agent cannot act on, because it does not know whether to retry
+    /// or to move on.
+    /// </para>
+    /// </summary>
+    public Task<VerifyResult> VerifyScreenRegionAsync(
+        nint handle,
+        PixelRect screenRegion,
+        CaptureResult? before,
+        CancellationToken ct = default,
+        bool screenCaptureOk = false) =>
+        VerifyCoreAsync(handle, target: null, screenRegion, before, ct, screenCaptureOk);
+
+    private async Task<VerifyResult> VerifyCoreAsync(
+        nint handle,
+        PixelRect? target,
+        PixelRect? screenRegion,
+        CaptureResult? before,
+        CancellationToken ct,
+        bool screenCaptureOk = false)
     {
         var watch = Stopwatch.StartNew();
 
@@ -77,12 +108,58 @@ public sealed class PostActionVerifier
             return VerifyResult.Indeterminate("no before frame", watch.Elapsed.TotalMilliseconds);
         }
 
+        // Capturing just the region, when it is safe to, is the difference between a cheap check and the most
+        // expensive call on the action path: PrintWindow renders the whole window through DWM twice per
+        // action, and 99% of what an action changes is a rectangle the size of a control.
+        //
+        // "Safe" means nothing else can be drawn inside the region. A screen BitBlt copies whatever is
+        // actually at those pixels — including a window on top of the target — which would read as a change
+        // that the target never made. So the caller has to say the target is in front (the occlusion guard
+        // already establishes that for a coordinate action), and anything else falls back to the window
+        // capture, which renders the window's own contents regardless of what covers it.
+        if (screenCaptureOk && screenRegion is { } region && before.ScreenRect is { } origin)
+        {
+            var cropped = Crop(before, region.X - origin.X, region.Y - origin.Y, region.Width, region.Height);
+            if (cropped is { } beforeRegion)
+            {
+                var patch = await _capture
+                    .CaptureScreenRegionAsync(region.X, region.Y, region.Width, region.Height, ct)
+                    .ConfigureAwait(false);
+
+                if (patch.Ok)
+                {
+                    // Both frames are now the region itself, so the judged area is all of it.
+                    return Compare(
+                        beforeRegion with { ScreenRect = region },
+                        patch with { ScreenRect = region },
+                        frameRegion: null,
+                        watch);
+                }
+            }
+        }
+
         var after = await _capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false);
         if (!after.Ok)
         {
             return VerifyResult.Indeterminate(
                 $"capture unavailable: {after.Error}", watch.Elapsed.TotalMilliseconds, after.Method);
         }
+
+        return Compare(before, after, Region(target, screenRegion, before.ScreenRect), watch);
+    }
+
+    /// <summary>
+    /// Compares two frames and judges <paramref name="frameRegion"/> of the overlap. Shared by both capture
+    /// strategies so the decision itself is identical however the pixels were obtained.
+    /// </summary>
+    private VerifyResult Compare(
+        CaptureResult before,
+        CaptureResult after,
+        PixelRect? frameRegion,
+        Stopwatch watch)
+    {
+        ArgumentNullException.ThrowIfNull(before);
+        ArgumentNullException.ThrowIfNull(after);
 
         // A window that was restored, moved or resized changes the frame between the two captures — and for a
         // focus that restored it, that change *is* the outcome being asked about. Reporting Indeterminate there
@@ -134,7 +211,11 @@ public sealed class PostActionVerifier
                 VerifyDecision.NoChange, 0, after.Method, "no dirty region", watch.Elapsed.TotalMilliseconds);
         }
 
-        var clipped = target.Intersect(new PixelRect(0, 0, width, height));
+        // Both capture strategies arrive here with the judged region already in frame coordinates: the
+        // window capture maps a screen region through the before-frame's origin, and the region capture
+        // compares two frames that both *are* the region.
+        var judged = frameRegion ?? new PixelRect(0, 0, width, height);
+        var clipped = judged.Intersect(new PixelRect(0, 0, width, height));
         var intersection = dirty.Intersect(clipped);
         var ratio = clipped.Area == 0 ? 0 : (double)intersection.Area / clipped.Area;
 
@@ -144,6 +225,61 @@ public sealed class PostActionVerifier
             : $"dirty region intersects only {ratio:P2} of the target{resizedNote}";
 
         return new VerifyResult(decision, ratio, after.Method, reason, watch.Elapsed.TotalMilliseconds);
+    }
+
+    /// <summary>
+    /// A rectangle cut out of a frame, in the frame's own pixels.
+    /// <para>
+    /// Refused rather than shrunk when the rectangle is not inside the frame: a capture whose pixels do not
+    /// match the region it claims to be is exactly the misalignment that region capture exists to avoid, and
+    /// quietly clamping would hide it.
+    /// </para>
+    /// </summary>
+    internal static CaptureResult? Crop(CaptureResult frame, int x, int y, int width, int height)
+    {
+        if (width <= 0 || height <= 0 || x < 0 || y < 0 || x + width > frame.Width || y + height > frame.Height)
+        {
+            return null;
+        }
+
+        if (x == 0 && y == 0 && width == frame.Width && height == frame.Height)
+        {
+            return frame;
+        }
+
+        var pixels = new byte[width * height * 4];
+        for (var row = 0; row < height; row++)
+        {
+            Array.Copy(
+                frame.Bgra,
+                (((y + row) * frame.Width) + x) * 4,
+                pixels,
+                row * width * 4,
+                width * 4);
+        }
+
+        return frame with { Width = width, Height = height, Bgra = pixels };
+    }
+
+    /// <summary>
+    /// Where a region lands inside a frame. A screen region needs the frame's own origin; a region already
+    /// given in frame coordinates is taken as it is. Null when the region cannot be placed — a capture that
+    /// does not know where on the screen it was taken has no honest way to map a screen coordinate onto it,
+    /// and the caller falls back to judging the whole frame.
+    /// </summary>
+    internal static PixelRect? Region(PixelRect? frameRegion, PixelRect? screenRegion, PixelRect? frameScreenRect)
+    {
+        if (frameRegion is { } given)
+        {
+            return given;
+        }
+
+        if (screenRegion is not { } screen || frameScreenRect is not { } origin)
+        {
+            return null;
+        }
+
+        return new PixelRect(screen.X - origin.X, screen.Y - origin.Y, screen.Width, screen.Height);
     }
 
     /// <summary>

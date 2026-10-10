@@ -1,6 +1,8 @@
 using Partner.Desktop.Capture;
 using Partner.Desktop.Input;
+using Partner.Desktop.Interop;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Tools;
 using Partner.Desktop.Windows;
 
 namespace Partner.Desktop;
@@ -62,7 +64,80 @@ public sealed class DesktopAutomation : IDisposable
     private readonly PostActionVerifier _verifier;
     private readonly TimeProvider _clock;
     private readonly Func<int, int, PointTarget> _hitTest;
+
+    /// <summary>Overridable so the cheap capture path is exercised without a real foreground window.</summary>
+    private readonly Func<nint, bool> _isForeground;
+
+    /// <summary>Overridable alongside <see cref="_isForeground"/>, for the same reason.</summary>
+    private readonly Func<VirtualDesktop> _virtualDesktop;
+
+    /// <summary>
+    /// The DOM side of a Chromium window, and the ports of the ones this agent launched. Null-safe everywhere:
+    /// a window without a debug port simply has no DOM elements, which is the coordinate path's window.
+    /// </summary>
+    private readonly CdpDomSource? _cdp;
+
+    private readonly CdpRegistry? _cdpPorts;
+
+    /// <summary>
+    /// The launch tool, when it shares the registry above. Null means this automation did not open the ports,
+    /// which is a configuration, not a failure.
+    /// </summary>
+    private readonly DesktopLaunchTool? _launch;
+
+    /// <summary>Overridable so the DOM path is exercised without a browser.</summary>
+    private readonly Func<nint, (int X, int Y)> _clientOrigin;
+
+    /// <param name="cdp">The DOM source; omit it to leave Chromium windows on the coordinate path.</param>
+    /// <param name="cdpPorts">Which processes opened a debug port, recorded at launch.</param>
+    public CdpDomSource? Cdp => _cdp;
+
+    public CdpRegistry? CdpPorts => _cdpPorts;
+
+    /// <summary>
+    /// A launch tool wired to the same port registry, or null when this automation did not open the ports.
+    /// <para>
+    /// The tool takes the registry at construction rather than being handed one afterwards: a port is recorded
+    /// by the launch that opened it, and a launch tool that could not write to the registry would produce a
+    /// window whose DOM stays invisible for the rest of the process's life — a failure that looks exactly like
+    /// "this application has no controls".
+    /// </para>
+    /// </summary>
+    public DesktopLaunchTool? LaunchTool => _launch
+        ?? (_cdpPorts is null ? null : new DesktopLaunchTool(startMenuRoots: null, ports: _cdpPorts));
     private readonly List<double> _actionLatenciesMs = new();
+
+    /// <summary>
+    /// The last walk of each window: its numbered elements and the live controls behind them.
+    /// <para>
+    /// Kept so pressing a control by id does not walk the same UI Automation tree twice. The observation the
+    /// action is checked against already re-walks the target window, and that walk is the fresher of the two —
+    /// re-walking inside the act only repeated work that had just been done, at a cross-process RPC per node.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)> _walks = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Windows whose last walk was cut off on a bound, and why. Kept beside <see cref="_walks"/> because it is
+    /// replaced at exactly the same moments — a re-observation is what refreshes both.
+    /// </summary>
+    private readonly Dictionary<string, WalkStopReason> _truncated = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Whether a stop reason means "there may be more controls in this window".
+    /// <para>
+    /// Depth and the per-window control cap are ordinary — every deep tree stops at the depth limit, and a
+    /// control-rich window stops at the cap by design — and reporting those would put a warning on almost every
+    /// window. Being cut off on nodes visited or on time is different: that is the walk running out of budget
+    /// with the tree unfinished, which is exactly where controls disappear.
+    /// </para>
+    /// </summary>
+    internal static WalkStopReason? CutOff(WalkStopReason stopped) => stopped switch
+    {
+        WalkStopReason.Visited or WalkStopReason.Time => stopped,
+        _ => null,
+    };
+
     private DesktopObservation? _lastObservation;
     private int _observationSequence;
 
@@ -72,7 +147,13 @@ public sealed class DesktopAutomation : IDisposable
         TimeSpan? verifyBudget = null,
         TimeProvider? clock = null,
         InputInjector? injector = null,
-        Func<int, int, PointTarget>? hitTest = null)
+        Func<int, int, PointTarget>? hitTest = null,
+        Func<nint, bool>? isForeground = null,
+        Func<VirtualDesktop>? virtualDesktop = null,
+        CdpDomSource? cdp = null,
+        CdpRegistry? cdpPorts = null,
+        Func<nint, (int X, int Y)>? clientOrigin = null,
+        DesktopLaunchTool? desktopLaunch = null)
     {
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
@@ -81,6 +162,26 @@ public sealed class DesktopAutomation : IDisposable
         _leases = new LeaseStore(_ttlPolicy);
         _verifier = new PostActionVerifier(_capture, verifyBudget);
         _hitTest = hitTest ?? HitTest.At;
+
+        // Spelled out rather than inlined: the null-coalescing operator cannot mix a delegate and a lambda
+        // here without the target type being inferred from the wrong side.
+        var foreground = isForeground ?? new Func<nint, bool>(handle => NativeMethods.GetForegroundWindow() == handle);
+        _isForeground = foreground;
+
+        _virtualDesktop = virtualDesktop ?? VirtualDesktop.Current;
+
+        _cdp = cdp;
+        _cdpPorts = cdpPorts;
+        _launch = desktopLaunch;
+
+        // The page reports viewport coordinates; the client area's screen origin is the only thing that turns
+        // them into something a person could have clicked. A negative one means the window could not say where
+        // its content starts, which is a reason not to guess rather than a read failure.
+        _clientOrigin = clientOrigin ?? (handle =>
+        {
+            var origin = new NativeMethods.Point { X = 0, Y = 0 };
+            return NativeMethods.ClientToScreen(handle, ref origin) ? (origin.X, origin.Y) : (X: -1, Y: -1);
+        });
     }
 
     public IScreenCapture Capture => _capture;
@@ -129,6 +230,14 @@ public sealed class DesktopAutomation : IDisposable
         // Elements are read per window and numbered inside this observation: an id is a position in this
         // answer, not a handle that survives a new one — which is exactly what makes a stale element detectable.
         var elements = new List<UiElement>();
+
+        // A full observation walks every window, so every entry is about to be rewritten: dropping the rest
+        // here is what keeps a closed window's live controls from being held for the life of the process.
+        if (elementsFor is null)
+        {
+            _walks.Clear();
+        }
+
         foreach (var window in windows)
         {
             var windowId = window.Handle.ToString("x");
@@ -140,7 +249,25 @@ public sealed class DesktopAutomation : IDisposable
 
             // Numbered by the same helper the picture's marks go through, so an id on a mark and the id in
             // this observation are the same control — not two independent walks that happen to agree today.
-            elements.AddRange(UiaTree.ReadNumbered(window.Handle, windowId));
+            var (numbered, nodes, stopped) = UiaTree.ReadNumberedWithNodes(window.Handle, windowId);
+            elements.AddRange(numbered);
+
+            // The live controls behind them, kept so an action on this window does not have to walk the same
+            // tree again. Only a re-walked window's entry is replaced, so the pair stays the lockstep pair one
+            // walk produced — which is the invariant an element id's meaning rests on.
+            _walks[windowId] = (numbered, nodes);
+
+            // A walk cut off on nodes or time has not seen the whole window, and the model has to be able to
+            // tell that from a window that simply has few controls. Otherwise a control that exists goes
+            // missing with nothing in the answer to say why.
+            if (CutOff(stopped) is { } reason)
+            {
+                _truncated[windowId] = reason;
+            }
+            else
+            {
+                _truncated.Remove(windowId);
+            }
         }
 
         if (elementsFor is not null && _lastObservation is not null)
@@ -156,7 +283,7 @@ public sealed class DesktopAutomation : IDisposable
 
         // Stamped *after* the walk, not before it. Reading the UIA trees of nine windows takes seconds —
         // Chromium needs a moment to publish its tree, one window hits the 40-element cap, and each window has
-        // its own timeout — while the window enumeration is a few milliseconds. A lease stamped before the walk
+        // its own node and time budget — while the window enumeration is a few milliseconds. A lease stamped before the walk
         // begins its life already spent: TTL minus the observation, which for the 15 s base and a measured
         // 10.2 s observation left about five seconds, and any slower round expired the lease before the model
         // could act on it. That is the "Expired" refusal arriving on a lease the caller had just been issued.
@@ -180,6 +307,8 @@ public sealed class DesktopAutomation : IDisposable
                 IsMinimized = w.IsMinimized,
                 Rect = new PixelRect(w.X, w.Y, w.Width, w.Height),
                 Confidence = 1.0,
+                ElementsTruncated = _truncated.TryGetValue(w.Handle.ToString("x"), out var cutOff),
+                ElementsTruncation = _truncated.GetValueOrDefault(w.Handle.ToString("x")),
                 IdentityDigest = DesktopObservation.Identity(
                     w.Handle.ToString("x"), w.ProcessId, w.ProcessStartTicks, w.ProcessName),
                 LayoutDigest = DesktopObservation.Layout(new PixelRect(w.X, w.Y, w.Width, w.Height)),
@@ -272,7 +401,14 @@ public sealed class DesktopAutomation : IDisposable
         // it: that reaches the control itself, needs no foreground window, and does not depend on its screen
         // position being unchanged since the observation. Everything else — and every control with no
         // suitable pattern — goes through injected input, which is what a person at the keyboard would do.
-        var injection = ElementPattern(handle, entityId, kind, parameters);
+        //
+        // A page's own control comes first, because a Chromium window's controls are not UI Automation
+        // controls at all: there, "the control" is a DOM node and the way to press it is to press that node.
+        var injection = parameters.ElementId is { Length: > 0 } domElementId
+            ? await TryActDomAsync(handle, entityId, domElementId, kind, ct).ConfigureAwait(false) is { } dom
+                ? new InjectionResult(dom.Ok, 0, $"{dom.Method}：{dom.Detail}")
+                : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId))
+            : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId));
         var raised = false;
 
         if (injection is null)
@@ -298,10 +434,7 @@ public sealed class DesktopAutomation : IDisposable
             injection = Inject(kind, handle, parameters);
         }
 
-        var verify = await _verifier
-            // The target is the frame's own rectangle: the verifier compares frames, whose origin is the
-            // window's top-left, and a screen rectangle there would intersect a different coordinate space.
-            .VerifyAsync(handle, new PixelRect(0, 0, before.Width, before.Height), before, ct)
+        var verify = await VerifyAsync(handle, injection, parameters, before, observation, ct)
             .ConfigureAwait(false);
 
         watch.Stop();
@@ -323,19 +456,230 @@ public sealed class DesktopAutomation : IDisposable
     }
 
     /// <summary>
-    /// Acts on a named control through its UI Automation pattern, or null when that does not apply — the
+    /// Judges the action against the part of the window it could plausibly have changed.
+    /// <para>
+    /// A control the model named is judged by <i>that control's rectangle</i>, not the window's. The decision
+    /// is a fraction of the judged area, so a whole-window target makes a small control's change fall under
+    /// the threshold: a button that repainted 60×30 in a 1200×800 window changed 1800 pixels against a
+    /// 4800-pixel line, and the click that worked came back as "画面无变化（效果未被确认）".
+    /// </para>
+    /// <para>
+    /// Two cases fall back to the whole frame, deliberately. A UI Automation pattern is not local — invoking a
+    /// menu button opens a menu anywhere in the window, and judging only the button would report the menu as
+    /// "no change". And a keystroke or a typed string has no rectangle of its own at all: what it changed is
+    /// wherever the text landed, which is the window.
+    /// </para>
+    /// </summary>
+    private Task<VerifyResult> VerifyAsync(
+        nint handle,
+        InjectionResult injection,
+        ActionParams parameters,
+        CaptureResult before,
+        DesktopObservation observation,
+        CancellationToken ct)
+    {
+        // The frame's own rectangle, in frame coordinates: the verifier compares frames, whose origin is the
+        // window's top-left, and a screen rectangle there would intersect a different coordinate space.
+        var whole = new PixelRect(0, 0, before.Width, before.Height);
+
+        var viaPattern = injection.Detail.StartsWith("uia.", StringComparison.Ordinal);
+
+        var region = viaPattern || parameters.ElementId is not { Length: > 0 } elementId
+            ? null
+            : observation.FindElement(elementId)?.Rect;
+
+        return region is { } named && !named.IsEmpty
+            ? _verifier.VerifyScreenRegionAsync(handle, named, before, ct, CanCaptureRegion(handle, named))
+            : _verifier.VerifyAsync(handle, whole, before, ct);
+    }
+
+    /// <summary>
+    /// Whether the region's pixels can be copied off the screen instead of re-rendering the whole window.
+    /// <para>
+    /// Only when the target is the foreground window. A screen BitBlt copies whatever is actually at those
+    /// pixels, so anything drawn on top — another application, a tooltip, this agent's own window — would be
+    /// compared against the target's own content and read as a change the target never made. The foreground
+    /// window is the one thing that guarantees nothing is on top of it, and it is also the state the occlusion
+    /// guard leaves a coordinate action in, so the cheap path is the common case rather than a special one.
+    /// </para>
+    /// </summary>
+    private bool CanCaptureRegion(nint handle, PixelRect region)
+    {
+        if (region.Width <= 0 || region.Height <= 0)
+        {
+            return false;
+        }
+
+        // Off the virtual desktop cannot be copied, and a minimized window's rectangle is a -32000 stub.
+        return !NativeMethods.IsIconic(handle)
+            && _isForeground(handle)
+            && _virtualDesktop().Contains(region.X, region.Y);
+    }
+
+    /// <summary>
+    /// The last walk of one window, when this process has one — so a pattern call can use it instead of
+    /// walking the same tree again. Null when the window was never walked here, and then the act walks it.
+    /// </summary>
+    private (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? WalkOf(
+        string entityId) => _walks.TryGetValue(entityId, out var walk) ? walk : null;
+
+    /// <summary>
+    /// Adds the page's own controls to a window that UI Automation cannot see into.
+    /// <para>
+    /// Separate from <see cref="Observe"/> because reading a page is a network round trip and the observation
+    /// is a synchronous walk over local windows. The two are also different sources: a Chromium window has one
+    /// control as far as UI Automation is concerned — the webview's document surface — and dozens as far as
+    /// its DOM is concerned, and both are wanted.
+    /// </para>
+    /// <para>
+    /// Never throws and never fails the observation. A browser that is not there, a port that never opened, a
+    /// page that navigated mid-read: all of them mean "this window has no DOM elements", which is the
+    /// coordinate path's window and exactly where it was before.
+    /// </para>
+    /// </summary>
+    /// <param name="entityId">One window, or null for every window with a debug port.</param>
+    /// <returns>How many elements were added — zero everywhere means nothing changed for anyone.</returns>
+    public async Task<int> AddDomElementsAsync(string? entityId = null, CancellationToken ct = default)
+    {
+        if (_cdp is null || _cdpPorts is null || _lastObservation is null)
+        {
+            return 0;
+        }
+
+        var added = 0;
+        var claimed = new HashSet<int>();
+
+        foreach (var entity in _lastObservation.Entities)
+        {
+            if (entityId is not null && !string.Equals(entityId, entity.EntityId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // One window per process. A browser's two tabs are two windows sharing one debug port, and the page
+            // on it is whichever one answered — so a second window of the same process would be handed a copy of
+            // the first one's controls at the first one's screen coordinates. That is worse than nothing: it
+            // looks like a working answer and it clicks the wrong window.
+            if (!claimed.Add(entity.ProcessId))
+            {
+                continue;
+            }
+
+            var port = _cdpPorts.PortOf(entity.ProcessId);
+            if (port is not { } debugPort)
+            {
+                continue;
+            }
+
+            var client = _clientOrigin(ParseHandle(entity.EntityId));
+            if (client.X < 0)
+            {
+                continue;
+            }
+
+            var page = await _cdp.ReadAsync(debugPort, ct).ConfigureAwait(false);
+            if (page is null)
+            {
+                continue;
+            }
+
+            var elements = page.Elements
+                .Select(record => CdpDomSource.ToElement(
+                    record,
+                    entity.EntityId,
+                    client.X,
+                    client.Y,
+                    page.DevicePixelRatio))
+                .ToList();
+
+            if (elements.Count == 0)
+            {
+                continue;
+            }
+
+            // Only this window's own DOM elements are replaced: a fresh UI Automation walk already cleared
+            // them, and adding again has to leave exactly one copy rather than accumulate.
+            _lastObservation.Elements = _lastObservation.Elements
+                .Where(existing => !IsDomElementOf(existing, entity.EntityId))
+                .Concat(elements)
+                .ToList();
+
+            added += elements.Count;
+        }
+
+        return added;
+    }
+
+    /// <summary>Whether an element came from a page's DOM rather than from UI Automation.</summary>
+    internal static bool IsDomElementOf(UiElement element, string windowId) =>
+        string.Equals(element.WindowId, windowId, StringComparison.Ordinal)
+        && element.ElementId.Contains(DomMarker, StringComparison.Ordinal);
+
+    /// <summary>The part of a DOM element's id that is the page-side handle.</summary>
+    private const string DomMarker = "#cdp:";
+
+    /// <summary>
+    /// Acts on one of a page's own controls. Null when this is not one — the caller then tries the UI
+    /// Automation path, which is also the path that decides whether the control is reachable at all.
+    /// </summary>
+    public async Task<UiaInvocation?> TryActDomAsync(
+        nint handle,
+        string entityId,
+        string elementId,
+        ActionKind kind,
+        CancellationToken ct)
+    {
+        if (_cdp is null || _cdpPorts is null || elementId is not { Length: > 0 })
+        {
+            return null;
+        }
+
+        // The marker is part of the id: {windowId}#cdp:{marker}. Parsed here rather than by the UI Automation
+        // side, which must not learn what a browser element is.
+        var marker = elementId.IndexOf("#cdp:", StringComparison.Ordinal);
+        if (marker < 0 || elementId.Length == marker + DomMarker.Length)
+        {
+            return null;
+        }
+
+        if (kind is not (ActionKind.LeftClick or ActionKind.Focus))
+        {
+            return null;
+        }
+
+        var entity = _lastObservation?.Find(entityId);
+        if (entity is null)
+        {
+            return null;
+        }
+
+        var port = _cdpPorts.PortOf(entity.ProcessId);
+        if (port is not { } debugPort)
+        {
+            return null;
+        }
+
+        return await _cdp.ActAsync(debugPort, elementId[(marker + DomMarker.Length)..], ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Acts on a named control through its UI Automation pattern, or null when that does not apply — the
     /// action names no control, or the control has no pattern that means what was asked. A pattern that was
     /// tried and failed is reported as a failure rather than retried as a blind coordinate click: if the
     /// control refused to be invoked, clicking its centre is not going to work either.
     /// </summary>
-    private static InjectionResult? ElementPattern(nint handle, string entityId, ActionKind kind, ActionParams parameters)
+    private static InjectionResult? ElementPattern(
+        nint handle,
+        string entityId,
+        ActionKind kind,
+        ActionParams parameters,
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? known)
     {
         if (parameters.ElementId is not { Length: > 0 } elementId)
         {
             return null;
         }
 
-        var invocation = UiaTree.TryAct(handle, entityId, elementId, kind);
+        var invocation = UiaTree.TryAct(handle, entityId, elementId, kind, known);
 
         return invocation is null
             ? null
@@ -408,7 +752,7 @@ public sealed class DesktopAutomation : IDisposable
     /// </summary>
     private static IReadOnlyList<(int X, int Y)> DeliveryPoints(ActionKind kind, ActionParams parameters) => kind switch
     {
-        ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll =>
+        ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll or ActionKind.DoubleClick =>
             new[] { (parameters.X, parameters.Y) },
         ActionKind.Drag =>
             new[] { (parameters.X, parameters.Y), (parameters.ToX, parameters.ToY) },
@@ -451,13 +795,21 @@ public sealed class DesktopAutomation : IDisposable
     {
         ActionKind.Focus => _injector.Focus(handle),
         ActionKind.MovePointer => _injector.MovePointer(parameters.X, parameters.Y),
-        ActionKind.LeftClick => _injector.LeftClick(parameters.X, parameters.Y),
+        ActionKind.LeftClick => parameters.ClickCount == 2
+            ? _injector.DoubleClick(parameters.X, parameters.Y)
+            : _injector.LeftClick(parameters.X, parameters.Y),
         ActionKind.RightClick => _injector.RightClick(parameters.X, parameters.Y),
-        ActionKind.KeyPress => _injector.KeyPress(parameters.VirtualKey),
+        ActionKind.KeyPress => _injector.KeyPress(parameters.VirtualKey, parameters.Modifiers),
         ActionKind.TypeText => _injector.TypeText(parameters.Text ?? string.Empty),
         ActionKind.Scroll => ScrollIn(parameters),
         ActionKind.Drag => _injector.Drag(parameters.X, parameters.Y, parameters.ToX, parameters.ToY),
-        _ => new InjectionResult(false, 0, $"unsupported action {kind}"),
+        _ => new InjectionResult(
+            false,
+            0,
+            $"{kind} cannot be performed as injected input here"
+            + (kind == ActionKind.ScrollIntoView
+                ? "：这个控件没有 ScrollItem/ScrollPattern（可能它并不在一个可滚动容器里）"
+                : string.Empty)),
     };
 
     /// <summary>Action latency statistics (design doc: latency must be measured, never assumed).</summary>

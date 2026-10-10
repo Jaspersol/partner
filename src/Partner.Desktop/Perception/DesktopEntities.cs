@@ -68,6 +68,21 @@ public sealed record UiEntity
     public required double Confidence { get; init; }
 
     /// <summary>
+    /// Whether this window's control list may be incomplete because the UI Automation walk hit a bound.
+    /// <para>
+    /// The walk is bounded — depth, controls per window, nodes visited, time — and on a Chromium-shaped
+    /// window those bounds are what makes an observation take milliseconds instead of tens of seconds. But a
+    /// truncated list is not the same answer as a short one, and reporting it as one is how a control that
+    /// exists goes missing with nothing to show for it. Depth and the control cap are ordinary and are not
+    /// reported; being cut off on nodes or time is, because that is where controls really do disappear.
+    /// </para>
+    /// </summary>
+    public bool ElementsTruncated { get; init; }
+
+    /// <summary>Why the walk stopped, when it stopped on a bound rather than on the tree running out.</summary>
+    public WalkStopReason ElementsTruncation { get; init; } = WalkStopReason.None;
+
+    /// <summary>
     /// Identity of the window: handle + owning process + when that process started.
     /// <para>
     /// Deliberately <b>not</b> the title or the rectangle. A music player retitles itself on every track, a
@@ -105,10 +120,11 @@ public sealed record DesktopObservation
     public required IReadOnlyList<UiEntity> Entities { get; init; }
 
     /// <summary>
-    /// Controls discovered inside those windows. Empty for apps that expose nothing (Chromium, games, canvases):
-    /// the window-level path still works there, it just needs coordinates.
+    /// Controls discovered inside those windows. Empty for apps that expose nothing (games, canvases): the
+    /// window-level path still works there, it just needs coordinates. A Chromium window started with a debug
+    /// port is not one of those — its controls come from the page's DOM rather than from UI Automation.
     /// </summary>
-    public IReadOnlyList<UiElement> Elements { get; init; } = Array.Empty<UiElement>();
+    public IReadOnlyList<UiElement> Elements { get; set; } = Array.Empty<UiElement>();
 
     /// <summary>An element by the id this observation gave it.</summary>
     public UiElement? FindElement(string elementId) =>

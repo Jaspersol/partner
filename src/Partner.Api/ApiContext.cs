@@ -6,6 +6,7 @@ using Partner.Core.Queue;
 using Partner.Core.Sessions;
 using Partner.Desktop;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Tools;
 
 namespace Partner.Api;
 
@@ -73,7 +74,16 @@ public sealed class ApiContext : IAsyncDisposable
 
         // The TTL comes from the settings at call time rather than at construction: a lease policy is a
         // per-observation decision, and the settings can change while the process runs.
-        var desktop = new DesktopAutomation(ttlPolicy: LeaseTtlPolicyFor(settings.Load()));
+        //
+        // The DOM source and its port registry are shared with the launch tool on purpose: a debug port only
+        // exists for a program this process started, so the thing that knows which ports exist is the thing
+        // that opened them.
+        var cdpPorts = new CdpRegistry();
+        var desktop = new DesktopAutomation(
+            ttlPolicy: LeaseTtlPolicyFor(settings.Load()),
+            cdp: new CdpDomSource(),
+            cdpPorts: cdpPorts,
+            desktopLaunch: new DesktopLaunchTool(startMenuRoots: null, ports: cdpPorts));
 
         return await Task.FromResult(new ApiContext(
             workspace,

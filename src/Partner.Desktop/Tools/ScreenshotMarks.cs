@@ -124,7 +124,9 @@ public static class ScreenshotMarks
 
         foreach (var element in elements.OrderBy(e => e.Rect.Y).ThenBy(e => e.Rect.X))
         {
-            if (element.Rect.IsEmpty || !Inside(element.Rect, window) || !Clickable(element.Role))
+            // An offscreen control has no place on a picture of this window — its rectangle is somewhere else
+            // on the screen — and a mark drawn where nothing is would invite a click into the void.
+            if (element.Rect.IsEmpty || element.IsOffscreen || !Inside(element.Rect, window) || !Clickable(element.Role))
             {
                 continue;
             }

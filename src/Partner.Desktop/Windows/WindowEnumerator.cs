@@ -52,6 +52,12 @@ public static class WindowEnumerator
         var foreground = NativeMethods.GetForegroundWindow();
         var windows = new List<DesktopWindow>();
 
+        // One process object per pid for the whole enumeration. Each of the two facts below needs its own
+        // Process handle, and a desktop with nine windows was opening eighteen — for the same handful of
+        // processes, and several times each.
+        var names = new Dictionary<uint, string?>();
+        var starts = new Dictionary<uint, long?>();
+
         NativeMethods.EnumWindows((handle, _) =>
         {
             if (!NativeMethods.IsWindowVisible(handle))
@@ -78,8 +84,8 @@ public static class WindowEnumerator
                 Handle = handle,
                 Title = title,
                 ProcessId = (int)processId,
-                ProcessName = TryGetProcessName(processId),
-                ProcessStartTicks = TryGetProcessStartTicks(processId),
+                ProcessName = Cached(names, processId, TryGetProcessName),
+                ProcessStartTicks = Cached(starts, processId, TryGetProcessStartTicks),
                 X = bounds.Left,
                 Y = bounds.Top,
                 Width = bounds.Width,
@@ -146,6 +152,26 @@ public static class WindowEnumerator
         var buffer = new char[length + 1];
         var copied = NativeMethods.GetWindowTextW(handle, buffer, buffer.Length);
         return copied <= 0 ? string.Empty : new string(buffer, 0, copied);
+    }
+
+    /// <summary>
+    /// One lookup per process per enumeration.
+    /// <para>
+    /// A null result is cached too, and that is the point: "this process refuses to answer" is an answer that
+    /// costs a handle to find, and asking again per window is how an enumeration of nine windows turned into
+    /// thirty process handles. <c>TryGetValue</c> distinguishes "cached as null" from "not cached", so an
+    /// unconstrained <typeparamref name="T"/> is safe here and lets both facts share it.
+    /// </para>
+    /// </summary>
+    private static T Cached<T>(Dictionary<uint, T> cache, uint processId, Func<uint, T> read)
+    {
+        if (!cache.TryGetValue(processId, out var value))
+        {
+            value = read(processId);
+            cache[processId] = value;
+        }
+
+        return value;
     }
 
     private static string? TryGetProcessName(uint processId)

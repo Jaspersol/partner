@@ -186,6 +186,44 @@ public sealed class DesktopLiveInteractionTests
     }
 
     [LiveDesktopFact]
+    public async Task Acting_on_a_named_control_reuses_the_observation_that_already_walked_the_window()
+    {
+        // The observation walked this window to re-check the action; the act then walked it again to turn the
+        // id back into a control. That second walk was a cross-process RPC per node for an answer the caller
+        // was already holding — and the reason an element-addressed action cost twice what it should.
+        //
+        // What is asserted here is the whole path, because the saving is only real if the reuse still presses
+        // the control the id named: a cache that returned the wrong control would be cheaper and wrong.
+        using var host = new ButtonWindow();
+        using var automation = new DesktopAutomation();
+
+        automation.Observe();
+
+        var button = automation.LastObservation!.Elements.FirstOrDefault(element =>
+            element.WindowId == host.HandleHex && element.Name == "提交");
+
+        Assert.NotNull(button);
+
+        GetCursorPos(out var cursorBefore);
+
+        var action = await automation.ActAsync(
+            host.HandleHex,
+            ActionKind.LeftClick,
+            new ActionParams { ElementId = button!.ElementId });
+
+        Assert.True(action.GuardPassed, action.GuardReason);
+        Assert.NotNull(action.Injection);
+        Assert.True(action.Injection!.Ok, action.Injection.Detail);
+
+        // The pattern reached the control, so no coordinate click was injected and the pointer did not move.
+        Assert.StartsWith("uia.", action.Injection.Detail, StringComparison.Ordinal);
+        Assert.True(host.Pressed.Wait(TimeSpan.FromSeconds(10)), "the button's Click handler never ran");
+
+        GetCursorPos(out var cursorAfter);
+        Assert.Equal((cursorBefore.X, cursorBefore.Y), (cursorAfter.X, cursorAfter.Y));
+    }
+
+    [LiveDesktopFact]
     public async Task An_injected_click_reaches_a_real_button()
     {
         // The missing half of the proof: the pattern path was verified against a real control, but nothing
