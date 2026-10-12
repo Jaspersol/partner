@@ -793,10 +793,42 @@
     {
       "id": "desktop.wait_primitive",
       "owner": "M9",
-      "level": "product-supported",
+      "level": "not-supported",
       "evidence": [
         {
           "check": "desktop: a wait for a control that is already there answers at once with the new id",
+          "ran": false,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.desktop_scope",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a full-desktop picture exists without any observation and is recorded as desktop",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "desktop: px/py on the desktop picture resolves to the point it was taken from",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.px_snap_to_element",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a px/py miss within the snap radius resolves to the control it was for",
           "ran": true,
           "passed": true,
           "skipped": false

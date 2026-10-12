@@ -23,7 +23,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**970+ 个 .NET 单测 + 200 个前端测试全绿 / 164 项 smoke 检查（其中 2 项需 `PARTNER_DESKTOP_LIVE=1`，本机默认 skip）/ 62 项能力 `product-supported`**。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。
+当前基线：**975+ 个 .NET 单测 + 200 个前端测试全绿 / 166 项 smoke 检查（其中 2 项需 `PARTNER_DESKTOP_LIVE=1`，本机默认 skip）/ 63 项能力 `product-supported`**。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -394,6 +394,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 
 **UIA 盲区：给模型看图，不做 OCR。** 模型卡片里的「支持图片（视觉）」决定这条路是否存在：打开后注册 `desktop_screenshot`，Electron / 游戏 / 画布这类 UIA 看不见的应用就靠**截图 + 模型视觉**，而不是本地 OCR——视觉模型自己读图比任何本地识别都准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败，所以这是一个关于「配的是什么模型」的声明，不是偏好。
 
+**桌面这一级（`scope:"desktop"`）。** 任务栏、托盘、通知横幅、桌面图标都属于**没有顶层窗口**的那层，任何一个窗口的截图都照不到它们——旧方案下模型永远看不见，只能靠 `desktop_launch` 的开始菜单解析当补丁。现在 `desktop_screenshot` 接受 `scope:"desktop"`：一张**虚拟桌面全景**（多屏拼接，原点可能为负，`CaptureScreenRegionAsync` 一次调用 ~60ms），叠同档的坐标网格，另外给每个可见/未最小化窗口画**编号标记块**——编号即结果文本里列出的对应 entityId，从图到动作不需要再观察一次；这是刻意不需要前提观察的一条（第一次看不能以先看过为前提）。图上的 px/py 由 act 服务端换算成屏幕坐标后走**裸坐标路径**（命中测试、遮挡检查、z 序全都要过），全帧图带来的精度代价由 `maxDimension` 控制（默认 1280，可传 4096 到近原生分辨率）。能力登记：`desktop.desktop_scope`(2)。
+
 - **图上带参考标记。** `desktop_screenshot` 在图上叠**坐标网格**（刻度上的数字就是屏幕坐标）和**控件编号标记**：带标记的控件直接给 `elementId`（点击点由服务端算），没有标记的地方（图标、画布、游戏）就沿网格读出屏幕坐标。只有**能按**的控件才编号：`Document` 不编号——它是编辑器的文本面（也是 Chromium 窗口唯一暴露的元素），矩形是整个内容区，「点它的中心」等于「点文档中间」，编号只会给出一个看着能点、其实不能的标记；一个标记都没有时答案会明说「只有网格可用」。这是被实测逼出来的：模型把播放按钮**用文字描述对了**，报出来的坐标却偏了 334px，落在左侧歌单面板的空白背景上（测得该像素是 `#F7F9FC`）——图没问题，是图上没有任何可量尺的东西。参数 `marks:false` 可以要回不带标注的原图。
 
 **租约认的是「窗口」，不是「窗口当时的样子」。** 租约的身份是 `句柄 + 进程 + 进程启动时间`，**标题和矩形不算身份**。这不是宽松，是必需：网易云音乐的标题就是当前歌名（换首歌就变），浏览器是页签名，编辑器是脏标记，终端是路径——把它们算进身份，这些应用就永远动不了；而 `focus` 会把最小化的窗口**还原**（矩形因此必变），于是模型上一步的成功动作会把它自己的下一步作废。实测就是这么绕死的：`focus` 注入成功、紧接的 `movePointer` 被拒「标题/进程/位置/大小变了」，只能再观察一次，8 步预算耗尽。现在身份变了（句柄被回收 / 进程重启）才拒绝；标题或矩形变了**照常执行**，只在结果里附一句「注意：窗口已变化（…）」，坐标一律按**新**矩形重算（越界仍按新矩形拒绝）。
@@ -749,7 +751,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 ---
 
-## 已实现能力（62）
+## 已实现能力（64）
 
 括号内是该能力的登记检查数（来自 smoke 生成的 `capabilities/manifest.json`；`--verify-baseline` 拿它与 baseline 逐条比对）。
 
@@ -763,7 +765,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_returns_state`(2：动作结果自带新截图、附图可被 px/py 映射且按 media id 记录；单击成功路径的实收官在 `PARTNER_DESKTOP_LIVE` 的 live 测试里)、`desktop.step_budget_by_family`(1：desktop/mcp 工具族回合步预算 32，普通工具仍 8)、`desktop.task_lease_approval`(3：批准即租、同窗口不再问、危险类永不入租)、`desktop.wait_primitive`(1：已有控件等待一次新 id，不再烧观察步数) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_returns_state`(2：动作结果自带新截图、附图可被 px/py 映射且按 media id 记录；单击成功路径的实收官在 `PARTNER_DESKTOP_LIVE` 的 live 测试里)、`desktop.step_budget_by_family`(1：desktop/mcp 工具族回合步预算 32，普通工具仍 8)、`desktop.task_lease_approval`(3：批准即租、同窗口不再问、危险类永不入租)、`desktop.wait_primitive`(1：已有控件等待一次新 id，不再烧观察步数)、`desktop.desktop_scope`(2：无观察前提的全桌面全景图 + 窗口编号标记、图上 px/py 服务器端落点)、`desktop.px_snap_to_element`(1：图上读数在控件邻域 8px 内即按控件中心点执行，超出半径才落坐标) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |

@@ -226,6 +226,26 @@ public sealed class DesktopAutomation : IDisposable
     public IScreenCapture Capture => _capture;
 
     /// <summary>
+    /// The whole virtual desktop in one frame, wherever it starts and however it spans monitors.
+    /// <para>
+    /// This is the observation level under "window": the taskbar, the tray, notification banners, desktop
+    /// icons — all the things that belong to no top-level window and therefore never appeared in an
+    /// observation. The bounds are read now (they can change with the monitor layout) and travel with the
+    /// frame as its <c>ScreenRect</c>, which is the same contract every window capture keeps
+    /// </para>
+    /// </summary>
+    public async Task<CaptureResult> CaptureDesktopAsync(CancellationToken ct = default)
+    {
+        var desktop = _virtualDesktop();
+        var frame = await _capture.CaptureScreenRegionAsync(
+            desktop.X, desktop.Y, desktop.Width, desktop.Height, ct).ConfigureAwait(false);
+
+        return frame.Ok
+            ? frame with { ScreenRect = new PixelRect(desktop.X, desktop.Y, desktop.Width, desktop.Height) }
+            : frame;
+    }
+
+    /// <summary>
     /// The most recent observation, or null before the first one. Exposed so a caller can check *what* it is
     /// about to act on (a policy on window titles has to read the title) without re-observing — which would
     /// mint a fresh lease and make the lease mechanism vacuous.

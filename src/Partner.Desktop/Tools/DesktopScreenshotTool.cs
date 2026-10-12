@@ -6,6 +6,7 @@ using Partner.Core.Media;
 using Partner.Desktop.Capture;
 using Partner.Desktop.Interop;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Windows;
 
 namespace Partner.Desktop.Tools;
 
@@ -51,10 +52,12 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         + "不传 entityId 就截当前前台窗口。**图上会叠坐标网格和控件标记**：网格刻度上的数字是屏幕坐标，"
         + "带标记的控件可以直接用它的 elementId 去 desktop_act（点击点由服务端算），没有标记的地方才靠读网格给坐标。"
         + "结果里带窗口 id、窗口在屏幕上的矩形、标记清单和可直接照抄的 desktop_act 调用"
-        + "（desktop_act 的 x/y 是**屏幕坐标**，不是图内坐标）。",
+        + "（desktop_act 的 x/y 是**屏幕坐标**，不是图内坐标）。"
+        + "看任务栏/托盘/通知/桌面图标用 scope=desktop（整个虚拟桌面，带窗口编号标记，不需要先 observe）。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id，来自 desktop_observe；省略则截前台窗口"},
+          "scope":{"type":"string","enum":["window","desktop"],"default":"window","description":"desktop = 截**整个虚拟桌面**（任务栏、托盘、通知、桌面图标这些不属于任何顶层窗口的东西）。带窗口编号标记：图上的数字对应结果里的 entityId，可直接给 desktop_act；不需要先 desktop_observe"},
           "maxDimension":{"type":"integer","description":"最长边像素上限，默认 1280"},
           "marks":{"type":"boolean","description":"是否叠网格与控件标记，默认 true；只有想看不带标注的原图时才设 false"},
           "zoomAt":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"description":"放大复查：屏幕上的一个粗略点位（从整窗网格读出）。返回以它为中心的一小片原图（约 192×192 屏幕 px，放大 3 倍显示，网格 20 px 一格），图上刻度仍是屏幕坐标，另带 mediaId 供 desktop_act 用 px/py 精确点击"}
@@ -63,7 +66,14 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
-        var arguments = Json.Deserialize<ScreenshotArguments>(argumentsJson) ?? new ScreenshotArguments(null, null, null, null);
+        var arguments = Json.Deserialize<ScreenshotArguments>(argumentsJson)
+            ?? new ScreenshotArguments(null, null, null, null, null);
+
+        if (string.Equals(arguments.Scope, "desktop", StringComparison.OrdinalIgnoreCase))
+        {
+            return await CaptureDesktopPicture(ct).ConfigureAwait(false);
+        }
+
         var observation = automation.LastObservation;
 
         if (observation is null)
@@ -299,6 +309,151 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         IReadOnlyList<ScreenshotMark> Marks);
 
     /// <summary>
+    /// The desktop, not a window: one frame of the whole virtual desktop with a grid whose labels are
+    /// screen coordinates and numbered chips on the windows. The model starts here when what it is looking
+    /// for lives under the window level — the tray icon it wants clicked, the toast it wants dismissed —
+    /// and before any observation exists, which is why this path skips the observe-first refusal the
+    /// per-window branch keeps: a first look cannot be conditioned on already having looked.
+    /// <para>
+    /// A window's chip carries its entityId, so "act on that window" needs no separate observe; the px/py
+    /// on this picture are served by the act as a bare screen point (which is what they map to), where the
+    /// usual guards — which window does the point land on, is it covered — do the rest.
+    /// </para>
+    /// </summary>
+    private async Task<ToolResult> CaptureDesktopPicture(CancellationToken ct)
+    {
+        var frame = await automation.CaptureDesktopAsync(ct).ConfigureAwait(false);
+        if (!frame.Ok)
+        {
+            return new ToolResult(false, $"全屏截图失败：{frame.Error ?? frame.Method}");
+        }
+
+        var desktop = frame.ScreenRect
+            ?? new PixelRect(0, 0, frame.Width, frame.Height);
+
+        var maxDimension = DesktopScreenshotTool.DefaultMaxDimension;
+        var windows = WindowEnumerator.List().ToList();
+
+        byte[] png;
+        int width;
+        int height;
+        IReadOnlyList<ScreenshotMark> marks;
+        try
+        {
+            var source = BitmapSource.Create(
+                frame.Width,
+                frame.Height,
+                96,
+                96,
+                System.Windows.Media.PixelFormats.Bgra32,
+                palette: null,
+                frame.Bgra,
+                frame.Width * 4);
+
+            var longest = Math.Max(frame.Width, frame.Height);
+            if (longest > maxDimension)
+            {
+                var factor = (double)maxDimension / longest;
+                source = new TransformedBitmap(source, new System.Windows.Media.ScaleTransform(factor, factor));
+            }
+
+            (png, width, height, marks) = DesktopScreenshotTool.EncodeDesktop(source, desktop, windows);
+        }
+        catch (Exception error)
+        {
+            return new ToolResult(false, $"编码全屏截图失败：{error.Message}");
+        }
+
+        string mediaId;
+        try
+        {
+            using var stream = new MemoryStream(png);
+            mediaId = await media.SaveAsync("image/png", stream, ct).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            return new ToolResult(false, $"保存全屏截图失败：{error.Message}");
+        }
+
+        if (media.TryRead(mediaId)?.ToDataUri() is not { } dataUri)
+        {
+            return new ToolResult(false, "全屏截图已保存但读不回来");
+        }
+
+        // Recorded like any other picture the model is shown, so px/py + mediaId on it resolves — under
+        // this entity id, "desktop", which the act maps to a bare screen point.
+        automation.MarkShown("desktop");
+        automation.RecordPicture(mediaId, new ShownPicture(
+            "desktop",
+            desktop,
+            width,
+            height,
+            automation.LastObservation?.ObsId ?? "desktop"));
+
+        return new ToolResult(true, DescribeDesktop(desktop, width, height, mediaId, marks, windows), new[] { dataUri });
+    }
+
+    private static string DescribeDesktop(
+        PixelRect desktop,
+        int width,
+        int height,
+        string mediaId,
+        IReadOnlyList<ScreenshotMark> marks,
+        IReadOnlyList<DesktopWindow> windows)
+    {
+        var perPicturePixelX = width > 0 ? desktop.Width / (double)width : 1;
+        var perPicturePixelY = height > 0 ? desktop.Height / (double)height : 1;
+        var numbered = marks.ToDictionary(mark => mark.Index, mark => mark);
+
+        var lines = new List<string>
+        {
+            $"桌面全景（虚拟屏幕 @ ({desktop.X},{desktop.Y}) {desktop.Width}×{desktop.Height}），"
+                + $"截图 {width}×{height}（媒体 {mediaId}）。",
+
+            $"图上叠了坐标网格，刻度上的数字是**屏幕坐标**。窗口内 (px,py) 与屏幕的关系是："
+                + $"屏幕 = ({desktop.X}+px×{perPicturePixelX:0.####}, {desktop.Y}+py×{perPicturePixelY:0.####})。"
+                + $"更稳的做法：直接把 px/py 和媒体 {mediaId} 给 desktop_act（服务端换算），"
+                + "它落在哪个窗口就属于哪个窗口；或用图上的窗口编号标记拿 entityId。",
+        };
+
+        if (marks.Count == 0)
+        {
+            lines.Add("没有可标记的窗口（都最小化了，或桌面是空的）：只有网格可用。");
+        }
+        else
+        {
+            var listed = string.Join("；", marks.Take(12).Select(mark =>
+                $"标记 {mark.Index} = '{mark.Label}'（entityId {mark.ElementId}，中心 ({mark.ClickAt.X},{mark.ClickAt.Y})）"));
+            lines.Add($"窗口编号标记：{listed}。对某个窗口操作，用 desktop_act {{entityId:<标记上的 id>}}。");
+        }
+
+        // Everything still open that a mark did not fit — a minimized window, or a desktop full enough to
+        // trip the cap — stays answerable from the observation, which is where ids come from anyway.
+        var omitted = windows.Where(window => numbered.Values.All(mark => !string.Equals(mark.ElementId, window.Handle.ToString("x"), StringComparison.Ordinal))).ToList();
+        if (omitted.Count > 0)
+        {
+            var note = string.Join("；", omitted.Take(6).Select(window => $"'{window.Title}'（已最小化）"));
+            lines.Add($"未标记的窗口（desktop_observe 里仍可见）：{note}");
+        }
+
+        lines.Add($"下一步：{{ \"elementId\": \"<标记上的 entityId>\", \"kind\": \"LeftClick\" }} 或 {{ \"kind\": \"LeftClick\", \"x\":<屏幕x>, \"y\":<屏幕y> }} 或 {{ \"kind\": \"LeftClick\", \"px\":<图上x>, \"py\":<图上y>, \"mediaId\": \"{mediaId}\" }}");
+        return string.Join("\n", lines);
+    }
+
+    private static (byte[] Png, int Width, int Height, IReadOnlyList<ScreenshotMark> Marks) EncodeDesktop(
+        BitmapSource source,
+        PixelRect desktop,
+        IReadOnlyList<DesktopWindow> windows)
+    {
+        var (annotated, marks) = ScreenshotMarks.DrawDesktop(source, desktop, windows);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(annotated));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return (stream.ToArray(), annotated.PixelWidth, annotated.PixelHeight, marks);
+    }
+
+    /// <summary>
     /// What the model needs in order to act on what it just saw: which window, where that window is on screen,
     /// how the picture maps onto it, what the marks mean, and the call to make.
     /// <para>
@@ -526,7 +681,7 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     private static nint ParseHandle(string entityId) =>
         nint.Parse(entityId, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
 
-    private sealed record ScreenshotArguments(string? EntityId, int? MaxDimension, bool? Marks, ZoomAt? ZoomAt);
+    private sealed record ScreenshotArguments(string? EntityId, int? MaxDimension, bool? Marks, ZoomAt? ZoomAt, string? Scope = null);
 
     public sealed record ZoomAt(int X, int Y);
 }

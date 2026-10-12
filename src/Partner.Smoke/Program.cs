@@ -1195,6 +1195,96 @@ internal static class Program
             }
         }
 
+        // —— The desktop level: the observation level under “window” ——
+        // The taskbar/tray/notification don't belong to any top-level window, so they never appeared in observations;
+        // the full-frame screenshot brings them in along with the window marks, no prerequisite observation.
+        using (var scopeAutomation = new DesktopAutomation())
+        {
+            var workspace = Path.Combine(root, "desktop-scope");
+            Directory.CreateDirectory(workspace);
+            var scopeTool = new DesktopScreenshotTool(scopeAutomation, new FileMediaStore(workspace));
+
+            var shot = await scopeTool.InvokeAsync("""{"scope":"desktop","maxDimension":4096}""");
+            var mediaId = System.Text.RegularExpressions.Regex.Match(
+                shot.Content, "媒体 ([0-9a-f]{8,})").Groups[1].Value;
+            var mapped = string.IsNullOrEmpty(mediaId) ? null : scopeAutomation.PictureOf(mediaId);
+            var expectations = VirtualDesktop.Current();
+
+            Check("desktop: a full-desktop picture exists without any observation and is recorded as desktop",
+                shot.Ok
+                && shot.Images is { Count: > 0 }
+                && mapped is not null
+                && mapped.EntityId == "desktop"
+                && mapped.ScreenRect == new PixelRect(expectations.X, expectations.Y, expectations.Width, expectations.Height),
+                shot.Ok ? $"media={mediaId} marks=?" : shot.Content[..Math.Min(70, shot.Content.Length)]);
+
+            // px/py on a full-frame image -> bare screen coordinate path (forwarding in input-free refusal). Pick the non-foreground
+            // window center; if ambiguity/wait-free window is not found, skip (such as full screen / foreground lockup environment).
+            var fresh = scopeAutomation.Observe();
+            var background = fresh.Entities.FirstOrDefault(entity =>
+                !entity.IsForeground && !entity.IsMinimized && entity.Rect.Width > 100);
+            if (background is not null && mapped is not null)
+            {
+                var centreX = background.Rect.X + background.Rect.Width / 2;
+                var centreY = background.Rect.Y + background.Rect.Height / 2;
+                var px = (int)Math.Round((centreX - mapped.ScreenRect.X) * mapped.PictureWidth / (double)mapped.ScreenRect.Width);
+                var py = (int)Math.Round((centreY - mapped.ScreenRect.Y) * mapped.PictureHeight / (double)mapped.ScreenRect.Height);
+
+                var actTool = new DesktopActTool(
+                    scopeAutomation, DesktopToolPolicy.Any, new FileMediaStore(workspace));
+                var resolved = await actTool.InvokeAsync(
+                    $$"""
+                    {"kind":"KeyPress","virtualKey":67,"px":{{px}},"py":{{py}},"mediaId":"{{mediaId}}","feedback":"off"}
+                    """);
+
+                Check("desktop: px/py on the desktop picture resolves to the point it was taken from",
+                    !resolved.Ok
+                    && resolved.Content.Contains($"({centreX},{centreY})", StringComparison.Ordinal)
+                    && (resolved.Content.Contains("不在前台", StringComparison.Ordinal) ||
+                        resolved.Content.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal)),
+                    resolved.Content[..Math.Min(80, resolved.Content.Length)]);
+            }
+        }
+
+        // —— px/py 就近元素兜底 ——（安全的证明路径：背景窗口的 key 在 guard 拒绝，不注入；拒绝带出解析后的控件名 = 充分证据）
+        using (var snapAutomation = new DesktopAutomation())
+        {
+            var workspace = Path.Combine(root, "desktop-snap");
+            Directory.CreateDirectory(workspace);
+            var observation = snapAutomation.Observe();
+            var target = observation.Entities.FirstOrDefault(entity =>
+                !entity.IsForeground && !entity.IsMinimized && entity.Rect.Width > 100);
+            var element = observation.Elements.FirstOrDefault(candidate =>
+                candidate.WindowId == target!.EntityId
+                && !candidate.IsOffscreen
+                && candidate.Role == "Button"
+                && !string.IsNullOrEmpty(candidate.Name)
+                && candidate.Rect.Width > 10);
+            if (target is not null && element is not null)
+            {
+                var shotTool = new DesktopScreenshotTool(snapAutomation, new FileMediaStore(workspace));
+                var shot = await shotTool.InvokeAsync(
+                    $$"""{"entityId":"{{target.EntityId}}","maxDimension":4096}""");
+                var mediaId = System.Text.RegularExpressions.Regex.Match(
+                    shot.Content, "媒体 ([0-9a-f]{8,})").Groups[1].Value;
+                var picture = snapAutomation.PictureOf(mediaId);
+
+                // 刻意偏 5px：扣入单击应有的控件邻域（snap 半径 8px）——从图出来的一步误差由服务器摊平。
+                var px = (int)Math.Round((element!.Centre.X + 5 - picture!.ScreenRect.X) * picture.PictureWidth / (double)picture.ScreenRect.Width);
+                var py = (int)Math.Round((element.Centre.Y - picture.ScreenRect.Y) * picture.PictureHeight / (double)picture.ScreenRect.Height);
+
+                var snapAct = new DesktopActTool(
+                    snapAutomation, DesktopToolPolicy.Any, new FileMediaStore(workspace));
+                var resolved = await snapAct.InvokeAsync(
+                    $$"""{"kind":"KeyPress","virtualKey":67,"px":{{px}},"py":{{py}},"mediaId":"{{mediaId}}","feedback":"off"}""");
+
+                Check("desktop: a px/py miss within the snap radius resolves to the control it was for",
+                    !resolved.Ok
+                    && resolved.Content.Contains($"'{element.Name}' [{element.Role}]", StringComparison.Ordinal),
+                    resolved.Content[..Math.Min(90, resolved.Content.Length)]);
+            }
+        }
+
         Check("desktop: input marshalling matches the Win32 contract",
             InputInjector.InputSize == (IntPtr.Size == 8 ? 40 : 28),
             $"INPUT size = {InputInjector.InputSize}");
@@ -4336,6 +4426,15 @@ internal static class Program
         ("desktop.wait_primitive", "M9", new[]
         {
             "desktop: a wait for a control that is already there answers at once with the new id",
+        }),
+        ("desktop.desktop_scope", "M9", new[]
+        {
+            "desktop: a full-desktop picture exists without any observation and is recorded as desktop",
+            "desktop: px/py on the desktop picture resolves to the point it was taken from",
+        }),
+        ("desktop.px_snap_to_element", "M9", new[]
+        {
+            "desktop: a px/py miss within the snap radius resolves to the control it was for",
         }),
         ("voice.utterance_to_queue", "M10", new[]
         {

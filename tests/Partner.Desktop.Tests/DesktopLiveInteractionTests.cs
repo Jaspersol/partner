@@ -635,4 +635,57 @@ public sealed class DesktopLiveInteractionTests
         public int X;
         public int Y;
     }
+
+    [LiveDesktopFact]
+    public async Task A_real_window_respects_the_contract_on_the_wire()
+    {
+        // End to end, and safe: a key press at a background window is refused before any input is
+        // injected — and the refusal names the CONTROL it resolved to, which is the evidence that the
+        // snap went through rather than the window-level fallback.
+        var workspace = Directory.CreateTempSubdirectory("partner-snap-live-");
+        try
+        {
+            using var automation = new DesktopAutomation();
+            var observation = automation.Observe();
+            var target = observation.Entities.FirstOrDefault(entity =>
+                !entity.IsForeground && !entity.IsMinimized && entity.Rect.Width > 100);
+            var element = observation.Elements.FirstOrDefault(e => e.WindowId == target!.EntityId);
+            if (target is null || element is null)
+            {
+                // No background window with an addressable control in this session: the pure-geometry
+                // tests above carry the contract.
+                return;
+            }
+
+            var tool = new DesktopScreenshotTool(automation, new FileMediaStore(workspace.FullName));
+            var shot = await tool.InvokeAsync(
+                $$"""{"entityId":"{{target.EntityId}}","maxDimension":4096}""");
+            Assert.True(shot.Ok, shot.Content);
+
+            var mediaId = System.Text.RegularExpressions.Regex.Match(
+                shot.Content, @"媒体 ([0-9a-f]{8,})").Groups[1].Value;
+            Assert.NotEmpty(mediaId);
+            var picture = automation.PictureOf(mediaId);
+            Assert.NotNull(picture);
+
+            // A miss on purpose: five pixels right of the centre, still within the snap radius.
+            var px = (int)Math.Round((element.Centre.X + 5 - picture!.ScreenRect.X) * picture.PictureWidth / (double)picture.ScreenRect.Width);
+            var py = (int)Math.Round((element.Centre.Y - picture.ScreenRect.Y) * picture.PictureHeight / (double)picture.ScreenRect.Height);
+
+            var media = new FileMediaStore(workspace.FullName);
+            var actTool = new DesktopActTool(automation, DesktopToolPolicy.Any, media);
+            var result = await actTool.InvokeAsync(
+                $$"""{"kind":"KeyPress","virtualKey":67,"px":{{px}},"py":{{py}},"mediaId":"{{mediaId}}","feedback":"off"}""");
+
+            Assert.False(result.Ok, $"audit={result.Content}");
+            Assert.Contains(element.Name, result.Content, StringComparison.Ordinal);
+
+            // The snap is announced, so a model reading 5 px of drift knows the server already smoothed it.
+            Assert.Contains("按控件中心点执行", result.Content, StringComparison.Ordinal);
+        }
+        finally
+        {
+            workspace.Delete(recursive: true);
+        }
+    }
 }

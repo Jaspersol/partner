@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Windows;
 
 namespace Partner.Desktop.Tools;
 
@@ -145,6 +146,83 @@ public static class ScreenshotMarks
         }
 
         return marks;
+    }
+
+    /// <summary>
+    /// Numbers the windows a full-desktop picture shows, in reading order like control marks.
+    /// <para>
+    /// A mark on a window is the same thing as a mark on a control, but for the level under it: the
+    /// <c>ElementId</c> is the window's entityId (addressable by <c>desktop_act</c> as-is), and the chip
+    /// sits at the window's centre, which is a pixel in that window — a reading anchor and an id in one
+    /// mark. Minimized windows are skipped outright: their rectangle is a 160×28 stub at −32000, and a
+    /// mark drawn there would invite a click into the void — the same reason element marks skip
+    /// offscreen controls.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<ScreenshotMark> WindowMarks(IReadOnlyList<DesktopWindow> windows, PixelRect desktop)
+    {
+        var marks = new List<ScreenshotMark>();
+
+        foreach (var window in windows.OrderBy(w => w.Y).ThenBy(w => w.X))
+        {
+            if (window.IsMinimized || window.Width <= 0 || window.Height <= 0 || !Inside(
+                    new PixelRect(window.X, window.Y, window.Width, window.Height), desktop))
+            {
+                continue;
+            }
+
+            marks.Add(new ScreenshotMark(
+                marks.Count + 1,
+                window.Handle.ToString("x"),
+                window.Title,
+                "window",
+                new PixelRect(window.X, window.Y, window.Width, window.Height),
+                (window.X + window.Width / 2, window.Y + window.Height / 2)));
+        }
+
+        return marks;
+    }
+
+    /// <summary>
+    /// Overlays the grid and the window marks on a full-desktop picture. Same two kinds of reference the
+    /// per-window picture carries — numbered chips (the mark's number is what the answer text lists) and a
+    /// grid whose labels are screen coordinates — but the numbered things are the windows themselves, so
+    /// the model can address a window by id straight from the picture instead of re-observing to learn
+    /// which hex handle the taskbar click belongs to.
+    /// </summary>
+    public static (BitmapSource Annotated, IReadOnlyList<ScreenshotMark> Marks) DrawDesktop(
+        BitmapSource source,
+        PixelRect desktop,
+        IReadOnlyList<DesktopWindow> windows)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(windows);
+
+        var width = source.PixelWidth;
+        var height = source.PixelHeight;
+
+        if (width <= 0 || height <= 0 || desktop.Width <= 0 || desktop.Height <= 0)
+        {
+            return (source, Array.Empty<ScreenshotMark>());
+        }
+
+        var scale = width / (double)desktop.Width;
+        var verticalScale = height / (double)desktop.Height;
+        var marks = WindowMarks(windows, desktop);
+
+        var visual = new DrawingVisual();
+        using (var context = visual.RenderOpen())
+        {
+            context.DrawImage(source, new Rect(0, 0, width, height));
+            DrawGrid(context, desktop, scale, verticalScale, width, height);
+            DrawMarks(context, marks, desktop, scale, verticalScale);
+        }
+
+        var annotated = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        annotated.Render(visual);
+        annotated.Freeze();
+
+        return (annotated, marks);
     }
 
     /// <summary>

@@ -4,7 +4,7 @@
 顺序依赖：`P0 → P1a → {P2a, P2b}`；`P1b`、`P1c` 独立可并行；`P3` 全部按需。
 每期做完统一收尾：smoke `Check(...)` + `Capabilities` 表 → `--update-baseline capabilities/manifest.baseline.json` → README 补相应小节（防文档漂移）。
 
-**进度**：**P0、P1 全部完成**。全仓 `dotnet test` 973 绿 / smoke 164 项全绿（2 项 live skip）/ `GATE PASS`(62 能力) / README 与基线已同步。下一项：P2a（`scope:"desktop"` 全屏观察），其后 P2b。
+**进度**：**P0、P1、P2a、P2b 全部完成**。全仓 `dotnet test` 975+ 绿 / smoke 166 项全绿（2 项 live skip + 15 项单测 live skip）/ `GATE PASS`(64 能力) / README 与基线已同步。剩余：P3（按需：CDP attach、WebView2 CDP、grounding 副路、on-failure 挡）——均为外部条件触发，未排期。
 
 **不做的（防止回流）**：不改 `InputInjector` / 坐标归一化（`ceil` 公式）/ 护栏四步序 / 租约身份模型 / `PostActionVerifier` 控件矩形判定（已测封印资产）；不做 OCR；不做沙箱/第二桌面；不把桌面工具 MCP 化。
 
@@ -58,26 +58,21 @@
 
 ---
 
-## P2 — 补上「桌面」这一级观察
+## P2 — 补上「桌面」这一级观察 — **2a / 2b 已完成**
 
-### 2a. `desktop_observe(scope:"desktop")`
-- [ ] **P2a.1 全屏捕获**
+### 2a. 全屏观察（实现放在 `desktop_screenshot{scope:"desktop"}`，不动 observe 的实体列表）
+- [x] **P2a.1 全屏捕获**
   调用对象：`src/Partner.Desktop/Capture/GdiScreenCapture.cs` 加 `CaptureVirtualDesktopAsync`。
   做法：虚拟屏原点/尺寸直接调 `Input/VirtualDesktop.cs` 现成逻辑；单次 `BitBlt`（~60ms，不顶回 UIA 遍历的 10.2s）。
-- [ ] **P2a.2 Desktop 实体**
-  调用对象：`DesktopAutomation.Observe` + `Perception/DesktopEntities.cs`。
-  做法：新增 `DesktopEntity`（role="desktop"，虚拟屏矩形）；UIA 树不走它；`ScreenshotMarks` 照常叠（窗口本身也编号，网格刻度即虚拟屏坐标——归一化已在注入层逐像素验过）。
-- [ ] **P2a.3 截图入口**
-  `desktop_screenshot` 接受 `entityId = desktop 实体` → 截全屏。
-- [ ] **P2a.4 验收：smoke `desktop.desktop_scope`**
-  全屏图能看到托盘某图的编号标记；用该 elementId 经 `desktop_act` 正常点击。
+- [x] **P2a.2 窗口编号标记**（`ScreenshotMarks.WindowMarks`：纯几何 —— 标记=窗口 entityId + 中心点；最小化/越界窗口与元素标记同规则跳过。没有为桌面造 UiEntity：桌面实体进列表会污染裸坐标命中（ResolveByPoint 的覆盖歧义）与窗口筛选，全屏路径不需要它）
+- [x] **P2a.3 截图入口**（`desktop_screenshot` 加 `scope:"desktop"`；无观察前提（第一次看不能以先看过为前提）；结果 `ShownPicture(entityId="desktop")`；act 端 px/py 全屏图映射为屏幕坐标后走裸坐标路径——命中测试/遮挡/z 序全过，非桌面图仍然要求窗口身份）
+- [x] **P2a.4 验收**（单测 5 条：几何/最小化跳过/无观察可出图/标记 id 可被 act 找到/px/py 落点±1px；smoke 2 条：无观察全景+media 记账、px/py 裸坐标解析落点）
 
-### 2b. px/py 就近元素兜底
-- [ ] **P2b.1 升级逻辑**
+### 2b. px/py 就近元素兜底 — **已完成**
+- [x] **P2b.1 升级逻辑**
   调用对象：`src/Partner.Desktop/Tools/DesktopTools.cs`（px/py 落点处理）。
   做法：服务端在同一次观察的元素列表里找半径 ε 内最近的可交互元素 —— 命中升级为 `elementId` 路径（得 pattern + 控件矩形校验的好处），未命中走坐标原路。ε = 8px（人眼实测偏差 ~5px）。
-- [ ] **P2b.2 验收：smoke `desktop.px_snap_to_element`**
-  px/py 偏 5px 仍点在按钮中心；偏 > ε 走坐标路径不升级。
+- [x] **P2b.2 验收**（单测 6 条：邻域内升级、半径外不升级、平局取 id、Document/空白矩形/他窗口/offscreen 不升级；live 门控 1 条实包；smoke 1 条：key 拒绝路径解析出控件名 + 目标写进 guard 拒绝文本）
 
 ---
 

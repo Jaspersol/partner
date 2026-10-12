@@ -281,6 +281,7 @@ public sealed class DesktopActTool(
         }
 
         var seenElement = arguments.ElementId is { Length: > 0 } elementId ? before.FindElement(elementId) : null;
+        var snapped = false;
         if (arguments.ElementId is { Length: > 0 } && seenElement is null)
         {
             return new ToolResult(false, $"未知控件 '{arguments.ElementId}'：先调用 desktop_observe");
@@ -321,12 +322,34 @@ public sealed class DesktopActTool(
             return new ToolResult(false, "x/y 和 px/py 同时给了：留一种（前者是屏幕坐标，后者是某张截图上的像素）");
         }
 
+        // A picture of the whole desktop carries no window identity: its pixel maps to a screen coordinate,
+        // and from there the action targets whatever window the fresh observation shows at that point —
+        // exactly the bare-point path, with the same hit-test and occlusion guards. Carrying "desktop"
+        // forward as an entityId would instead sink every such call into "未知窗口", because the desktop
+        // has no UiEntity and never will — it is the thing windows live on.
+        if (picture is not null && string.Equals(picture.EntityId, "desktop", StringComparison.Ordinal))
+        {
+            if (seenElement is not null || arguments.EntityId is { Length: > 0 })
+            {
+                return new ToolResult(false,
+                    "这张媒体是桌面全景（scope=desktop），不对应单一窗口：要么给 x/y 屏幕坐标，"
+                    + "要么用 desktop_observe 拿某个窗口的 entityId，或用全屏图上的窗口编号标记中的 id");
+            }
+
+            point = MapPicturePoint(picture, picturePoint!.Value.X, picturePoint.Value.Y);
+            picture = null;
+            picturePoint = null;
+            entityId = null;
+        }
+
         if (string.IsNullOrWhiteSpace(entityId))
         {
             // No window named, but a point is: the point itself says where the click lands, so derive the window
             // from it. Models do this — they look at the picture, then click the coordinates they worked out —
             // and refusing that on a technicality is how "operate the app" turns into a loop of refusals.
-            entityId = ResolveByPoint(before, point, automation.LastShownEntityId)?.EntityId;
+            entityId = ResolveByPoint(before, point, "desktop".Equals(automation.LastShownEntityId, StringComparison.Ordinal)
+                ? null
+                : automation.LastShownEntityId)?.EntityId;
             if (entityId is null)
             {
                 return new ToolResult(false, DescribeRefusal(before, point));
@@ -392,6 +415,19 @@ public sealed class DesktopActTool(
             point = MapPicturePoint(picture, pp.X, pp.Y);
         }
 
+        // The snap: a pixel read off a picture carries a couple of pixels of double rounding (a
+        // downscaled full-window or full-desktop picture cannot avoid it), and a vision model's read
+        // adds its own — a measured miss was 5 px, which on a 3 px control is the neighbour. When no
+        // element was named, a point that lands within a control's neighbourhood is upgraded to that
+        // control: the click goes to the centre the server computed, where the pattern or the
+        // verification knows exactly what it is acting on. Beyond the radius the point keeps its own
+        // coordinate — snapping to a control the model did not aim at would be a different click.
+        if (point is { } mapped && seenElement is null)
+        {
+            seenElement = SnapToElement(fresh, entityId, mapped);
+            snapped = seenElement is not null;
+        }
+
         if (seenElement is not null && RevalidateElement(seenElement, fresh) is { } staleElement)
         {
             return new ToolResult(false, staleElement);
@@ -412,7 +448,11 @@ public sealed class DesktopActTool(
 
         if (Guard(kind, target, resolved, arguments) is { } blocked)
         {
-            return new ToolResult(false, blocked);
+            // The refusal names the control that was resolved, when one was: the model's next decision
+            // turns on whether it was aiming at that control — snap or named — not at the window overall.
+            return new ToolResult(false, element is null
+                ? blocked
+                : $"{blocked} · 目标 '{element.Name}' [{element.Role}]");
         }
 
         // A control that is below the fold has a click point outside the window, so every containment check
@@ -444,7 +484,8 @@ public sealed class DesktopActTool(
 
         var action = await automation.ActAsync(entityId, kind, parameters, ct).ConfigureAwait(false);
 
-        var described = Describe(action, kind, target, element);
+        var described = Describe(action, kind, target, element)
+            + (snapped ? " · px/py 卷到了控件邻域，已按控件中心点执行" : string.Empty);
 
         // The state after the action rides along with the result: the server just re-checked this window and
         // has its fresh elements in hand, so the picture and the ids it labels are a matched set by
@@ -627,6 +668,45 @@ public sealed class DesktopActTool(
     /// control" with no position in it means the middle of the control.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The interactive control whose centre is nearest to the point, inside the named window and within
+    /// <see cref="SnapRadius"/>. Static text (a <c>Document</c>) is skipped for the same reason the
+    /// screenshot marks skip it: its rectangle is the whole content area, so "snap to its centre" is
+    /// "snap to the middle of the document" — a click the caller did not ask for. Offscreen controls are
+    /// skipped for the same reason element marks skip them: their rectangle is somewhere else.
+    /// </summary>
+    public const int SnapRadius = 8;
+
+    public static UiElement? SnapToElement(DesktopObservation fresh, string? entityId, (int X, int Y) at)
+    {
+        ArgumentNullException.ThrowIfNull(fresh);
+        if (string.IsNullOrWhiteSpace(entityId) || at.X is < -1_000_000 or > 10_000_000)
+        {
+            return null;
+        }
+
+        return fresh.Elements
+            .Where(candidate =>
+                string.Equals(candidate.WindowId, entityId, StringComparison.Ordinal)
+                && !candidate.IsOffscreen
+                && candidate.Rect.Width > 0
+                && candidate.Rect.Height > 0
+                && !string.Equals(candidate.Role, "Document", StringComparison.Ordinal))
+            .Select(candidate => (candidate, Distance(candidate.Centre, at)))
+            .Where(pair => pair.Item2 <= SnapRadius * SnapRadius)
+            .OrderBy(pair => pair.Item2)
+            .ThenBy(pair => pair.candidate.ElementId, StringComparer.Ordinal)
+            .Select(pair => pair.candidate)
+            .FirstOrDefault();
+    }
+
+    private static int Distance((int X, int Y) a, (int X, int Y) b)
+    {
+        var dx = a.X - b.X;
+        var dy = a.Y - b.Y;
+        return dx * dx + dy * dy;
+    }
+
     public static (int X, int Y) Within(UiElement element, RelativePoint? offset)
     {
         var at = offset ?? RelativePoint.Centre;
