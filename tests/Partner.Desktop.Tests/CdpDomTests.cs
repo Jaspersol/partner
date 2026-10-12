@@ -27,6 +27,48 @@ public sealed class CdpDomTests
         double height = 32) =>
         new(marker, name, role, x, y, width, height);
 
+
+    // ---- which page one port answers with（多标签共享一个调试端口时的选择） --------
+
+    [Theory]
+    [InlineData("音乐 - 网易云音乐", "音乐", true)]
+    [InlineData("音乐", "音乐 - 网易云音乐", true)]
+    [InlineData("音乐 - 网易云音乐", "播放列表", false)]
+    [InlineData("", "", false)]
+    public void The_window_title_and_the_page_title_name_the_same_tab(string windowTitle, string pageTitle, bool matched)
+    {
+        // Chromium titles the window after the page, often with a suffix; Electron may title it after the
+        // app. Either direction counts, so both conventions land on their page.
+        Assert.Equal(matched, CdpDomSource.Matches(pageTitle, windowTitle));
+    }
+
+    [Fact]
+    public async Task A_port_serving_two_tabs_answers_the_window_that_asks()
+    {
+        // Two windows share one debug port; the first page in the list is not the one every window means.
+        // The pick goes by title — and when a hint matches nothing, the first page still answers, which is
+        // the behaviour this rule contained.
+        var safe = new CdpPage("第一标签", "http://x/1", "ws://first");
+        var wanted = new CdpPage("音乐 - 网易云音乐", "http://x/2", "ws://second");
+
+        CdpPage? picked = null;
+        var source = new CdpDomSource(connect: (port, hint) =>
+        {
+            picked = CdpDomSource.Matches(wanted.Title, hint) ? wanted : safe;
+            return Task.FromResult<CdpPage?>(picked);
+        });
+
+        // The read itself would need a real page (the socket open fails on a fake), so what this asserts is
+        // the pick: which page the hint routed to, because that is where both the read and the press land.
+        await source.ReadAsync(9222, "音乐 - 网易云音乐");
+        Assert.Equal("ws://second", picked!.WebSocketDebuggerUrl);
+
+        // And the un-hinted call keeps the old shape: first page, first socket.
+        picked = null;
+        await source.ReadAsync(9222);
+        Assert.Equal("ws://first", picked!.WebSocketDebuggerUrl);
+    }
+
     [Fact]
     public void Viewport_coordinates_become_screen_coordinates()
     {

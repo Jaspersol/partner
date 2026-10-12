@@ -800,7 +800,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 项 | 状态 |
 |---|---|
 | UIA 语义树 | **已做**：窗口内的可交互控件（名称/类型/矩形/点击点、是否在视野外）随观察返回。Chromium、游戏、画布这类 UIA 盲区返回空，仍走坐标路径 |
-| Chromium / Electron 的页面控件 | **已做，但有硬边界**：页面元素（按钮/链接/输入框）作为控件出现在 `desktop_observe` 里，可直接用 elementId 按名字点，**不需要窗口在前台**。边界：**只有本进程用 `desktop_launch` 启动的程序才会有调试端口**（标志得在命令行上，用户已经跑着的程序补不上去）；名字认不出的 Electron 程序要在 `arguments` 里自己传 `--remote-debugging-port=9222`；单实例程序已在跑时端口不会开（启动结果会明说）。**多标签页只取一个窗口的页面**（两个标签共享一个端口，应答哪个是随机的） |
+| Chromium / Electron 的页面控件 | **已做，但有硬边界**：页面元素（按钮/链接/输入框）作为控件出现在 `desktop_observe` 里，可直接用 elementId 按名字点，**不需要窗口在前台**。边界：**只有本进程用 `desktop_launch` 启动的程序才会有调试端口**（标志得在命令行上，用户已经跑着的程序补不上去）；名字认不出的 Electron 程序要在 `arguments` 里自己传 `--remote-debugging-port=9222`；单实例程序已在跑时端口不会开（启动结果会明说）。**多标签/多窗口已按标题选页**：两个标签共享一个调试端口时，端口不再永远答第一个标签——按窗口标题与页面标题的双向包含匹配选页，一个端口可并存多页的 socket（每个 target 一个客户端的限制不变）；匹配不上仍回退第一个（旧形状）。未验证：多标签在线上真的吃到匹配（live 测试跑的是单页 Edge） |
 | 调试端口的安全性 | **已知代价**：端口无认证、监听 loopback（本机其它进程也能读那个页面）。这是 Chromium/Electron 本身的性质。只在 `desktop_launch` 主动启动时才开，不去开用户已经开着的窗口 |
 | 真实 Electron 应用 | **未验证**：live 测试跑的是本机 Edge + 本地 HTML 页；网易云音乐一类没验过 |
 | 遍历被上限截断 | ✅ **已说**：`WalkStopReason` → `UiEntity.ElementsTruncated/ElementsTruncation` → `desktop_observe` 的 `elementsIncomplete`。**只有 Visited/Time 报**，深度与控件上限是常态不报。一个 Chromium 形状的窗口实测从 23.8s 降到 4.4s |

@@ -106,7 +106,7 @@ public sealed class CdpDomLiveTests
 
             // The press reaches the page, not a coordinate near it.
             var button = snapshot.Elements.First(element => element.Name == "提交");
-            var press = await source.ActAsync(port, button.Marker, CancellationToken.None);
+            var press = await source.ActAsync(port, button.Marker, window!.Title, CancellationToken.None);
 
             Assert.NotNull(press);
             Assert.True(press!.Ok, press.Detail);
@@ -176,11 +176,11 @@ public sealed class CdpDomLiveTests
         return null;
     }
 
-private static async Task<CdpDomSource.CdpDomSnapshot?> WaitForPageAsync(CdpDomSource source, int port)
+private static async Task<CdpDomSource.CdpDomSnapshot?> WaitForPageAsync(CdpDomSource source, int port, string? windowTitle = null)
     {
         for (var attempt = 0; attempt < 60; attempt++)
         {
-            var snapshot = await source.ReadAsync(port, CancellationToken.None);
+            var snapshot = await source.ReadAsync(port, windowTitle, CancellationToken.None);
             if (snapshot is { Elements.Count: > 0 })
             {
                 return snapshot;
@@ -208,5 +208,5 @@ private static async Task<CdpDomSource.CdpDomSnapshot?> WaitForPageAsync(CdpDomS
     }
 
     private static async Task<string?> EvaluateAsync(int port, string expression) =>
-        await new CdpDomSource().EvaluateAsync(port, expression, CancellationToken.None);
+        await new CdpDomSource().EvaluateAsync(port, expression, null, CancellationToken.None);
 }

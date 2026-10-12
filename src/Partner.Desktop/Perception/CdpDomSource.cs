@@ -245,11 +245,13 @@ public sealed class CdpDomSource
     /// as one that changed nothing.
     /// </para>
     /// </summary>
-    public Task<string?> EvaluateAsync(int port, string expression, CancellationToken ct = default) =>
-        SendAsync(port, $"({expression})", ct);
+    public Task<string?> EvaluateAsync(int port, string expression, string? windowTitle = null, CancellationToken ct = default) =>
+        SendAsync(port, windowTitle, $"({expression})", ct);
 
-    /// <summary>Live sockets, one per debug port.</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, CdpConnection> _connections = new();
+    /// <summary>Live sockets, one per (port, page) pair. A port serves several tabs, and each target has
+    /// its own <c>webSocketDebuggerUrl</c> — the socket keys on the page so two windows of one browser can
+    /// each talk to the tab they are looking at instead of both talking to the first one.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Port, string Url), CdpConnection> _connections = new();
 
     /// <summary>How long one expression may take before the page is written off as not answering.</summary>
     internal static readonly TimeSpan EvaluateTimeout = TimeSpan.FromSeconds(5);
@@ -258,7 +260,7 @@ public sealed class CdpDomSource
     /// The endpoint a debuggable page is reached through.</summary>
     private readonly HttpClient _http;
 
-    private readonly Func<int, Task<CdpPage?>> _connect;
+    private readonly Func<int, string?, Task<CdpPage?>> _connect;
 
     /// <summary>
     /// Overridable so the page lookup and the walk can be exercised without a browser: the failure modes being
@@ -267,7 +269,7 @@ public sealed class CdpDomSource
     /// </summary>
     public CdpDomSource(
         HttpClient? http = null,
-        Func<int, Task<CdpPage?>>? connect = null)
+        Func<int, string?, Task<CdpPage?>>? connect = null)
     {
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
         _connect = connect ?? ConnectAsync;
@@ -278,15 +280,15 @@ public sealed class CdpDomSource
     /// that did not answer. Never throws — a browser that is not there is not an error, it is a window the
     /// other paths are for.
     /// </summary>
-    public async Task<CdpDomSnapshot?> ReadAsync(int port, CancellationToken ct)
+    public async Task<CdpDomSnapshot?> ReadAsync(int port, string? windowTitle = null, CancellationToken ct = default)
     {
-        var page = await _connect(port).ConfigureAwait(false);
+        var page = await _connect(port, windowTitle).ConfigureAwait(false);
         if (page is null)
         {
             return null;
         }
 
-        var result = await SendAsync(port, ReadScript, ct).ConfigureAwait(false);
+        var result = await SendAsync(port, windowTitle, ReadScript, ct).ConfigureAwait(false);
         if (result is null)
         {
             return null;
@@ -330,15 +332,15 @@ public sealed class CdpDomSource
     /// Presses a marked element. Null when the page could not be reached; a refusal when it could not press
     /// that element — which is reported rather than turned into a click at the coordinates it used to occupy.
     /// </summary>
-    public async Task<UiaInvocation?> ActAsync(int port, string marker, CancellationToken ct)
+    public async Task<UiaInvocation?> ActAsync(int port, string marker, string? windowTitle = null, CancellationToken ct = default)
     {
-        var page = await _connect(port).ConfigureAwait(false);
+        var page = await _connect(port, windowTitle).ConfigureAwait(false);
         if (page is null)
         {
             return null;
         }
 
-        var result = await SendAsync(port, ActScript.Replace("%MARKER%", marker, StringComparison.Ordinal), ct)
+        var result = await SendAsync(port, windowTitle, ActScript.Replace("%MARKER%", marker, StringComparison.Ordinal), ct)
             .ConfigureAwait(false);
 
         if (result is null)
@@ -363,10 +365,15 @@ public sealed class CdpDomSource
     }
 
     /// <summary>
-    /// The first page on a debug port. Several tabs share one port, so the choice is by title and URL rather
-    /// than by order — and an app we launched has usually exactly one.
+    /// The first page on a debug port that matches what was asked for, falling back to the first page at all.
+    /// Several tabs share one port, and without this rule they do not share it safely — a second window reads
+    /// the first tab's DOM and presses the first tab's buttons, which is a wrong-tab click with no error
+    /// anywhere. The window title is the only hint the window has: Chromium names the window after its page
+    /// (often with a suffix like " - Google Chrome"), Electron after its app or page. The match is
+    /// bidirectional containment, case-insensitive, on the two titles; when nothing matches (the suffix
+    /// conventions differ too much) the first page answers, which is the behaviour this used to always have.
     /// </summary>
-    private async Task<CdpPage?> ConnectAsync(int port)
+    private async Task<CdpPage?> ConnectAsync(int port, string? preferredTitle)
     {
         try
         {
@@ -382,6 +389,7 @@ public sealed class CdpDomSource
             var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var document = JsonDocument.Parse(body);
 
+            CdpPage? first = null;
             foreach (var target in document.RootElement.EnumerateArray())
             {
                 if (target.TryGetProperty("type", out var type) && type.GetString() != "page")
@@ -394,18 +402,45 @@ public sealed class CdpDomSource
                     continue;
                 }
 
-                return new CdpPage(
+                var page = new CdpPage(
                     target.TryGetProperty("title", out var title) ? title.GetString() ?? string.Empty : string.Empty,
                     target.TryGetProperty("url", out var pageUrl) ? pageUrl.GetString() ?? string.Empty : string.Empty,
                     url);
+
+                if (Matches(page.Title, preferredTitle))
+                {
+                    return page;
+                }
+
+                first ??= page;
             }
 
-            return null;
+            return first;
         }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or JsonException)
         {
             return null;
         }
+    }
+
+    /// <summary>Whether a page's title and the window's title name the same tab: either containing the
+    /// other, so "音乐 - 网易云音乐" matches the page titled "音乐" and vice versa.</summary>
+    internal static bool Matches(string pageTitle, string? windowTitle)
+    {
+        if (string.IsNullOrWhiteSpace(windowTitle) || string.IsNullOrWhiteSpace(pageTitle))
+        {
+            return false;
+        }
+
+        var page = pageTitle.Trim();
+        var window = windowTitle.Trim();
+        if (window.Length == 0 || page.Length == 0)
+        {
+            return false;
+        }
+
+        return page.Contains(window, StringComparison.OrdinalIgnoreCase)
+            || window.Contains(page, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -417,19 +452,30 @@ public sealed class CdpDomSource
     /// exists for, so the connection is kept and re-established only when the page goes away.
     /// </para>
     /// </summary>
-    private async Task<CdpConnection?> ConnectionAsync(int port, CancellationToken ct)
+    private async Task<CdpConnection?> ConnectionAsync(int port, string? preferredTitle, CancellationToken ct)
     {
-        if (_connections.TryGetValue(port, out var existing2) && existing2.IsOpen)
+        var page = await _connect(port, preferredTitle).ConfigureAwait(false);
+        if (page is null)
         {
-            return existing2;
+            return null;
         }
 
-        if (_connections.TryRemove(port, out var stale))
+        var key = (port, page.WebSocketDebuggerUrl);
+        if (_connections.TryGetValue(key, out var existing2) && existing2.IsOpen)
         {
-            stale.Dispose();
-        }
+            // The pick is checked against the hint each time: a tab that was retitled (or closed and
+            // replaced) must not keep serving the stale socket — the hint is what the window answered
+            // for, and a stale one names a different page with every coordinate wrong by a tab.
+            if (Matches(page.Title, preferredTitle))
+            {
+                return existing2;
+            }
 
-        var page = await _connect(port).ConfigureAwait(false);
+            if (_connections.TryRemove(key, out var wrong))
+            {
+                wrong.Dispose();
+            }
+        }
         if (page is null)
         {
             return null;
@@ -443,7 +489,7 @@ public sealed class CdpDomSource
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
 
             await connection.OpenAsync(timeout.Token).ConfigureAwait(false);
-            _connections[port] = connection;
+            _connections[key] = connection;
             return connection;
         }
         catch (Exception error) when (
@@ -454,12 +500,12 @@ public sealed class CdpDomSource
         }
     }
 
-    /// <summary>One expression, one answer, over the connection held for that port.</summary>
-    private async Task<string?> SendAsync(int port, string expression, CancellationToken ct)
+    /// <summary>One expression, one answer, over the connection held for the page the window names.</summary>
+    private async Task<string?> SendAsync(int port, string? preferredTitle, string expression, CancellationToken ct)
     {
         try
         {
-            var connection = await ConnectionAsync(port, ct).ConfigureAwait(false);
+            var connection = await ConnectionAsync(port, preferredTitle, ct).ConfigureAwait(false);
             if (connection is null)
             {
                 return null;

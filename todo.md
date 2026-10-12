@@ -4,7 +4,7 @@
 顺序依赖：`P0 → P1a → {P2a, P2b}`；`P1b`、`P1c` 独立可并行；`P3` 全部按需。
 每期做完统一收尾：smoke `Check(...)` + `Capabilities` 表 → `--update-baseline capabilities/manifest.baseline.json` → README 补相应小节（防文档漂移）。
 
-**进度**：**P0、P1、P2a、P2b 全部完成**。全仓 `dotnet test` 975+ 绿 / smoke 166 项全绿（2 项 live skip + 15 项单测 live skip）/ `GATE PASS`(64 能力) / README 与基线已同步。剩余：P3（按需：CDP attach、WebView2 CDP、grounding 副路、on-failure 挡）——均为外部条件触发，未排期。
+**进度**：**P0、P1、P2a、P2b 全部完成；P3.1 的多标签半已提级修复，其余按需/定为不做**。全仓 `dotnet test` 975+ 绿 / smoke 166 项全绿（2 项 live skip + 15 项单测 live skip）/ `GATE PASS`(64 能力) / README 与基线已同步。剩余：P3（按需：CDP attach、WebView2 CDP、grounding 副路、on-failure 挡）——均为外部条件触发，未排期。
 
 **不做的（防止回流）**：不改 `InputInjector` / 坐标归一化（`ceil` 公式）/ 护栏四步序 / 租约身份模型 / `PostActionVerifier` 控件矩形判定（已测封印资产）；不做 OCR；不做沙箱/第二桌面；不把桌面工具 MCP 化。
 
@@ -78,11 +78,10 @@
 
 ## P3 — 接缝与外部条件（按需，不排期）
 
-- [ ] **P3.1 CDP attach + 多标签**
-  调用对象：`Perception/CdpRegistry.cs`（扫 loopback 常见端口 + `/json/version` UA 比对）、`Perception/CdpDomSource.cs`（枚举 `/json` 全部 targets，消除多标签随机性）。
-  触发：用户实际抱怨「已开着的 Electron 应用动不了」。
-- [ ] **P3.2 WebView2 自家壳走 CDP**
-  壳以 `--remote-debugging-port` 启动 webview → 吃掉壳自身的 UIA 盲区（自家程序零安全争议）。
+- [x] **P3.1 的「多标签」半 —— 已升级为全线修复（2026 本轮）**：这不是等抱怨的功能缺口而是正确性 bug——两个标签共享一个调试端口时，`/json/list` 的第一个 tab 会同时供两个窗口读写（第二窗口按自己的客户区原点换算第一个 tab 的 DOM，点击也落在第一个 tab 里）。修法：`CdpDomSource.ConnectAsync(port, windowTitle)` 按窗口标题与页面标题双向包含匹配选页（Chromium 窗口标题 = 页 title + 后缀；Electron 可能相反）；连接缓存从「每端口一条」改为「每 (端口， 页) 一条」（targets 各自 webSocketDebuggerUrl，每 target 一个客户端的限制不变）；匹配不上仍回退第一个（旧行为）。单测 7 条（`CdpDomTests` 匹配规则 4 +  Fake connect 选页 2 + 旧 viewport 1 已有）；未验证多标签在线上真吃到匹配（live 是单页 Edge）。
+- [ ] **P3.1 的「attach」半 —— 维持按需**
+  扫 loopback 常见端口找已开的调试目标；价值低（大多数真实用户的浏览器未带调试端口，attach 无从得手；仅开发者自带 flag 的 Electron 应用受益）。触发不变：用户实际抱怨且场景明确时。
+- [ ] **P3.2 WebView2 自家壳走 CDP —— 定为不做**：自家壳的会话/设置操作有更正确的路（API + 治理），让 agent 用桌面工具去点自家 UI 是最差路径（且 agent 自己的窗口正好挡在用户眼前，hit-test 抬前台的冲突就在那）。写明设计立场：模型对自家应用的修改走 HTTP API，不走 desktop 工具。
 - [ ] **P3.3 grounding 模型副路（已收紧为“纯文本模型专用”）**
   结论：**接入了视觉模型（`supportsImages=true`）后不做**——坐标读数的精度由已有三层机制承担
   （网格/标记标准化读数、zoomAt 两段瞄、`SnapToElement` 8px 邻域吸附），剩余优化的顺序是：

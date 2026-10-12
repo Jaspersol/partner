@@ -700,7 +700,7 @@ public sealed class DesktopAutomation : IDisposable
                 continue;
             }
 
-            var page = await _cdp.ReadAsync(debugPort, ct).ConfigureAwait(false);
+            var page = await _cdp.ReadAsync(debugPort, entity.Label, ct).ConfigureAwait(false);
             if (page is null)
             {
                 continue;
@@ -782,7 +782,7 @@ public sealed class DesktopAutomation : IDisposable
             return null;
         }
 
-        return await _cdp.ActAsync(debugPort, elementId[(marker + DomMarker.Length)..], ct).ConfigureAwait(false);
+        return await _cdp.ActAsync(debugPort, elementId[(marker + DomMarker.Length)..], entity.Label, ct).ConfigureAwait(false);
     }
 
     /// <summary>Acts on a named control through its UI Automation pattern, or null when that does not apply — the
