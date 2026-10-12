@@ -68,11 +68,15 @@ public static class ScreenshotMarks
     /// Overlays the grid and the element marks. <paramref name="window"/> is the window's screen rectangle —
     /// the frame is a capture of it, so this is the one conversion between picture pixels and screen pixels.
     /// </summary>
+    /// <param name="gridStep">Forces the grid step in screen pixels, instead of the ~8-cells rule. A zoomed
+    /// crop is small by construction (hundreds of pixels), where the rule would still land on a 25–50 px
+    /// step — a precision bound the zoom exists to break, so the caller pins the step instead.</param>
     /// <returns>The annotated picture, and the marks it printed, in the order they were numbered.</returns>
     public static (BitmapSource Annotated, IReadOnlyList<ScreenshotMark> Marks) Draw(
         BitmapSource source,
         PixelRect window,
-        IReadOnlyList<UiElement> elements)
+        IReadOnlyList<UiElement> elements,
+        int? gridStep = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(elements);
@@ -97,7 +101,7 @@ public static class ScreenshotMarks
         {
             context.DrawImage(source, new Rect(0, 0, width, height));
 
-            DrawGrid(context, window, scale, verticalScale, width, height);
+            DrawGrid(context, window, scale, verticalScale, width, height, gridStep);
             DrawMarks(context, marks, window, scale, verticalScale);
         }
 
@@ -165,9 +169,10 @@ public static class ScreenshotMarks
         double scale,
         double verticalScale,
         int width,
-        int height)
+        int height,
+        int? forcedStep = null)
     {
-        var step = NiceStep(Math.Max(window.Width, window.Height));
+        var step = forcedStep ?? NiceStep(Math.Max(window.Width, window.Height));
 
         var pen = GridPen;
 

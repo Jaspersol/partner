@@ -9,8 +9,51 @@ namespace Partner.Core.Agent;
 
 public sealed record AgentTurnOptions
 {
-    /// <summary>Hard cap on steps inside one turn (a budget, not a semantic limit).</summary>
+    /// <summary>Hard cap on steps inside one turn (a budget, not a semantic limit).
+    /// <para>The floor every family budget stands on; see <see cref="ToolStepBudgets"/>.</para></summary>
     public int MaxSteps { get; init; } = 8;
+
+    /// <summary>
+    /// Step budgets beyond <see cref="MaxSteps"/>, by tool-name prefix.
+    /// <para>
+    /// One number for every family says a GUI task and a “what time is it” need the same room. They don’t:
+    /// a real desktop task runs 20–40 steps of look, act, look — while a chat turn ends as soon as the answer
+    /// is written either way, so a larger ceiling only binds premises that were never going to finish. Keys
+    /// are prefixes applied to tool names: <c>desktop</c> covers every <c>desktop_*</c> tool,
+    /// <c>mcp_</c> covers the server-bridged ones.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<string, int> ToolStepBudgets { get; init; } =
+        new Dictionary<string, int>(StringComparer.Ordinal) { ["desktop"] = 32, ["mcp_"] = 32 };
+
+    /// <summary>
+    /// The budget this turn runs under: the largest family budget among the tools <b>registered</b>, or
+    /// <see cref="MaxSteps"/> when none of the keys matches.
+    /// <para>
+    /// Keyed on the registry, not on what the model has called so far. Extending the budget only after a
+    /// family tool actually ran would mean a desktop task that spends its first few steps reading the
+    /// desktop dies on the old number before its first action; and a registration is a statement about what
+    /// kind of work this toolset is for all the same.
+    /// </para>
+    /// </summary>
+    public int StepsAllowedFor(IEnumerable<string> registeredToolNames)
+    {
+        ArgumentNullException.ThrowIfNull(registeredToolNames);
+
+        var budget = MaxSteps;
+        foreach (var name in registeredToolNames)
+        {
+            foreach (var (prefix, steps) in ToolStepBudgets)
+            {
+                if (name.StartsWith(prefix, StringComparison.Ordinal) && steps > budget)
+                {
+                    budget = steps;
+                }
+            }
+        }
+
+        return budget;
+    }
 
     public int MaxTokens { get; init; } = 4096;
 
@@ -216,7 +259,11 @@ public sealed class AgentTurnRunner
                 var userLoggedHere = messageAlreadyLogged;
                 var systemLogged = false;
 
-                while (steps < _options.MaxSteps)
+                // The budget the toolset earns: a desktop turn gets room to look-act-look dozens of times,
+                // a plain chat turn never notices the difference (it ends when the answer is written).
+                var budget = _options.StepsAllowedFor(_tools.Specs.Select(spec => spec.Name));
+
+                while (steps < budget)
                 {
                     ct.ThrowIfCancellationRequested();
 
@@ -362,7 +409,7 @@ public sealed class AgentTurnRunner
                     }
                 }
 
-                if (steps >= _options.MaxSteps)
+                if (steps >= budget)
                 {
                     // Budget exhausted with work still pending: still a budget reason, tagged for diagnosis.
                     reason = TurnEndReason.MaxTokens;

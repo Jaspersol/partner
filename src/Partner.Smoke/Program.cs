@@ -1,5 +1,6 @@
 ﻿using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using Partner.Api.Settings;
 using Partner.Api.Voice;
 using System.Globalization;
 using System.Net.Sockets;
@@ -1083,6 +1084,117 @@ internal static class Program
                 refused.GuardReason ?? "(none)");
         }
 
+        // The action's answer now carries the state after it: the same pipeline the screenshot tool runs,
+        // attached to a result the model was already about to read. Two read-only evidences — when a picture
+        // is promised (the decision matrix, which must exclude a refusal, the aim-only kinds and a caller who
+        // said off) and what one render yields (a real PNG under a media id the server's px/py mapping can
+        // resolve). Both drive a stub capture, so the user's screen stays out of the check.
+        {
+            var matrix = DesktopActTool.WantsPicture(ActionKind.LeftClick, "auto", supportsImages: true, guardPassed: true)
+                && !DesktopActTool.WantsPicture(ActionKind.LeftClick, "off", supportsImages: true, guardPassed: true)
+                && !DesktopActTool.WantsPicture(ActionKind.LeftClick, "auto", supportsImages: false, guardPassed: true)
+                && !DesktopActTool.WantsPicture(ActionKind.LeftClick, "auto", supportsImages: true, guardPassed: false)
+                && !DesktopActTool.WantsPicture(ActionKind.Focus, "auto", supportsImages: true, guardPassed: true)
+                && !DesktopActTool.WantsPicture(ActionKind.MovePointer, "auto", supportsImages: true, guardPassed: true)
+                && !DesktopActTool.WantsPicture(ActionKind.ScrollIntoView, "auto", supportsImages: true, guardPassed: true);
+
+            Check("desktop: an act answer promises a picture for the kinds that change what is seen",
+                matrix
+                && new DesktopActTool(
+                    new DesktopAutomation(), DesktopToolPolicy.Any, new FileMediaStore(root),
+                    supportsImages: true).Spec.Description.Contains("自动附上", StringComparison.Ordinal)
+                && new DesktopActTool(
+                    new DesktopAutomation(), DesktopToolPolicy.Any, new FileMediaStore(root),
+                    supportsImages: true).Spec.ParametersJsonSchema.Contains("feedback", StringComparison.Ordinal),
+                matrix ? "matrix holds and the schema advertises it" : "decision matrix broke");
+
+            var workspace = Path.Combine(root, "desktop-act-state");
+            Directory.CreateDirectory(workspace);
+            const int frameWidth = 320;
+            const int frameHeight = 200;
+            var frameRect = new PixelRect(40, 30, frameWidth, frameHeight);
+            using (var automation = new DesktopAutomation(capture: new PositionEchoCapture(frameRect)))
+            {
+                var target = new UiEntity
+                {
+                    EntityId = "1a2b",
+                    Generation = "obs-x",
+                    Role = "window",
+                    Label = "smoke 窗口",
+                    Value = "smoke",
+                    Rect = frameRect,
+                    Confidence = 1.0,
+                    IdentityDigest = "digest-x",
+                    LayoutDigest = DesktopObservation.Layout(frameRect),
+                    ProcessId = 4242,
+                    ObservedAtMs = desktopClock.GetUtcNow(),
+                };
+
+                var picture = await DesktopScreenshotTool.RenderAfterActionAsync(
+                    automation, new FileMediaStore(workspace), target,
+                    new List<UiElement> { new("e-1", "1a2b", "播放", "Button", new PixelRect(50, 40, 80, 30), "element-a") },
+                    obsId: "obs-x",
+                    ct: default);
+
+                var mapped = automation.PictureOf(picture?.MediaId ?? "");
+                Check("desktop: an act answer's attached picture maps back and is recorded by id",
+                    picture is not null
+                    && mapped is not null
+                    && frameRect == mapped.ScreenRect
+                    && frameWidth == mapped.PictureWidth
+                    && frameHeight == mapped.PictureHeight
+                    && "obs-x" == mapped.ObsId
+                    && picture.DataUri.StartsWith("data:image/png;base64,", StringComparison.Ordinal)
+                    && automation.LastShownEntityId == target.EntityId,
+                    picture is null
+                        ? "render produced nothing"
+                        : $"{picture.Width}x{picture.Height} media={picture.MediaId} marks={picture.Marks.Count}");
+            }
+        }
+
+        // The step budget is measured by tool family: a GUI task runs 20–40 look-act-look steps, so a flat
+        // single number spent them on the first two controls and ended the turn as step-limit. Keyed on what
+        // the registry holds, so the same turn runner gives a plain chat turn only the base number.
+        {
+            var desktopFamily = new InMemoryToolRegistry();
+            desktopFamily.Register(new StubTool("desktop_act", "done"));
+            desktopFamily.Register(new StubTool("desktop_observe", "seen"));
+
+            var plainFamily = new InMemoryToolRegistry();
+            plainFamily.Register(new StubTool("clock", "12:34"));
+
+            var options = new AgentTurnOptions();
+            var desktopBudget = options.StepsAllowedFor(desktopFamily.Specs.Select(spec => spec.Name));
+            var plainBudget = options.StepsAllowedFor(plainFamily.Specs.Select(spec => spec.Name));
+
+            Check("desktop: the step budget is measured by tool family, not one number",
+                options.MaxSteps == 8
+                && desktopBudget > 8
+                && plainBudget == 8,
+                $"default={options.MaxSteps} desktop={desktopBudget} plain={plainBudget}");
+        }
+
+        // Waiting is one call with a deadline instead of the observe-observe loop. The wait for a control
+        // that is already there answers at once with a fresh id (a real aimed walk, read-only).
+        using (var waitAutomation = new DesktopAutomation())
+        {
+            var observation = waitAutomation.Observe();
+            var target = observation.Entities.FirstOrDefault(entity => !entity.IsMinimized);
+            var element = observation.Elements.FirstOrDefault(candidate => candidate.WindowId == target!.EntityId);
+            if (target is not null && element is not null)
+            {
+                var waitTool = new DesktopWaitTool(waitAutomation);
+                var found = await waitTool.InvokeAsync($$"""
+                    {"kind":"element","entityId":"{{target.EntityId}}","elementId":"{{element.ElementId}}"}
+                    """);
+
+                Check("desktop: a wait for a control that is already there answers at once with the new id",
+                    found.Ok && found.Content.Contains("控件已出现", StringComparison.Ordinal)
+                        && found.Content.Contains("desktop_act 可直接用", StringComparison.Ordinal),
+                    found.Content[..Math.Min(70, found.Content.Length)]);
+            }
+        }
+
         Check("desktop: input marshalling matches the Win32 contract",
             InputInjector.InputSize == (IntPtr.Size == 8 ? 40 : 28),
             $"INPUT size = {InputInjector.InputSize}");
@@ -2068,7 +2180,6 @@ internal static class Program
                     && obsAfter != obsBefore,
                     $"reObserved={obsAfter != obsBefore} result={(outcome ?? "(none)")[..Math.Min(70, (outcome ?? "(none)").Length)]}");
 
-
                 // The blind-app fallback: a screenshot reaches the model as an image, and the log keeps only the
                 // media id. This is what replaces OCR — the model reads the pixels itself. Waited for, because
                 // the turn is still running when the approval lands.
@@ -2184,6 +2295,155 @@ internal static class Program
                 await leaseVoice.DisposeAsync();
                 await leaseConsumer.DisposeAsync();
                 await leaseContext.DisposeAsync();
+            }
+
+            // ---- The continuing grant: approve once, the same window does not re-ask -------------
+            var grantWorkspace = Path.Combine(root, "desktop-lease-grant");
+            Directory.CreateDirectory(Path.Combine(grantWorkspace, "settings"));
+            await File.WriteAllTextAsync(
+                Path.Combine(grantWorkspace, "settings", "runtime.json"),
+                """{"model":{"supportsImages":false},"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
+
+            var grantConsumerLlm = new LeaseThenActLlm();
+            var grantPort = FreePort();
+            var grantToken = TokenAuth.Generate();
+            var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
+            var (grantApp, grantContext, grantConsumer, grantVoice) =
+                await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, grantConsumerLlm);
+            var grantRun = grantApp.RunAsync();
+            using var grantHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{grantPort}") };
+            grantHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", grantToken);
+
+            try
+            {
+                await WaitForHostAsync(grantHttp);
+                await grantHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "连续操作一个窗口" });
+
+                // The first act parks; approved here, which is where the continuing grant is minted —
+                // not through any desktop endpoint, because a "yes" is the human's whole intent.
+                string? grantApprovalId = null;
+                for (var attempt = 0; attempt < 600 && grantApprovalId is null; attempt++)
+                {
+                    var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                        .GetProperty("pending").EnumerateArray().ToList();
+                    if (pending.Count > 0)
+                    {
+                        grantApprovalId = pending[0].GetProperty("approvalId").GetString();
+                    }
+
+                    await Task.Delay(25);
+                }
+                var granted = grantApprovalId is not null
+                    && (await grantHttp.PostAsJsonAsync($"/api/approvals/{grantApprovalId}", new { approved = true })).IsSuccessStatusCode;
+
+                // The granted state must be server-visible, so a run and a restart see the same fact.
+                TaskLeaseState? shownLease = null;
+                for (var attempt = 0; attempt < 200 && shownLease is null; attempt++)
+                {
+                    shownLease = grantContext.TaskLeases.Snapshot().FirstOrDefault();
+                    await Task.Delay(25);
+                }
+
+                Check("desktop: an approved action opens a continuing grant on its window",
+                    granted && shownLease is not null
+                    && shownLease.EntityId == PickTargetOf(grantConsumerLlm.Requests)
+                    && shownLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps,
+                    shownLease is null ? "no lease was minted" : $"entity={shownLease.EntityId} steps={shownLease.RemainingSteps}");
+
+                // The second act on the same window is what the grant is for: it must not park, and it
+                // must reach the tool (where the guard refuses it — the window is not in front), which
+                // costs one of the ten.
+                var secondResult = default(string?);
+                var secondActParked = false;
+                for (var attempt = 0; attempt < 400 && secondResult is null; attempt++)
+                {
+                    var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                        .GetProperty("pending").EnumerateArray().ToList();
+                    if (pending.Count > 0 && pending[0].GetProperty("toolName").GetString() == "desktop_act")
+                    {
+                        // A parked second act is the failure this check exists to catch — deny it so the
+                        // turn finishes, and report it precisely rather than as a timeout.
+                        secondActParked = true;
+                        secondResult = "(still parked: governance did not see the grant)";
+                        await grantHttp.PostAsJsonAsync(
+                            $"/api/approvals/{pending[0].GetProperty("approvalId").GetString()}",
+                            new { approved = false });
+                        break;
+                    }
+
+                    var polled = await grantHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var results = polled.GetProperty("items").EnumerateArray()
+                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                        .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                        .Where(body => body.Contains("不在前台", StringComparison.Ordinal))
+                        .ToList();
+
+                    // The first act's result is the guard refusal it earned the grant; find the second one.
+                    if (results.Count >= 2)
+                    {
+                        secondResult = results[^1];
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                var spentLease = grantContext.TaskLeases.Snapshot().FirstOrDefault();
+                Check("desktop: a granted window does not re-ask for the same kind",
+                    secondResult is not null && !secondActParked
+                    && spentLease is not null
+                    && spentLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps - 1,
+                    $"result={secondResult ?? "(timed out)"} "
+                    + $"remaining={spentLease?.RemainingSteps.ToString() ?? "none"}");
+
+                // What a grant must never cover: leaving the GUI parks even under a live grant.
+                string? execApproval = null;
+                for (var attempt = 0; attempt < 600 && execApproval is null; attempt++)
+                {
+                    var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                        .GetProperty("pending").EnumerateArray().ToList();
+                    if (pending.Count > 0 && pending[0].GetProperty("toolName").GetString() == "desktop_exec")
+                    {
+                        execApproval = pending[0].GetProperty("approvalId").GetString();
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                if (execApproval is not null)
+                {
+                    await grantHttp.PostAsJsonAsync($"/api/approvals/{execApproval}", new { approved = false });
+                }
+
+                // A denied exec is still “the tool could not run”: it settles without losing the grant.
+                TaskLeaseState? afterDeny = null;
+                for (var attempt = 0; attempt < 400; attempt++)
+                {
+                    var polled = await grantHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    if (polled.GetProperty("items").EnumerateArray()
+                        .Any(item => (item.GetProperty("body").GetString() ?? string.Empty)
+                            .Contains("denied:", StringComparison.Ordinal)))
+                    {
+                        afterDeny = grantContext.TaskLeases.Snapshot().FirstOrDefault();
+                        break;
+                    }
+
+                    await Task.Delay(25);
+                }
+
+                Check("desktop: a grant never covers leaving the GUI even while one is live",
+                    execApproval is not null
+                    && afterDeny is not null
+                    && afterDeny.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps - 1,
+                    execApproval is null ? "desktop_exec never parked" : $"denied, grant steps={afterDeny?.RemainingSteps.ToString() ?? "(none)"}");
+            }
+            finally
+            {
+                await grantApp.StopAsync();
+                await grantRun;
+                await grantVoice.DisposeAsync();
+                await grantConsumer.DisposeAsync();
+                await grantContext.DisposeAsync();
             }
 
             var desktopWorkspace = Path.Combine(root, "desktop-tools");
@@ -3518,66 +3778,121 @@ internal static class Program
         }
 
         /// <summary>The centre of the picked window, in screen coordinates, as desktop_observe reports them.</summary>
-        private (int X, int Y) PickCentre()
-        {
-            var observed = _requests
-                .SelectMany(request => request.Messages)
-                .Where(message => message.Role == "tool" && message.Content is not null)
-                .Select(message => message.Content!)
-                .LastOrDefault(content => content.Contains("\"entities\"", StringComparison.Ordinal));
-
-            if (observed is null)
-            {
-                return (1, 1);
-            }
-
-            using var document = JsonDocument.Parse(observed);
-            var entities = document.RootElement.GetProperty("entities").EnumerateArray().ToList();
-            var target = entities.FirstOrDefault(entity =>
-                entity.GetProperty("entityId").GetString() == PickTarget());
-
-            if (target.ValueKind == JsonValueKind.Undefined)
-            {
-                return (1, 1);
-            }
-
-            var rect = target.GetProperty("rect");
-            return (
-                rect.GetProperty("x").GetInt32() + (rect.GetProperty("width").GetInt32() / 2),
-                rect.GetProperty("y").GetInt32() + (rect.GetProperty("height").GetInt32() / 2));
-        }
+        private (int X, int Y) PickCentre() => PickCentreOf(_requests);
 
         /// <summary>The window the observation listed, preferring one that is not foreground.</summary>
-        private string PickTarget()
+        private string PickTarget() => PickTargetOf(_requests);
+
+        public Task<LlmResponse> StreamAsync(LlmRequest request, Action<string> onText, CancellationToken ct = default) =>
+            CompleteAsync(request, ct);
+    }
+
+    /// <summary>The window the observation listed, preferring one that is not foreground: the entity id of a
+    /// real window is machine-specific, so any scripted model has to read what it just observed.</summary>
+    private static string PickTargetOf(IEnumerable<LlmRequest> requests)
+    {
+        var observed = requests
+            .SelectMany(request => request.Messages)
+            .Where(message => message.Role == "tool" && message.Content is not null)
+            .Select(message => message.Content!)
+            .LastOrDefault(content => content.Contains("\"entities\"", StringComparison.Ordinal));
+
+        if (observed is null)
         {
-            var observed = _requests
-                .SelectMany(request => request.Messages)
-                .Where(message => message.Role == "tool" && message.Content is not null)
-                .Select(message => message.Content!)
-                .LastOrDefault(content => content.Contains("\"entities\"", StringComparison.Ordinal));
+            return "1";
+        }
 
-            if (observed is null)
+        using var document = JsonDocument.Parse(observed);
+        var entities = document.RootElement.GetProperty("entities").EnumerateArray()
+            // A minimized window is a 160×28 stub at -32000: nothing can be clicked or seen in it, so a
+            // model that reads the observation picks a real one.
+            .Where(entity => !(entity.TryGetProperty("minimized", out var small) && small.GetBoolean()))
+            .ToList();
+
+        if (entities.Count == 0)
+        {
+            return "1";
+        }
+
+        var background = entities.FirstOrDefault(entity =>
+            !entity.TryGetProperty("foreground", out var flag) || !flag.GetBoolean());
+
+        return (background.ValueKind == JsonValueKind.Undefined ? entities[0] : background)
+            .GetProperty("entityId").GetString() ?? "1";
+    }
+
+    /// <summary>The centre of the picked window, in screen coordinates, as desktop_observe reports them.</summary>
+    private static (int X, int Y) PickCentreOf(IEnumerable<LlmRequest> requests)
+    {
+        var target = PickTargetOf(requests);
+        var observed = requests
+            .SelectMany(request => request.Messages)
+            .Where(message => message.Role == "tool" && message.Content is not null)
+            .Select(message => message.Content!)
+            .LastOrDefault(content => content.Contains("\"entities\"", StringComparison.Ordinal));
+
+        if (observed is null)
+        {
+            return (1, 1);
+        }
+
+        using var document = JsonDocument.Parse(observed);
+        var entity = document.RootElement.GetProperty("entities").EnumerateArray()
+            .FirstOrDefault(candidate => candidate.GetProperty("entityId").GetString() == target);
+        if (entity.ValueKind == JsonValueKind.Undefined)
+        {
+            return (1, 1);
+        }
+
+        var rect = entity.GetProperty("rect");
+        return (
+            rect.GetProperty("x").GetInt32() + (rect.GetProperty("width").GetInt32() / 2),
+            rect.GetProperty("y").GetInt32() + (rect.GetProperty("height").GetInt32() / 2));
+    }
+
+    /// <summary>
+    /// A model whose script is: act, act again on the same window, then try to leave the GUI. The point of
+    /// the shape is the second act — a human approved the first, and the <see cref="TaskLeaseStore"/> is
+    /// what decides whether the third parks again or runs. Nothing here presses anything: keystrokes at a
+    /// background window are refusals the guards produce before any input is injected.
+    /// <para>The third act is <c>desktop_exec</c>, which cannot ride the grant — approvals are forked by
+    /// what leaves the GUI, never by what stays inside a window.</para>
+    /// </summary>
+    private sealed class LeaseThenActLlm : ILlmClient
+    {
+        private readonly List<LlmRequest> _requests = new();
+
+        public IReadOnlyList<LlmRequest> Requests => _requests;
+
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+        {
+            _requests.Add(request);
+
+            var toolResults = request.Messages.Count(message => message.Role == "tool");
+
+            return Task.FromResult(toolResults switch
             {
-                return "1";
-            }
-
-            using var document = JsonDocument.Parse(observed);
-            var entities = document.RootElement.GetProperty("entities").EnumerateArray()
-                // A minimized window is a 160×28 stub at -32000: nothing can be clicked or seen in it, so a
-                // model that reads the observation picks a real one.
-                .Where(entity => !(entity.TryGetProperty("minimized", out var small) && small.GetBoolean()))
-                .ToList();
-
-            if (entities.Count == 0)
-            {
-                return "1";
-            }
-
-            var background = entities.FirstOrDefault(entity =>
-                !entity.TryGetProperty("foreground", out var flag) || !flag.GetBoolean());
-
-            return (background.ValueKind == JsonValueKind.Undefined ? entities[0] : background)
-                .GetProperty("entityId").GetString() ?? "1";
+                0 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c1", "desktop_observe", "{}") },
+                    "tool_calls"),
+                1 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c2", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
+                    "tool_calls"),
+                // ■ The lease probe: same window, same kind. Approved once above, so this runs without
+                // approval — that is exactly what the check reads back from the server state.
+                2 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c3", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
+                    "tool_calls"),
+                // What a grant must never cover: a command that leaves the GUI asks every time.
+                3 => new LlmResponse(
+                    null,
+                    new[] { new LlmToolCall("c4", "desktop_exec", "{ \"command\": \"echo hi\" }") },
+                    "tool_calls"),
+                _ => new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
+            });
         }
 
         public Task<LlmResponse> StreamAsync(LlmRequest request, Action<string> onText, CancellationToken ct = default) =>
@@ -3753,6 +4068,25 @@ internal static class Program
 
         _failures++;
         Console.WriteLine($"  FAIL  {what}{(detail is null ? "" : $"  → {detail}")}");
+    }
+
+    /// <summary>A capture that pre-reports one positioned frame for any window, so the render of an act
+    /// answer is drift-free to test without engaging the user's screen.</summary>
+    private sealed class PositionEchoCapture(PixelRect at) : IScreenCapture
+    {
+        public Task<CaptureResult> CaptureWindowAsync(nint handle, CancellationToken ct = default) => Task.FromResult(
+            new CaptureResult
+            {
+                Ok = true,
+                Width = at.Width,
+                Height = at.Height,
+                Bgra = new byte[at.Width * at.Height * 4],
+                Method = "smoke.stub",
+                ScreenRect = at,
+            });
+
+        public Task<CaptureResult> CaptureScreenRegionAsync(int x, int y, int width, int height, CancellationToken ct = default) =>
+            CaptureWindowAsync(0, ct);
     }
 
     /// <summary>
@@ -3980,6 +4314,28 @@ internal static class Program
         {
             "desktop: a screenshot reaches the model as an image",
             "desktop: the log records the screenshot by media id, not by pixels",
+        }),
+        // The act answer carries the state after the action. The decision and the recording are what the
+        // smoke can drive read-only (the positive click itself is a live test's job, which moves the user's
+        // pointer and is deliberately skipped here).
+        ("desktop.act_returns_state", "M9", new[]
+        {
+            "desktop: an act answer promises a picture for the kinds that change what is seen",
+            "desktop: an act answer's attached picture maps back and is recorded by id",
+        }),
+        ("desktop.step_budget_by_family", "M9", new[]
+        {
+            "desktop: the step budget is measured by tool family, not one number",
+        }),
+        ("desktop.task_lease_approval", "M9", new[]
+        {
+            "desktop: an approved action opens a continuing grant on its window",
+            "desktop: a granted window does not re-ask for the same kind",
+            "desktop: a grant never covers leaving the GUI even while one is live",
+        }),
+        ("desktop.wait_primitive", "M9", new[]
+        {
+            "desktop: a wait for a control that is already there answers at once with the new id",
         }),
         ("voice.utterance_to_queue", "M10", new[]
         {

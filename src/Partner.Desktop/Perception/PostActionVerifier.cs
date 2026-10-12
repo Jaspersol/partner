@@ -33,7 +33,9 @@ public sealed record VerifyResult(
 /// Adaptation recorded deliberately: the reference implementation reads DXGI dirty rects; here the dirty
 /// rect is <i>derived from the frame diff</i> (bounding box of changed pixels) because the GDI backend has
 /// no dirty-rect source. The decision matrix, the 0.005 area-ratio threshold and the 100 ms budget are
-/// otherwise identical.
+/// otherwise identical. A second adaptation sits on top of that: repaints are asynchronous, so a NoChange
+/// is re-measured a bounded number of times (see <see cref="DefaultRecheckRounds"/>) before it is reported
+/// — the reference's single re-observation is folded into the polling loop.
 /// </para>
 /// </summary>
 public sealed class PostActionVerifier
@@ -44,16 +46,33 @@ public sealed class PostActionVerifier
     /// <summary>Minimum intersected-area ratio for a change to count (reference value: 0.005).</summary>
     public const double MinIntersectedAreaRatio = 0.005;
 
+    /// <summary>The pause between re-captures when the first frame shows no change yet. Repaints are
+    /// asynchronous: a busy compositor (Chromium) or an app that queues its <c>WM_PAINT</c> may not have
+    /// drawn the effect of the action within the few milliseconds between the release and the first capture,
+    /// and reading that early frame as "nothing changed" is how a click that worked comes back as a failure
+    /// and gets tried again.</summary>
+    public static readonly TimeSpan DefaultRecheckDelay = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>Extra captures after the first, when the first shows no change. Each is a full diff against
+    /// the before-frame, so a change that appears on any of them is reported on the round it appeared.</summary>
+    public const int DefaultRecheckRounds = 3;
+
     private readonly IScreenCapture _capture;
     private readonly TimeSpan _budget;
+    private readonly TimeSpan _recheckDelay;
+    private readonly int _recheckRounds;
 
-    public PostActionVerifier(IScreenCapture capture, TimeSpan? budget = null)
+    public PostActionVerifier(IScreenCapture capture, TimeSpan? budget = null, int? recheckRounds = null, TimeSpan? recheckDelay = null)
     {
         _capture = capture ?? throw new ArgumentNullException(nameof(capture));
         _budget = budget ?? DefaultBudget;
+        _recheckRounds = recheckRounds ?? DefaultRecheckRounds;
+        _recheckDelay = recheckDelay ?? DefaultRecheckDelay;
     }
 
     public TimeSpan Budget => _budget;
+
+    public int RecheckRounds => _recheckRounds;
 
     /// <summary>
     /// Re-captures the window and compares it against <paramref name="before"/>.
@@ -117,10 +136,21 @@ public sealed class PostActionVerifier
         // that the target never made. So the caller has to say the target is in front (the occlusion guard
         // already establishes that for a coordinate action), and anything else falls back to the window
         // capture, which renders the window's own contents regardless of what covers it.
-        if (screenCaptureOk && screenRegion is { } region && before.ScreenRect is { } origin)
+        // Both frames of one round must be in one coordinate space: a whole window against a region patch
+        // would intersect two spaces and judge a corner that was never meant. So the region-before-frame is
+        // cropped once, and both sides of every round run in the same mode.
+        var regionMode = screenCaptureOk && screenRegion is { } region && before.ScreenRect is { } origin
+            && Crop(before, region.X - origin.X, region.Y - origin.Y, region.Width, region.Height) is { } frame
+            ? (Before: (CaptureResult?)frame, Screen: (PixelRect?)region)
+            : (Before: (CaptureResult?)null, Screen: (PixelRect?)null);
+
+        CaptureResult RoundBefore() => regionMode.Before ?? before;
+
+        CaptureResult? captureFailure = null;
+
+        async Task<(CaptureResult Frame, PixelRect? Judged)?> RoundAfterAsync()
         {
-            var cropped = Crop(before, region.X - origin.X, region.Y - origin.Y, region.Width, region.Height);
-            if (cropped is { } beforeRegion)
+            if (regionMode.Before is not null && regionMode.Screen is { } region)
             {
                 var patch = await _capture
                     .CaptureScreenRegionAsync(region.X, region.Y, region.Width, region.Height, ct)
@@ -129,34 +159,69 @@ public sealed class PostActionVerifier
                 if (patch.Ok)
                 {
                     // Both frames are now the region itself, so the judged area is all of it.
-                    return Compare(
-                        beforeRegion with { ScreenRect = region },
-                        patch with { ScreenRect = region },
-                        frameRegion: null,
-                        watch);
+                    return (patch with { ScreenRect = region }, null);
                 }
             }
+
+            var after = await _capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false);
+            if (!after.Ok)
+            {
+                captureFailure ??= after;
+                return null;
+            }
+
+            return (after, Region(target, screenRegion, before.ScreenRect));
         }
 
-        var after = await _capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false);
-        if (!after.Ok)
+        var round = await RoundAfterAsync().ConfigureAwait(false);
+        if (round is null)
         {
             return VerifyResult.Indeterminate(
-                $"capture unavailable: {after.Error}", watch.Elapsed.TotalMilliseconds, after.Method);
+                $"capture unavailable: {captureFailure?.Error ?? "no frame"}",
+                watch.Elapsed.TotalMilliseconds,
+                captureFailure?.Method ?? before.Method);
         }
 
-        return Compare(before, after, Region(target, screenRegion, before.ScreenRect), watch);
+        var elapsedMs = () => watch.Elapsed.TotalMilliseconds;
+        var result = Compare(RoundBefore(), round.Value.Frame, round.Value.Judged, new Stopwatch(), elapsedMs);
+
+        // Repaints are asynchronous. A NoChange measured within a few milliseconds of the release can be a
+        // frame the application has not drawn yet, and reporting it as "nothing changed" invites a retry —
+        // the retry the double-triggered toggle is made of. So a NoChange is re-measured on a short loop:
+        // each round re-captures and re-diffs against the same before-frame, and the first round that sees a
+        // change wins. A later round whose capture fails, or a loop that runs out, leaves the measured
+        // NoChange standing — no change is what was actually measured, once per round, on every round until
+        // now. More waiting than this starts to look like hoping rather than verifying.
+        for (var recheck = 0; recheck < _recheckRounds && result.Decision == VerifyDecision.NoChange; recheck++)
+        {
+            await Task.Delay(_recheckDelay, ct).ConfigureAwait(false);
+            var next = await RoundAfterAsync().ConfigureAwait(false);
+            if (next is null)
+            {
+                break;
+            }
+
+            // One diff budget per round, not per verification: the budget bounds one scan — capture to
+            // decision — and a scan that shares its clock with the rounds before it would spend the budget
+            // the moment it started and answer Indeterminate for a frame it never read.
+            result = Compare(RoundBefore(), next.Value.Frame, next.Value.Judged, new Stopwatch(), elapsedMs);
+        }
+
+        return result;
     }
 
     /// <summary>
     /// Compares two frames and judges <paramref name="frameRegion"/> of the overlap. Shared by both capture
     /// strategies so the decision itself is identical however the pixels were obtained.
     /// </summary>
+    /// <param name="watch">The scan's own clock: the diff budget is per scan, and the round loop passes a
+    /// fresh one. The reported elapsed is <paramref name="elapsedMs"/>'s — the whole verification.</param>
     private VerifyResult Compare(
         CaptureResult before,
         CaptureResult after,
         PixelRect? frameRegion,
-        Stopwatch watch)
+        Stopwatch watch,
+        Func<double>? elapsedMs = null)
     {
         ArgumentNullException.ThrowIfNull(before);
         ArgumentNullException.ThrowIfNull(after);
@@ -171,7 +236,9 @@ public sealed class PostActionVerifier
         if (width <= 0 || height <= 0)
         {
             return VerifyResult.Indeterminate(
-                "the two captures do not overlap at all", watch.Elapsed.TotalMilliseconds, after.Method);
+                "the two captures do not overlap at all",
+                elapsedMs?.Invoke() ?? watch.Elapsed.TotalMilliseconds,
+                after.Method);
         }
 
         var resized = after.Width != before.Width || after.Height != before.Height;
@@ -183,7 +250,7 @@ public sealed class PostActionVerifier
         {
             return VerifyResult.Indeterminate(
                 $"verification budget of {_budget.TotalMilliseconds:0}ms exceeded",
-                watch.Elapsed.TotalMilliseconds,
+                elapsedMs?.Invoke() ?? watch.Elapsed.TotalMilliseconds,
                 after.Method);
         }
 
@@ -203,12 +270,12 @@ public sealed class PostActionVerifier
                     1,
                     after.Method,
                     $"window resized {before.Width}×{before.Height} → {after.Width}×{after.Height}",
-                    watch.Elapsed.TotalMilliseconds);
+                    elapsedMs?.Invoke() ?? watch.Elapsed.TotalMilliseconds);
             }
 
             // Measured, and nothing moved anywhere in the frame.
             return new VerifyResult(
-                VerifyDecision.NoChange, 0, after.Method, "no dirty region", watch.Elapsed.TotalMilliseconds);
+                VerifyDecision.NoChange, 0, after.Method, "no dirty region", elapsedMs?.Invoke() ?? watch.Elapsed.TotalMilliseconds);
         }
 
         // Both capture strategies arrive here with the judged region already in frame coordinates: the
@@ -224,7 +291,7 @@ public sealed class PostActionVerifier
             ? $"dirty region intersects {ratio:P2} of the target{resizedNote}"
             : $"dirty region intersects only {ratio:P2} of the target{resizedNote}";
 
-        return new VerifyResult(decision, ratio, after.Method, reason, watch.Elapsed.TotalMilliseconds);
+        return new VerifyResult(decision, ratio, after.Method, reason, elapsedMs?.Invoke() ?? watch.Elapsed.TotalMilliseconds);
     }
 
     /// <summary>

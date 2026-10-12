@@ -28,6 +28,16 @@ public static class DesktopEndpoints
                 leaseTtlMs = settings.LeaseTtlMs,
                 approval = settings.Approval,
                 allowedWindowTitles = settings.AllowedWindowTitles,
+
+                // Server-owned: the banner announces "approve this window" with this number, so a change
+                // here has to say so rather than drift between two writers.
+                stepsPerGrant = Api.Settings.TaskLeaseStore.DefaultSteps,
+                taskLeases = ctx.TaskLeases.Snapshot().Select(lease => new
+                {
+                    entityId = lease.EntityId,
+                    remainingSteps = lease.RemainingSteps,
+                    expiresAt = lease.ExpiresAt,
+                }),
                 lastObsId = ctx.Desktop.LastObservation?.ObsId,
                 entityCount = ctx.Desktop.LastObservation?.Entities.Count ?? 0,
                 entities = (ctx.Desktop.LastObservation?.Entities ?? Array.Empty<Partner.Desktop.Perception.UiEntity>())

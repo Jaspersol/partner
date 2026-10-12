@@ -156,7 +156,7 @@ public sealed partial class ViewEndpointsTests
 
         var none = await ToolsAsync();
         Assert.All(none, tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
-        Assert.Equal(6, none.Count);
+        Assert.Equal(7, none.Count);
 
         // An unknown gear is refused rather than silently stored.
         var bogus = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "whatever" });

@@ -18,6 +18,7 @@ public static class DesktopToolCatalog
         "desktop_observe",
         "desktop_screenshot",
         "desktop_clipboard_get",
+        "desktop_wait",
     };
 
     /// <summary>Tools that can affect the machine outside the window the model is looking at.</summary>
@@ -34,6 +35,7 @@ public static class DesktopToolCatalog
         "desktop_observe",
         "desktop_screenshot",
         "desktop_act",
+        "desktop_wait",
         "desktop_launch",
         "desktop_exec",
         "desktop_clipboard_get",

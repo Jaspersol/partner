@@ -307,7 +307,18 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 tools.Register(new DesktopScreenshotTool(_context.Desktop, _context.Media));
             }
 
-            tools.Register(new DesktopActTool(_context.Desktop, policy));
+            tools.Register(new DesktopActTool(
+                _context.Desktop,
+                policy,
+                _context.Media,
+                // The picture rides along only for a model that can take one, for the same reason the
+                // screenshot tool is registered behind this switch: sending one to a text-only model fails
+                // the request, and consistent registration keeps the tool's answers honest about it.
+                supportsImages: _context.Settings.Load().Model.SupportsImages));
+
+            // Waiting is read-only and self-bounded (≤5 s): a slow page spends seconds, not steps, so it
+            // always exists while the desktop tools do.
+            tools.Register(new DesktopWaitTool(_context.Desktop));
             // The automation's own launch tool, so the port it opens is one the observation can read: a
             // browser launched without that link gets the flag and nothing else, and its buttons stay invisible
             // for the rest of the process's life — which looks exactly like an app with no controls.
@@ -331,7 +342,10 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             // Fail-closed and live: the desktop tools answer to the current approval gear, and anything that is
             // not a desktop tool is denied because nothing else is registered.
             governance,
-            _context.Approvals,
+            // Approval, intercepted: a granted desktop action also opens its continuing grant on the same
+            // window, which is what turns "approve each of 24 clicks" into "approve the window". The wrap
+            // forwards everything else unchanged.
+            new LeaseGrantingApprovalHandler(_context.Approvals, _context.TaskLeases),
             TurnHooks(_workspace),
             assembler: assembler,
             options: turnOptions,

@@ -269,6 +269,8 @@ export interface DesktopState {
   leaseTtlMs: number
   approval: string
   allowedWindowTitles: string[]
+  /** Continuing approval grants this many further steps on an approved window. Server-owned number. */
+  stepsPerGrant?: number
   lastObsId: string | null
   entityCount: number
   /** The windows from the last observation: an approval names an entityId, and this is how a human reads it. */

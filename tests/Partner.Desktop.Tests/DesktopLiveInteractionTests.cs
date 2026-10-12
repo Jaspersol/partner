@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using Partner.Core.Media;
 using Partner.Desktop;
 using Partner.Desktop.Input;
 using Partner.Desktop.Perception;
@@ -243,9 +244,13 @@ public sealed class DesktopLiveInteractionTests
 
         GetCursorPos(out var start);
 
+        var mediaDir = Directory.CreateTempSubdirectory("partner-live-act-media-");
         try
         {
-            var tool = new DesktopActTool(automation, DesktopToolPolicy.Any);
+            var tool = new DesktopActTool(
+                automation,
+                DesktopToolPolicy.Any,
+                new FileMediaStore(mediaDir.FullName));
             var result = await tool.InvokeAsync(
                 $$"""{"entityId":"{{host.HandleHex}}","kind":"LeftClick","x":{{host.ButtonCentre.X}},"y":{{host.ButtonCentre.Y}}}""");
 
@@ -255,10 +260,19 @@ public sealed class DesktopLiveInteractionTests
             // The handler runs on the application's own thread: this only fires if the injected click really
             // reached the control.
             Assert.True(host.Pressed.Wait(TimeSpan.FromSeconds(10)), $"the button's Click handler never ran: {result.Content}");
+
+            // And the answer now carries the state after the click — the same pipeline the screenshot tool
+            // runs, attached to the result the model is already about to read. One completed answer replaces
+            // the follow-up call the loop used to need.
+            var afterPicture = Assert.Single(result.Images!);
+            Assert.StartsWith("data:image/png;base64,", afterPicture);
+            Assert.Contains("已附截图", result.Content, StringComparison.Ordinal);
+            Assert.Contains("px/py 可直接对它用", result.Content, StringComparison.Ordinal);
         }
         finally
         {
             SetCursorPos(start.X, start.Y);
+            mediaDir.Delete(recursive: true);
         }
     }
 
@@ -282,21 +296,30 @@ public sealed class DesktopLiveInteractionTests
         var observation = automation.Observe();
         Assert.NotNull(observation.Find(target.HandleHex));
 
-        var tool = new DesktopActTool(automation, DesktopToolPolicy.Any);
-        var click = $$"""{"entityId":"{{target.HandleHex}}","kind":"LeftClick","x":{{target.ButtonCentre.X}},"y":{{target.ButtonCentre.Y}}}""";
+        var mediaDirCovered = Directory.CreateTempSubdirectory("partner-live-cover-media-");
+        try
+        {
+            var tool = new DesktopActTool(
+                automation, DesktopToolPolicy.Any, new FileMediaStore(mediaDirCovered.FullName));
+            var click = $$"""{"entityId":"{{target.HandleHex}}","kind":"LeftClick","x":{{target.ButtonCentre.X}},"y":{{target.ButtonCentre.Y}}}""";
 
-        // The setup itself: the point really is covered, by the cover window, before anything is clicked.
-        cover.Raise();
-        var under = HitTest.At(target.ButtonCentre.X, target.ButtonCentre.Y);
-        Assert.True(
-            under.Handle == cover.Handle,
-            $"expected the cover under ({target.ButtonCentre.X},{target.ButtonCentre.Y}), got {under.Handle:x} '{under.Title}'");
+            // The setup itself: the point really is covered, by the cover window, before anything is clicked.
+            cover.Raise();
+            var under = HitTest.At(target.ButtonCentre.X, target.ButtonCentre.Y);
+            Assert.True(
+                under.Handle == cover.Handle,
+                $"expected the cover under ({target.ButtonCentre.X},{target.ButtonCentre.Y}), got {under.Handle:x} '{under.Title}'");
 
-        var clicked = await tool.InvokeAsync(click);
+            var clicked = await tool.InvokeAsync(click);
 
-        Assert.True(clicked.Ok, clicked.Content);
-        Assert.Contains("带到前台", clicked.Content, StringComparison.Ordinal);
-        Assert.True(target.Pressed.Wait(TimeSpan.FromSeconds(10)), $"the button's Click handler never ran: {clicked.Content}");
+            Assert.True(clicked.Ok, clicked.Content);
+            Assert.Contains("带到前台", clicked.Content, StringComparison.Ordinal);
+            Assert.True(target.Pressed.Wait(TimeSpan.FromSeconds(10)), $"the button's Click handler never ran: {clicked.Content}");
+        }
+        finally
+        {
+            mediaDirCovered.Delete(recursive: true);
+        }
     }
 
     [LiveDesktopFact]
@@ -314,16 +337,30 @@ public sealed class DesktopLiveInteractionTests
         var observation = automation.Observe();
         Assert.NotNull(observation.Find(target.HandleHex));
 
-        var tool = new DesktopActTool(automation, DesktopToolPolicy.Any);
-        var click = $$"""{"entityId":"{{target.HandleHex}}","kind":"LeftClick","x":{{target.ButtonCentre.X}},"y":{{target.ButtonCentre.Y}}}""";
+        var mediaDirRefused = Directory.CreateTempSubdirectory("partner-live-refused-media-");
+        try
+        {
+            var tool = new DesktopActTool(
+                automation, DesktopToolPolicy.Any, new FileMediaStore(mediaDirRefused.FullName));
+            var click = $$"""{"entityId":"{{target.HandleHex}}","kind":"LeftClick","x":{{target.ButtonCentre.X}},"y":{{target.ButtonCentre.Y}}}""";
 
-        var refused = await tool.InvokeAsync(click);
+            var refused = await tool.InvokeAsync(click);
 
-        Assert.False(refused.Ok, refused.Content);
-        Assert.Contains("partner-live-cover", refused.Content, StringComparison.Ordinal);
-        Assert.Contains("仍然被挡住", refused.Content, StringComparison.Ordinal);
-        Assert.False(target.Pressed.IsSet);
-        Assert.False(cover.Pressed.IsSet);
+            Assert.False(refused.Ok, refused.Content);
+            Assert.Contains("partner-live-cover", refused.Content, StringComparison.Ordinal);
+            Assert.Contains("仍然被挡住", refused.Content, StringComparison.Ordinal);
+
+            // Nothing was injected, so nothing is new to show: a refusal does not carry a picture.
+            Assert.Null(refused.Images);
+
+            // And nothing was pressed anywhere.
+            Assert.False(target.Pressed.IsSet);
+            Assert.False(cover.Pressed.IsSet);
+        }
+        finally
+        {
+            mediaDirRefused.Delete(recursive: true);
+        }
     }
 
     [LiveDesktopFact]

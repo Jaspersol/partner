@@ -10,6 +10,7 @@
 |---|---|
 | 目标架构方案（选型/缺口/分期/验收） | `D:/code/Clone/agent-harness-architecture-proposal.md` |
 | 现状分析（被引用的源码核验） | `D:/code/Clone/agent-harness-desktop-game-implementation-analysis.md` |
+| 桌面操控优化的待办（P0–P3 分期） | `todo.md` |
 
 ---
 
@@ -22,7 +23,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**929 个 .NET 单测 + 200 个前端测试全绿 / 157 项 smoke 检查（其中 2 项需 `PARTNER_DESKTOP_LIVE=1`）/ 58 项能力 `product-supported`**。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。
+当前基线：**970+ 个 .NET 单测 + 200 个前端测试全绿 / 164 项 smoke 检查（其中 2 项需 `PARTNER_DESKTOP_LIVE=1`，本机默认 skip）/ 62 项能力 `product-supported`**。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -376,7 +377,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 | 工具 | 做什么 | 审批 |
 |---|---|---|
 | `desktop_observe` | 列出窗口**以及窗口内的控件**（elementId、名称、类型、点击点） | 永不审批（只读） |
-| `desktop_act` | focus / movePointer / leftClick / rightClick / keyPress / typeText / scroll / drag | 按挡位 |
+| `desktop_act` | focus / movePointer / leftClick / rightClick / keyPress / typeText / scroll / drag；批准后在**同一窗口**内连续操作不再逐次弹窗（任务租约，见下）；**动作校验完成后自动附一张该窗口的新截图**（含网格与标记，px/py 可直接对它用；`feedback=off` 关闭；拒绝、无视觉后果的 kind（focus/movePointer/scrollIntoView）、纯文本模型时不附） | 按挡位；批准动作自动授后续步 |
+| `desktop_wait` | 等一个条件，最多 5 秒：控件出现 / 窗口出现 / 画面停在两帧哈希相同上 | 永不审批（只读，硬顶 5s） |
 | `desktop_clipboard_get` | 读剪贴板 | 永不审批（只读） |
 | `desktop_clipboard_set` | 写剪贴板 | 危险 |
 | `desktop_launch` | 启动程序 / 打开 URI；**裸名字先查开始菜单** | 危险 |
@@ -397,6 +399,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 **租约认的是「窗口」，不是「窗口当时的样子」。** 租约的身份是 `句柄 + 进程 + 进程启动时间`，**标题和矩形不算身份**。这不是宽松，是必需：网易云音乐的标题就是当前歌名（换首歌就变），浏览器是页签名，编辑器是脏标记，终端是路径——把它们算进身份，这些应用就永远动不了；而 `focus` 会把最小化的窗口**还原**（矩形因此必变），于是模型上一步的成功动作会把它自己的下一步作废。实测就是这么绕死的：`focus` 注入成功、紧接的 `movePointer` 被拒「标题/进程/位置/大小变了」，只能再观察一次，8 步预算耗尽。现在身份变了（句柄被回收 / 进程重启）才拒绝；标题或矩形变了**照常执行**，只在结果里附一句「注意：窗口已变化（…）」，坐标一律按**新**矩形重算（越界仍按新矩形拒绝）。
 
 图片怎么走到模型：工具结果在日志里是文本（记 media id），像素通过 `ToolResult.Images` 随下一次请求作为**用户消息的图像**发出——wire 上 `tool` 角色只能带文本，所以图片必须自己成一条消息。实测：真实窗口的截图到达模型（`data:image/png;base64,…`），日志里只有 media id。
+
+**动作的返回值现在自带世界状态**（`desktop_act` 默认 `feedback=auto`）。一条真实的 GUI 任务要 20–40 步，而「动作 → 再调一次 desktop_screenshot 才知道结果」把每步变成两次模型往返，还把 8 步的回合预算耗光在验收上。现在校验完成就把**同一个窗口**按新观察重新出图（网格与标记叠在 fresh 的 elementId 上——附图标注的就是模型下一步能按名寻址的那批控件）附在结果里：看一眼−动一下在一回合内收敛，`px/py + mediaId` 天然指向最新那帧。不附图的三种情形是明确的：拒绝（什么都没注入，没有新画面可附）、`focus/movePointer/scrollIntoView`（为下一步瞄准的 kind，不改画面）、`feedback=off` 或纯文本模型（右侧开关的状态即声明）。渲染失败**静默降级**为无图——文字结果自己站得住，一次保存失败不应该把一个已经成功的动作变成失败。能力登记：`desktop.act_returns_state`；单击成功路径的实收官在 `PARTNER_DESKTOP_LIVE` 的 `An_injected_click_reaches_a_real_button`（真点击 → 结果带图）。
 
 **启动一个程序：名字要先解析。** `Process.Start` 走 ShellExecute，它搜 `PATH` 与 App Paths，但**不搜开始菜单**——所以 `notepad` 能开、`网易云音乐` 不能（它的快捷方式在开始菜单里，可执行文件在 `C:\game\WangYi\CloudMusic\cloudmusic.exe`）。裸名字现在先在开始菜单里解析（精确名优先，其次是包含它的最短名——否则「网易云音乐」会命中「卸载网易云音乐」），找不到时把最接近的几个名字回给模型，让它自己纠正，而不是去猜可执行文件路径。
 
@@ -450,9 +454,32 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 |---|---|
 | **不审批** | 什么都不问，模型直接动手 |
 | **危险指令审批** | 只有离开 GUI 的：执行命令、启动程序、写剪贴板 |
-| **全部审批**（默认） | 每个桌面**动作**都要批准；**看屏幕不算** |
+| **全部审批**（默认） | 每个 GUI **动作**都要批准；**看屏幕不算** |
 
 读取（观察、读剪贴板）永不需要批准——否则每看一眼都要点一次，纯摩擦且不保护任何东西。
+
+### 任务租约：批准一次，同一窗口不再逐次弹窗
+
+「全部审批」挡位下的旧语义（每个动作一问）在真实任务里成了一个按钮按 24 次的仪式。现在的分支是：
+
+| 动作 | 第一次 | 之后（同一窗口） |
+|---|---|---|
+| GUI 交互（点击/打字/按键…） | 弹窗；**批准即授后续 10 步** | 租约消费一步，直接执行，不再问 |
+| 离开 GUI 的（exec / launch / clipboard_set） | **每一条都单独问**，租约永不覆盖 | 同左——授权「在窗口里操作」不能顺带变成「能跑命令」 |
+
+- 授予只发生在**人真正说了是**的那里：批准应答的路径上裹了一层 `LeaseGrantingApprovalHandler`，批准成功才记账。拒绝、超时（false）、挡位本就不问的三种情况都不生租约。
+- 租约身份是**窗口句柄**（同观察租约的语义：不认标题/矩形——换歌名、拖动不使它失效；句柄被回收/进程重启才失效）。存在 `ApiContext.TaskLeases` 上，**重启不消租约**（授予是关于人做过的事，不是关于这个回合）。
+- 每次执行消一步；步数用完或 10 分钟（超任何一次审批会话）后自然失效，`GET /api/desktop` 的 `taskLeases` 能看到剩余。危险类不受影响是硬的——由构造保证（只有 `desktop_act` 查租约）。
+- 横幅文案直接写明：`无人应答即拒绝 · 允许将授权目标窗口继续 10 步（危险类仍逐次询问）`。下一步是拒绝、改挡位或步数用完，重新弹窗。
+- 能力登记：`desktop.task_lease_approval`(3，grant 记账 / 不重问 / 危险永不覆盖)。
+
+### 步预算按工具族
+
+`MaxSteps = 8` 曾是所有族一个数——而一条真实 GUI 任务要 20–40 步 look-act-look，聊天的回合则随答案而终。现在 `AgentTurnOptions.ToolStepBudgets` 按工具名前缀给预算（`desktop: 32、mcp_: 32，其余 8`），决定依据是**注册表里有什么**（`StepsAllowedFor`）——在第一次 desktop 调用之前就定死，而不是等到预算不够。大上限对会自然结束的回合没有任何作用（循环在答案写完时退出）。能力登记：`desktop.step_budget_by_family`。
+
+### 等待原语
+
+慢弹窗、加载画面不再烧观察步数：`desktop_wait` 一次调用带死线（默认 3s，**硬顶 5s**）三选一——`element`（控件出现：只重新走那一个窗口的 UIA 树，成功即附新观察与新 elementId）、`window`（窗口出现：查窗口列表，毫秒级）、`stillFrame`（画面停止变化：**连续两帧哈希相同**才算稳——一帧相同正是重绘中间那一瞬的形状，`PostActionVerifier` 的同一条纪律）。只读，永不审批；超时报「未达成」并给出当前状态，不是挂着耗回合。能力登记：`desktop.wait_primitive`。
 
 挡位是**决策**而不是**能力**，所以它**实时生效**（治理每次调用时读当前挡位），不会重启消费者、不会打断飞行中的回合。切换开关（启用/停用）或改窗口白名单才重建工具表——那两件改变的是「存在什么」。
 
@@ -600,14 +627,14 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 | 层 | 位置 | 覆盖什么 |
 |---|---|---|
-| .NET 单测（553） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
-| smoke（149 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99（**先跑 3 次预热再采样**：刚播种完的库头两次要 480–570ms，那是 SQLite 页缓存与 FTS 首次建索引的一次性开销，不是任何人会等到的检索延迟；稳定态中位数 78ms、P99 93ms。把冷启动计入 P99 会让一个每次查询 80ms 的库显示为不达标） |
+| .NET 单测（961） | `tests/` | 各层逻辑：会话/队列/调度/记忆/治理/MCP/桌面/语音/游戏/API（含消费者循环、投递口、模型客户端与 SSE 流式、设置读写、语音宿主、发现端点、历史删除与物理清除、按 token 的窗口与压缩、token 计数、工具行投影、进程生命周期） |
+| smoke（159 检查） | `src/Partner.Smoke` | 端到端：真实进程、真实窗口、真实 HTTP、10 万条检索 P99（**先跑 3 次预热再采样**：刚播种完的库头两次要 480–570ms，那是 SQLite 页缓存与 FTS 首次建索引的一次性开销，不是任何人会等到的检索延迟；稳定态中位数 78ms、P99 93ms。把冷启动计入 P99 会让一个每次查询 80ms 的库显示为不达标） |
 | 前端契约测试（15） | `ui/tests/api.contract.test.ts` | **拉起真实 `partner-api.exe`**，验证 TS 类型与服务端 JSON 不漂移、鉴权生效、消费者状态、设置全段落、密钥不回传、发现端点、上下文占用 |
 | 前端视图测试（54） | `ui/tests/views.test.ts` | 六个视图的渲染与交互（含设置五张卡片、密钥只写语义、未生效提示、语音半状态、设备/模型下拉、删除与二次确认撤回、上下文占用表、队列只列待输入、流式行与刷新节奏、滚动跟随、MCP 服务器增删与「名字和命令」校验、技能启用计数/说明展开/扫描警告、设置页保存不清空另两页的决策） |
 | 前端组件测试（34） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（工具卡配对与状态、流式行与它的 Markdown 渲染） |
 | 前端壳装配测试（2） | `ui/tests/app.test.ts` | 挂载真实 `App.vue`，逐个点开侧栏页签并断言**没有一条 Vue 警告**（模板里写了却没 import 的组件会退化成空自定义元素：类型查不出来、页面全白，只有运行时警告会报）；无令牌时说明原因且不发请求 |
 | **壳的端到端（34）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、**桌面卡片默认关闭且写明需批准**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、**「支持图片」开关落盘并让运行中的消费者注册截图工具**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
-| 能力门禁（58） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败；因 `PARTNER_DESKTOP_LIVE` 未开而没跑到的检查记为 `not verified`，不失败 |
+| 能力门禁（59） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败；因 `PARTNER_DESKTOP_LIVE` 未开而没跑到的检查记为 `not verified`，不失败 |
 
 ### 落盘点
 
@@ -722,7 +749,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 ---
 
-## 已实现能力（58）
+## 已实现能力（62）
 
 括号内是该能力的登记检查数（来自 smoke 生成的 `capabilities/manifest.json`；`--verify-baseline` 拿它与 baseline 逐条比对）。
 
@@ -736,7 +763,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_returns_state`(2：动作结果自带新截图、附图可被 px/py 映射且按 media id 记录；单击成功路径的实收官在 `PARTNER_DESKTOP_LIVE` 的 live 测试里)、`desktop.step_budget_by_family`(1：desktop/mcp 工具族回合步预算 32，普通工具仍 8)、`desktop.task_lease_approval`(3：批准即租、同窗口不再问、危险类永不入租)、`desktop.wait_primitive`(1：已有控件等待一次新 id，不再烧观察步数) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
 | M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |

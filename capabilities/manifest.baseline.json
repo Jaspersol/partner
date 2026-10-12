@@ -655,7 +655,7 @@
     {
       "id": "desktop.minimized_window",
       "owner": "M9",
-      "level": "product-supported",
+      "level": "covered",
       "evidence": [
         {
           "check": "desktop: a minimized window is reported as minimized rather than as a small window",
@@ -677,15 +677,15 @@
         },
         {
           "check": "desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
-          "ran": true,
+          "ran": false,
           "passed": true,
-          "skipped": false
+          "skipped": true
         },
         {
           "check": "desktop: a restored window is screenshot from the stale observation instead of being refused",
-          "ran": true,
+          "ran": false,
           "passed": true,
-          "skipped": false
+          "skipped": true
         }
       ]
     },
@@ -727,6 +727,76 @@
         },
         {
           "check": "desktop: the log records the screenshot by media id, not by pixels",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.act_returns_state",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: an act answer promises a picture for the kinds that change what is seen",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "desktop: an act answer\u0027s attached picture maps back and is recorded by id",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.step_budget_by_family",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: the step budget is measured by tool family, not one number",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.task_lease_approval",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: an approved action opens a continuing grant on its window",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "desktop: a granted window does not re-ask for the same kind",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "desktop: a grant never covers leaving the GUI even while one is live",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.wait_primitive",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: a wait for a control that is already there answers at once with the new id",
           "ran": true,
           "passed": true,
           "skipped": false

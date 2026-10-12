@@ -882,6 +882,84 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_desktop_toolset_is_given_the_family_budget()
+    {
+        // A real desktop task runs 20–40 look-act-look steps; the old single number said eight, which spent
+        // them all on the first two controls. The default toolset earns 32 — no test or configuration needed
+        // to get it, because the registry names the family.
+        await using var store = new JsonlSessionStore(new FakeSink());
+
+        var tools = new InMemoryToolRegistry();
+        tools.Register(new FakeTool("desktop_act"));
+        tools.Register(new FakeTool("desktop_observe"));
+
+        var responses = new List<LlmResponse>();
+        for (var i = 0; i < 12; i++)
+        {
+            responses.Add(Call($"c{i}", i % 2 == 0 ? "desktop_observe" : "desktop_act"));
+        }
+        responses.Add(Say("完成"));
+
+        var runner = Build(
+            store,
+            new ScriptedLlmClient(responses),
+            tools,
+            new AllowListGovernance(new[] { "desktop_act", "desktop_observe" }));
+
+        var result = await runner.RunAsync(Claimed());
+
+        // Thirteen steps under the old single number of eight would have ended as step-limit.
+        Assert.Equal(TurnEndReason.Completed, result.Reason);
+        Assert.Equal(13, result.Steps);
+    }
+
+    [Fact]
+    public async Task A_plain_toolset_still_stops_at_the_default_budget()
+    {
+        // The larger ceiling only binds turns that were never going to finish quickly. Chat ends when the
+        // answer is written, so a non-desktop toolset must still hear the old number.
+        await using var store = new JsonlSessionStore(new FakeSink());
+
+        var tools = new InMemoryToolRegistry();
+        tools.Register(new FakeTool("clock"));
+
+        var responses = new List<LlmResponse>();
+        for (var i = 0; i < 9; i++)
+        {
+            responses.Add(Call($"c{i}", "clock"));
+        }
+        responses.Add(Say("完成"));
+
+        var runner = Build(
+            store,
+            new ScriptedLlmClient(responses),
+            tools,
+            new AllowListGovernance(new[] { "clock" }));
+
+        var result = await runner.RunAsync(Claimed());
+
+        Assert.Equal(TurnEndReason.MaxTokens, result.Reason);
+        Assert.Equal(8, result.Steps);
+    }
+
+    [Fact]
+    public void The_family_budget_pick_the_largest_registered_match()
+    {
+        var options = new AgentTurnOptions { MaxSteps = 8, ToolStepBudgets = new Dictionary<string,int> { ["desktop"] = 32 } };
+
+        Assert.Equal(32, options.StepsAllowedFor(new[] { "desktop_act", "clock" }));
+        Assert.Equal(32, options.StepsAllowedFor(new[] { "desktop_observe" }));
+
+        // No match falls back to the base number, not to zero and not to refuse-to-run.
+        Assert.Equal(8, options.StepsAllowedFor(new[] { "clock" }));
+        Assert.Equal(8, options.StepsAllowedFor(Array.Empty<string>()));
+
+        // A larger MaxSteps stays the ceiling: budgets raise, they do not lower.
+        var raised = options with { MaxSteps = 48 };
+        Assert.Equal(48, raised.StepsAllowedFor(new[] { "desktop_act" }));
+    }
+
+    [Fact]
     public async Task Flush_failure_surfaces_and_the_turn_is_not_marked_successful()
     {
         // Buffered store: appends alone are not durable, so the runner's own end-of-turn barrier is what

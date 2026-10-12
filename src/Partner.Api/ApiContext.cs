@@ -24,7 +24,8 @@ public sealed class ApiContext : IAsyncDisposable
         SettingsStore settings,
         IMediaStore media,
         DesktopAutomation desktop,
-        QueuedApprovalHandler approvals)
+        QueuedApprovalHandler approvals,
+        TaskLeaseStore taskLeases)
     {
         Workspace = workspace;
         Session = session;
@@ -34,6 +35,7 @@ public sealed class ApiContext : IAsyncDisposable
         Media = media;
         Desktop = desktop;
         Approvals = approvals;
+        TaskLeases = taskLeases;
     }
 
     public string Workspace { get; }
@@ -59,6 +61,12 @@ public sealed class ApiContext : IAsyncDisposable
     /// Where a tool call waits for a human. Shared with the API so the UI can answer what the model asked.
     /// </summary>
     public QueuedApprovalHandler Approvals { get; }
+
+    /// <summary>
+    /// Continuing approval, per window: what a human granted is recorded here rather than on the
+    /// governance instance, so restarting the consumer does not erase the fact the human acted on.
+    /// </summary>
+    public TaskLeaseStore TaskLeases { get; }
 
     public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
     {
@@ -93,7 +101,9 @@ public sealed class ApiContext : IAsyncDisposable
             settings,
             media,
             desktop,
-            new QueuedApprovalHandler())).ConfigureAwait(false);
+            new QueuedApprovalHandler(),
+            new TaskLeaseStore(clock: clock)))
+            .ConfigureAwait(false);
     }
 
     /// <summary>The lease policy the settings ask for, clamped by the policy's own floor and cap.</summary>

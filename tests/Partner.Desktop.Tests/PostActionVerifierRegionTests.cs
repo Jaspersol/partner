@@ -186,7 +186,7 @@ public sealed class PostActionVerifierRegionTests
     {
         var capture = new FixedCapture(Frame(Window, WindowHeight), Window, WindowHeight, WindowOnScreen);
 
-        var result = await new PostActionVerifier(capture)
+        var result = await new PostActionVerifier(capture, recheckRounds: 0)
             .VerifyScreenRegionAsync(1, ButtonOnScreen, Before(), screenCaptureOk: true);
 
         Assert.Equal(VerifyDecision.NoChange, result.Decision);
@@ -241,7 +241,7 @@ public sealed class PostActionVerifierRegionTests
             WindowHeight,
             WindowOnScreen);
 
-        var result = await new PostActionVerifier(capture).VerifyScreenRegionAsync(
+        var result = await new PostActionVerifier(capture, recheckRounds: 0).VerifyScreenRegionAsync(
             1,
             ButtonOnScreen,
             Before(withoutOrigin: true),

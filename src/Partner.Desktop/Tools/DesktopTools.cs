@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Partner.Core.Agent.Tools;
+using Partner.Core.Media;
 using Partner.Desktop.Input;
 using Partner.Desktop.Perception;
 
@@ -211,7 +212,11 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
 ///   refused before input is injected.</item>
 /// </list>
 /// </summary>
-public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPolicy policy) : ITool
+public sealed class DesktopActTool(
+    DesktopAutomation automation,
+    DesktopToolPolicy policy,
+    IMediaStore media,
+    bool supportsImages = true) : ITool
 {
     public ToolSpec Spec { get; } = new(
         "desktop_act",
@@ -221,6 +226,7 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         + "Invoke / Select / Toggle / SetFocus / ScrollItem，**不需要该窗口在前台**；控件没有对应 pattern 时才点它的中心点），不必再给坐标；"
         + "否则用 x/y——"
         + "**屏幕坐标**（desktop_observe 的 clickAt 就是屏幕坐标，可直接用），且必须落在虚拟桌面范围内。"
+        + "或者更稳：用 px/py + mediaId——直接给 desktop_screenshot（含 zoomAt 放大图）结果那张图上的像素，换算由服务端做。"
         + "x/y 落在哪个已观察窗口里，就作用于那个窗口；跨多个窗口有歧义时会拒绝并列出候选，此时要显式传 entityId。"
         + "点还必须真的能落到目标窗口上：若该点被别的窗口挡住（包括本应用自己的窗口），会拒绝并报出挡住的窗口——"
         + "先对目标 focus 把它带到前台，再点。"
@@ -229,7 +235,9 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         + "typeText 需要 text；keyPress 需要 virtualKey，可选 modifiers（[\"ctrl\"]、[\"ctrl\",\"shift\"] 这样的组合键）；"
         + "scroll 需要 scrollDelta（**格数**：正数向上滚，负数向下滚，一次 3 格比较合适）；"
         + "scrollIntoView 只需 elementId（由控件自己报距离，不用猜滚多少）；drag 需要 x/y + toX/toY。"
-        + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。",
+        + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。"
+        + "动作执行后**会自动附上该窗口的新截图**（含网格与标记，mediaId 可直接供 px/py 用），"
+        + "不需要再手动 desktop_screenshot 才能看见效果；feedback=off 可关掉。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id；给了 elementId 或 x/y 时可省略"},
@@ -237,6 +245,9 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
           "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","DoubleClick","KeyPress","TypeText","Scroll","ScrollIntoView","Drag"]},
           "x":{"type":"integer","description":"屏幕坐标 x"},
           "y":{"type":"integer","description":"屏幕坐标 y"},
+          "px":{"type":"integer","description":"desktop_screenshot 结果那张图上的像素 x（需要同时给 mediaId）"},
+          "py":{"type":"integer","description":"图上像素 y（需要同时给 mediaId）；与 x/y 二选一，换算由服务端做，优先这个"},
+          "mediaId":{"type":"string","description":"px/py 所属的那张截图的媒体 id，desktop_screenshot 的结果里有"},
           "toX":{"type":"integer","description":"拖拽终点屏幕坐标 x"},
           "toY":{"type":"integer","description":"拖拽终点屏幕坐标 y"},
           "virtualKey":{"type":"integer"},
@@ -244,7 +255,8 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
           "modifiers":{"type":"array","items":{"type":"string","enum":["shift","ctrl","alt","win"]},"description":"按住不放的修饰键，如 [\"ctrl\"]"},
           "scrollDelta":{"type":"integer","description":"滚轮格数：正数向上，负数向下，一次 3 格比较合适"},
           "offset":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"description":"控件内部的相对位置 0..1，不传就是控件中心"},
-          "clickCount":{"type":"integer","enum":[1,2],"description":"1 = 单击，2 = 双击（仅 leftClick）"}
+          "clickCount":{"type":"integer","enum":[1,2],"description":"1 = 单击，2 = 双击（仅 leftClick）"},
+          "feedback":{"type":"string","enum":["auto","off"],"default":"auto","description":"auto = 动作后服务端自动附一张该窗口的新截图（含网格与控件标记）；off = 不要图，省 token"}
         },"required":["kind"],"additionalProperties":false}
         """);
 
@@ -275,7 +287,39 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         }
 
         var point = arguments.X is { } x && arguments.Y is { } y ? (x, y) : ((int X, int Y)?)null;
-        var entityId = seenElement?.WindowId ?? arguments.EntityId;
+
+        // A picture pixel, plus the picture it belongs to. The server owns the conversion — reading a
+        // position off a picture is what the model is good at; turning it into a screen coordinate is
+        // arithmetic against a window offset, which is exactly where the measured 334 px miss came from.
+        ShownPicture? picture = null;
+        var picturePoint = arguments.Px is { } px && arguments.Py is { } py
+            ? (X: px, Y: py)
+            : ((int X, int Y)?)null;
+        if (picturePoint is not null)
+        {
+            if (arguments.MediaId is not { Length: > 0 } mediaId)
+            {
+                return new ToolResult(false, "px/py 需要 mediaId（哪张图上的像素）：desktop_screenshot 的结果里带它");
+            }
+
+            picture = automation.PictureOf(arguments.MediaId);
+            if (picture is null)
+            {
+                return new ToolResult(false,
+                    $"媒体 '{arguments.MediaId}' 不在记录里（可能已过期）：重新 desktop_screenshot，再用新结果里的 mediaId");
+            }
+        }
+
+        var entityId = seenElement?.WindowId ?? arguments.EntityId ?? picture?.EntityId;
+        if (picture is not null && arguments.EntityId is { Length: > 0 } named && !named.Equals(picture.EntityId, StringComparison.Ordinal))
+        {
+            return new ToolResult(false, $"媒体 '{arguments.MediaId}' 是窗口 '{picture.EntityId}' 的，entityId 却是 '{named}'：两者指同一个窗口，或分开调用");
+        }
+
+        if (point is not null && picturePoint is not null)
+        {
+            return new ToolResult(false, "x/y 和 px/py 同时给了：留一种（前者是屏幕坐标，后者是某张截图上的像素）");
+        }
 
         if (string.IsNullOrWhiteSpace(entityId))
         {
@@ -333,6 +377,21 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
 
         var target = fresh.Find(entityId)!;
 
+        // The picture the coordinate comes from is only as fresh as the window's position. A pixel on the
+        // picture maps to a screen position through the rectangle the picture was taken at — and when the
+        // window has moved or changed shape since, that map points somewhere else with no error on either
+        // side. A picture that no longer matches the fresh rectangle is refused outright rather than
+        // remapped somewhere it was not taken.
+        if (picture is not null && StalePicture(target.Rect, picture) is { } stalePicture)
+        {
+            return new ToolResult(false, stalePicture);
+        }
+
+        if (point is null && picturePoint is { } pp && picture is not null)
+        {
+            point = MapPicturePoint(picture, pp.X, pp.Y);
+        }
+
         if (seenElement is not null && RevalidateElement(seenElement, fresh) is { } staleElement)
         {
             return new ToolResult(false, staleElement);
@@ -387,7 +446,37 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
 
         var described = Describe(action, kind, target, element);
 
-        return new ToolResult(action.GuardPassed, drift is null ? described : $"{described} · {drift}");
+        // The state after the action rides along with the result: the server just re-checked this window and
+        // has its fresh elements in hand, so the picture and the ids it labels are a matched set by
+        // construction. Degradation is deliberately silent — the text result already stands on its own, and
+        // a failed save costing the model one desktop_screenshot call must not cost it the action.
+        DesktopScreenshotTool.PostActionPicture? post = null;
+        if (WantsPicture(kind, arguments.Feedback, supportsImages, action.GuardPassed))
+        {
+            var postElements = fresh.Elements
+                .Where(candidate => string.Equals(candidate.WindowId, entityId, StringComparison.Ordinal))
+                .ToList();
+
+            post = await DesktopScreenshotTool.RenderAfterActionAsync(
+                automation, media, target, postElements, fresh.ObsId, ct).ConfigureAwait(false);
+        }
+
+        if (post is null)
+        {
+            return new ToolResult(action.GuardPassed, drift is null ? described : $"{described} · {drift}");
+        }
+
+        var withPicture = described
+            + $"\n已附截图 {post.MediaId}（{post.Width}×{post.Height}，动作后画面 @ 屏幕 "
+            + $"({post.ScreenRect.X},{post.ScreenRect.Y}) {post.ScreenRect.Width}×{post.ScreenRect.Height}；"
+            + "px/py 可直接对它用）"
+            + (post.Marks.Count > 0
+                ? $"，图上叠标记 {post.Marks.Count} 个"
+                : "，图上无标记（该窗口无可寻址控件），坐标沿网格读");
+        return new ToolResult(
+            action.GuardPassed,
+            drift is null ? withPicture : $"{withPicture} · {drift}",
+            new[] { post.DataUri });
     }
 
     /// <summary>
@@ -574,6 +663,42 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
             : names.Where(name => !InputInjector.ModifierKeys.ContainsKey(name ?? string.Empty)).ToList();
 
     /// <summary>
+    /// The refusal for a picture that no longer shows the window where it is. A pixel on the picture maps to
+    /// a screen position through the rectangle the picture was taken at — and when the window has moved or
+    /// changed shape since, that map points somewhere else with no error on either side. The picture that no
+    /// longer matches the fresh rectangle is refused outright rather than remapped somewhere it was not
+    /// taken: remapping is the arithmetic this path exists to keep away from the model.
+    /// </summary>
+    public static string? StalePicture(PixelRect now, ShownPicture picture)
+    {
+        ArgumentNullException.ThrowIfNull(picture);
+
+        if (now == picture.ScreenRect)
+        {
+            return null;
+        }
+
+        return $"媒体里的截图拍摄时窗口在 ({picture.ScreenRect.X},{picture.ScreenRect.Y}) "
+            + $"{picture.ScreenRect.Width}×{picture.ScreenRect.Height}，"
+            + $"现在在 ({now.X},{now.Y}) {now.Width}×{now.Height}："
+            + "这张图的 px/py 已过期（或窗口已改变大小），重新 desktop_screenshot（可用 zoomAt 对准目标点）";
+    }
+
+    /// <summary>
+    /// A position on the picture the model is looking at, as a screen coordinate — the server does the
+    /// arithmetic, from the rectangle the picture was taken at. Two scales, one per axis: a capture cropped
+    /// to the visible frame and rescaled to the token budget need not keep the aspect it started with.
+    /// Rounding to nearest: both sides of the map are restitutions of a real point, not floorings of a grid.
+    /// </summary>
+    public static (int X, int Y) MapPicturePoint(ShownPicture picture, int px, int py)
+    {
+        var scale = picture.Scale;
+        return (
+            picture.ScreenRect.X + (int)Math.Round(px * scale.X),
+            picture.ScreenRect.Y + (int)Math.Round(py * scale.Y));
+    }
+
+    /// <summary>
     /// Which window a bare point belongs to. An absolute-coordinate click physically goes to whatever is at
     /// that point, so deriving the window from the point is not a guess — but ambiguity is still refused: with
     /// several windows over one point, the model has to say which it meant.
@@ -621,6 +746,18 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
 
         return $"{why}：把 entityId 一起传过来。本次观察到：{windows}{more}";
     }
+
+    /// <summary>
+    /// Whether this action's answer carries the post-action picture, and why not when it does not: a refusal
+    /// injected nothing, so there is nothing new to see; kinds without a visual consequence walk the pointer
+    /// or prepare an aim without changing anything; a caller who said off, or a model that cannot take
+    /// pictures, gets no picture at all. Called before the render, so the matrix is what the result shows.
+    /// </summary>
+    internal static bool WantsPicture(ActionKind kind, string? feedback, bool supportsImages, bool guardPassed) =>
+        guardPassed
+        && feedback is not "off"
+        && supportsImages
+        && kind is not (ActionKind.Focus or ActionKind.MovePointer or ActionKind.ScrollIntoView);
 
     /// <summary>
     /// The result, with injection and verification kept apart: they answer different questions, and collapsing
@@ -682,5 +819,9 @@ public sealed class DesktopActTool(DesktopAutomation automation, DesktopToolPoli
         int? ScrollDelta,
         IReadOnlyList<string>? Modifiers = null,
         RelativePoint? Offset = null,
-        int? ClickCount = null);
+        int? ClickCount = null,
+        int? Px = null,
+        int? Py = null,
+        string? MediaId = null,
+        string? Feedback = null);
 }

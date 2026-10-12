@@ -39,6 +39,36 @@ public sealed record DesktopAction
 public sealed record DesktopLatency(double P50Ms, double P99Ms, double MaxMs);
 
 /// <summary>
+/// What one screenshot offered the model, kept so the server — not the model — owns the conversion from the
+/// picture the model is looking at to the screen the pointer moves on.
+/// <para>
+/// The model reports a position as pixels <b>on the picture it holds</b> (px/py + the picture's mediaId);
+/// the server maps it through the rectangle the picture was taken at. Reading positions off a picture is
+/// what a vision model is good at; multiplying by window offsets is not, and a measured failure had a
+/// correct verbal description of a play button land 334 px away from it in empty background. The scale for
+/// the two axes is carried separately, because a capture cropped to the visible frame and a rescale to the
+/// token budget do not have to keep the aspect they started with.
+/// </para>
+/// </summary>
+/// <param name="EntityId">The window the picture is a view of.</param>
+/// <param name="ScreenRect">Where the picture's top-left pixel sat on the screen when it was taken.</param>
+/// <param name="PictureWidth">The encoded picture's width, in picture pixels.</param>
+/// <param name="PictureHeight">The encoded picture's height, in picture pixels.</param>
+/// <param name="ObsId">The observation the picture was taken against — the audit trail.</param>
+public sealed record ShownPicture(
+    string EntityId,
+    PixelRect ScreenRect,
+    int PictureWidth,
+    int PictureHeight,
+    string ObsId)
+{
+    /// <summary>Screen pixels per picture pixel, per axis.</summary>
+    public (double X, double Y) Scale => (
+        PictureWidth > 0 ? ScreenRect.Width / (double)PictureWidth : 1,
+        PictureHeight > 0 ? ScreenRect.Height / (double)PictureHeight : 1);
+}
+
+/// <summary>
 /// The L1 desktop facade (design doc §2.6): observe windows → issue a lease → inject input → verify.
 /// <para>
 /// Three rules are structural here, not advisory:
@@ -87,6 +117,12 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>Overridable so the DOM path is exercised without a browser.</summary>
     private readonly Func<nint, (int X, int Y)> _clientOrigin;
+
+    /// <summary>
+    /// The UIPI gate, called before any <c>SendInput</c>-carried action: null uses the real one, and an
+    /// override lets tests answer for it without a real token.
+    /// </summary>
+    private readonly Func<nint, string?> _integrity;
 
     /// <param name="cdp">The DOM source; omit it to leave Chromium windows on the coordinate path.</param>
     /// <param name="cdpPorts">Which processes opened a debug port, recorded at launch.</param>
@@ -153,7 +189,8 @@ public sealed class DesktopAutomation : IDisposable
         CdpDomSource? cdp = null,
         CdpRegistry? cdpPorts = null,
         Func<nint, (int X, int Y)>? clientOrigin = null,
-        DesktopLaunchTool? desktopLaunch = null)
+        DesktopLaunchTool? desktopLaunch = null,
+        Func<nint, string?>? integrityRefusal = null)
     {
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
@@ -182,6 +219,8 @@ public sealed class DesktopAutomation : IDisposable
             var origin = new NativeMethods.Point { X = 0, Y = 0 };
             return NativeMethods.ClientToScreen(handle, ref origin) ? (origin.X, origin.Y) : (X: -1, Y: -1);
         });
+
+        _integrity = integrityRefusal ?? new IntegrityGate().Refusal;
     }
 
     public IScreenCapture Capture => _capture;
@@ -205,6 +244,60 @@ public sealed class DesktopAutomation : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(entityId);
         LastShownEntityId = entityId;
+    }
+
+    /// <summary>How many pictures a medium id stays addressable by. The model needs the ones it is reasoning
+    /// about now; older screenshots age out rather than having the map grow with the session.</summary>
+    private const int PictureMemory = 8;
+
+    private readonly object _picturesGate = new();
+
+    /// <summary>mediaId → the picture the server created it from, oldest evicted.</summary>
+    private readonly Dictionary<string, ShownPicture> _pictures = new(StringComparer.Ordinal);
+
+    private readonly List<string> _pictureOrder = [];
+
+    /// <summary>Records one picture the model was just shown, addressable by its media id, so the server owns
+    /// the picture→screen conversion for it (see <see cref="ShownPicture"/>).</summary>
+    public void RecordPicture(string mediaId, ShownPicture picture)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mediaId);
+        ArgumentNullException.ThrowIfNull(picture);
+
+        lock (_picturesGate)
+        {
+            if (_pictures.Remove(mediaId))
+            {
+                _pictureOrder.Remove(mediaId);
+            }
+
+            _pictureOrder.Add(mediaId);
+            _pictures[mediaId] = picture;
+
+            while (_pictureOrder.Count > PictureMemory)
+            {
+                var evicted = _pictureOrder[0];
+                _pictureOrder.RemoveAt(0);
+                _pictures.Remove(evicted);
+            }
+        }
+    }
+
+    /// <summary>The picture a media id was created from, or null when it has aged out (or was never one).
+    /// A null here is reported to the model rather than resolved against some newer picture: reporting
+    /// coordinates taken off photo A against photo B is exactly the misaligned click this mechanism exists
+    /// to prevent.</summary>
+    public ShownPicture? PictureOf(string mediaId)
+    {
+        if (string.IsNullOrEmpty(mediaId))
+        {
+            return null;
+        }
+
+        lock (_picturesGate)
+        {
+            return _pictures.TryGetValue(mediaId, out var picture) ? picture : null;
+        }
     }
 
     public LeaseStore Leases => _leases;
@@ -413,6 +506,16 @@ public sealed class DesktopAutomation : IDisposable
 
         if (injection is null)
         {
+            // UIPI first, before anything touches the user's window order: an elevated target swallows this
+            // process's SendInput silently, so focusing and raising it would move the user's foreground for an
+            // action that was never going to land. A UI Automation pattern — the path above — crosses integrity
+            // levels fine and so is not gated; this is a gate on the one communication channel that would be
+            // swallowed, not on reaching the window at all.
+            if (DeliversInput(kind) && _integrity(handle) is { } uiPiDenied)
+            {
+                return Refused(actionId, observation.ObsId, entityId, kind, parameters, uiPiDenied);
+            }
+
             // Before injecting: the point has to be somewhere the target can receive it. Injected input is
             // delivered by the OS to whatever window is under the point, and a point inside the target's
             // rectangle can still be covered by another application's window — in which case the click lands
@@ -789,6 +892,21 @@ public sealed class DesktopAutomation : IDisposable
             ? $"{remaining}（已把它带到前台，仍然被挡住：把挡住的窗口挪开）"
             : null;
     }
+
+    /// <summary>
+    /// Whether an action travels through <c>SendInput</c>, and is therefore subject to UIPI. A UI Automation
+    /// pattern is not: it is a per-process RPC to the control itself, which is part of why it is the one way
+    /// to reach a control this process is too low to click.
+    /// </summary>
+    internal static bool DeliversInput(ActionKind kind) => kind switch
+    {
+        // Focus does not inject: it is a window-manager call (SetForegroundWindow), and activating an
+        // elevated window is exactly what a person's alt-tab does. Everything else here ends in an input
+        // event, and an input event sent toward a higher-integrity window is dropped by the OS.
+        ActionKind.Focus => false,
+        ActionKind.ScrollIntoView => false,
+        _ => true,
+    };
 
     /// <summary>Injected input — the path used for everything a pattern cannot express.</summary>
     private InjectionResult Inject(ActionKind kind, nint handle, ActionParams parameters) => kind switch

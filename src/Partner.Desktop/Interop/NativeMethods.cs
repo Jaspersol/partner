@@ -91,6 +91,9 @@ internal static class NativeMethods
     internal static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);
 
     [DllImport("user32.dll")]
+    internal static extern nint GetShellWindow();
+
+    [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int index);
 
     // The bounding box of every monitor in one coordinate space — the space SendInput's absolute mouse
@@ -202,6 +205,10 @@ internal static class NativeMethods
 
     internal const int DpiAwarenessContextPerMonitorAwareV2 = -4;
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetCursorPos(out Point point);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(nint hwnd, nint processId);
 
@@ -295,6 +302,46 @@ internal static class NativeMethods
         [FieldOffset(0)]
         public KeyboardInput Keyboard;
     }
+
+    // ---- token integrity level ------------------------------------------------------------------
+
+    /// <summary>
+    /// Reads the integrity level of the process owning a window, for the UIPI gate. Every call used here is
+    /// documented against <c>PROCESS_QUERY_LIMITED_INFORMATION</c>, so a query succeeds across integrity
+    /// levels (that is the point of the limited right): what it cannot read is not "nobody may know the
+    /// level" but a protected process, which the gate treats as undetermined rather than elevated.
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern nint OpenProcess(uint access, bool inherit, uint processId);
+
+    internal const uint ProcessQueryLimitedInformation = 0x1000;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool OpenProcessToken(nint process, uint access, out nint token);
+
+    internal const uint TokenQuery = 0x0008;
+    internal const uint TokenIntegrityLevel = 25;
+
+    /// <summary>
+    /// Reads one token information class into an unmanaged buffer. Called first with a null buffer to size
+    /// the answer, then with it — the standard two-step. Buffer is allocated by the caller with
+    /// <c>Marshal.AllocHGlobal</c> because the SID pointer read out of it must stay in unmanaged memory for
+    /// the <c>GetSidSubAuthority</c> calls that follow.
+    /// </summary>
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetTokenInformation(nint token, uint class_, nint buffer, int length, out int returnLength);
+
+    [DllImport("advapi32.dll")]
+    internal static extern nint GetSidSubAuthority(nint sid, uint index);
+
+    [DllImport("advapi32.dll")]
+    internal static extern nint GetSidSubAuthorityCount(nint sid);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool CloseHandle(nint handle);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct MouseInput

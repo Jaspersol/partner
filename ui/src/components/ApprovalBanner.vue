@@ -28,6 +28,12 @@ const target = computed(() => {
 })
 
 const kind = computed(() => /"kind"\s*:\s*"([^"]+)"/.exec(current.value?.arguments ?? '')?.[1] ?? '')
+
+/**
+ * Grant's size comes from the server — it is the server's semantics, not the banner's. A null desktop
+ * state (no desktop observation yet) falls back to what the store does by default.
+ */
+const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 </script>
 
 <template>
@@ -38,7 +44,9 @@ const kind = computed(() => /"kind"\s*:\s*"([^"]+)"/.exec(current.value?.argumen
     <span v-if="target" class="target" data-test="approval-target">目标 {{ target }}</span>
     <code class="break args">{{ current.arguments }}</code>
     <span class="spacer" />
-    <span class="muted" data-test="approval-hint">无人应答即拒绝</span>
+    <span class="muted" data-test="approval-hint">
+      无人应答即拒绝 · 允许将授权目标窗口继续 {{ grantSteps }} 步（危险类仍逐次询问）
+    </span>
     <button class="primary" data-test="approval-allow" @click="emit('answer', current.approvalId, true)">
       允许
     </button>

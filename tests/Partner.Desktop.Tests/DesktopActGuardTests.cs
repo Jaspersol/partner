@@ -362,7 +362,8 @@ public sealed class DesktopActGuardTests
         // Every tool is in the catalog: the host walks this list to decide what to allow, so a tool missing
         // from it would never be allowed to run.
         Assert.Contains("desktop_act", DesktopToolCatalog.All);
+        Assert.Contains("desktop_wait", DesktopToolCatalog.All);
         Assert.Contains("desktop_exec", DesktopToolCatalog.All);
-        Assert.Equal(7, DesktopToolCatalog.All.Count);
+        Assert.Equal(8, DesktopToolCatalog.All.Count);
     }
 }

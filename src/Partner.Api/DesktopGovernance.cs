@@ -63,8 +63,42 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
                 ? gear != ApprovalGears.None
                 : gear == ApprovalGears.All;
 
+        if (toolName == "desktop_act")
+        {
+            return SwitchOnTaskLease(toolName, argumentsJson, needsApproval, gear);
+        }
+
         return needsApproval
             ? new GovernanceDecision(ToolDecision.Ask, $"'{toolName}' 需要人工批准（挡位：{gear}）")
+            : new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 在当前挡位下可直接执行（{gear}）");
+    }
+
+    /// <summary>
+    /// A GUI action first answers to what a human already granted for its window. The grant is spent one
+    /// step at a time, by <see cref="TaskLeaseStore.Consume"/> — the same call that decides may run also
+    /// spends it, because Decide is exactly where an execution about to happen passes through.
+    /// <para>
+    /// The dangerous tools never reach this: they asked by gear before the lease existed, and a grant of
+    /// continuing GUI latitude must not quietly widen into launching or pasting — that is a separate ask,
+    /// every time.
+    /// </para>
+    /// </summary>
+    private GovernanceDecision SwitchOnTaskLease(string toolName, string argumentsJson, bool needsApproval, string gear)
+    {
+        var target = TaskLeaseStore.TryTarget(argumentsJson);
+        if (target is not null)
+        {
+            var (allowed, reason, remaining) = _context.TaskLeases.Consume(target.Value.EntityId, target.Value.Kind, argumentsJson);
+            if (allowed)
+            {
+                return new GovernanceDecision(ToolDecision.Allow,
+                    $"在任务租约内：窗口 {target.Value.EntityId} 已获准继续操作（{reason}）");
+            }
+        }
+
+        return needsApproval
+            ? new GovernanceDecision(ToolDecision.Ask,
+                $"'{toolName}' 需要人工批准（挡位：{gear}；批准将授权同一窗口继续 {TaskLeaseStore.DefaultSteps} 步）")
             : new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 在当前挡位下可直接执行（{gear}）");
     }
 }

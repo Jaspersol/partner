@@ -29,6 +29,22 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     /// <summary>Longest side of the picture sent to the model. Bigger costs tokens, not accuracy.</summary>
     private const int DefaultMaxDimension = 1280;
 
+    /// <summary>Half the side of a zoomed crop, in screen pixels. The crop is the second stage of the two
+    /// step aiming: the model reads a rough position off the whole window, then looks at a piece of it
+    /// full-size — where a 1280-wide whole-window picture is one picture pixel per ~two screen pixels, the
+    /// crop is delivered at three times its native resolution, and its grid is pinned to a 20 px step.
+    /// </summary>
+    internal const int ZoomRadius = 96;
+
+    /// <summary>A zoom crop is upscaled this much for legibility. Upscaling adds no information — the grid
+    /// and the marks already carry the exact numbers — but reading an 11 pt label inside a 192 px image is
+    /// a strain, and the model that has to read the numbers is the whole point.</summary>
+    private const int ZoomUpscale = 3;
+
+    /// <summary>The screen-pixel grid step a zoomed crop is drawn with (whole-window pictures keep the
+    /// about-8-cells rule): every cell of it is 20 px wide, so a line-to-line reading is ±10 px on screen.</summary>
+    internal const int ZoomGridStep = 20;
+
     public ToolSpec Spec { get; } = new(
         "desktop_screenshot",
         "把一个窗口的截图发给模型看（UIA 看不见的应用——Electron、游戏、画布——靠这个）。"
@@ -40,13 +56,14 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id，来自 desktop_observe；省略则截前台窗口"},
           "maxDimension":{"type":"integer","description":"最长边像素上限，默认 1280"},
-          "marks":{"type":"boolean","description":"是否叠网格与控件标记，默认 true；只有想看不带标注的原图时才设 false"}
+          "marks":{"type":"boolean","description":"是否叠网格与控件标记，默认 true；只有想看不带标注的原图时才设 false"},
+          "zoomAt":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"description":"放大复查：屏幕上的一个粗略点位（从整窗网格读出）。返回以它为中心的一小片原图（约 192×192 屏幕 px，放大 3 倍显示，网格 20 px 一格），图上刻度仍是屏幕坐标，另带 mediaId 供 desktop_act 用 px/py 精确点击"}
         },"additionalProperties":false}
         """);
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
-        var arguments = Json.Deserialize<ScreenshotArguments>(argumentsJson) ?? new ScreenshotArguments(null, null, null);
+        var arguments = Json.Deserialize<ScreenshotArguments>(argumentsJson) ?? new ScreenshotArguments(null, null, null, null);
         var observation = automation.LastObservation;
 
         if (observation is null)
@@ -107,6 +124,21 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
                 + $"网格与标记按这个位置标注）"
             : string.Empty;
 
+        // Where inside the frame a zoom asked for: clamped to the window, refused when the point the model
+        // read off the whole window is not on it at all — a zoom into a neighbouring window would answer a
+        // question nobody was asking.
+        (PixelRect CropScreen, PixelRect CropFrame)? zoom = null;
+        if (arguments.ZoomAt is { } at)
+        {
+            var zoomAt = (X: at.X, Y: at.Y);
+            if (!ZoomRect(captured, zoomAt, out var cropScreen, out var cropFrame, out var zoomError))
+            {
+                return new ToolResult(false, zoomError);
+            }
+
+            zoom = (cropScreen, cropFrame);
+        }
+
         byte[] png;
         int width;
         int height;
@@ -114,7 +146,9 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
 
         try
         {
-            (png, width, height, marks) = Encode(frame, maxDimension, captured, elements, wantsMarks);
+            (png, width, height, marks) = zoom is { } crop
+                ? EncodeZoom(frame, crop.CropFrame, crop.CropScreen, elements)
+                : Encode(frame, maxDimension, captured, elements, wantsMarks);
         }
         catch (Exception error)
         {
@@ -143,8 +177,126 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         // A bare point is resolvable to this window, because this is the picture the coordinates came from.
         automation.MarkShown(entity.EntityId);
 
-        return new ToolResult(true, Describe(entity, captured, width, height, mediaId, marks, moved), new[] { dataUri });
+        // Recorded with its media id, so the model can ask desktop_act for px/py <i>on this picture</i> and
+        // the server does the conversion — from the rectangle the picture was actually taken at, not one the
+        // model converted.
+        var pictureScreen = zoom?.CropScreen ?? captured;
+        automation.RecordPicture(mediaId, new ShownPicture(
+            entity.EntityId,
+            pictureScreen,
+            width,
+            height,
+            observation.ObsId));
+
+        return new ToolResult(true, zoom is { } done
+            ? DescribeZoom(entity, done.CropScreen, mediaId, marks)
+            : Describe(entity, captured, width, height, mediaId, marks, moved), new[] { dataUri });
     }
+
+    /// <summary>
+    /// The visible state after an action, as the act tool's answer itself.
+    /// <para>
+    /// An action's result used to be text only, so the model had to spend a second tool call guessing what
+    /// the result looked like — and a GUI task is precisely the case where wanting to see is the norm, not
+    /// the exception. This is the same pipeline <see cref="InvokeAsync"/> runs, aimed at the window that was
+    /// just acted on: capture, scale to the token budget, draw the grid and the element marks, store under a
+    /// media id, and return the data URI for the wire. Every step degrades silently to "no picture" rather
+    /// than failing the action that already succeeded: a missing picture costs the model one
+    /// <c>desktop_screenshot</c> call, a failed action costs the whole turn.
+    /// </para>
+    /// <para>
+    /// Deliberately <b>not</b> a re-observe of anything but this window's own elements: the ids the marks are
+    /// drawn with come from the <b>fresh</b> observation the act just re-checked against, so what the picture
+    /// labels is exactly what the model can address by id next. Element ids minted from a stale observation
+    /// would be refused by the revalidation on first use.
+    /// </para>
+    /// </summary>
+    internal static async Task<PostActionPicture?> RenderAfterActionAsync(
+        DesktopAutomation automation,
+        IMediaStore media,
+        UiEntity target,
+        IReadOnlyList<UiElement> elements,
+        string obsId,
+        CancellationToken ct)
+    {
+        var handle = ParseHandle(target.EntityId);
+
+        // Same trap as the explicit tool: the stub rectangle at -32000 has no pixels to show, and the answer
+        // for it is in the action's result text ("focus first"), not in a blank picture. The fresh
+        // observation is the truth here — it measured IsIconic when the act re-checked the window, which is
+        // never staler than re-asking — and the handle is asked as well, so a window that minimized in the
+        // last few milliseconds is caught either way.
+        if (target.IsMinimized || NativeMethods.IsIconic(handle))
+        {
+            return null;
+        }
+
+        CaptureResult frame;
+        try
+        {
+            frame = await automation.Capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        if (!frame.Ok)
+        {
+            return null;
+        }
+
+        // Aligned to where the frame was actually rendered: the window may have moved — even by the action
+        // itself, which is exactly a restore — and a grid labelled from the observation's rectangle would
+        // carry coordinates that are wrong by however far it moved.
+        var captured = frame.ScreenRect ?? target.Rect;
+
+        byte[] png;
+        int width;
+        int height;
+        IReadOnlyList<ScreenshotMark> marks;
+        try
+        {
+            (png, width, height, marks) = Encode(frame, DefaultMaxDimension, captured, elements, marks: true);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        string mediaId;
+        try
+        {
+            using var stream = new MemoryStream(png);
+            mediaId = await media.SaveAsync("image/png", stream, ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        var dataUri = media.TryRead(mediaId)?.ToDataUri();
+        if (dataUri is null)
+        {
+            return null;
+        }
+
+        // The same bookkeeping the explicit tool does: the model can address this picture with px/py +
+        // mediaId, the server owns the conversion, and a bare point resolves to this window.
+        automation.MarkShown(target.EntityId);
+        automation.RecordPicture(mediaId, new ShownPicture(target.EntityId, captured, width, height, obsId));
+
+        return new PostActionPicture(mediaId, dataUri, width, height, captured, marks);
+    }
+
+    /// <summary>What the post-action picture carries onto the wire, at one glance per field.</summary>
+    internal sealed record PostActionPicture(
+        string MediaId,
+        string DataUri,
+        int Width,
+        int Height,
+        PixelRect ScreenRect,
+        IReadOnlyList<ScreenshotMark> Marks);
 
     /// <summary>
     /// What the model needs in order to act on what it just saw: which window, where that window is on screen,
@@ -166,7 +318,8 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         string moved)
     {
         var rect = captured;
-        var perPicturePixel = width > 0 ? (double)rect.Width / width : 1;
+        var perPicturePixelX = width > 0 ? rect.Width / (double)width : 1;
+        var perPicturePixelY = height > 0 ? rect.Height / (double)height : 1;
 
         var lines = new List<string>
         {
@@ -174,8 +327,9 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
                 + $"{rect.Width}×{rect.Height}，截图 {width}×{height}（媒体 {mediaId}）。{moved}",
 
             $"图上叠了坐标网格，**刻度上的数字就是屏幕坐标**：先沿着网格读出目标所在格的屏幕 x/y，再写进 "
-                + $"desktop_act 的 x/y。不要凭感觉估。窗口内 (px,py) 与屏幕的关系是 "
-                + $"屏幕 = ({rect.X}+px×{perPicturePixel:0.###}, {rect.Y}+py×{perPicturePixel:0.###})。",
+                + $"desktop_act 的 x/y。不要凭感觉估。窗口内 (px,py) 与屏幕的关系是（两轴比例分别给，宽高不必同比例）："
+                + $"屏幕 = ({rect.X}+px×{perPicturePixelX:0.####}, {rect.Y}+py×{perPicturePixelY:0.####})。"
+                + $"更稳的做法：直接把 px/py 和媒体 {mediaId} 给 desktop_act，由服务端换算。",
         };
 
         if (marks.Count == 0)
@@ -252,9 +406,127 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         return (stream.ToArray(), drawn.Item1.PixelWidth, drawn.Item1.PixelHeight, drawn.Item2);
     }
 
+    /// <summary>
+    /// Where inside the frame a zoom asked for, clamped to the window by growing the crop toward the sides
+    /// that have room — so the point is never at the crop's edge, where the model would run out of picture
+    /// exactly where it needs to look. Refused, not clamped, when the point is not on this window: a zoom
+    /// into the window next door answers a question nobody was asking.
+    /// </summary>
+    internal static bool ZoomRect(
+        PixelRect window,
+        (int X, int Y) at,
+        out PixelRect cropScreen,
+        out PixelRect cropFrame,
+        out string error)
+    {
+        cropScreen = new PixelRect(0, 0, 0, 0);
+        cropFrame = new PixelRect(0, 0, 0, 0);
+
+        if (window.Width <= 0 || window.Height <= 0)
+        {
+            error = "窗口矩形无效，无法放大";
+            return false;
+        }
+
+        if (!window.Contains(at.X, at.Y))
+        {
+            error = $"({at.X},{at.Y}) 不在窗口矩形 {window.Width}×{window.Height} 内：放大的是这个窗口的区域，先给窗口内的点";
+            return false;
+        }
+
+        // A fixed-size crop (when the window affords it), shifted — never clipped — so the point keeps as
+        // much reading room as the window allows: a crop clipped on one side would put the model's reading
+        // target at the picture's edge, where the grid and the neighbours it needs to read against run out.
+        var width = Math.Min(window.Width, 2 * ZoomRadius);
+        var height = Math.Min(window.Height, 2 * ZoomRadius);
+
+        var left = Clamp(at.X - ZoomRadius, window.X, window.X + window.Width - width);
+        var top = Clamp(at.Y - ZoomRadius, window.Y, window.Y + window.Height - height);
+        cropScreen = new PixelRect(left, top, width, height);
+
+        // Frame pixels: the capture's origin is the window's corner, already in screen coordinates.
+        cropFrame = new PixelRect(cropScreen.X - window.X, cropScreen.Y - window.Y, width, height);
+        error = string.Empty;
+        return true;
+    }
+
+    private static int Clamp(int value, int low, int high) =>
+        Math.Clamp(value, Math.Min(low, high), Math.Max(low, high));
+
+    /// <summary>
+    /// Encodes a zoomed crop: cut at native resolution from the freshly captured frame, upscaled for
+    /// legibility, then drawn with the pinned 20 px grid. The crop keeps what the downscaled whole-window
+    /// picture threw away — real pixels — and that is the whole point of the second stage.
+    /// </summary>
+    private static (byte[] Png, int Width, int Height, IReadOnlyList<ScreenshotMark> Marks) EncodeZoom(
+        CaptureResult frame,
+        PixelRect cropFrame,
+        PixelRect cropScreen,
+        IReadOnlyList<UiElement> elements)
+    {
+        var fullFrame = BitmapSource.Create(
+            frame.Width,
+            frame.Height,
+            96,
+            96,
+            System.Windows.Media.PixelFormats.Bgra32,
+            palette: null,
+            frame.Bgra,
+            frame.Width * 4);
+
+        var crop = new System.Windows.Media.Imaging.CroppedBitmap(
+            fullFrame,
+            new System.Windows.Int32Rect(cropFrame.X, cropFrame.Y, cropFrame.Width, cropFrame.Height));
+
+        var zoomed = new TransformedBitmap(crop, new System.Windows.Media.ScaleTransform(ZoomUpscale, ZoomUpscale));
+
+        var drawn = ScreenshotMarks.Draw(zoomed, cropScreen, elements, ZoomGridStep);
+
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(drawn.Item1));
+
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+
+        return (stream.ToArray(), drawn.Item1.PixelWidth, drawn.Item1.PixelHeight, drawn.Item2);
+    }
+
+    /// <summary>
+    /// What the model needs to finish the aiming on a zoomed crop: the size of its grid, the exact
+    /// conversion — which it should not do — and the call to make next.
+    /// </summary>
+    private static string DescribeZoom(
+        UiEntity entity,
+        PixelRect cropScreen,
+        string mediaId,
+        IReadOnlyList<ScreenshotMark> marks)
+    {
+        var lines = new List<string>
+        {
+            $"放大复查：'{entity.Label}'（{entity.Value ?? "?"}）窗口 {entity.EntityId} 的区域 @ 屏幕 "
+                + $"({cropScreen.X},{cropScreen.Y}) {cropScreen.Width}×{cropScreen.Height}（媒体 {mediaId}）。",
+
+            $"这张图是真像素放大 {ZoomUpscale} 倍，网格一格 = 屏幕 {ZoomGridStep} px，刻度上的数字是屏幕坐标。"
+                + $"读数后仍然用 desktop_act：可直接给 x/y（屏幕坐标），更稳的做法是给 px/py + mediaId={mediaId}，"
+                + $"由服务端换算。",
+        };
+
+        if (marks.Count > 0)
+        {
+            var listed = string.Join("；", marks.Take(24).Select(mark =>
+                $"标记 {mark.Index} = '{mark.Label}' [{mark.Role}] elementId {mark.ElementId} 点击点屏幕 ({mark.ClickAt.X},{mark.ClickAt.Y})"));
+            lines.Add($"带标记的控件：{listed}。这些优先用 elementId，不用坐标。");
+        }
+
+        lines.Add($"下一步：{{ \"entityId\":\"{entity.EntityId}\", \"kind\":\"LeftClick\", \"mediaId\":\"{mediaId}\", \"px\":<图上x>, \"py\":<图上y> }}");
+        return string.Join("\n", lines);
+    }
+
     /// <summary>The window handle behind an entity id, which the observation wrote as hex.</summary>
     private static nint ParseHandle(string entityId) =>
         nint.Parse(entityId, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
 
-    private sealed record ScreenshotArguments(string? EntityId, int? MaxDimension, bool? Marks);
+    private sealed record ScreenshotArguments(string? EntityId, int? MaxDimension, bool? Marks, ZoomAt? ZoomAt);
+
+    public sealed record ZoomAt(int X, int Y);
 }

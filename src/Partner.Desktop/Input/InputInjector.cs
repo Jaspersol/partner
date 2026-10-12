@@ -357,10 +357,77 @@ public sealed class InputInjector
     };
 
     /// <summary>One positional event, refused before anything is injected when the point is off-screen.</summary>
-    private InjectionResult Positional(int x, int y, uint downFlag, uint upFlag, string detail, int count = 1) =>
-        TryBuildClick(x, y, downFlag, upFlag, count, out var inputs, out var error)
-            ? Send(inputs, detail)
-            : new InjectionResult(false, 0, error!);
+    private InjectionResult Positional(int x, int y, uint downFlag, uint upFlag, string detail, int count = 1)
+    {
+        if (!TryPosition(x, y, out var nx, out var ny, out var error))
+        {
+            return new InjectionResult(false, 0, error!);
+        }
+
+        var move = MouseAt(nx, ny, PositionalFlags);
+
+        if (downFlag == 0)
+        {
+            // MovePointer: no button follows, so nothing to pace — send the move and be done.
+            return Send([move], detail);
+        }
+
+        // The pause between arriving and pressing. The old single record (move+down in one event) gave the
+        // target zero time to build hover state, and hover-driven hit targets — table rows that reveal their
+        // buttons on hover, menus, split entries — read it as "a click from no mouse". Moving first and
+        // dwelling before the press is what a person's hand does.
+        if (HoverUnsettled(x, y))
+        {
+            var positioned = Send([move], $"move to ({x},{y})");
+            if (!positioned.Ok)
+            {
+                return positioned;
+            }
+
+            Thread.Sleep(HoverDwellMs);
+        }
+
+        var press = MouseAt(nx, ny, PositionalFlags | downFlag);
+        var release = MouseAt(nx, ny, PositionalFlags | upFlag);
+
+        if (count == 2)
+        {
+            // The two clicks in two real sends with a real sleep between them. The no-op record inside
+            // TryBuildClick costs no time — SendInput queue positions its events back to back — so the
+            // double click's spacing has to be made of actual wall time, which is what GetDoubleClickTime
+            // measures the machine's own expectation against.
+            var first = Send([press, release], detail);
+            if (!first.Ok)
+            {
+                return first;
+            }
+
+            Thread.Sleep(DoubleClickDelayMs);
+            return Send([press, release], $"{detail} ×2");
+        }
+
+        return Send([press, release], detail);
+    }
+
+    /// <summary>The pause between arriving and pressing, in milliseconds — long enough for the target's
+    /// message loop to turn the move into a hover, short enough that the human eye reads it as one motion.</summary>
+    public const int HoverDwellMs = 40;
+
+    /// <summary>
+    /// Whether the pointer is somewhere other than the point: a click whose pointer is already there (the
+    /// model's own movePointer before it, or the user's hand) needs no artificial pause — the hover state is
+    /// already whatever it is going to be. An unreadable position skips nothing: an unverifiable assumption
+    /// eats the 40 ms rather than the click.
+    /// </summary>
+    private static bool HoverUnsettled(int x, int y)
+    {
+        if (!NativeMethods.GetCursorPos(out var at))
+        {
+            return true;
+        }
+
+        return at.X != x || at.Y != y;
+    }
 
     /// <summary>
     /// Types text as unicode input. Character by character rather than by keyboard layout: the point is to
