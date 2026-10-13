@@ -159,7 +159,7 @@ defineExpose({ refresh })
 
         <div v-for="(server, index) in form.servers" :key="index" class="server" :data-test="'mcp-server'">
           <div class="server-row">
-            <label>
+            <label class="span-2">
               <span>名字</span>
               <input
                 :value="server.name"
@@ -168,7 +168,7 @@ defineExpose({ refresh })
                 @input="updateServer(index, { name: ($event.target as HTMLInputElement).value })"
               />
             </label>
-            <label>
+            <label class="span-2">
               <span>命令</span>
               <input
                 :value="server.command"
@@ -179,7 +179,6 @@ defineExpose({ refresh })
               <!-- How the process is started decides what this field accepts: a bare name is looked up on
                    PATH and nothing else. A path that only works because someone's shell sets an alias fails
                    here, at start-up, with the reason a few lines deep in a consumer log. -->
-              <span class="source">可执行文件名或绝对路径；裸名字只按 PATH 查找</span>
             </label>
           </div>
 
@@ -194,7 +193,7 @@ defineExpose({ refresh })
               />
             </label>
             <label>
-              <span>工作目录</span>
+              <span>工作目录：可执行文件名或绝对路径；裸名字只按 PATH 查找</span>
               <input
                 :value="server.workingDirectory ?? ''"
                 data-test="mcp-server-cwd"
@@ -213,7 +212,7 @@ defineExpose({ refresh })
             </label>
           </div>
 
-          <button class="ghost" data-test="mcp-server-remove" @click="removeServer(index)">移除</button>
+          <button class="ghost danger" data-test="mcp-server-remove" @click="removeServer(index)">移除</button>
         </div>
 
         <button class="ghost" data-test="mcp-server-add" @click="addServer">＋ 添加服务器</button>
@@ -297,19 +296,24 @@ label.mcp-field small {
   align-items: baseline;
 }
 
+/* An inset step on --surface-2, not a bordered box: the card already draws the outer edge, and a second
+   border inside it made the block read as a box in a box. The darker step is what the surface ladder is for. */
 .server {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: var(--space-3);
   display: grid;
   gap: var(--space-2);
-  margin-block-end: var(--space-2);
 }
 
+/* One four-column track, shared by both rows, so 名字/命令 and 参数/工作目录/超时 line up on the same
+   divisions instead of each flex row choosing its own widths. span-2 on the two wide fields; the narrow
+   container below drops to a single column and the spans go with it. */
 .server-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-2);
-  flex-wrap: wrap;
 }
 
 .server-row label {
@@ -318,14 +322,23 @@ label.mcp-field small {
   font-size: var(--fs-meta);
   color: var(--text-3);
   min-inline-size: 0;
-  /* Every field takes a share of the row instead of the browser's default input width, so the columns of
-     one row line up with the columns of the next and the inputs stretch to their labels. The grow field
-     claims double; below ~16rem the row wraps and each field goes full-width. */
-  flex: 1 1 12rem;
+  /* Start, not the default stretch: the label cell stretches to the tallest sibling (the 参数 textarea),
+     and stretch would hand that spare height to the name track — so 工作目录's name row grew to 29px next
+     to 参数's 18px and every control below it sat 11px lower. Pinned to the top, all controls in a row
+     share one top edge. */
+  align-content: start;
 }
 
+.server-row label.span-2,
 .server-row .grow {
-  flex: 2 1 16rem;
+  grid-column: span 2;
+}
+
+/* The field's name is read; the label's grey is the container's. One step apart so the row scans as
+   "name over control" rather than as four lines of the same grey. */
+.server-row label > span {
+  color: var(--text-2);
+  font-weight: 500;
 }
 
 .server-row input,
@@ -352,5 +365,18 @@ label.mcp-field small {
 .card button.ghost,
 .server button.ghost {
   justify-self: start;
+}
+
+/* Narrow: one column. The spans have to go with it — `span 2` against a single explicit track would open
+   an implicit second column and push the third field onto its own row. */
+@container body (max-width: 40rem) {
+  .server-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .server-row label.span-2,
+  .server-row .grow {
+    grid-column: auto;
+  }
 }
 </style>
