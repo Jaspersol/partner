@@ -239,6 +239,8 @@ internal static class Program
     {
         var clock = TimeProvider.System;
 
+        WarnIfPartnerAppIsRunning();
+
         // ---- 1. three input kinds, interleaved arrival order -------------------------
         var (store, repaired) = JsonlSessionStore.Open(root, clock);
         Check("session log opens clean", repaired == 0, $"repaired={repaired}");
@@ -681,7 +683,9 @@ internal static class Program
                 && copy.Body == "scratch note about the deployment window",
                 $"promoted={promoted}");
 
-            // Injection budget.
+            // Injection budget — through the production path now: the recall hook (M0) runs the store's
+            // InjectAsync, so the same bounded-then-marked contract applies to a turn's prompt. Here the two
+            // arms are checked side by side: the store result, and what the hook writes into a turn.
             await using (var tight = new MemoryStore(
                 Path.Combine(root, "memory", "tight.db"),
                 new MemoryStoreOptions { InjectionTokenLimit = 20, RecallLimit = 10 },
@@ -702,6 +706,60 @@ internal static class Program
                 Check("memory: injection respects the token budget",
                     injection.Tokens <= 20 && injection.Truncated && injection.Hits.Count < 5,
                     $"tokens={injection.Tokens} hits={injection.Hits.Count} truncated={injection.Truncated}");
+
+                var hook = new MemoryRecallHook(tight);
+                var hookCtx = new HookContext
+                {
+                    SessionId = "smoke",
+                    Source = InputSource.Text,
+                    InputPayload = "alpha beta",
+                    WorkspaceDirectory = root,
+                };
+                await hook.RunAsync(hookCtx, default);
+
+                var injectedText = string.Join('\n', hookCtx.InjectedPrompts);
+                Check("memory: the recall hook injects through the budget and marks the cut",
+                    hookCtx.InjectedPrompts.Count == 1
+                    && injectedText.Contains("token budget", StringComparison.Ordinal)
+                    && injectedText.Contains("alpha beta gamma", StringComparison.Ordinal),
+                    $"prompts={hookCtx.InjectedPrompts.Count} truncatedMark={injectedText.Contains("token budget", StringComparison.Ordinal)}");
+            }
+
+            // Maintenance pass (M0): a store nobody reads or writes still ages and prunes itself.
+            await using (var dusty = new MemoryStore(
+                Path.Combine(root, "memory", "dusty.db"),
+                clock: clock))
+            {
+                var longAgo = clock.GetUtcNow() - TimeSpan.FromDays(90) - TimeSpan.FromMinutes(5);
+                await dusty.WriteAsync(new MemoryRecord
+                {
+                    RecordId = "dusty-idle",
+                    Tier = MemoryTier.Semantic,
+                    Scope = MemoryScope.Recall,
+                    Body = "an idle record nobody recalled in over 90 days",
+                    CreatedAt = longAgo,
+                });
+                await dusty.WriteAsync(new MemoryRecord
+                {
+                    RecordId = "dusty-expired",
+                    Tier = MemoryTier.Working,
+                    Scope = MemoryScope.Recall,
+                    Body = "a working record whose TTL is long blown",
+                    CreatedAt = clock.GetUtcNow() - TimeSpan.FromDays(30),
+                });
+                await dusty.PromoteEligibleAsync();
+
+                var maintenance = new MemoryMaintenanceService(dusty, clock);
+                var dustRun = await maintenance.RunAsync();
+                await maintenance.DisposeAsync();
+
+                Check("memory: the maintenance pass ages and trims an untouched store",
+                    dustRun.Demoted >= 1
+                    && dustRun.Trimmed >= 1
+                    && (await dusty.GetAsync("dusty-idle"))!.Tier == MemoryTier.Episodic
+                    && await dusty.GetAsync("dusty-expired") is null
+                    && await dusty.GetAsync(MemoryStore.EpisodicCopyId("dusty-expired")) is not null,
+                    $"demoted={dustRun.Demoted} trimmed={dustRun.Trimmed}");
             }
 
             // Scale: the Phase 3 acceptance number (100k records, retrieval P99 < 500ms).
@@ -1656,7 +1714,7 @@ internal static class Program
         var uiWorkspace = Path.Combine(root, "ui");
         var apiPort = FreePort();
         var uiToken = TokenAuth.Generate();
-        var (apiApp, apiContext, apiConsumer, apiVoice) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
+        var (apiApp, apiContext, apiConsumer, apiVoice, _) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
         var apiRun = apiApp.RunAsync();
 
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{apiPort}") };
@@ -1815,9 +1873,17 @@ internal static class Program
                 && saved.GetProperty("output").GetProperty("muteDuringTts").GetBoolean()
                 && saved.GetProperty("asr").GetProperty("model").GetString() == "smoke-asr"
                 && saved.GetProperty("tts").GetProperty("chunkMs").GetInt32() == 120,
+
+                // The memory section rides the same PUT: off is the shipped default, so this also asserts the
+                // section arrives rather than being dropped by the view.
                 $"gap={saved.GetProperty("input").GetProperty("utteranceGapMs").GetDouble()} "
                 + $"asr={saved.GetProperty("asr").GetProperty("model").GetString()} "
                 + $"tts={saved.GetProperty("tts").GetProperty("chunkMs").GetInt32()}");
+            Check("memory: embeddings default off and the switch round-trips",
+                settings.GetProperty("memory").GetProperty("embeddings").GetBoolean() == false
+                && saved.GetProperty("memory").GetProperty("embeddings").GetBoolean() == false,
+                $"default={settings.GetProperty("memory").GetProperty("embeddings").GetBoolean()}"
+                + $" afterSave={saved.GetProperty("memory").GetProperty("embeddings").GetBoolean()}");
 
             // Queue view + cancel. The view is served from what is still in play rather than from the log, so a
             // cancelled item leaves the list instead of appearing in it as Canceled. The check asserts that
@@ -1883,7 +1949,7 @@ internal static class Program
             var disabledWorkspace = Path.Combine(root, "consumer-off");
             var disabledPort = FreePort();
             var disabledToken = TokenAuth.Generate();
-            var (offApp, offContext, offConsumer, offVoice) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
+            var (offApp, offContext, offConsumer, offVoice, _) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
             var offRun = offApp.RunAsync();
             using var offHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{disabledPort}") };
             offHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", disabledToken);
@@ -1901,6 +1967,32 @@ internal static class Program
                     && offQueue.GetProperty("depth").GetInt32() == 1
                     && offState.GetProperty("stats").GetProperty("handled").GetInt32() == 0,
                     $"running={offState.GetProperty("running").GetBoolean()} depth={offQueue.GetProperty("depth").GetInt32()}");
+
+                // Shrinking the window with no model still saves: the endpoint reports that compaction is
+                // deferred, rather than a 500 (or a silent loss) — the save itself must never break.
+                var offBefore = await offHttp.GetFromJsonAsync<JsonElement>("/api/settings");
+                if (!offBefore.TryGetProperty("model", out _))
+                {
+                    throw new InvalidOperationException("settings view lost the model section");
+                }
+
+                var offShrink = await offHttp.PutAsJsonAsync("/api/settings", new
+                {
+                    model = new
+                    {
+                        // Record-replace semantics: both limits, and maxTokens must stay below the window.
+                        contextTokens = 8192,
+                        maxTokens = 2048,
+                    },
+                });
+
+                var offCompaction = (await offShrink.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
+                Check("settings: shrinking the window without a model saves and reports the deferred compaction",
+                    offShrink.IsSuccessStatusCode
+                    && offCompaction.ValueKind == JsonValueKind.Object
+                    && !offCompaction.GetProperty("compacted").GetBoolean()
+                    && (offCompaction.GetProperty("reason").GetString() ?? string.Empty).Contains("压缩", StringComparison.Ordinal),
+                    $"status={(int)offShrink.StatusCode} reason={offCompaction.GetProperty("reason").GetString()}");
             }
             finally
             {
@@ -1919,7 +2011,7 @@ internal static class Program
             {
                 new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
             });
-            var (onApp, onContext, onConsumer, onVoice) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, onLlm);
+            var (onApp, onContext, onConsumer, onVoice, _) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, onLlm);
             var onRun = onApp.RunAsync();
             using var onHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{onPort}") };
             onHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", onToken);
@@ -1981,7 +2073,7 @@ internal static class Program
                 new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
                 new HttpLlmOptions { BaseUrl = $"http://127.0.0.1:{modelPort}/v1", Model = "smoke-model" });
 
-            var (wireApp, wireContext, wireConsumer, wireVoice) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
+            var (wireApp, wireContext, wireConsumer, wireVoice, _) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
             var wireRun = wireApp.RunAsync();
             using var wireHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{wirePort}") };
             wireHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", wireToken);
@@ -2197,7 +2289,7 @@ internal static class Program
             var leaseToken = TokenAuth.Generate();
             var leaseLlm = new ObserveThenActLlm();
 
-            var (leaseApp, leaseContext, leaseConsumer, leaseVoice) =
+            var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _) =
                 await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, leaseLlm);
             var leaseRun = leaseApp.RunAsync();
             using var leaseHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{leasePort}") };
@@ -2377,6 +2469,22 @@ internal static class Program
                         && noWindow.Contains("entityId", StringComparison.Ordinal)
                         && noWindow.Contains("'", StringComparison.Ordinal),
                     $"result={(noWindow ?? "(none)")[..Math.Min(90, (noWindow ?? "(none)").Length)]}");
+
+                // The telemetry aggregates: the turn above ran through observe → act → screenshot, so the
+                // endpoint must hold at least one act and one picture — without those, a tuning decision has
+                // no denominator. Verdicts are NOT required non-zero: the scripted turn refuses most acts
+                // (guards) and the aim-only kinds no longer verify (they promise no picture), so every
+                // verdict field can legitimately be 0 on a scripted turn.
+                var telemetry = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+                var hasAct = telemetry.GetProperty("acts").GetInt32() > 0;
+                var hasPicture = telemetry.GetProperty("pictures").GetProperty("count").GetInt32() > 0;
+
+                Check("desktop: telemetry aggregates the turn the model just ran",
+                    hasAct && hasPicture,
+                    $"acts={(telemetry.GetProperty("acts").GetInt32())} "
+                        + $"pictures={(telemetry.GetProperty("pictures").GetProperty("count").GetInt32())} "
+                        + $"verdicts={telemetry.GetProperty("verdicts").GetRawText()} "
+                        + $"walkTruncated={telemetry.GetProperty("walkTruncated").GetInt32()}");
             }
             finally
             {
@@ -2398,7 +2506,7 @@ internal static class Program
             var grantPort = FreePort();
             var grantToken = TokenAuth.Generate();
             var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
-            var (grantApp, grantContext, grantConsumer, grantVoice) =
+            var (grantApp, grantContext, grantConsumer, grantVoice, _) =
                 await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, grantConsumerLlm);
             var grantRun = grantApp.RunAsync();
             using var grantHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{grantPort}") };
@@ -2557,7 +2665,7 @@ internal static class Program
                 new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
             });
 
-            var (desktopApp, desktopContext, desktopConsumer, desktopVoice) =
+            var (desktopApp, desktopContext, desktopConsumer, desktopVoice, _) =
                 await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, desktopScripted);
             var desktopRun = desktopApp.RunAsync();
             using var desktopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{desktopPort}") };
@@ -2719,7 +2827,7 @@ internal static class Program
             var settingsModelPort = FreePort();
 
             using var settingsProvider = new FakeChatProvider(settingsModelPort, "由设置驱动的回复。");
-            var (settingsApp, settingsContext, settingsConsumer, settingsVoice) =
+            var (settingsApp, settingsContext, settingsConsumer, settingsVoice, _) =
                 await ApiHost.BuildAsync(settingsWorkspace, settingsPort, settingsToken, clock);
             var settingsRun = settingsApp.RunAsync();
             using var settingsHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{settingsPort}") };
@@ -3074,7 +3182,7 @@ internal static class Program
                 new LlmResponse("书房的灯已经打开了。窗帘也拉上了。", Array.Empty<LlmToolCall>(), "stop"),
             });
 
-            var (loopApp, loopContext, loopConsumer, loopVoice) =
+            var (loopApp, loopContext, loopConsumer, loopVoice, _) =
                 await ApiHost.BuildAsync(loopWorkspace, loopPort, loopToken, clock, loopLlm, components);
             var loopRun = loopApp.RunAsync();
             using var loopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{loopPort}") };
@@ -3892,7 +4000,10 @@ internal static class Program
             return "1";
         }
 
-        using var document = JsonDocument.Parse(observed);
+        // The observation now carries a trailing note (the blind-Electron hint) after the JSON; the pick
+        // reads only the JSON document, which ends at the last '}' before the note.
+        var jsonEnd = observed.LastIndexOf('}');
+        using var document = JsonDocument.Parse(observed[..(jsonEnd + 1)]);
         var entities = document.RootElement.GetProperty("entities").EnumerateArray()
             // A minimized window is a 160×28 stub at -32000: nothing can be clicked or seen in it, so a
             // model that reads the observation picks a real one.
@@ -3926,7 +4037,7 @@ internal static class Program
             return (1, 1);
         }
 
-        using var document = JsonDocument.Parse(observed);
+        using var document = JsonDocument.Parse(observed[..(observed.LastIndexOf('}') + 1)]);
         var entity = document.RootElement.GetProperty("entities").EnumerateArray()
             .FirstOrDefault(candidate => candidate.GetProperty("entityId").GetString() == target);
         if (entity.ValueKind == JsonValueKind.Undefined)
@@ -4160,6 +4271,29 @@ internal static class Program
         Console.WriteLine($"  FAIL  {what}{(detail is null ? "" : $"  → {detail}")}");
     }
 
+    /// <summary>
+    /// The desktop checks read the real desktop (pit 11/12): one extra window from a running Partner app
+    /// adds seconds to every UIA walk and the timing-sensitive scenes degrade wholesale, reads looking like
+    /// regressions that are not. Warned at the top, where the operator still decides to stop rather than
+    /// after the desktop section spent a minute failing.
+    /// </summary>
+    private static void WarnIfPartnerAppIsRunning()
+    {
+        var suspects = System.Diagnostics.Process.GetProcessesByName("partner-api")
+            .Concat(System.Diagnostics.Process.GetProcessesByName("partner-shell"))
+            .Concat(System.Diagnostics.Process.GetProcessesByName("Partner"))
+            .ToList();
+
+        if (suspects.Count == 0)
+        {
+            return;
+        }
+
+        Console.WriteLine(
+            $"  WARN  检测到疑似本应用进程在跑（{string.Join("、", suspects.Select(p => $"{p.ProcessName} (pid {p.Id})"))}）："
+            + "桌面结果可能整片失真——建议先停应用再跑 smoke");
+    }
+
     /// <summary>A capture that pre-reports one positioned frame for any window, so the render of an act
     /// answer is drift-free to test without engaging the user's screen.</summary>
     private sealed class PositionEchoCapture(PixelRect at) : IScreenCapture
@@ -4312,6 +4446,19 @@ internal static class Program
         ("memory.injection_budget", "M5", new[]
         {
             "memory: injection respects the token budget",
+            "memory: the recall hook injects through the budget and marks the cut",
+        }),
+        ("memory.maintenance_pass", "M0", new[]
+        {
+            "memory: the maintenance pass ages and trims an untouched store",
+        }),
+        ("memory.embeddings_switch", "M0", new[]
+        {
+            "memory: embeddings default off and the switch round-trips",
+        }),
+        ("settings.no_model_shrink_saves", "M0", new[]
+        {
+            "settings: shrinking the window without a model saves and reports the deferred compaction",
         }),
         ("memory.scale_p99", "M5", new[]
         {
@@ -4435,6 +4582,10 @@ internal static class Program
         ("desktop.px_snap_to_element", "M9", new[]
         {
             "desktop: a px/py miss within the snap radius resolves to the control it was for",
+        }),
+        ("desktop.telemetry_aggregates", "M9", new[]
+        {
+            "desktop: telemetry aggregates the turn the model just ran",
         }),
         ("voice.utterance_to_queue", "M10", new[]
         {

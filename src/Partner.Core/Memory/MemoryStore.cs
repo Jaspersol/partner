@@ -150,7 +150,14 @@ public sealed class MemoryStore : IMemoryStore
     /// fact, so dropping it two notches loses the part that made it worth keeping.
     /// </para>
     /// </summary>
-    private async Task DemoteIdleAsync(DateTimeOffset now, CancellationToken ct)
+    public async Task<int> DemoteIdleAsync(CancellationToken ct = default)
+    {
+        var demoted = 0;
+        await DemoteIdleAsync(_clock.GetUtcNow(), ct, d => demoted = d).ConfigureAwait(false);
+        return demoted;
+    }
+
+    private async Task DemoteIdleAsync(DateTimeOffset now, CancellationToken ct, Action<int>? reported = null)
     {
         var cutoff = now - MemoryLifecycle.IdleBeforeDemotion;
 
@@ -162,6 +169,7 @@ public sealed class MemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$cutoff", Iso(cutoff));
 
         var demoted = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        reported?.Invoke(demoted);
         if (demoted > 0)
         {
             await LogAsync(

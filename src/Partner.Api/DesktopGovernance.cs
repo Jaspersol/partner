@@ -65,12 +65,62 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
 
         if (toolName == "desktop_act")
         {
-            return SwitchOnTaskLease(toolName, argumentsJson, needsApproval, gear);
+            var decision = SwitchOnTaskLease(toolName, argumentsJson, needsApproval, gear);
+            RecordLease(decision, argumentsJson);
+            return decision;
         }
 
         return needsApproval
             ? new GovernanceDecision(ToolDecision.Ask, $"'{toolName}' 需要人工批准（挡位：{gear}）")
             : new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 在当前挡位下可直接执行（{gear}）");
+    }
+
+    /// <summary>
+    /// The act decision rides the telemetry stream, keyed by what answered: in-lease (and the steps that
+    /// remain), ask, or the decision the gear itself made. The exhaustion rate — the number the lease-step
+    /// tuning waits for — is acts answered with nothing left versus acts answered at all.
+    /// </summary>
+    private void RecordLease(GovernanceDecision decision, string argumentsJson)
+    {
+        if (_context.Telemetry is not { } sink)
+        {
+            return;
+        }
+
+        string label;
+        if (decision.Decision == ToolDecision.Allow && decision.Reason.Contains("任务租约", StringComparison.Ordinal))
+        {
+            label = "inLease";
+        }
+        else if (decision.Decision == ToolDecision.Ask)
+        {
+            label = "asked";
+        }
+        else
+        {
+            label = "gearAllow";
+        }
+
+        try
+        {
+            var entityId = TaskLeaseStore.TryTarget(argumentsJson)?.EntityId;
+            sink.Record(new Partner.Desktop.Telemetry.DesktopTelemetryEvent(
+                DateTimeOffset.UtcNow,
+                "governance_desktop_act",
+                label,
+                entityId,
+                Ok: decision.Decision != ToolDecision.Deny,
+                Snapped: null,
+                Verify: null,
+                MediaWidth: null,
+                MediaHeight: null,
+                LatencyMs: 0,
+                StopReason: null));
+        }
+        catch (Exception)
+        {
+            // Telemetry must not fail the decision being reported.
+        }
     }
 
     /// <summary>

@@ -198,6 +198,8 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
             height,
             observation.ObsId));
 
+        automation.RecordToolPicture("desktop_screenshot", entity.Label, width, height, zoom is not null);
+
         return new ToolResult(true, zoom is { } done
             ? DescribeZoom(entity, done.CropScreen, mediaId, marks)
             : Describe(entity, captured, width, height, mediaId, marks, moved), new[] { dataUri });
@@ -389,6 +391,8 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
             width,
             height,
             automation.LastObservation?.ObsId ?? "desktop"));
+
+        automation.RecordToolPicture("desktop_screenshot", "desktop", width, height, zoom: false);
 
         return new ToolResult(true, DescribeDesktop(desktop, width, height, mediaId, marks, windows), new[] { dataUri });
     }

@@ -1,102 +1,149 @@
-# Todo — 桌面操控优化（按 2026 优化方案为基准）
+# Todo — 记忆/桌面/核心能力优化(2026-10-13 全仓分析)
 
-基准：安全/精度工程**不动**。改动集中在**回合协议、感知层级、预算与审批的计量方式**三处。
-顺序依赖：`P0 → P1a → {P2a, P2b}`；`P1b`、`P1c` 独立可并行；`P3` 全部按需。
-每期做完统一收尾：smoke `Check(...)` + `Capabilities` 表 → `--update-baseline capabilities/manifest.baseline.json` → README 补相应小节（防文档漂移）。
+基准:2026-10-13 状态——全 solution 983 单测绿 / smoke SMOKE OK / GATE PASS 65 能力。上轮桌面优化(O 遥测、F1、C1、C2、S1–S4)已收尾,工作树改动待提交。
 
-**进度**：**P0、P1、P2a、P2b 全部完成；P3.1 的多标签半已提级修复，其余按需/定为不做**。全仓 `dotnet test` 975+ 绿 / smoke 166 项全绿（2 项 live skip + 15 项单测 live skip）/ `GATE PASS`(64 能力) / README 与基线已同步。剩余：P3（按需：CDP attach、WebView2 CDP、grounding 副路、on-failure 挡）——均为外部条件触发，未排期。
+本轮来源:记忆(M5)、桌面(M9)、核心(M1–M4/M7/M8)三路全仓探查。优先级:**先修生产接线缺位(记忆多数弱点是"功能在、没接上"),再修稳健性,调参仍等遥测数字**。
 
-**不做的（防止回流）**：不改 `InputInjector` / 坐标归一化（`ceil` 公式）/ 护栏四步序 / 租约身份模型 / `PostActionVerifier` 控件矩形判定（已测封印资产）；不做 OCR；不做沙箱/第二桌面；不把桌面工具 MCP 化。
+每期收尾不变:smoke `Check(...)` + `Capabilities` 表 → `--update-baseline capabilities/manifest.baseline.json` → README 补节 → 跑 smoke 前停应用(坑 11/12)。
 
 ---
 
-## P0 — `desktop_act` 返回带新状态（最优先，其余改动的杠杆）— **已完成**
+## M — 记忆能力(最大缺口:生产接线缺位)
 
-- [x] **P0.1 act 路径附图**
-  实现：`DesktopScreenshotTool.RenderAfterActionAsync`（与显式截图工具同一条管线：捕获 → 缩放 → `ScreenshotMarks` 叠标注 → media 落盘 → data URI）；`DesktopTools.cs` act 结果构造处调用后经 `ToolResult.Images` 上线（通道 `AgentTurnRunner.cs:339` 不变）。
-  附图标注用 **fresh 观察的那批 elementId**（act 重校验时刚跑的同一次遍历），保证图上的标记就是模型下一步能按名寻址的那批。
-- [x] **P0.2 参数与例外**
-  schema 加 `feedback: "auto" | "off"`，默认 `auto`。判定集中在 `DesktopActTool.WantsPicture(kind, feedback, supportsImages, guardPassed)`：拒绝、`focus/movePointer/scrollIntoView`、`off`、纯文本模型 → 不附。
-  另一条实测补上：`target.IsMinimized || IsIconic(handle)` 任一为真不加图（最小化窗口没有像素可展示）。
-- [x] **P0.3 返回文字补一行**
-  `已附截图 <mediaId>（W×H，动作后画面 @ 屏幕 X,Y W×H；px/py 可直接对它用）…`。
-- [x] **P0.4 验收**
-  smoke：`desktop.act_returns_state`(2) —— 决策矩阵 + 附图对 px/py 可映射、按 media id 记录（重启 `manifest.baseline.json` 更新，门禁 `GATE PASS`，59 项能力）。
-  单测：`DesktopActFeedbackTests`（10 条：决策矩阵 6 + 渲染/降级/最小化 4，stub capture，不碰真实桌面）。
-  live（默认 skip）：`DesktopLiveInteractionTests.An_injected_click_reaches_a_real_button` 已扩展为断言真点击后结果带图。
-  （已知边界：渲染失败静默降级为无图，文字结果不变 —— 这是刻意的，不是漏。）
+### M0 接线缺位(功能已实现但生产未用——最高优先,全是小改动)
 
----
+- [x] **M0.1 回忆注入走 token 预算路径**(2026-10-13)
+  做法:`MemoryRecallHook` 改走 `IMemoryStore.InjectAsync`(生产预算即默认 5000),首次放不下即带截断标记;`recallLimit` 参数顺带退役。验收:单测超预算注入带标记(`Injection_stops_at_the_budget_and_says_so`);smoke `memory.injection_budget` 现断言 store 侧 + 生产钩子侧两_paths。
 
-## P1 — 预算与审批的计量方式（成本最低、收益第二）— **P1a / P1b 已完成，P1c 待做**
+- [x] **M0.2 生命周期维护挂调度器,不再寄居读写路径**(2026-10-13)
+  做法:`Api/MemoryMaintenanceService`(TimeProvider 注入,默认每日)随 `ApiHost` 起停,单遍 `PromoteEligible → DemoteIdle(已公开到 IMemoryStore)→ Trim → Compact`,失败只记 stderr 下次重试。无生产调度器实例(JsonlScheduler 仅 smoke),故用定时器而非调度器——与 todo 的「倾向调度器」取舍为**宿主生命周期对齐**(调度器会话与 queue 绑定,维护不该有自己的输出口)。验收:Core 单测「90 天未召回 + TTL 过期」例程后降级/清除(episodic 副本无 TTL 幸存);Api 单测跑真实工作区 store 计数回执;smoke `memory.maintenance_pass`。
 
-### 1a. 步预算按工具族拆 — **已完成**
-- [x] **P1a.1 判停改按族**（实现：`AgentTurnOptions.ToolStepBudgets`，前缀 `desktop` / `mcp_`；`StepsAllowedFor(registeredToolNames)` 按**注册表里有什么**取最大那支 —— 在动作发生前就知道决算，不会死在第一次 desktop 调用之前。默认内置 `desktop:32 / mcp_:32`，普通仍 8）
-- [x] **P1a.2 选项**（`AgentTurnRunnerTests` 新 3 条：desktop 工具集可走 13 步、纯 chat 工具集仍 8 步即停、最大匹配与上限语义；`MaxSteps` 仍是所有族预算的地板也是下限）
-- [x] **P1a.3 验收：smoke `desktop.step_budget_by_family`**（真实注册表形状 → desktop>8 且 plain==8）
+- [x] **M0.3 嵌入 provider 接线(或如实声明 FTS-only)**(2026-10-13)
+  做法:settings 增 `memory.embeddings` 段(默认关),开时 `ApiContext.OpenAsync` 接 `HashingEmbeddingProvider`;**启动时读一次**——中途改开关不动已开的库(不会让新记录悄悄带上旧记录没有的向量),重启生效即文档语义。模型端 embedding 端点仍不做(外部依赖)。验收:单测开=vector 分量非零(`Memory_embeddings_saved_to_settings_take_effect_at_the_next_open`);关=行为不变(默认路径未传入 provider);README 写默认 FTS-only。
 
-### 1b. 审批从「逐动作」变「任务租约」
-### 1b. 审批从「逐动作」变「任务租约」— **已完成**（实现不同于原计划：不靠 UI 调租约端点，改在**批准应答路径**上自动记账）
+- [x] **M0.4 无模型时缩窗保存不再抛异常**(2026-10-13)
+  现状核实:`ConsumerHost.CompactAsync` 无 llm 时**已不抛**(返 `CompactionResult(0, null, "未配置模型，无法压缩")`),todo 描述的 500 已不存在——本轮只补验证与兜底确认。验收:Api 单测无 llm + 缩窗保存 → 200 + `compaction.compacted=false` + reason,历史不丢(`Shrinking_the_context_folds_the_history_once`);smoke 无模型宿主外加同形状检查 `settings.no_model_shrink_saves`。补压(「下次回合开始或调度器例程补压」)未做:compaction 是一次性补叠,搁在保存时机的决定已由 no-llm 报告承担,先不加第二条触发路径。
 
-- [x] **P1b.1 治理判定**（分享：`Api/Settings/TaskLeaseStore.cs` —— 授予/消费/快照；身份是**窗口句柄**，与观察租约同一语义；`Tools/LeaseGrantingApprovalHandler.cs` 包住 `QueuedApprovalHandler`，desktop_act 被人真批了才自动授后续 10 步；`DesktopGovernance.Decide` 里 desktop_act 先查租约再查挡位。**危险类由构造隔离**：只有 desktop_act 进租约分支）
-- [x] **P1b.2 横幅文案**（`ApprovalBanner.vue` 的提示改为「允许将授权目标窗口继续 N 步（危险类仍逐次询问）」；`stepsPerGrant` 是**服务端给出**的数字，随 `GET /api/desktop` 下来，前端不抄常量）
-- [x] **P1b.3 验收：smoke `desktop.task_lease_approval`(3)（真实 consumer + 真实审批队列：批准 → `GET /api/desktop` 可见租约；同窗口第二次 act 不进 pending 且租约从 10 掉到 9；同一租约内 desktop_exec 仍弹且拒绝后租约不变）**
+### M1 检索质量
 
-### 1c. `desktop_wait` 原语 — **已完成**
-- [x] **P1c.1 StabilitySensor**
-  新建：`src/Partner.Desktop/Perception/StabilitySensor.cs`。
-  实现：**不**改旧 `PostActionVerifier`（校验策略与轮询参数捆绑，重建只会引入回归风险），独立实现「连续两帧哈希相同才算稳」；verifier 不动、对其的现有测试全绿。`ClampTimeout` 硬顶 5s。
-- [x] **P1c.2 新工具**
-  新建：`src/Partner.Desktop/Tools/DesktopWaitTool.cs`。
-  schema：`{kind:"element"|"window"|"stillFrame", entityId?, elementId?, titleContains?, timeoutMs?, stableRounds?}`。
-  超时硬顶 5s；**超时报「未达成」并给出当前状态**，不是挂着烧步数。只读类 → 永不审批。
-- [x] **P1c.3 名单登记**
-  `Tools/DesktopToolCatalog.cs`：`desktop_wait` 进 `All` 与只读集；`ConsumerHost` 注册；`/api/consumer` 工具表同步。
-- [x] **P1c.4 验收**
-  单测 8 条（`DesktopWaitToolTests`）：封顶、两帧才算稳、永不停则超时、已有控件一次命中且附新观察、窗口不存在报「现在开着」、坏形参拒绝、只读分类、未知窗口/kind 拒绝。
-  smoke `desktop.wait_primitive`(1)：真实窗口的已有控件一次命中且带新 id。
+- [ ] **M1.1 CJK 真分词(替换 bigram LIKE OR 全表扫描)**
+  现状:unicode61 把整句 CJK 当单 token,FTS 服务不了换词问句;粗筛退化为 200 条 bigram 的 OR LIKE 扫描(`MemoryStore.cs:776-836`),成本随库增长,`memory.scale_p99` 基线只测了 Latin FTS 路径。
+  改法:FTS5 自定义分词不可行(SQLite 编译选项)则改双写:CJK 内容额外存 bigram 表走 FTS5 查询(把 LIKE OR 变成 FTS 索引查询);`CandidateLimit` 保留为兜底。
+  验收:CJK 换词问句(共享词 <2)召回非空;10 万条 CJK 库 P99 <500ms(补 `memory.scale_p99_cjk` 或并入现有检查)。
 
----
+- [ ] **M1.2 `FindBySourceAsync` 建索引**
+  现状:`source_event_seq` 无索引(`IMemoryStore.cs:79-85` 注释自认);会话级联删除对区间逐 seq 查询,千 seq 撤回 = 千次查询。
+  改法:`memories(source_event_seq)` 建索引 + 区间批量查(一条 `WHERE source_event_seq BETWEEN`);schema 迁移走试跑 ALTER 路径(见 M2.1)。
+  验收:单测千 seq 区间级联一次查询(可用计数器断言 SQL 次数)。
 
-## P2 — 补上「桌面」这一级观察 — **2a / 2b 已完成**
+### M2 数据层稳健性
 
-### 2a. 全屏观察（实现放在 `desktop_screenshot{scope:"desktop"}`，不动 observe 的实体列表）
-- [x] **P2a.1 全屏捕获**
-  调用对象：`src/Partner.Desktop/Capture/GdiScreenCapture.cs` 加 `CaptureVirtualDesktopAsync`。
-  做法：虚拟屏原点/尺寸直接调 `Input/VirtualDesktop.cs` 现成逻辑；单次 `BitBlt`（~60ms，不顶回 UIA 遍历的 10.2s）。
-- [x] **P2a.2 窗口编号标记**（`ScreenshotMarks.WindowMarks`：纯几何 —— 标记=窗口 entityId + 中心点；最小化/越界窗口与元素标记同规则跳过。没有为桌面造 UiEntity：桌面实体进列表会污染裸坐标命中（ResolveByPoint 的覆盖歧义）与窗口筛选，全屏路径不需要它）
-- [x] **P2a.3 截图入口**（`desktop_screenshot` 加 `scope:"desktop"`；无观察前提（第一次看不能以先看过为前提）；结果 `ShownPicture(entityId="desktop")`；act 端 px/py 全屏图映射为屏幕坐标后走裸坐标路径——命中测试/遮挡/z 序全过，非桌面图仍然要求窗口身份）
-- [x] **P2a.4 验收**（单测 5 条：几何/最小化跳过/无观察可出图/标记 id 可被 act 找到/px/py 落点±1px；smoke 2 条：无观察全景+media 记账、px/py 裸坐标解析落点）
+- [ ] **M2.1 schema 版本号 + 显式迁移**
+  现状:无版本号,迁移靠逐条 ALTER 吞异常(`MemorySchema.cs:34-49`);未来改列类型/拆表无框架。
+  改法:`PRAGMA user_version` 打版本,版本表驱动迁移步骤;现有"试跑吞异常"归为 v0→v1 的兼容步骤。
+  验收:单测旧库(缺列)打开后自动迁到 v1 且功能不破。
 
-### 2b. px/py 就近元素兜底 — **已完成**
-- [x] **P2b.1 升级逻辑**
-  调用对象：`src/Partner.Desktop/Tools/DesktopTools.cs`（px/py 落点处理）。
-  做法：服务端在同一次观察的元素列表里找半径 ε 内最近的可交互元素 —— 命中升级为 `elementId` 路径（得 pattern + 控件矩形校验的好处），未命中走坐标原路。ε = 8px（人眼实测偏差 ~5px）。
-- [x] **P2b.2 验收**（单测 6 条：邻域内升级、半径外不升级、平局取 id、Document/空白矩形/他窗口/offscreen 不升级；live 门控 1 条实包；smoke 1 条：key 拒绝路径解析出控件名 + 目标写进 guard 拒绝文本）
+- [ ] **M2.2 `ParseScope` 未知值显式记录**
+  现状:枚举缩容遗留的未知 scope 静默当 `Recall`(`MemoryStore.cs:849-850`),数据语义漂移无感知。
+  改法:未知值记入结果附注(或遥测),行为保持兜底不破。
+  验收:单测未知 scope 值 + 断言附注。
+
+### M3 蒸馏与覆盖面
+
+- [x] **M3.1 工具型回合也产记忆**(2026-10-13,与 M0 同批)
+  做法:`Core/Memory/ToolAppearance.Summarize`——无 assistant 文本的回合取本回合内最长一条 `desktop_act` 成功 ToolResult(ok=true 且带「已通过界面自动化执行 / 注入成功 / 已按控件中心点执行」标记),其余一律不收;拒绝、校验失败、`ok=false` 全排除。验收:单测成功 act 产 Working 记录(`A_tool_only_turn_is_remembered_from_a_successful_act`)、纯失败回合不产(`A_all_failed_tool_turn_leaves_no_memory`)。
+
+- [ ] **M3.2 蒸馏词表外置可扩充**(低优先,M3.1 后再看)
+  现状:SelfReferential/Chitchat/importance 词表硬编码中英短语(`ConversationDistiller.cs:46-60, 128-138`),"别忘了"/"note that" 等漏网;`MaxBodyLength=400` 截断不挑句界。
+  改法:词表外置到设置或数据文件;截断对齐句子边界(句号/问号/换行回退)。
+  验收:单测"别忘了"被蒸馏、"note that"命中 importance;截断点落在句界。
+
+- [ ] **M3.3 矛盾检测阈值改密度**(低优先)
+  现状:`MinSharedKeywords=5` 绝对计数(`MemoryLifecycle.cs:32`),超短句共享词不足漏掉 supersede,新旧事实并存。
+  改法:改密度比(交集/较短句关键词数 ≥ 阈值),短句不再漏;阈值拿现有单测数据回归调。
+  验收:单测"换用 D 盘了"类短句能 supersede;既有矛盾用例不回归。
+
+### 不做(记忆)
+
+- 记忆库导出/备份 UI:存储立场是"删除即丢失、库即权威",先不做;README 已明示。
+- 语义 embedding 服务默认接入:依赖外部端点,留在 M0.3 的可选项,不默认开。
 
 ---
 
-## P3 — 接缝与外部条件（按需，不排期）
+## D — 桌面操控(T 区数字未到前,只修结构性弱点)
 
-- [x] **P3.1 的「多标签」半 —— 已升级为全线修复（2026 本轮）**：这不是等抱怨的功能缺口而是正确性 bug——两个标签共享一个调试端口时，`/json/list` 的第一个 tab 会同时供两个窗口读写（第二窗口按自己的客户区原点换算第一个 tab 的 DOM，点击也落在第一个 tab 里）。修法：`CdpDomSource.ConnectAsync(port, windowTitle)` 按窗口标题与页面标题双向包含匹配选页（Chromium 窗口标题 = 页 title + 后缀；Electron 可能相反）；连接缓存从「每端口一条」改为「每 (端口， 页) 一条」（targets 各自 webSocketDebuggerUrl，每 target 一个客户端的限制不变）；匹配不上仍回退第一个（旧行为）。单测 7 条（`CdpDomTests` 匹配规则 4 +  Fake connect 选页 2 + 旧 viewport 1 已有）；未验证多标签在线上真吃到匹配（live 是单页 Edge）。
-- [ ] **P3.1 的「attach」半 —— 维持按需**
-  扫 loopback 常见端口找已开的调试目标；价值低（大多数真实用户的浏览器未带调试端口，attach 无从得手；仅开发者自带 flag 的 Electron 应用受益）。触发不变：用户实际抱怨且场景明确时。
-- [ ] **P3.2 WebView2 自家壳走 CDP —— 定为不做**：自家壳的会话/设置操作有更正确的路（API + 治理），让 agent 用桌面工具去点自家 UI 是最差路径（且 agent 自己的窗口正好挡在用户眼前，hit-test 抬前台的冲突就在那）。写明设计立场：模型对自家应用的修改走 HTTP API，不走 desktop 工具。
-- [ ] **P3.3 grounding 模型副路（已收紧为“纯文本模型专用”）**
-  结论：**接入了视觉模型（`supportsImages=true`）后不做**——坐标读数的精度由已有三层机制承担
-  （网格/标记标准化读数、zoomAt 两段瞄、`SnapToElement` 8px 邻域吸附），剩余优化的顺序是：
-  ① 先用真实任务遥测量（吸附命中率在 act 结果文本里免费可见）→
-  ② 偏差大再调护栏（P2b 半径按控件尺寸归一化、出图分辨率提高、zoomAt 参数化）→
-  ③ 仍不够才谈第二通道。
-  仅剩触发条件：**配置纯文本模型却仍启用桌面**（UIA 盲区变盲）、且有一个本地部署的 OpenAI 兼容轻量端点——此时它才从「第二模型」降级为「能力回退」。做法不变：截像 → 专端点 → 点回服务端 px/py 同一条归一化。代价不变：第二客户端 = 探测/降级/账号全套新概念。
-- [ ] **P3.4 `feedback:"on-failure"` 挡（只在 NoChange 附图）**
-  触发：P0 跑两周后看真实 token 消耗再定。
+### D0 遥测兑现(先收上轮埋点的数,决定 T 区)
+
+- [ ] **D0.1 跑一轮真实会话,读 `GET /api/desktop/telemetry`,按结果裁定 T 区四项**
+  snap 命中率 <90% → 吸附半径按控件尺寸归一化;zoom 用得多且命中低 → `zoomAt` 参数化;附图 token 占比 >25% → feedback 默认挡换 `on-failure`;租约耗尽率 >30% → 租约 10 步调参。
+  **数字不到,四项都不动**(上轮原则延续)。
+  产出:数字记进本文件 T 区条目,做出/不做结论。
+
+### D1 稳健性小修(不依赖遥测)
+
+- [ ] **D1.1 遥测 windowHours 与 sink 保留期联动**
+  现状:聚合端点硬编码 1h(`DesktopEndpoints.cs:72`),sink 保留 1h——改其一即静默不一致。
+  改法:聚合窗从 sink 的 Retention 派生,query 参数 clamp 到保留期内。
+  验收:单测改保留期后端点窗一致。
+
+- [ ] **D1.2 `desktop_exec` 后台子进程管道关闭**
+  现状:30s 超时后管道可能不关(`DesktopSystemTools.cs:124-126` 自认),子进程与句柄滞留。
+  改法:超时路径 kill 进程树 + dispose 管道;正常路径已关的不动。
+  验收:单测假进程超时后无句柄滞留(Process.Exited + pipe disposed)。
+
+- [ ] **D1.3 `_lastObservation` 单槽并发覆盖**
+  现状:并发 observe 互相覆盖 walks/truncated(`DesktopAutomation.cs:185`,注释假设工具循环单线程);步预算 4 并行已在打破该假设。
+  改法:walks/truncated 挪到 per-call 作用域或 Concurrent 注册;或埋点处直接落遥测不依赖槽。
+  验收:单测并发两 observe,遥测两条各带自己的截断计数。
+
+### 不做(桌面,上轮已判,防回流)
+
+- attach 半(扫端口找已开调试目标)、WebView2 走 CDP、grounding 模型副路、OCR/沙箱/第二桌面/MCP 化桌面工具。
+- UIPI fail-open 改 fail-closed:刻意设计,级别读不出的进程放行;改了会拒掉大量合法动作。
+- region BitBlt 快路径竞态:窗口极小、代价是加锁;等真实误报再说。
 
 ---
 
-## 收尾清单（每期完成后勾）
+## C — 核心能力(验证与补缺)
 
-- [ ] smoke 新检查写进 `src/Partner.Smoke/Program.cs` + `Capabilities` 表
-- [ ] `dotnet run --project src/Partner.Smoke -- --update-baseline capabilities/manifest.baseline.json`
-- [ ] README 相应小节补一行（当前 [[README]] 的「桌面操控」三节 + 「未做/未验证」表）
-- [ ] 桌面测试串行约束仍然成立（坑 11/12）：跑 smoke 前停应用
+- [ ] **C.1 真实模型供应商往返验证**
+  现状:`HttpLlmClient` 只验过线格式与假端点(FakeChatProvider/ScriptedLlmClient),OpenAI/Ollama 实跑未做——README"未做/未验证"表现在这么写。
+  改法:一次性人工验证脚本(`scripts/`),对配置的真实端点跑一轮 chat + `/tokenize` + `/models`,结果记 README;**不进 smoke**(smoke 不依赖外部服务)。
+  验收:README 未验证表删该项,记录实测供应商与版本。
+
+- [ ] **C.2 ASR/TTS 真服务验证**(同 C.1 性质)
+  现状:本机无服务,走脚本实现。
+  改法:同上,人工验证一次,结果记 README。
+
+- [ ] **C.3 README 坑 9 已过时清理**
+  现状:README 写"无 .git",仓库已是 git(提交 537fd3a)。
+  改法:删/改该条,顺检坑列表其余时效。
+  验收:docs 引用检查过(`scripts/ci.sh` 首步)。
+
+- [ ] **C.4 offscreen 控件挤占 40 配额缓解**(低优先)
+  现状:长列表 offscreen 控件可把视野内按钮挤出产出配额,现缓解=先 scrollIntoView。
+  改法:`UiaTree` 产出优先保留 viewport 相交控件,offscreen 按剩余配额截断;截断标记沿用 `ElementsTruncated`。
+  验收:单测深列表场景视野内控件必在产出里。
+
+### 不做(核心)
+
+- slash-command dispatch(PreDispatch 无条件跑是既有设计,钩子可 ShortCircuit,无需求);
+- 跨进程双消费者(队列进程内单消费者是结构立场,TFM 带 windows 后缀因语音须同进程);
+- set-of-marks 编号徽章 / Phase 5c 帧级闭环:保持 README 未做表现状,无触发信号。
+
+---
+
+## 执行顺序建议
+
+1. **M0.1–M0.4**(接线缺位,小改动大收益,一批做完一起收尾)**✅ 2026-10-13 完成**(同批顺带 M3.1)
+2. **D0.1**(跑会话收数,裁定 T 区——不确定工期,尽早启动)
+3. **M1.1 + M1.2**(检索质量,依赖 M2.1 的迁移框架先行)
+4. **D1.1–D1.3 + C.3**(小修,可穿插)
+5. **M2.x → M3.x → C.4**(数据层→覆盖面→低优先;M3.1 已随 M0 批完成)
+6. **C.1/C.2**(人工验证,不占开发周期,有真实端点时顺手)
+
+收尾清单(每期完成后勾):
+- [x] smoke 新检查写进 `src/Partner.Smoke/Program.cs` + `Capabilities` 表(M0 批:4 条新检查、injection_budget 加 1)
+- [x] `dotnet run --project src/Partner.Smoke -- --update-baseline capabilities/manifest.baseline.json`(2026-10-13 已刷新:163 检查 / 68 能力 / 66 product-supported;含上轮待提交的 desktop.telemetry_aggregates)
+- [x] README 相应小节补行(含未做/未验证表)
+- [x] 跑 smoke 前停应用(本轮连跑两遍均 SMOKE OK;px/py 检查为环境敏感,无应用干扰时通过)

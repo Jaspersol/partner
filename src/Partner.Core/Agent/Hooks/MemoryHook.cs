@@ -10,16 +10,18 @@ namespace Partner.Core.Agent.Hooks;
 /// The read end of the memory wire. Without it the recall pipeline is a library nothing calls: the store
 /// fills up and nothing ever looks at it again.
 /// </para>
+/// <para>
+/// Runs through <see cref="IMemoryStore.InjectAsync"/> rather than a bare recall, so long bodies stop at the
+/// injection token budget with a truncation marker instead of crowding out the conversation itself.
+/// </para>
 /// </summary>
 public sealed class MemoryRecallHook : AgentHookBase
 {
     private readonly IMemoryStore _memory;
-    private readonly int _recallLimit;
 
-    public MemoryRecallHook(IMemoryStore memory, int recallLimit = 8)
+    public MemoryRecallHook(IMemoryStore memory)
     {
         _memory = memory ?? throw new ArgumentNullException(nameof(memory));
-        _recallLimit = Math.Max(1, recallLimit);
     }
 
     /// <inheritdoc />
@@ -36,8 +38,8 @@ public sealed class MemoryRecallHook : AgentHookBase
             return HookOutcome.Continue;
         }
 
-        var hits = await _memory.RecallAsync(query, _recallLimit, ct).ConfigureAwait(false);
-        if (hits.Count == 0)
+        var injection = await _memory.InjectAsync(query, ct).ConfigureAwait(false);
+        if (injection.Hits.Count == 0)
         {
             return HookOutcome.Continue;
         }
@@ -48,17 +50,24 @@ public sealed class MemoryRecallHook : AgentHookBase
         // Each line carries its age, because a memory is not a fact the person just stated. "the user prefers
         // dark mode" from three months ago may since have changed, and the model can only treat it as
         // background if the prompt says it is background. Without this it reads as current.
-        var lines = new List<string>(hits.Count + 2)
+        var lines = new List<string>(injection.Hits.Count + 3)
         {
             "Known from earlier sessions, most relevant first. Each is background, not something the person just",
             "said: trust it unless they contradict it here, and prefer what they say now over anything below.",
         };
 
-        foreach (var hit in hits)
+        foreach (var hit in injection.Hits)
         {
             var age = MemoryAge.Describe(hit.CreatedAt, hit.Now);
             var kind = hit.Tier == MemoryTier.Working ? "unconfirmed" : "established";
             lines.Add($"- [{kind}, {age}] {hit.Body}");
+        }
+
+        // The budget dropped something the query scored at least as highly as what is here. Saying so stops
+        // the prompt from reading complete when it was cut: the model knows there was more than fit.
+        if (injection.Truncated)
+        {
+            lines.Add("(more memories were scored but dropped to stay within the injection token budget)");
         }
 
         ctx.Inject(string.Join('\n', lines), priority: 50);
@@ -80,6 +89,12 @@ public sealed class MemoryRecallHook : AgentHookBase
 /// and a failure mode to solve a problem the scoring already solves — and would make a wrong answer
 /// unrecoverable, where a noisy record is one <c>SoftDeleteAsync</c> away.
 /// </para>
+/// <para>
+/// A turn the model spent inside a tool answers with tool results, not prose. The distiller rejects empty
+/// text, which would leave desktop-work conclusions (paths chosen, preferences acted on, what was fixed)
+/// unrecorded; see <see cref="ToolAppearance.Summarize"/> for the conservative path that covers them.
+/// </para>
+
 /// </summary>
 public sealed class MemoryDistilHook : AgentHookBase
 {
@@ -123,10 +138,11 @@ public sealed class MemoryDistilHook : AgentHookBase
             }
         }
 
-        if (userSeq is null || assistantText.Length == 0)
+        if (userSeq is null)
         {
             return HookOutcome.Continue;
         }
+
 
         // At-least-once is prevented by asking first. A turn retried after a crash would otherwise record the
         // same fact twice, and recall would return it as two independent pieces of evidence — the one place
@@ -136,8 +152,23 @@ public sealed class MemoryDistilHook : AgentHookBase
             return HookOutcome.Continue;
         }
 
+        // A turn with prose takes the prose. A turn that was all tools (a desktop task answers "click done",
+        // not text) falls back to the most informative tool result of the same exchange — conservatively: only
+        // results which say they were executed at a control's centre, which is the store's own success marker.
+        var answer = assistantText.Trim();
+        if (answer.Length == 0)
+        {
+            var fromTools = ToolAppearance.Summarize(view.Items, userSeq.Value);
+            if (fromTools is null)
+            {
+                return HookOutcome.Continue;
+            }
+
+            answer = fromTools;
+        }
+
         var now = _clock.GetUtcNow();
-        var distilled = ConversationDistiller.Distill(userText, assistantText, userSeq.Value, now);
+        var distilled = ConversationDistiller.Distill(userText, answer, userSeq.Value, now);
         if (distilled is null)
         {
             return HookOutcome.Continue;

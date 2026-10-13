@@ -6,6 +6,7 @@ using Partner.Core.Queue;
 using Partner.Core.Sessions;
 using Partner.Desktop;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Telemetry;
 using Partner.Desktop.Tools;
 
 namespace Partner.Api;
@@ -25,7 +26,8 @@ public sealed class ApiContext : IAsyncDisposable
         IMediaStore media,
         DesktopAutomation desktop,
         QueuedApprovalHandler approvals,
-        TaskLeaseStore taskLeases)
+        TaskLeaseStore taskLeases,
+        InMemoryTelemetrySink telemetry)
     {
         Workspace = workspace;
         Session = session;
@@ -36,6 +38,7 @@ public sealed class ApiContext : IAsyncDisposable
         Desktop = desktop;
         Approvals = approvals;
         TaskLeases = taskLeases;
+        Telemetry = telemetry;
     }
 
     public string Workspace { get; }
@@ -68,6 +71,13 @@ public sealed class ApiContext : IAsyncDisposable
     /// </summary>
     public TaskLeaseStore TaskLeases { get; }
 
+    /// <summary>
+    /// Desktop tool measurements, shared by the automation (walk side) and the tools (result side), and
+    /// read by the telemetry endpoint. Session-level like every other store: it outlives a consumer
+    /// restart, because a tuning question spans turns.
+    /// </summary>
+    public InMemoryTelemetrySink Telemetry { get; }
+
     public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
@@ -75,9 +85,21 @@ public sealed class ApiContext : IAsyncDisposable
 
         var (session, _) = JsonlSessionStore.Open(workspace, clock);
         var queue = new JsonlInputQueue(workspace, capacity: 1024, clock: clock);
-        var memory = new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), clock: clock);
-        // Holds the whole runtime configuration now, not just the voice halves.
+
+        // Read once, here: the store is built with its embedding provider fixed. Turning the switch on
+        // therefore takes effect at the next process start, which the settings comment in MemorySettings
+        // owes the reader — changing it live would mean re-embedding or silently diverging between old and
+        // new records on the vector arm of the scorer.
         var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
+        var memoryOptions = new MemoryStoreOptions();
+        if (settings.Load().Memory.Embeddings)
+        {
+            memoryOptions = memoryOptions with { Embeddings = new HashingEmbeddingProvider() };
+        }
+
+        var memory = new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), memoryOptions, clock);
+
+        // Holds the whole runtime configuration now, not just the voice halves.
         var media = FileMediaStore.Open(workspace);
 
         // The TTL comes from the settings at call time rather than at construction: a lease policy is a
@@ -87,11 +109,13 @@ public sealed class ApiContext : IAsyncDisposable
         // exists for a program this process started, so the thing that knows which ports exist is the thing
         // that opened them.
         var cdpPorts = new CdpRegistry();
+        var telemetry = new InMemoryTelemetrySink(clock);
         var desktop = new DesktopAutomation(
             ttlPolicy: LeaseTtlPolicyFor(settings.Load()),
             cdp: new CdpDomSource(),
             cdpPorts: cdpPorts,
-            desktopLaunch: new DesktopLaunchTool(startMenuRoots: null, ports: cdpPorts));
+            desktopLaunch: new DesktopLaunchTool(startMenuRoots: null, ports: cdpPorts),
+            telemetry: telemetry);
 
         return await Task.FromResult(new ApiContext(
             workspace,
@@ -102,7 +126,8 @@ public sealed class ApiContext : IAsyncDisposable
             media,
             desktop,
             new QueuedApprovalHandler(),
-            new TaskLeaseStore(clock: clock)))
+            new TaskLeaseStore(clock: clock),
+            telemetry))
             .ConfigureAwait(false);
     }
 

@@ -83,6 +83,7 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         // is a network round trip on top of it — and its absence changes nothing, since those windows were
         // already reachable by coordinate.
         var domElements = 0;
+        string? domNote = null;
 
         try
         {
@@ -90,7 +91,10 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            // Silent before; the answer now says why the page's controls are missing, because "this window
+            // has no controls" and "the browser stopped answering" are different next steps.
             domElements = 0;
+            domNote = $"页面 DOM 读失败（{error.Message}）：这些窗口只能走坐标路径";
         }
 
         // Narrowed before serializing, not after: the point of the filter is that a nine-window desktop does
@@ -150,7 +154,37 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
             + (domElements > 0
                 ? $"\n（其中 {domElements} 个控件来自浏览器页面的 DOM：直接用 elementId 按名字点就行，"
                     + "不需要窗口在前台，也不受窗口被别的程序挡住影响。）"
-                : string.Empty));
+                : domNote is { Length: > 0 }
+                    ? $"\n（{domNote}）"
+                    : string.Empty)
+            + BlindWindows(observation));
+    }
+
+    /// <summary>
+    /// A window whose UIA walk came back almost empty is, usually, a Chromium/Electron surface — the one
+    /// element it exposes is the webview's document plane. The model standing in front of it can only read
+    /// coordinates off screenshots, which is exactly the 17-step spiral a real session spent on one music
+    /// player. The escape hatch exists and the model just has to know it: relaunch with a debug port and
+    /// the page's nodes become addressable controls. Said once per window, only when this process launched
+    /// the app at least once before (a port nobody recorded would not answer, so the hint would promise
+    /// what it cannot keep).
+    /// </summary>
+    internal static string BlindWindows(DesktopObservation observation)
+    {
+        var blind = observation.Entities
+            .Where(entity => !entity.IsMinimized)
+            .Where(entity => observation.Elements.Count(element =>
+                    string.Equals(element.WindowId, entity.EntityId, StringComparison.Ordinal))
+                < 2)
+            .Select(entity => $"'{entity.Label}'")
+            .Take(3)
+            .ToList();
+
+        return blind.Count == 0
+            ? string.Empty
+            : $"\n（{string.Join("、", blind)} 只露出了极少控件——多半是 UIA 看不见的应用（Electron/网页内嵌界面），"
+                + "操作它只能靠截图上的坐标。若这个程序是用 desktop_launch 启动过的，重启时在 arguments 里带上 "
+                + "--remote-debugging-port=9222，页面里的按钮、链接就能作为控件出现在观察里，直接按名字点。）";
     }
 
     /// <summary>
@@ -236,8 +270,8 @@ public sealed class DesktopActTool(
         + "scroll 需要 scrollDelta（**格数**：正数向上滚，负数向下滚，一次 3 格比较合适）；"
         + "scrollIntoView 只需 elementId（由控件自己报距离，不用猜滚多少）；drag 需要 x/y + toX/toY。"
         + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。"
-        + "动作执行后**会自动附上该窗口的新截图**（含网格与标记，mediaId 可直接供 px/py 用），"
-        + "不需要再手动 desktop_screenshot 才能看见效果；feedback=off 可关掉。",
+        + "动作执行后会自动附上该窗口的新截图（含网格与标记，mediaId 可直接供 px/py 用），"
+        + "不需要再手动 desktop_screenshot 才能看见效果；feedback=on-failure 只在校验不确认时附图（省钱）；feedback=off 全关。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id；给了 elementId 或 x/y 时可省略"},
@@ -256,7 +290,7 @@ public sealed class DesktopActTool(
           "scrollDelta":{"type":"integer","description":"滚轮格数：正数向上，负数向下，一次 3 格比较合适"},
           "offset":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"description":"控件内部的相对位置 0..1，不传就是控件中心"},
           "clickCount":{"type":"integer","enum":[1,2],"description":"1 = 单击，2 = 双击（仅 leftClick）"},
-          "feedback":{"type":"string","enum":["auto","off"],"default":"auto","description":"auto = 动作后服务端自动附一张该窗口的新截图（含网格与控件标记）；off = 不要图，省 token"}
+          "feedback":{"type":"string","enum":["auto","off","on-failure"],"default":"auto","description":"auto = 动作后自动附新截图；on-failure = 仅当校验未能确认效果（NoChange/Indeterminate）时才附图，省 token；off = 不要图"}
         },"required":["kind"],"additionalProperties":false}
         """);
 
@@ -446,12 +480,28 @@ public sealed class DesktopActTool(
             ? point
             : Within(element, arguments.Offset);
 
+        // A scroll with no coordinates and no control means "scroll this window": the wheel lands on whoever
+        // owns the cursor today, so an empty point is not refused, it is defaulted to the window's centre —
+        // the position the model is looking at. Refusing it made the model spend a whole turn working out
+        // coordinates it should never have needed.
+        if (kind is ActionKind.Scroll && resolved is null)
+        {
+            resolved = (target.Rect.X + target.Rect.Width / 2, target.Rect.Y + target.Rect.Height / 2);
+        }
+
         if (Guard(kind, target, resolved, arguments) is { } blocked)
         {
             // The refusal names the control that was resolved, when one was: the model's next decision
             // turns on whether it was aiming at that control — snap or named — not at the window overall.
+            // A point-outside refusal also names the nearest interactive control the fresh observation
+            // holds: without it the model spent a whole turn re-observing to find where to aim instead.
+            var near = element is null && resolved is not null
+                ? NearestControl(fresh, entityId, resolved.Value)
+                : null;
+
             return new ToolResult(false, element is null
-                ? blocked
+                ? near is null ? blocked : $"{blocked}\n离这个点最近的控件：'{near.Value.Element.Name}' [{near.Value.Element.Role}] "
+                    + $"elementId {near.Value.Element.ElementId}，点击点 ({near.Value.Element.Centre.X},{near.Value.Element.Centre.Y})"
                 : $"{blocked} · 目标 '{element.Name}' [{element.Role}]");
         }
 
@@ -482,7 +532,9 @@ public sealed class DesktopActTool(
             ToY = arguments.ToY ?? 0,
         };
 
+        var actWatch = System.Diagnostics.Stopwatch.StartNew();
         var action = await automation.ActAsync(entityId, kind, parameters, ct).ConfigureAwait(false);
+        actWatch.Stop();
 
         var described = Describe(action, kind, target, element)
             + (snapped ? " · px/py 卷到了控件邻域，已按控件中心点执行" : string.Empty);
@@ -492,7 +544,7 @@ public sealed class DesktopActTool(
         // construction. Degradation is deliberately silent — the text result already stands on its own, and
         // a failed save costing the model one desktop_screenshot call must not cost it the action.
         DesktopScreenshotTool.PostActionPicture? post = null;
-        if (WantsPicture(kind, arguments.Feedback, supportsImages, action.GuardPassed))
+        if (WantsPicture(kind, arguments.Feedback, supportsImages, action.GuardPassed, action.PostVerify?.Decision))
         {
             var postElements = fresh.Elements
                 .Where(candidate => string.Equals(candidate.WindowId, entityId, StringComparison.Ordinal))
@@ -501,6 +553,8 @@ public sealed class DesktopActTool(
             post = await DesktopScreenshotTool.RenderAfterActionAsync(
                 automation, media, target, postElements, fresh.ObsId, ct).ConfigureAwait(false);
         }
+
+        RecordAct(action, kind, target, element, snapped, post is null ? null : (post.Width, post.Height), actWatch.Elapsed.TotalMilliseconds);
 
         if (post is null)
         {
@@ -518,6 +572,46 @@ public sealed class DesktopActTool(
             action.GuardPassed,
             drift is null ? withPicture : $"{withPicture} · {drift}",
             new[] { post.DataUri });
+    }
+
+    /// <summary>
+    /// Writes one act event, when telemetry is wired. The fields are what the result text already says —
+    /// the point of the event is that aggregates do not have to parse result strings back. Silent on a
+    /// null sink and never throws into the result path.
+    /// </summary>
+    private void RecordAct(
+        DesktopAction action,
+        Input.ActionKind kind,
+        UiEntity target,
+        UiElement? element,
+        bool snapped,
+        (int Width, int Height)? picture,
+        double latencyMs)
+    {
+        if (automation.Telemetry is not { } sink)
+        {
+            return;
+        }
+
+        try
+        {
+            sink.Record(new Telemetry.DesktopTelemetryEvent(
+                DateTimeOffset.UtcNow,
+                "desktop_act",
+                Kind: kind.ToString(),
+                Target: element?.Name ?? target.Label,
+                Ok: action.GuardPassed && action.Injection?.Ok == true,
+                Snapped: snapped ? true : (bool?)null,
+                Verify: action.PostVerify?.Decision.ToString(),
+                MediaWidth: picture?.Width,
+                MediaHeight: picture?.Height,
+                LatencyMs: latencyMs,
+                StopReason: null));
+        }
+        catch (Exception)
+        {
+            // Telemetry must not fail the action that fed it.
+        }
     }
 
     /// <summary>
@@ -707,6 +801,36 @@ public sealed class DesktopActTool(
         return dx * dx + dy * dy;
     }
 
+    /// <summary>
+    /// The control nearest to a refused point, whatever its distance. The snap path is bounded by the
+    /// 8 px radius; this one has no radius because the point was refused — the answer is not "act here"
+    /// but "this is what exists near where you aimed", and for that the nearest control is the honest one.
+    /// </summary>
+    public static (UiElement Element, int Distance)? NearestControl(
+        DesktopObservation fresh,
+        string? entityId,
+        (int X, int Y) at)
+    {
+        ArgumentNullException.ThrowIfNull(fresh);
+        if (string.IsNullOrWhiteSpace(entityId))
+        {
+            return null;
+        }
+
+        return fresh.Elements
+            .Where(candidate =>
+                string.Equals(candidate.WindowId, entityId, StringComparison.Ordinal)
+                && !candidate.IsOffscreen
+                && candidate.Rect.Width > 0
+                && candidate.Rect.Height > 0
+                && !string.Equals(candidate.Role, "Document", StringComparison.Ordinal))
+            .Select(candidate => (Element: candidate, Distance: Distance(candidate.Centre, at)))
+            .OrderBy(pair => pair.Distance)
+            .FirstOrDefault() is { Distance: > 0 } found
+                ? found
+                : null;
+    }
+
     public static (int X, int Y) Within(UiElement element, RelativePoint? offset)
     {
         var at = offset ?? RelativePoint.Centre;
@@ -832,12 +956,25 @@ public sealed class DesktopActTool(
     /// injected nothing, so there is nothing new to see; kinds without a visual consequence walk the pointer
     /// or prepare an aim without changing anything; a caller who said off, or a model that cannot take
     /// pictures, gets no picture at all. Called before the render, so the matrix is what the result shows.
+    /// <para>
+    /// <c>on-failure</c> narrows the third axis: the picture is only for the result where seeing matters —
+    /// the action ran but the verification could not confirm the effect. A verified action does not need
+    /// its after-picture; the model asked to save tokens gets precisely the cases it would otherwise have
+    /// spent a <c>desktop_screenshot</c> call on, and keeps saving on the rest.
+    /// </para>
     /// </summary>
-    internal static bool WantsPicture(ActionKind kind, string? feedback, bool supportsImages, bool guardPassed) =>
+    internal static bool WantsPicture(
+        ActionKind kind,
+        string? feedback,
+        bool supportsImages,
+        bool guardPassed,
+        VerifyDecision? verify = null) =>
         guardPassed
         && feedback is not "off"
         && supportsImages
-        && kind is not (ActionKind.Focus or ActionKind.MovePointer or ActionKind.ScrollIntoView);
+        && kind is not (ActionKind.Focus or ActionKind.MovePointer or ActionKind.ScrollIntoView)
+        && (feedback != "on-failure"
+            || verify is VerifyDecision.NoChange or VerifyDecision.Indeterminate);
 
     /// <summary>
     /// The result, with injection and verification kept apart: they answer different questions, and collapsing

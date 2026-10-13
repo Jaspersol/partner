@@ -2,6 +2,7 @@ using System.Text.Json;
 using Partner.Api.Settings;
 using Partner.Desktop;
 using Partner.Desktop.Input;
+using Partner.Desktop.Telemetry;
 
 namespace Partner.Api.Endpoints;
 
@@ -48,6 +49,65 @@ public static class DesktopEndpoints
                         process = entity.Value,
                         foreground = entity.IsForeground,
                     }),
+            });
+        });
+
+        // The tuning aggregates the todo's O phase exists to collect: snap hit rate, the verification
+        // verdict distribution, how often actions carry a picture and how heavy those are, and the walk /
+        // action latencies. Read-only — the sink is written by the tools, never by this endpoint.
+        app.MapGet("/api/desktop/telemetry", (ApiContext ctx) =>
+        {
+            var events = ctx.Telemetry.Snapshot();
+
+            var acts = events.Where(e => e.Tool == "desktop_act").ToList();
+            var observes = events.Where(e => e.Tool == "desktop_observe").ToList();
+            var pictures = events.Where(e => e.MediaWidth is not null).ToList();
+            var governance = events.Where(e => e.Tool == "governance_desktop_act").ToList();
+
+            var snappedCandidates = acts.Where(e => e.Snapped is not null).ToList();
+            var verified = acts.Where(e => e.Verify is not null).ToList();
+
+            return Results.Ok(new
+            {
+                windowHours = 1,
+                acts = acts.Count,
+
+                // Of the calls that offered a px/py point, how many were upgraded to a control. The
+                // denominator is calls-that-could-snap, not all acts, so a rate of 100 with no
+                // candidates is reported as null rather than a misleading zero.
+                snapHitRate = snappedCandidates.Count == 0
+                    ? (double?)null
+                    : Math.Round(100.0 * snappedCandidates.Count(e => e.Snapped == true) / snappedCandidates.Count, 1),
+
+                verdicts = new
+                {
+                    anyChange = verified.Count(e => e.Verify == "AnyChange"),
+                    noChange = verified.Count(e => e.Verify == "NoChange"),
+                    indeterminate = verified.Count(e => e.Verify == "Indeterminate"),
+                },
+
+                pictures = new
+                {
+                    count = pictures.Count,
+                    avgWidth = pictures.Count == 0 ? null : (int?)Math.Round(pictures.Average(e => e.MediaWidth!.Value)),
+                    avgHeight = pictures.Count == 0 ? null : (int?)Math.Round(pictures.Average(e => e.MediaHeight!.Value)),
+                },
+
+                walkTruncated = observes.Count(e => e.StopReason is not null),
+
+                // The lease column the T-zone's step-count tuning reads: of the act decisions answered
+                // through governance, how many ran inside the human's grant, how many reparked. askShare
+                // over the same denominator is the friction number.
+                leases = governance.Count == 0
+                    ? null
+                    : (int?)governance.Count(e => e.Kind == "inLease"),
+                leaseAsked = governance.Count(e => e.Kind == "asked"),
+                leaseGearAllow = governance.Count(e => e.Kind == "gearAllow"),
+
+                observeP50Ms = Percentile(observes.Select(e => e.LatencyMs), 50),
+                observeP99Ms = Percentile(observes.Select(e => e.LatencyMs), 99),
+                actP50Ms = Percentile(acts.Select(e => e.LatencyMs), 50),
+                actP99Ms = Percentile(acts.Select(e => e.LatencyMs), 99),
             });
         });
 
@@ -220,6 +280,22 @@ public static class DesktopEndpoints
 
     private static string? DisabledReason(ApiContext ctx) =>
         ctx.Settings.Load().Desktop.Enabled ? null : "桌面能力未启用（设置里的「桌面」段）";
+
+    /// <summary>Nearest-rank percentile over the recorded latencies, null when nothing was recorded.</summary>
+    private static double? Percentile(IEnumerable<double> values, int percentile)
+    {
+        var sorted = values.OrderBy(v => v).ToList();
+        if (sorted.Count == 0)
+        {
+            return null;
+        }
+
+        var index = Math.Clamp(
+            (int)Math.Ceiling(sorted.Count * percentile / 100.0) - 1,
+            0,
+            sorted.Count - 1);
+        return Math.Round(sorted[index], 1);
+    }
 
     public sealed record DesktopActRequest(
         string? EntityId,

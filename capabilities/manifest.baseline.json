@@ -412,6 +412,51 @@
           "ran": true,
           "passed": true,
           "skipped": false
+        },
+        {
+          "check": "memory: the recall hook injects through the budget and marks the cut",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "memory.maintenance_pass",
+      "owner": "M0",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: the maintenance pass ages and trims an untouched store",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "memory.embeddings_switch",
+      "owner": "M0",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: embeddings default off and the switch round-trips",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "settings.no_model_shrink_saves",
+      "owner": "M0",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "settings: shrinking the window without a model saves and reports the deferred compaction",
+          "ran": true,
+          "passed": true,
+          "skipped": false
         }
       ]
     },
@@ -793,11 +838,11 @@
     {
       "id": "desktop.wait_primitive",
       "owner": "M9",
-      "level": "not-supported",
+      "level": "product-supported",
       "evidence": [
         {
           "check": "desktop: a wait for a control that is already there answers at once with the new id",
-          "ran": false,
+          "ran": true,
           "passed": true,
           "skipped": false
         }
@@ -829,6 +874,19 @@
       "evidence": [
         {
           "check": "desktop: a px/py miss within the snap radius resolves to the control it was for",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "desktop.telemetry_aggregates",
+      "owner": "M9",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "desktop: telemetry aggregates the turn the model just ran",
           "ran": true,
           "passed": true,
           "skipped": false

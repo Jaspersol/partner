@@ -389,6 +389,37 @@ public sealed class MemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task The_maintenance_pass_ages_and_trims_without_any_recall()
+    {
+        // The read/write paths used to be the only place maintenance ran, so a library nobody opened for
+        // months never aged: this pass is what a notebook that sits unopened still goes through.
+        await using var store = Open();
+        var longAgo = _clock.GetUtcNow() - TimeSpan.FromDays(200);
+
+        // Idle (Semantic, never recalled) → demoted; expired consolidated Working → trimmed.
+        await store.WriteAsync(Rec("idle", "alpha mark", MemoryTier.Semantic, MemoryScope.Recall, longAgo));
+        await store.WriteAsync(Rec("expired", "beta mark", MemoryTier.Working, MemoryScope.Recall, longAgo));
+        await store.PromoteEligibleAsync();
+
+        // Two, not one: promotion also put down the episodic copy ("expired#episodic"), and it goes idle with
+        // everything else in the pass — the rule is per-record, not per-conversation.
+        var demoted = await store.DemoteIdleAsync();
+        Assert.Equal(2, demoted);
+        Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("idle"))!.Tier);
+
+        var trimmed = await store.TrimAsync();
+        Assert.Equal(1, trimmed);
+        Assert.Null(await store.GetAsync("expired"));
+        // The episodic copy has no TTL, so what promotion froze survives the trim.
+        Assert.NotNull(await store.GetAsync(MemoryStore.EpisodicCopyId("expired")));
+
+        // Retention still outranks the pass.
+        await store.WriteAsync(Rec("kept", "gamma mark", MemoryTier.Semantic, MemoryScope.Retain, longAgo));
+        await store.DemoteIdleAsync();
+        Assert.Equal(MemoryTier.Semantic, (await store.GetAsync("kept"))!.Tier);
+    }
+
+    [Fact]
     public async Task An_idle_procedural_record_drops_to_episodic_rather_than_straight_to_working()
     {
         await using var store = Open();

@@ -2,6 +2,7 @@ using Partner.Desktop.Capture;
 using Partner.Desktop.Input;
 using Partner.Desktop.Interop;
 using Partner.Desktop.Perception;
+using Partner.Desktop.Telemetry;
 using Partner.Desktop.Tools;
 using Partner.Desktop.Windows;
 
@@ -124,6 +125,13 @@ public sealed class DesktopAutomation : IDisposable
     /// </summary>
     private readonly Func<nint, string?> _integrity;
 
+    /// <summary>
+    /// Where tool measurements land, when there is one. The automation emits only the walk side (latency,
+    /// truncation) — tool results belong to the tools — and a null sink means "no telemetry", which every
+    /// caller is expected to treat as the ordinary case.
+    /// </summary>
+    private readonly ITelemetrySink? _telemetry;
+
     /// <param name="cdp">The DOM source; omit it to leave Chromium windows on the coordinate path.</param>
     /// <param name="cdpPorts">Which processes opened a debug port, recorded at launch.</param>
     public CdpDomSource? Cdp => _cdp;
@@ -190,7 +198,8 @@ public sealed class DesktopAutomation : IDisposable
         CdpRegistry? cdpPorts = null,
         Func<nint, (int X, int Y)>? clientOrigin = null,
         DesktopLaunchTool? desktopLaunch = null,
-        Func<nint, string?>? integrityRefusal = null)
+        Func<nint, string?>? integrityRefusal = null,
+        ITelemetrySink? telemetry = null)
     {
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
@@ -221,9 +230,16 @@ public sealed class DesktopAutomation : IDisposable
         });
 
         _integrity = integrityRefusal ?? new IntegrityGate().Refusal;
+        _telemetry = telemetry;
+        _clockLocal = clock ?? TimeProvider.System;
     }
 
+    private readonly TimeProvider _clockLocal;
+
     public IScreenCapture Capture => _capture;
+
+    /// <summary>The telemetry sink, when one was wired; the tools record their own halves through it.</summary>
+    public ITelemetrySink? Telemetry => _telemetry;
 
     /// <summary>
     /// The whole virtual desktop in one frame, wherever it starts and however it spans monitors.
@@ -451,7 +467,47 @@ public sealed class DesktopAutomation : IDisposable
         };
 
         _lastObservation = observation;
+        RecordTelemetry(observation, watch.Elapsed.TotalMilliseconds);
         return observation;
+    }
+
+    /// <summary>
+    /// One aggregate event per observation: latency, plus a truncation reason when <i>any</i> window was
+    /// cut off on nodes or time. Per-window truncation details live on the entities themselves; the
+    /// aggregate answers "how often is the walk budget losing controls", which is the tuning question.
+    /// </summary>
+    private void RecordTelemetry(DesktopObservation observation, double latencyMs)
+    {
+        if (_telemetry is null)
+        {
+            return;
+        }
+
+        var stopReason = observation.Entities
+            .Select(entity => entity.ElementsTruncation)
+            .Where(reason => reason is WalkStopReason.Visited or WalkStopReason.Time)
+            .Select(reason => reason.ToString())
+            .FirstOrDefault();
+
+        try
+        {
+            _telemetry.Record(new DesktopTelemetryEvent(
+                _clockLocal.GetUtcNow(),
+                "desktop_observe",
+                Kind: null,
+                Target: observation.Entities.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Ok: true,
+                Snapped: null,
+                Verify: null,
+                MediaWidth: null,
+                MediaHeight: null,
+                latencyMs,
+                stopReason));
+        }
+        catch (Exception)
+        {
+            // Telemetry must not fail the observation that fed it.
+        }
     }
 
     /// <summary>
@@ -508,7 +564,15 @@ public sealed class DesktopAutomation : IDisposable
         }
 
         var handle = ParseHandle(entityId);
-        var before = await _capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false);
+
+        // Focus/aim kinds change where the next action goes, not what the window paints, so there is no
+        // before-frame to keep and nothing to verify against. Capturing and diffing them anyway produced
+        // "校验：画面无变化" on actions that never promised a visual effect — and a real session read that
+        // sentence as its click having failed.
+        var verifiesAfterwards = NeedsVerification(kind);
+        var before = verifiesAfterwards
+            ? await _capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false)
+            : CaptureResult.Failed("skipped", "aim-only kind does not need a before-frame");
 
         // A control the model named is acted on through UI Automation when the control supports a pattern for
         // it: that reaches the control itself, needs no foreground window, and does not depend on its screen
@@ -557,8 +621,10 @@ public sealed class DesktopAutomation : IDisposable
             injection = Inject(kind, handle, parameters);
         }
 
-        var verify = await VerifyAsync(handle, injection, parameters, before, observation, ct)
-            .ConfigureAwait(false);
+        var verify = verifiesAfterwards
+            ? await VerifyAsync(handle, injection, parameters, before, observation, ct)
+                .ConfigureAwait(false)
+            : null;
 
         watch.Stop();
         _actionLatenciesMs.Add(watch.Elapsed.TotalMilliseconds);
@@ -928,6 +994,16 @@ public sealed class DesktopAutomation : IDisposable
         _ => true,
     };
 
+    /// <summary>
+    /// Whether the action's effect is measurable in pixels, so a before-frame is worth keeping. The aim-only
+    /// kinds change where the next action goes — the pointer's position, the focused control, a control
+    /// scrolled to the edge — and any repaint that follows belongs to the next action, not this one.
+    /// Verifying them anyway reported "no change" as a verdict on an effect that was never the claim, and a
+    /// real session then treated that verdict as its click having failed.
+    /// </summary>
+    internal static bool NeedsVerification(ActionKind kind) => kind
+        is not (ActionKind.Focus or ActionKind.MovePointer or ActionKind.ScrollIntoView);
+
     /// <summary>Injected input — the path used for everything a pattern cannot express.</summary>
     private InjectionResult Inject(ActionKind kind, nint handle, ActionParams parameters) => kind switch
     {
@@ -968,6 +1044,39 @@ public sealed class DesktopAutomation : IDisposable
     public void Dispose()
     {
         // Nothing unmanaged is held across calls: GDI objects are released inside each capture.
+    }
+
+    /// <summary>
+    /// One picture event, from either screenshot tool shape (explicit or zoom). The tuning question it
+    /// feeds is "how much of the token budget goes to pictures", and the zoom flag separates the cheap
+    /// whole-window picture from the deliberate second-stage crop.
+    /// </summary>
+    public void RecordToolPicture(string tool, string? target, int width, int height, bool zoom)
+    {
+        if (_telemetry is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _telemetry.Record(new Telemetry.DesktopTelemetryEvent(
+                _clockLocal.GetUtcNow(),
+                tool,
+                zoom ? "zoom" : null,
+                target,
+                Ok: true,
+                Snapped: null,
+                Verify: null,
+                width,
+                height,
+                LatencyMs: 0,
+                StopReason: null));
+        }
+        catch (Exception)
+        {
+            // Telemetry must not fail the capture that fed it.
+        }
     }
 
     private DesktopAction Refused(

@@ -90,3 +90,41 @@ public sealed class MemoryCascadeTests : ApiFixture
         Assert.Empty((await _http.GetFromJsonAsync<JsonElement>("/api/memory")).EnumerateArray());
     }
 }
+
+/// <summary>
+/// The maintenance pass over the real workspace: what a host that nobody talks to for a week still runs, on
+/// the same store the views read.
+/// </summary>
+public sealed class MemoryMaintenanceTests : ApiFixture
+{
+    protected override string WorkspaceName => "partner-memory-maintenance";
+
+    [Fact]
+    public async Task The_pass_runs_over_the_workspace_store_and_reports_its_counts()
+    {
+        var longAgo = DateTimeOffset.UtcNow - TimeSpan.FromDays(200);
+
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "idle-1",
+            Tier = MemoryTier.Semantic,
+            Scope = MemoryScope.Recall,
+            Body = "很久没被回忆的旧事实",
+            CreatedAt = longAgo,
+        });
+
+        var maintenance = new MemoryMaintenanceService(_context.Memory);
+        var run = await maintenance.RunAsync();
+
+        // Demotion only: nothing was old-Working, nothing TTL'd, nothing soft-deleted. A count of one says
+        // the workspace store was actually walked rather than lazily skipped.
+        Assert.Equal(1, run.Demoted);
+        Assert.Equal(0, run.Promoted);
+        Assert.Equal(0, run.Trimmed);
+        Assert.Equal(0, run.Compacted);
+        Assert.Equal(MemoryTier.Episodic, (await _context.Memory.GetAsync("idle-1"))!.Tier);
+
+        maintenance.Stop();
+        await maintenance.DisposeAsync();
+    }
+}

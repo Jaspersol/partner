@@ -126,6 +126,65 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
+    public async Task A_tool_only_turn_is_remembered_from_a_successful_act()
+    {
+        // Desktop answers in tool results, not prose; without this path the whole day's desktop work left no
+        // memory at all — the model had "said" nothing the distiller recognised.
+        var (session, memory) = Open();
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User,
+            Source = InputSource.Text,
+            Body = "播放器里点一下播放",
+        });
+
+        const string actResult = "LeftClick · 注入成功 · 校验：画面已变化 · 目标 '播放' [button] @ 播放器";
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.ToolResult,
+            Source = InputSource.Text,
+            Body = actResult,
+            Meta = new Dictionary<string, string> { ["name"] = "desktop_act", ["ok"] = "true" },
+        });
+
+        await new MemoryDistilHook(memory, session).RunAsync(Context("播放器里点一下播放"), default);
+
+        var record = Assert.Single(await memory.ListAsync());
+        Assert.Contains("播放", record.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_all_failed_tool_turn_leaves_no_memory()
+    {
+        // Only executed-and-verified act results count: a refusal or an unverifiable click is not a fact the
+        // store can vouch for, and a failed day of clicking is not worth remembering.
+        var (session, memory) = Open();
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User,
+            Source = InputSource.Text,
+            Body = "删掉那个文件夹",
+        });
+
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.ToolResult,
+            Source = InputSource.Text,
+            Body = "未注入：approval denied · 目标 '确认' [button] @ 对话框",
+            Meta = new Dictionary<string, string> { ["name"] = "desktop_act", ["ok"] = "false" },
+        });
+
+        var ctx = Context("删掉那个文件夹");
+        await new MemoryDistilHook(memory, session).RunAsync(ctx, default);
+
+        Assert.Empty(await memory.ListAsync());
+
+        // Nothing was distilled, so a turn that later succeeds must still be able to record the same seq.
+        var second = await memory.FindBySourceAsync(1);
+        Assert.Null(second);
+    }
+
+    [Fact]
     public async Task A_question_with_no_answer_is_not_a_fact()
     {
         var (session, memory) = Open();
@@ -174,6 +233,38 @@ public sealed class MemoryHookTests : IDisposable
 
         // Injecting an empty header would put a heading in the prompt with nothing under it, every turn.
         Assert.Empty(ctx.InjectedPrompts);
+    }
+
+    [Fact]
+    public async Task Injection_stops_at_the_budget_and_says_so()
+    {
+        // Long bodies used to go into the prompt unbounded: recall took its fixed limit and injected every
+        // hit in full, so one giant note could crowd out the conversation itself. The hook now runs through
+        // the store's injection budget and marks the cut.
+        // A tight budget store of its own: the default 5000-token budget would need ten of these bodies to
+        // flinch, and the test wants the cut, not the count.
+        var (session, _) = JsonlSessionStore.Open(_dir);
+        _session = session;
+        _memory = new MemoryStore(Path.Combine(_dir, "tight.db"), new MemoryStoreOptions { InjectionTokenLimit = 300 });
+        var memory = _memory;
+
+        for (var i = 0; i < 4; i++)
+        {
+            await memory.WriteAsync(new MemoryRecord
+            {
+                RecordId = $"big-{i}",
+                Tier = MemoryTier.Semantic,
+                Scope = MemoryScope.Recall,
+                Body = "细节" + new string('情', 500) + $" 第 {i} 条",
+            });
+        }
+
+        var ctx = Context("细节");
+        await new MemoryRecallHook(memory).RunAsync(ctx, default);
+
+        var injected = string.Join('\n', ctx.InjectedPrompts);
+        Assert.Contains("token budget", injected, StringComparison.Ordinal);
+        Assert.NotEmpty(ctx.InjectedPrompts);
     }
 
     [Fact]

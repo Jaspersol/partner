@@ -23,7 +23,7 @@ bash scripts/ci.sh
 
 依次执行：.NET 编译 → 单元测试 → smoke → 能力门禁 → 前端类型检查/测试/构建 → 壳编译。任一步失败即中断，退出码非 0。
 
-当前基线：**975+ 个 .NET 单测 + 200 个前端测试全绿 / 166 项 smoke 检查（其中 2 项需 `PARTNER_DESKTOP_LIVE=1`，本机默认 skip）/ 63 项能力 `product-supported`**。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。
+当前基线：**1000+ 个 .NET 单测 + 200 个前端测试全绿 / smoke 检查（其中 2 项需 `PARTNER_DESKTOP_LIVE=1`，本机默认 skip）/ 能力 `product-supported` 数以 baseline 为准**。桌面那两个依赖真实前台窗口的测试要在**应用停掉时**才稳定，见坑 12。
 
 跳过最慢的壳编译：`SKIP_SHELL=1 bash scripts/ci.sh`。
 
@@ -427,6 +427,10 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 
 **观察可以只看一个窗口。** `desktop_observe` 接 `entityId` / `titleContains`。九窗口的桌面每轮都按九窗口的控件量发过来，而模型通常只操作其中一个。筛不出东西时**报出看到了什么**而不是回一个空列表——空列表读起来像「桌面是空的」，会把模型支去启动已经开着的程序。
 
+**盲的 Electron 窗口会明说出口在哪。** 一轮真实任务里，`desktop_launch` 启动的网易云音乐（Electron 程序，名字里看不出引擎）只给 UIA 一个 `Document` 面——后面 13 步全靠模型在截图网格上读坐标，读了三遍放大图。现在：观察里一个**可见窗口的控件数 < 2** 时，结果尾部附一行——「此窗口只露出极少控件……重启时在 arguments 里带上 `--remote-debugging-port=9222`，页面里的按钮就能作为控件出现在观察里，直接按名字点」。出口本来就存在（`desktop_launch` 对 Chromium 族会自动开端口，对自己传过 flag 的程序也认），缺的是模型知道它适用于「看起来像坏掉」的这个窗口。**`scroll` 不再要坐标。** 无 `x/y`、无 `elementId` 的 scroll 默认滚目标窗口中心，不再拒绝——拒绝逼着模型花一整轮算一组它本不需要的坐标。
+
+**aim-only 的动作不再演「校验」。** `focus` / `movePointer` / `scrollIntoView` 改变的是指针与焦点——下一步的去向，不是画面本身；它们重绘与否与动作无关。`Focus · 注入成功 · 校验：画面无变化（效果未被确认）` 这句话曾经把一轮实测里第 5 步引去「再移动一次指针无限循环」——它读起来就是动作失败。现在这三种 kind 跳过抓帧与校验（顺带省 ~250ms/次），结果里不再出现校验字样。**按像素点坐标点错窗口时，拒答会带着它离谁最近。** `不在矩形内` 的拒绝过去只报几何事实，模型为找到最近的目标又跑了一次观察；现在拒绝文本顺手列出观察里离该点最近的可交互控件（名称 + `elementId` + 点击点）。
+
 **UIA遍历有两个上限，而产出上限曾经什么也限不住。** 遍历原本只按「产出了多少个控件」停——而 `Describe` 对不感兴趣的控件返回 `null`、计数不增长，所以**一个全是 `Custom`/`Image` 控件的窗口（正是 Chromium / Electron 的形状）永远触发不了上限，整棵树会被走完**，每个节点一次跨进程 RPC。实测：一个 2000 个无用控件的窗口，观察它**要 23.8 秒**——九窗口的桌面上就是整次观察报废。现在按**访问节点数**停（`WalkBudget`，默认 800 节点 / 5 秒），同一个窗口 **4.4 秒**，而且按钮照样找得到（它排在前面）。同一批改动里 `ReadValue` 改成只对 `Edit`/`Document`/`ComboBox` 取值——`Text` 是真实界面里最多的控件，而 `TextPattern.DocumentRange.GetText` 要拉整段文档范围，这个值从来没人用。
 
 **每个窗口只查一次进程。** 枚举里每个窗口各开一次 `Process.GetProcessById` 取名字、再开一次取启动时间；九窗口就是十八次句柄，实际只有 handful 个进程。现在按 pid 归组，一次枚举内每个进程查一次，**「这个进程拒绝回答」也算一次答案并被缓存**。
@@ -482,6 +486,20 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 ### 等待原语
 
 慢弹窗、加载画面不再烧观察步数：`desktop_wait` 一次调用带死线（默认 3s，**硬顶 5s**）三选一——`element`（控件出现：只重新走那一个窗口的 UIA 树，成功即附新观察与新 elementId）、`window`（窗口出现：查窗口列表，毫秒级）、`stillFrame`（画面停止变化：**连续两帧哈希相同**才算稳——一帧相同正是重绘中间那一瞬的形状，`PostActionVerifier` 的同一条纪律）。只读，永不审批；超时报「未达成」并给出当前状态，不是挂着耗回合。能力登记：`desktop.wait_primitive`。
+
+### 桌面遥测（调参的裁定依据）
+
+工具自己已经算出的数字——px/py 吸附命中、动作校验结论、附图尺寸、观察/动作耗时、遍历截断——过去只在结果文本里出现一次就丢。现在 `ITelemetrySink`（会话级单例，`src/Partner.Desktop/Telemetry/`）在三个出口记账：`DesktopAutomation.Observe`（延迟 + 截断原因）、`DesktopActTool`（ok / snapped / 校验结论 / 附图宽高 / 耗时）、`DesktopScreenshotTool`（media 尺寸，zoom 有 kind 区分）。`GET /api/desktop/telemetry` 按滑动窗（1h）聚合：snap 命中率、校验分布（AnyChange/NoChange/Indeterminate）、附图频次与均宽高、observe/act p50·p99、截断计数。
+
+**它为哪儿存在**：吸附半径、zoom 参数、`feedback` 默认挡、租约步数的每一次调整原来只能靠感觉，现在按数字裁——todo.md 的 T 区每一条都绑着触发阈值。**契约是双向静默**：遥测坏了不连累工具（每个记点 try/catch 包裹），工具坏了也不少记（记点在出口处，不在管线中途）。能力登记：`desktop.telemetry_aggregates`。
+
+### `feedback` 三挡（auto / on-failure / off）
+
+`auto` 是老形状：动作后自动附图，一次返回里就能看见效果。`off` 全关。新挡 **`on-failure`**：只在**校验未能确认效果**（NoChange / Indeterminate）时才附图——动作生效了就不需要下一帧，省的是校验通过那张的 token；动作存疑的那张保留，因为它正是模型下一步要用的信息。判据收敛在 `WantsPicture` 一处。默认仍是 `auto`——换默认的条件由遥测数字决定（附图 token 占比），不提前。
+
+### smoke 会先警告
+
+跑 smoke 时若有 partner 相关进程在跑，会先打一行 `WARN`（进程名 + pid）——桌面检查读的是真实桌面，多一个 WebView2 窗口会让定时敏感场景整片失真（坑 11/12）。警告把「该停应用」的决定放到开头，而不是等桌面段跑满一分钟再看小白文。
 
 挡位是**决策**而不是**能力**，所以它**实时生效**（治理每次调用时读当前挡位），不会重启消费者、不会打断飞行中的回合。切换开关（启用/停用）或改窗口白名单才重建工具表——那两件改变的是「存在什么」。
 
@@ -740,7 +758,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M2 队列 | `Core/Queue/`（`JsonlInputQueue`、`InputItem`） |
 | M3 Agent | `Core/Agent/`（`AgentTurnRunner`、`Hooks/`、`Llm/`（含 `HttpLlmClient`）、`Tools/`、`Governance/`、`Mcp/`、`Skills/`）、`Core/Hosting/TurnLoop.cs` |
 | M4 调度 | `Core/Scheduler/`（`JsonlScheduler`、`CronExpression`） |
-| M5 记忆 | `Core/Memory/`（`MemoryStore`、`MemorySchema`、`MemoryScorer`、`ConversationDistiller`、`MemoryDeletion`、`Embeddings`、`TokenCounter`）；回路在 `Core/Agent/Hooks/MemoryHook.cs` |
+| M5 记忆 | `Core/Memory/`（`MemoryStore`、`MemorySchema`、`MemoryScorer`、`ConversationDistiller`、`MemoryDeletion`、`Embeddings`、`TokenCounter`）；回路在 `Core/Agent/Hooks/MemoryHook.cs`；定期维护在 `Api/MemoryMaintenanceService` |
 | M6 治理 | `Core/Agent/Governance/`、`Core/Agent/Tools/`（`ToolGovernance`、`InMemoryToolRegistry`） |
 | M7 MCP | `Core/Agent/Mcp/` |
 | M8 Skills | `Core/Agent/Skills/` |
@@ -751,7 +769,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 ---
 
-## 已实现能力（64）
+## 已实现能力（68）
 
 括号内是该能力的登记检查数（来自 smoke 生成的 `capabilities/manifest.json`；`--verify-baseline` 拿它与 baseline 逐条比对）。
 
@@ -761,14 +779,14 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M2 队列 | `queue.single_fifo`(5)、`queue.idempotent_restart`(3)、`queue.crash_recovery`(2) |
 | M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1)、`agent.queue_consumer`(34) |
 | M4 调度 | `scheduler.durable_delivery`(3)、`scheduler.receipt_dedup`(1)、`scheduler.failure_retention`(2)、`scheduler.schedule_to_turn`(3) |
-| M5 记忆 | `memory.recall_pipeline`(2)、`memory.offline_degradation`(1)、`memory.privacy_delete`(1)、`memory.promotion`(1)、`memory.injection_budget`(1)、`memory.scale_p99`(1) |
+| M5 记忆 | `memory.recall_pipeline`(2)、`memory.offline_degradation`(1)、`memory.privacy_delete`(1)、`memory.promotion`(1)、`memory.injection_budget`(2)、`memory.scale_p99`(1)、`memory.maintenance_pass`(1)、`memory.embeddings_switch`(1) |
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
-| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_returns_state`(2：动作结果自带新截图、附图可被 px/py 映射且按 media id 记录；单击成功路径的实收官在 `PARTNER_DESKTOP_LIVE` 的 live 测试里)、`desktop.step_budget_by_family`(1：desktop/mcp 工具族回合步预算 32，普通工具仍 8)、`desktop.task_lease_approval`(3：批准即租、同窗口不再问、危险类永不入租)、`desktop.wait_primitive`(1：已有控件等待一次新 id，不再烧观察步数)、`desktop.desktop_scope`(2：无观察前提的全桌面全景图 + 窗口编号标记、图上 px/py 服务器端落点)、`desktop.px_snap_to_element`(1：图上读数在控件邻域 8px 内即按控件中心点执行，超出半径才落坐标) |
+| M9 桌面 | `desktop.window_enumeration`(1)、`desktop.gdi_capture`(1)、`desktop.post_action_verification`(1)、`desktop.lease_gating`(3)、`desktop.input_marshalling`(3)、`desktop.uia_pattern_routing`(2：能走 pattern 就走 pattern、控件 id 解析不到不猜)、`desktop.screenshot_marks`(1：标记带控件的真实屏幕点)、`desktop.minimized_window`(5：标记、截图拒绝、点击拒绝、focus 还原、还原后按旧观察也能截图；**前三条跑在 smoke 自己造的窗口上**（专有线程 + 消息循环），后两条要动读者焦点，需 `PARTNER_DESKTOP_LIVE=1`)、`desktop.act_targeting`(3：无 id 的点按坐标定窗口、无窗口覆盖时列出候选、点必须落在真正接收它的顶层窗口上)、`desktop.model_vision`(2：截图作为图像到达模型、日志只留 media id)、`desktop.act_returns_state`(2：动作结果自带新截图、附图可被 px/py 映射且按 media id 记录；单击成功路径的实收官在 `PARTNER_DESKTOP_LIVE` 的 live 测试里)、`desktop.step_budget_by_family`(1：desktop/mcp 工具族回合步预算 32，普通工具仍 8)、`desktop.task_lease_approval`(3：批准即租、同窗口不再问、危险类永不入租)、`desktop.wait_primitive`(1：已有控件等待一次新 id，不再烧观察步数)、`desktop.desktop_scope`(2：无观察前提的全桌面全景图 + 窗口编号标记、图上 px/py 服务器端落点)、`desktop.px_snap_to_element`(1：图上读数在控件邻域 8px 内即按控件中心点执行，超出半径才落坐标)、`desktop.telemetry_aggregates`(1：一次真实 observe→act→screenshot 后，遥测端点各聚合非零) |
 | M10/M11 语音 | `voice.utterance_to_queue`(2)、`voice.asr_contract`(1)、`voice.threshold_guard`(1)、`voice.playback_gate`(4)、`voice.failure_visibility`(2)、`voice.output_ordering`(1)、`voice.output_switch`(1)、`voice.hosted_loop`(4) |
 | M12 游戏 | `game.process_adapter`(3)、`game.reflex_loop`(2)、`game.sensor_debounce`(1)、`game.latency_monitor`(1) |
-| M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1) |
+| M13 UI | `ui.auth`(2)、`ui.composer`(1)、`ui.session_view`(1)、`ui.memory_view`(2)、`ui.queue_view`(1)、`ui.settings`(1)、`ui.projection_rebuild`(1)、`settings.no_model_shrink_saves`(1) |
 
 ---
 
@@ -826,6 +844,10 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 生产打包 | ✅ 已跑：`Partner_0.1.0_x64-setup.exe` **63 MB**（含 214 MB 自包含 API，NSIS 压缩）。**未在干净机器上安装验证** |
 | 记忆写入回路 | ✅ **已接通**（此前**完全没有写入方**）：`MemoryDistilHook`（`Finally` 阶段）把回合提炼成 `Working` 记录，`MemoryRecallHook`（`PreAgentBuild`）把召回结果注入系统块。浏览器实跑：说「我用的是公司内网账号 alice」→ 记忆视图出现该条 → 换种措辞问「我的内网账号是哪个」→ 记忆被召回并注入 |
 | 记忆注入的时效 | ✅ **已做**：注入的每条带 `[层级, 多久前]`（`[established, 10 天前]` / `[unconfirmed, 2 小时前]`），表头写明「以对方现在说的为准」。**记忆不是人刚才说的话**——三个月前的偏好可能早变了，模型只有在提示词说明它是背景时才可能这样权衡 |
+| 记忆注入的预算 | ✅ **已接通**（M0.1，此前 `InjectAsync`（5000 token 注入预算、截断标记）**生产零调用**，`MemoryRecallHook` 直接按固定 8 条裸召回、长正文可占掉上下文）：召回钩子改走 `IMemoryStore.InjectAsync`——预算内放行，首次装不下即带截断标记「more memories were scored but dropped to stay within the injection token budget」，让模型知道提示词是截过的而不是完整的。smoke 的 `memory.injection_budget` 现在同时断言 store 侧与生产钩子侧 |
+| 记忆的定期自我维护 | ✅ **已接通**（M0.2，此前 promote 只在写前、demote 只在召回后顺带跑、`TrimAsync` 生产零调用——**没人读没人写的库永不自我维护**，TTL 过期的 Working 记录永久滞留）：`Api/MemoryMaintenanceService` 随宿主起停，默认每日一跑，按序 `PromoteEligible → DemoteIdle（已公开为接口方法）→ Trim → Compact`，单遍失败只记 stderr、下个间隔重试——一次失败不能拖垮正在服务的消费者。smoke 能力 `memory.maintenance_pass` 用「90 天未召回 + TTL 过期」的库断言降级与清除（episodic 副本因无 TTL 幸存） |
+| 记忆的本地向量分量 | ✅ **已接线**（M0.3，此前 `ApiContext` 构造 store 不传 options，生产恒为 `NullEmbeddingProvider`、打分器 vector 权重 0.25 恒 0）：设置新增 `memory.embeddings`（**默认关**），开时接 `HashingEmbeddingProvider`（本地 n-gram 哈希、无外部依赖）；读在进程打开时生效——启动后改开关不影响已打开的库，也就不会让新记录悄悄带上旧记录没有的向量。模型端 embedding 端点不在本设置内（外部依赖，不默认开）。smoke 能力 `memory.embeddings_switch` 锁默认值与转换 |
+| 桌面回合也产记忆 | ✅ **已保守接通**（M3.1，此前炼取要求 assistant 文本非空——桌面任务以工具调用回答，关键结论（点了什么、成功没成）永不入库）：`MemoryDistilHook` 在无文本回合读末次 `ToolResult`，只收 `desktop_act` 且 ok、带执行成功标记（「已通过界面自动化执行 / 注入成功 / 已按控件中心点执行」）的结果；失败的、被拒的不收 |
 | 中文召回 | ✅ **已修**（此前**对中文完全失效**）：FTS 的 `unicode61` 把整句中文当**一个 token**，「我不太喜欢被打断」找不到「用户不喜欢被反复确认」。索引侧无版本机制、不能换分词器，故 CJK 查询改走 bigram 的参数化 `LIKE`（OR）；打分器仍负责排序。现有召回单测**全是英文**，是它一直没被发现的原因 |
 | 记忆的冲突与降级 | ✅ **已做**：① **冲突按最新生效**——写入时与同层旧记录比对词集，重合够多就让旧的 `valid_to` 生效并记 `superseded_by`，**但不删**，两条都在列表里可读可改。② **三个月未被召回就降一级**（`Semantic→Episodic→Working`，之后由既有 Trim 清掉；`Procedural` 原来会被一次甩两级，已修）。③ **层级可手工改**（`POST /api/memory/{id}/tier`）——「这是我依赖的事实」和「这是我以前猜的」不是打分器能判断的，只有人能定。④ `GET /api/memory/all` 返回**含已失效**的全部记录：「完全可见」要求能看到「什么替换了它」 |
 | 记忆的可见性与可编辑 | ✅ **已做**：列表改用 `GET /api/memory/all`（**含已失效**），每行显示**层级的中文名**（`暂记/经过/确定/做法`）而不是枚举值，并把「什么时候被用过」写进有效性行——`已失效 → m9 · 3 天前用过` 一行说清三件事。层级可从面板直接改（`memory-set-tier`），改完按规范重读，不做乐观更新。摘要分开报「N 条生效 · 共 M 条」。层筛选固定列出**四层 + 各自计数**（含 0 条的层）——旧实现按数据里出现过的层动态生成，空层无法选中且显示裸枚举名 |

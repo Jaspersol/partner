@@ -27,7 +27,32 @@ public sealed record RuntimeSettings
     public McpSettings Mcp { get; init; } = new();
     public SkillSettings Skills { get; init; } = new();
 
+    public MemorySettings Memory { get; init; } = new();
+
     public static RuntimeSettings Default { get; } = new();
+}
+
+/// <summary>
+/// The memory store's electrical wiring.
+/// <para>
+/// Embeddings default <b>off</b>, and stay off by default: the store works FTS-only (design doc's offline
+/// degradation), and turning the local hashing provider on rewrites every future record into vectors the
+/// current store did not have — a ranking change a person did not ask for. The provider here is local and
+/// dependency-free (hashed character trigrams), so enabling costs no network call; a model-backed embedding
+/// endpoint would be an external dependency and is deliberately not reachable through this setting.
+/// </para>
+/// </summary>
+public sealed record MemorySettings
+{
+    /// <summary>
+    /// Turn on the local hashing embedding provider. Off = exactly the pre-setting behaviour: recall scores
+    /// run lexical + FTS only, and the vector component stays zero.
+    /// </summary>
+    public bool Embeddings { get; init; }
+
+    public bool Equals(MemorySettings? other) => other is not null && Embeddings == other.Embeddings;
+
+    public override int GetHashCode() => Embeddings.GetHashCode();
 }
 
 /// <summary>
@@ -357,6 +382,8 @@ public sealed record SettingsView
 
     public SkillSettings Skills { get; init; } = new();
 
+    public MemorySettings Memory { get; init; } = new();
+
     public static SettingsView From(RuntimeSettings settings) => new()
     {
         Input = settings.Input,
@@ -388,5 +415,7 @@ public sealed record SettingsView
         // Without this the settings response drops the section, and the UI — which refills its form from the
         // response — forgets which skills were switched off the moment it is saved.
         Skills = settings.Skills,
+
+        Memory = settings.Memory,
     };
 }

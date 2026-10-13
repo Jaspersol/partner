@@ -49,7 +49,7 @@ public abstract class ApiFixture : IAsyncLifetime
         _port = FreePort();
         _token = TokenAuth.Generate();
 
-        var (app, context, consumer, voice) = await ApiHost.BuildAsync(
+        var (app, context, consumer, voice, _) = await ApiHost.BuildAsync(
             _workspace, _port, _token, clock: null, llm: Llm, components: Components);
 
         _app = app;

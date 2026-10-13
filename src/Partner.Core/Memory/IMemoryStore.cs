@@ -58,6 +58,12 @@ public interface IMemoryStore : IAsyncDisposable
     /// <summary>Consolidates working records older than the promotion age. Idempotent.</summary>
     Task<int> PromoteEligibleAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Drops each idle record one tier — the maintenance pass, so a store nobody reads or writes still ages its
+    /// records instead of holding a stale fact at full trust forever. Idempotent.
+    /// </summary>
+    Task<int> DemoteIdleAsync(CancellationToken ct = default);
+
     /// <summary>Trims expired working records — <b>only</b> those already consolidated.</summary>
     Task<int> TrimAsync(CancellationToken ct = default);
 

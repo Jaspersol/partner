@@ -204,6 +204,38 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task A_desktop_act_decision_rides_the_lease_telemetry()
+    {
+        // The gear that asks per action, an act argument that carries a window id, and Decide directly:
+        // the lease label is what the T-zone's exhaustion-rate threshold keys on, and the endpoint column
+        // must reflect what governance answered without a turn in flight.
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        try
+        {
+            var governance = new Partner.Api.DesktopGovernance(_context);
+            var before = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+
+            var ask = governance.Decide("desktop_act", """{"entityId":"ff","kind":"LeftClick","x":1,"y":1}""");
+            Assert.Equal(Partner.Core.Agent.Tools.ToolDecision.Ask, ask.Decision);
+
+            var after = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+            Assert.True(after.GetProperty("leaseAsked").GetInt32() > before.GetProperty("leaseAsked").GetInt32(),
+                $"leaseAsked={after.GetProperty("leaseAsked").GetInt32()}");
+        }
+        finally
+        {
+            await _http.PutAsJsonAsync("/api/settings", new
+            {
+                desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+        }
+    }
+
+    [Fact]
     public async Task An_empty_approval_queue_is_reported_rather_than_hidden()
     {
         // The UI has to distinguish "nothing is waiting" from "we could not ask", so the shape is always there.
@@ -219,5 +251,41 @@ public sealed partial class ViewEndpointsTests
         var response = await _http.PostAsJsonAsync("/api/approvals/ap-does-not-exist", new { approved = true });
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Telemetry_reports_its_shape_before_any_desktop_traffic()
+    {
+        // An empty sink is a valid answer, not an error: the aggregates exist before the first observe,
+        // and every rate reading no candidates is null rather than zero.
+        var empty = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+
+        Assert.Equal(0, empty.GetProperty("acts").GetInt32());
+        Assert.True(empty.GetProperty("snapHitRate").ValueKind is JsonValueKind.Null);
+        Assert.Equal(0, empty.GetProperty("walkTruncated").GetInt32());
+        Assert.True(empty.GetProperty("observeP50Ms").ValueKind is JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Telemetry_aggregates_carry_the_fields_the_tuning_decisions_read()
+    {
+        var telemetry = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+
+        foreach (var field in new[] { "acts", "snapHitRate", "verdicts", "pictures", "walkTruncated",
+                     "leases", "leaseAsked", "leaseGearAllow",
+                     "observeP50Ms", "observeP99Ms", "actP50Ms", "actP99Ms" })
+        {
+            Assert.True(telemetry.TryGetProperty(field, out _), $"missing {field}");
+        }
+
+        foreach (var field in new[] { "anyChange", "noChange", "indeterminate" })
+        {
+            Assert.True(telemetry.GetProperty("verdicts").TryGetProperty(field, out _), $"missing verdicts.{field}");
+        }
+
+        foreach (var field in new[] { "count", "avgWidth", "avgHeight" })
+        {
+            Assert.True(telemetry.GetProperty("pictures").TryGetProperty(field, out _), $"missing pictures.{field}");
+        }
     }
 }

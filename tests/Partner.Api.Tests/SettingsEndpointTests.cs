@@ -1,4 +1,5 @@
 using Partner.Core.Contracts;
+using Partner.Core.Memory;
 using Partner.Core.Sessions;
 using Partner.Core.Agent.Llm;
 using System.Net;
@@ -117,7 +118,7 @@ public sealed class SettingsEndpointTests : ApiFixture
             new LlmResponse("前几条：用户依次打了招呼。", Array.Empty<LlmToolCall>(), "stop"),
         });
 
-        var (app, context, consumer, voice) = await ApiHost.BuildAsync(workspace, port, token, clock: null, llm: llm);
+        var (app, context, consumer, voice, _) = await ApiHost.BuildAsync(workspace, port, token, clock: null, llm: llm);
         var run = app.RunAsync();
 
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -195,7 +196,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     {
         var settings = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
 
-        foreach (var section in new[] { "input", "output", "asr", "tts", "model" })
+        foreach (var section in new[] { "input", "output", "asr", "tts", "model", "memory" })
         {
             Assert.True(settings.TryGetProperty(section, out _), $"missing section {section}");
         }
@@ -206,6 +207,53 @@ public sealed class SettingsEndpointTests : ApiFixture
         Assert.Equal("qwen3-asr", settings.GetProperty("asr").GetProperty("model").GetString());
         Assert.Equal("zh", settings.GetProperty("tts").GetProperty("lang").GetString());
         Assert.Equal(120, settings.GetProperty("model").GetProperty("timeoutSeconds").GetDouble());
+
+        // Embeddings default off: memory runs FTS-only until somebody switches the local provider on.
+        Assert.False(settings.GetProperty("memory").GetProperty("embeddings").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Memory_embeddings_saved_to_settings_take_effect_at_the_next_open()
+    {
+        // Off by default, and the switch round-trips. The store reads it at process open, so a live save has
+        // no effect until restart — asserted here by scoring through the same workspace after reopening.
+        var put = await _http.PutAsJsonAsync("/api/settings", new { memory = new { embeddings = true } });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        Assert.True((await _http.GetFromJsonAsync<JsonElement>("/api/settings"))
+            .GetProperty("memory").GetProperty("embeddings").GetBoolean());
+
+        // A fresh context over a workspace of its own (the fixture still holds this one's logs) picks the
+        // provider up from the same settings: the store is constructed from what the workspace says.
+        var reopenedWorkspace = Path.Combine(Path.GetTempPath(), "partner-embeddings", Guid.NewGuid().ToString("N"));
+        try
+        {
+            // The same saved runtime.json: OpenAsync reads this workspace's settings, so carrying the file
+            // over is what "next process start over the same configuration" means.
+            Directory.CreateDirectory(Path.Combine(reopenedWorkspace, "settings"));
+            File.Copy(_context.Settings.Path, Path.Combine(reopenedWorkspace, "settings", "runtime.json"));
+
+            var (session, _) = Partner.Core.Sessions.JsonlSessionStore.Open(reopenedWorkspace);
+            await session.DisposeAsync();
+
+            await using var reopened = await ApiContext.OpenAsync(reopenedWorkspace);
+            await reopened.Memory.WriteAsync(new MemoryRecord
+            {
+                RecordId = "emb-1",
+                Tier = MemoryTier.Semantic,
+                Scope = MemoryScope.Recall,
+                Body = "部署流水线每夜运行",
+            });
+
+            var hits = await reopened.Memory.RecallAsync("部署流水线");
+            Assert.True(hits.Count > 0 && hits[0].Score.Vector > 0, "vector component should be live");
+        }
+        finally
+        {
+            if (Directory.Exists(reopenedWorkspace))
+            {
+                Directory.Delete(reopenedWorkspace, recursive: true);
+            }
+        }
     }
 
     [Fact]

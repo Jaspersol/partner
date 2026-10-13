@@ -14,7 +14,7 @@ namespace Partner.Api;
 /// </summary>
 public static class ApiHost
 {
-    public static async Task<(WebApplication App, ApiContext Context, ConsumerHost Consumer, VoiceHost Voice)> BuildAsync(
+    public static async Task<(WebApplication App, ApiContext Context, ConsumerHost Consumer, VoiceHost Voice, MemoryMaintenanceService Maintenance)> BuildAsync(
         string workspace,
         int port,
         string token,
@@ -29,6 +29,9 @@ public static class ApiHost
         var consumer = ConsumerHost.Create(context, workspace);
         var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents());
 
+        // The store ages whether or not a model is configured: the TTL and promotion rules do not need one.
+        var maintenance = new MemoryMaintenanceService(context.Memory, clock);
+
         if (llm is not null)
         {
             // A caller-supplied client is for tests and diagnostics: it bypasses the settings/env resolution
@@ -41,6 +44,8 @@ public static class ApiHost
             await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
         }
 
+        maintenance.Start();
+
         await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);
 
         var builder = WebApplication.CreateBuilder();
@@ -48,6 +53,7 @@ public static class ApiHost
         builder.Services.AddSingleton(context);
         builder.Services.AddSingleton(consumer);
         builder.Services.AddSingleton(voice);
+        builder.Services.AddSingleton(maintenance);
 
         // The shell serves the UI from its own origin, so every API call is cross-origin. CORS here is a
         // browser-enforced allowlist, not the security boundary — the bearer token is (and CORS never grants
@@ -81,6 +87,6 @@ public static class ApiHost
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
 
-        return (app, context, consumer, voice);
+        return (app, context, consumer, voice, maintenance);
     }
 }
