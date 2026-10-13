@@ -374,6 +374,11 @@ defineExpose({ refresh, focusSearch, collapseInspector })
       <div v-if="!inspectorCollapsed" class="inspector-scrim" @click="inspectorCollapsed = true" />
       <div class="scroll">
         <MemoryList :rows="visible" :selected-id="selected?.recordId ?? null" @select="select" />
+        <div v-if="!loaded" class="skeleton-stack" aria-hidden="true">
+          <div class="skeleton-line" />
+          <div class="skeleton-line" />
+          <div class="skeleton-line" />
+        </div>
         <p v-if="!loaded" class="pending" data-test="memory-pending">正在读取记忆…</p>
         <!--
           Two different empties. 「无记忆」 in a search result says the store is empty when it has just reported

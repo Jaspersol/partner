@@ -437,7 +437,7 @@ defineExpose({ focus, restore })
     </div>
 
     <div class="composer-tools">
-      <label class="ghost attach" :class="{ busy: uploading }" data-test="composer-attach">
+      <label class="ghost attach" :class="{ busy: uploading }" :aria-busy="uploading || undefined" data-test="composer-attach">
         {{ uploading ? '上传中…' : '＋ 附件' }}
         <input
           type="file"
@@ -495,12 +495,20 @@ defineExpose({ focus, restore })
         class="danger"
         data-test="composer-interrupt"
         :disabled="busy"
+        :aria-busy="busy || undefined"
         :title="`中断正在运行的 ${runningId}`"
         @click="interrupt"
       >
         {{ busy ? '中断中…' : action.label }}
       </button>
-      <button v-else class="primary" :disabled="!canSend" data-test="composer-send" @click="send">
+      <button
+        v-else
+        class="primary"
+        :disabled="!canSend"
+        :aria-busy="busy || undefined"
+        data-test="composer-send"
+        @click="send"
+      >
         {{ action.label }}
         <Icon name="return" :size="14" label="Enter 发送" />
       </button>

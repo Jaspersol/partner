@@ -78,8 +78,7 @@ const announcement = computed(() => {
       >
         <Icon name="panel-left" :size="16" />
       </button>
-      <strong>Partner</strong>
-      <span class="muted brand-scope">· {{ viewLabel }}</span>
+      <span class="muted brand-scope">{{ viewLabel }}</span>
     </div>
 
     <div class="row breadcrumb">

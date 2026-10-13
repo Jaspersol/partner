@@ -191,7 +191,15 @@ const blocks = computed(() => parse(props.body))
         </thead>
         <tbody>
           <tr v-for="(row, rowIndex) in block.rows" :key="rowIndex">
-            <td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td>
+            <!-- data-label feeds the narrow-container card layout in the scoped block below: the header cell
+                 that would sit above the column at desktop width becomes the label in front of each value. -->
+            <td
+              v-for="(cell, cellIndex) in row"
+              :key="cellIndex"
+              :data-label="block.header[cellIndex]"
+            >
+              {{ cell }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -297,6 +305,62 @@ const blocks = computed(() => parse(props.body))
 .markdown th {
   background: var(--surface-0);
   font-weight: 600;
+}
+
+/* Narrow: the table becomes a stack of cards, one per row, each cell labelled by its header. A four-column
+   table squeezed into a phone width is two unreadable characters per cell; this is the same data at the
+   same reading order with the column names back in front of the values. The header row itself goes — its
+   content is now every card's labels — and the table keeps its th/td structure at wide widths, where the
+   tests and the copy-paste path expect a real table. */
+@container body (max-width: 40rem) {
+  .markdown table,
+  .markdown thead,
+  .markdown tbody,
+  .markdown tr,
+  .markdown td {
+    display: block;
+    inline-size: 100%;
+  }
+
+  .markdown thead {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .markdown tr {
+    margin-block-end: var(--space-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface-1);
+    overflow: hidden;
+  }
+
+  .markdown td {
+    display: grid;
+    grid-template-columns: minmax(0, 8rem) minmax(0, 1fr);
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: none;
+    border-block-end: 1px solid var(--line);
+  }
+
+  .markdown tr td:last-child {
+    border-block-end: none;
+  }
+
+  .markdown td::before {
+    content: attr(data-label);
+    color: var(--text-3);
+    font-size: var(--fs-meta);
+    line-height: var(--lh-meta);
+    font-weight: 500;
+  }
 }
 
 .markdown hr {

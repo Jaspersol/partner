@@ -549,6 +549,11 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           @retract="removeFrom($event, true)"
           @restore="restoreIntoComposer"
         />
+        <div v-if="!loaded" class="skeleton-stack" aria-hidden="true">
+          <div class="skeleton-line" />
+          <div class="skeleton-line" />
+          <div class="skeleton-line" />
+        </div>
         <p v-if="!loaded" class="pending" data-test="session-pending">正在读取会话…</p>
         <p v-else-if="visible.length === 0" class="empty">（无匹配事件）</p>
       </div>

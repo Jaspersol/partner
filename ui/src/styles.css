@@ -7,23 +7,19 @@
  *      font size changes.
  *   2. Only visual scalars (radius, spacing, type scale, shadow) live in :root, and only in rem. Nothing
  *      here sets a width or height that a component should be deriving from its content.
- */
-
-/*
- * Design tokens and layout primitives, per ui.md §8.
- *
- * Two rules run through this file:
- *   1. Layout sizes are never absolute. Regions are sized by their content, by fractional tracks, or by
- *      clamps with a ratio in the middle — so the same rules hold when the window, the panel, or the root
- *      font size changes.
- *   2. Only visual scalars (radius, spacing, type scale, shadow) live in :root, and only in rem. Nothing
- *      here sets a width or height that a component should be deriving from its content.
  *
  * A third, added 2026-10-01 (P5 S1): depth comes from the surface ladder and from shadows, not from borders.
  * The palette this file used before had `--bg` and `--pane` 2% apart and no shadow at all, which left a 1px
  * rule as the only way to say "this is a different thing" — so every block drew its own border and the app
  * read as a 2005 table. `--surface-*` is the replacement, and `--line` is now for boundaries that genuinely
  * need to be seen rather than for structure.
+ *
+ * A fourth, 2026-10-13 (UI modernization): the token *values* moved to the slate system — brand blue
+ * #2563eb, window #f8fafc, card #fff, ink #0f172a, hairline #e2e8f0, system radius 12px, motion 150ms.
+ * Nothing structural changed: same token names, same layering rules, every ratio re-measured against the
+ * worst surface a value can land on (see the comments beside each token). Light and dark are both full
+ * ladders, and Inter leads the font stack without a network fetch — the CSP allows no remote origins, so
+ * the stack degrades to the platform UI font where Inter is not installed.
  */
 
 :root {
@@ -35,41 +31,43 @@
      inspector overlay, and the session row's `⋯` menu — both are separated by --shadow-3, which is how a
      floating panel is normally drawn. A token nobody reads is not sitting here waiting for a popover that
      does not exist, and the popover does exist now. */
-  --surface-0: #f2f2f4;
-  --surface-1: #ffffff;
-  --surface-2: #f5f5f7; /* 1.09:1 against --surface-1. Measured, not guessed: the value this
-                           was first given (#fafafb) came out at 1.04:1, which is not a step, it is a
-                           rounding error. */
+  --surface-0: #f8fafc; /* window, per the modernization token sheet */
+  --surface-1: #ffffff; /* card */
+  --surface-2: #f1f5f9; /* 1.09:1 against --surface-1. Measured, not guessed: a value closer than
+                           this (e.g. #f8fafc at 1.04:1) is not a step, it is a rounding error. */
 
   /* ---- borders: only where a boundary has to be read ----------------------------------------------
-     --line is a hairline carrying structure — a row divider, a section edge. It is deliberately below
-     3:1 (1.7:1 measured): WCAG 1.4.11 covers the boundary you must see to *identify a control*, which is
-     not what a divider between two rows of the same list is. --line-strong is the one that has to be
-     found, so it is 3.2:1 against both surfaces. */
-  --line: rgb(0 0 0 / 0.09);
-  --line-strong: #8f8f96;
+     --line is the token-sheet hairline (#e2e8f0) carrying structure — a row divider, a section edge. It is
+     deliberately below 3:1 (1.2:1 measured): WCAG 1.4.11 covers the boundary you must see to *identify a
+     control*, which is not what a divider between two rows of the same list is. --line-strong is the one
+     that has to be found — the edge of a field or a secondary button — so it is measured against every
+     surface it can sit on and the worst case still clears 3:1 (3.3:1). */
+  --line: #e2e8f0;
+  --line-strong: #7c8899; /* 3.6:1 card / 3.4:1 window / 3.3:1 hover */
 
   /* ---- text: three levels, by meaning rather than by which one looks nicer ------------------------
-     Measured against both --surface-1 and --surface-2; the worst case is the quoted one. */
-  --text: #17171a; /* 17.9:1 / 17.2:1  正文 */
-  --text-2: #5f5f68; /*  6.3:1 /  6.0:1  次级：说明、按钮 */
-  --text-3: #70707a; /*  4.9:1 /  4.7:1  meta：时间、id、计数 —— 是内容，不是装饰 */
+     Measured against all three surfaces; the worst case (hover) is the quoted one. The modernization sheet
+     lists #64748b as the secondary ink — it measures 4.34:1 on a hovered row, under the AA floor, so the
+     two read levels land one step darker instead. Same slate hue family, ratio first. */
+  --text: #0f172a; /* 16.3:1 worst  正文 */
+  --text-2: #475569; /*  6.9:1 worst  次级：说明、按钮 */
+  --text-3: #5f6b7d; /*  4.9:1 worst  meta：时间、id、计数 —— 是内容，不是装饰 */
 
-  --accent: #3b5bfd; /*  5.1:1 on --surface-1 */
-  --accent-soft: rgb(59 91 253 / 0.1);
+  --accent: #2563eb; /*  5.2:1 card, brand blue from the sheet */
+  --accent-soft: rgb(37 99 235 / 0.1);
   /* Focus ring for form fields, deliberately *not* accent. A blue edge on a field reads as "this one is
      wrong" rather than "this is where you are", and on a settings page of nothing-but-fields it reads as a
      validation state that does not exist. A neutral grey says only the first thing. Accent stays on
      buttons, where there is no border for it to be confused with. */
-  --focus-ring: #8f8f96;
-  /* Accent text sitting *on* a tint of itself. `--accent` on `--accent-soft` measures 4.47:1 — under the
-     floor — because the tint darkens the ground the text is measured against. Pressed segments and other
-     "accent on accent-tint" states use this instead: 5.3:1 on that same tint, and still 6.1:1 on plain
-     white, so it is safe anywhere the plain accent would have been. */
-  --accent-pressed: #3350e8;
-  --warn: #a86400; /*  4.7:1 */
-  --error: #c0263c; /*  5.9:1 */
-  --ok: #0f7b46; /*  5.3:1 */
+  --focus-ring: #7c8899; /* same 3.3–3.6:1 band as --line-strong: a non-text indicator, not a colour cue */
+  /* Accent text sitting *on* a tint of itself, and the ink on a filled accent button. `--accent` on
+     `--accent-soft` lands on a darkened ground, so pressed segments use this deeper step instead; white on
+     the fill is 5.2:1. Dark mode swaps --on-accent for near-black ink because the fill there is light. */
+  --accent-pressed: #1d4ed8;
+  --on-accent: #ffffff;
+  --warn: #b45309; /*  4.6:1 worst */
+  --error: #c81d31; /*  4.8:1 on its own 10% tint — the worst surface an error sentence sits on */
+  --ok: #15803d; /*  4.6:1 worst */
 
   /* Selection is a tint of the accent, not a new hue: the row is still this app's row, just the one you are
      on. The 2px bar down its edge is what actually carries "selected" for anyone who cannot separate the
@@ -79,37 +77,41 @@
   /* ---- shadows ----------------------------------------------------------------------------------
      Only for things that leave the page. A card sitting on a surface is told apart by --surface, not by a
      shadow — putting one on every card is what makes an interface look like a stack of sticky notes. Two
-     steps, because there are two things that leave the page: the narrow-window inspector, and (in S2) the
-     menus and popovers. --shadow-1 stays reserved for "lifted but still on the page". */
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 4%), 0 1px 3px rgb(0 0 0 / 6%);
-  --shadow-3: 0 12px 32px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 6%);
+     steps, because there are two things that leave the page: the narrow-window inspector, and the menus and
+     popovers. --shadow-1 is the modernization sheet's one soft lift; --shadow-3 is reserved for genuinely
+     floating panels and stays soft — heavy shadow is what makes an interface look like a 2014 dashboard. */
+  --shadow-1: 0 1px 3px rgb(0 0 0 / 8%);
+  --shadow-3: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 6px rgb(0 0 0 / 6%);
 
-  /* ---- radii & spacing --------------------------------------------------------------------------- */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.5rem;
+  /* ---- radii & spacing ---------------------------------------------------------------------------
+     One system radius: 12px, the sheet's value, aliased across the three names so component CSS that asks
+     for a "small" radius still gets the system one without a sweep through every scoped block. 50% survives
+     on its own for dots and avatars; nothing here should need a second radius until a real need appears. */
+  --radius-sm: 0.75rem; /* 12px */
+  --radius-md: 0.75rem; /* 12px */
+  --radius-lg: 0.75rem; /* 12px */
+  --space-1: 0.25rem; /* 4 */
+  --space-2: 0.5rem; /* 8 */
+  --space-3: 0.75rem; /* 12 */
+  --space-4: 1rem; /* 16 */
+  --space-5: 1.5rem; /* 24 */
+  --space-6: 2rem; /* 32: section rhythm on the larger layouts */
 
-  /* ---- type scale: four steps that are actually steps ----------------------------------------------
-     The previous scale was 11 / 12 / 13 / 14 px with meta and body in the same colour, so the two levels
-     a reader most needs to tell apart differed by 2px and by nothing else — the hierarchy existed in the
-     token names and not on the screen. Each step here is at least 2px.
-
-     All four steps are live as of S4. The 15px prose step arrived with the event row — the one surface in
-     this app anybody reads rather than scans, and therefore the only place a bigger size is information. */
-  --fs-ui: 0.8125rem; /* 13px  控件、按钮、列表 */
+  /* ---- type scale: the sheet's steps, under their existing names -----------------------------------
+     12 / 14 / 16 / 20 / 24, each step at least 2px so the hierarchy is on the screen and not only in the
+     token names. Prose is 16px — the one surface in this app anybody reads rather than scans, and therefore
+     the only place a bigger size is information. h1 (markdown's top heading) picks up the 24px step below;
+     32px exists in the sheet as a display size and this app has no display text, so no token waits for it. */
+  --fs-ui: 0.875rem; /* 14px  控件、按钮、列表 */
   --lh-ui: 1.5;
   --fs-meta: 0.75rem; /* 12px  时间、id、计数 */
   --lh-meta: 1.4;
-  --fs-code: 0.8125rem; /* 13px  等宽 */
-  --lh-code: 1.6; /* 代码用 1.6：13px 配 UI 的 1.5 在等宽字里明显偏挤 */
-  --fs-prose: 0.9375rem; /* 15px  事件正文 —— 页面上唯一的「大字」 */
+  --fs-code: 0.875rem; /* 14px  等宽 */
+  --lh-code: 1.6; /* 代码用 1.6：14px 配 UI 的 1.5 在等宽字里明显偏挤 */
+  --fs-prose: 1rem; /* 16px  事件正文 —— 页面上唯一的「大字」 */
   --lh-prose: 1.75; /* 1.75 而不是 1.6：中文方块字没有拉丁文的升降部，字框内的余量就是行与行之间的呼吸 */
-  --fs-title: 0.875rem;
+  --fs-title: 1.25rem; /* 20px  卡片标题、面板标题 */
+  --fs-h1: 1.5rem; /* 24px  markdown 一级标题 */
 
   --font-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
 
@@ -122,89 +124,94 @@
   --rail-expanded: 15rem; /* 240px: a label and an id fit; more would be a second column's worth of waste */
 
   /* Motion: three kinds, all of them short enough to read as "responsive" rather than "animated".
-     ui.md §8.5. Durations are the slow end of that word on purpose — a workbench that bounces is a
-     workbench you wait for. */
-  --motion-fast: 120ms;
-  --ease: cubic-bezier(0.2, 0, 0, 1);
+     ui.md §8.5. The sheet's window is 150–250ms; these are the slow end of that word on purpose — a
+     workbench that bounces is a workbench you wait for. */
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --motion-slow: 250ms;
+  --ease: ease;
 
   /* Tool families (ui/src/toolAppearance.ts). One hue per family so a turn's calls can be scanned by colour
-     before they are read by name; dark mode reuses the same hues at a lighter value rather than inverting. */
+     before they are read by name; dark mode reuses the same hues at a lighter value rather than inverting.
+     --tool-read follows the brand accent; --tool-schedule and --tool-control are ink levels, not hues. */
   --tool-shell: #b0601e;
-  --tool-read: #3b5bfd;
+  --tool-read: #2563eb;
   --tool-write: #8a4bd0;
-  --tool-search: #0f7b46;
+  --tool-search: #15803d;
   --tool-web: #0a8f96;
-  --tool-record: #a86400;
-  --tool-schedule: #5f5f68;
+  --tool-record: #b45309;
+  --tool-schedule: #475569;
   --tool-agent: #c2185b;
-  --tool-control: #5f5f68;
+  --tool-control: #475569;
 }
 
 /* Dark mode is a token rewrite, never a component change (ui.md §8). It follows the OS unless the user
    picked a side, which is what the two selectors below express.
 
-   The ladder is *not* the light one re-scaled. Two measured facts drove it: a shadow on a near-black background
-   contributes far less separation than the same shadow on white, and a ratio measured between two dark values
-   understates how much a step looks like — so the upper steps are pushed further apart than light mode has
-   them, while the bottom step is kept tight so the window itself stays black. */
+   The ladder is the slate system's own dark half — the same hue family as light mode, not a re-scale of it.
+   Measured worst cases (hover surface is the hard one): --text-3 4.9:1, --error 4.7:1, --accent 4.9:1.
+   --on-accent flips here: the dark-mode fills are light blues and pinks, so the ink on them is the window
+   colour — white text on #60a5fa is 2.5:1 and would fail on the app's most used button. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --surface-0: #08080b;
-    --surface-1: #111115; /* 1.06:1 from --surface-0 */
-    --surface-2: #1a1a1f; /* 1.09:1 from --surface-1 */
-    --line: rgb(255 255 255 / 0.09);
-    --line-strong: #8a8a96;
-    --text: #e9e9ee; /* 15.7:1 */
-    --text-2: #a1a1ac; /*  7.4:1 */
-    --text-3: #8a8a96; /*  5.5:1 */
-    --accent: #6b8cff; /*  6.3:1 */
-    --accent-soft: rgb(107 140 255 / 0.14);
-    --focus-ring: #9a9aa5;
-    --accent-pressed: #9db2ff; /*  5.1:1 on that tint */
-    --warn: #e0a458; /*  8.4:1 */
-    --error: #ff7b8a; /*  7.4:1 */
-    --ok: #57c98b; /*  8.9:1 */
-    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
-    --shadow-3: 0 12px 32px rgb(0 0 0 / 60%);
+    --surface-0: #0f172a;
+    --surface-1: #1e293b; /* 1.21:1 from --surface-0 */
+    --surface-2: #27344a; /* 1.17:1 from --surface-1 */
+    --line: rgb(226 232 240 / 0.1);
+    --line-strong: #6b7b93; /* 3.4:1 card / 4.2:1 window — fields do not sit on hover rows */
+    --text: #f1f5f9; /* 13.4:1 worst */
+    --text-2: #cbd5e1; /*  7.0:1 worst */
+    --text-3: #94a3b8; /*  4.9:1 worst */
+    --accent: #60a5fa; /*  4.9:1 worst */
+    --accent-soft: rgb(96 165 250 / 0.14);
+    --focus-ring: #94a3b8;
+    --accent-pressed: #93c5fd;
+    --on-accent: #0f172a; /* 7.0:1 on the accent fill */
+    --warn: #fbbf24;
+    --error: #fb7185;
+    --ok: #4ade80;
+    --shadow-1: 0 1px 3px rgb(0 0 0 / 40%);
+    --shadow-3: 0 8px 24px rgb(0 0 0 / 55%), 0 2px 6px rgb(0 0 0 / 40%);
     --tool-shell: #e0a458;
-    --tool-read: #6b8cff;
+    --tool-read: #60a5fa;
     --tool-write: #c39cf0;
-    --tool-search: #57c98b;
+    --tool-search: #4ade80;
     --tool-web: #5fd0d6;
-    --tool-record: #e0a458;
-    --tool-schedule: #a1a1ac;
+    --tool-record: #fbbf24;
+    --tool-schedule: #cbd5e1;
     --tool-agent: #f07ba8;
-    --tool-control: #a1a1ac;
+    --tool-control: #cbd5e1;
   }
 }
 
 :root[data-theme='dark'] {
-  --surface-0: #08080b;
-  --surface-1: #111115;
-  --surface-2: #1a1a1f;
-  --line: rgb(255 255 255 / 0.09);
-  --line-strong: #8a8a96;
-  --text: #e9e9ee;
-  --text-2: #a1a1ac;
-  --text-3: #8a8a96;
-  --accent: #6b8cff;
-  --accent-soft: rgb(107 140 255 / 0.14);
-  --focus-ring: #9a9aa5;
-  --accent-pressed: #9db2ff;
-  --warn: #e0a458;
-  --error: #ff7b8a;
-  --ok: #57c98b;
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
-  --shadow-3: 0 12px 32px rgb(0 0 0 / 60%);
+  --surface-0: #0f172a;
+  --surface-1: #1e293b;
+  --surface-2: #27344a;
+  --line: rgb(226 232 240 / 0.1);
+  --line-strong: #6b7b93;
+  --text: #f1f5f9;
+  --text-2: #cbd5e1;
+  --text-3: #94a3b8;
+  --accent: #60a5fa;
+  --accent-soft: rgb(96 165 250 / 0.14);
+  --focus-ring: #94a3b8;
+  --accent-pressed: #93c5fd;
+  --on-accent: #0f172a;
+  --warn: #fbbf24;
+  --error: #fb7185;
+  --ok: #4ade80;
+  --shadow-1: 0 1px 3px rgb(0 0 0 / 40%);
+  --shadow-3: 0 8px 24px rgb(0 0 0 / 55%), 0 2px 6px rgb(0 0 0 / 40%);
   --tool-shell: #e0a458;
-  --tool-read: #6b8cff;
+  --tool-read: #60a5fa;
   --tool-write: #c39cf0;
-  --tool-search: #57c98b;
+  --tool-search: #4ade80;
   --tool-web: #5fd0d6;
-  --tool-record: #e0a458;
-  --tool-schedule: #a1a1ac;
+  --tool-record: #fbbf24;
+  --tool-schedule: #cbd5e1;
   --tool-agent: #f07ba8;
-  --tool-control: #a1a1ac;
+  --tool-control: #cbd5e1;
 }
 
 /* Scrollbars are part of the layout, so they get a budget. WebView2 draws a classic Windows scrollbar that
@@ -246,7 +253,11 @@ body {
 body {
   background: var(--surface-0);
   color: var(--text);
-  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  /* Inter first, per the modernization sheet — and *no* @font-face or remote link: the CSP allows no remote
+     origins (index.html), so the stack uses a locally installed Inter when there is one and otherwise falls
+     back to the platform UI font. The CJK faces follow because Inter carries no Chinese glyphs. */
+  font-family: Inter, 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui,
+    sans-serif;
   font-size: var(--fs-ui);
   line-height: var(--lh-ui);
 }
@@ -332,16 +343,18 @@ button:disabled {
 button.primary {
   border-color: transparent;
   background: var(--accent);
-  /* White, not --text: a filled accent button carrying body-dark text on it is the one place in this palette
-     where the text colour is decided by the button rather than by the surface it sits on. */
-  color: #ffffff;
+  /* The one place in this palette where the text colour is decided by the button rather than by the surface
+     it sits on: white on the light-mode fill (5.2:1), near-black on the dark-mode fill (7.0:1). White on
+     #60a5fa would be 2.5:1 — the swap is what keeps the send button readable in both modes. */
+  color: var(--on-accent);
   font-weight: 500;
 }
 
 button.primary:hover:not(:disabled) {
-  /* Darker, not lighter: the accent already sits at 5.1:1 with white text, so a hover that lightened it
+  /* Darker, not lighter: the accent already sits at 5.2:1 with white text, so a hover that lightened it
      would walk straight down the contrast floor. Darkening buys the other direction instead — 6.3:1 — and
-     reads as "pressed", which is what a hover on a filled button should say. */
+     reads as "pressed", which is what a hover on a filled button should say. The same mix runs in dark
+     mode over a light fill under dark ink; measured there too (5.5:1), still clear of the floor. */
   background: color-mix(in srgb, var(--accent) 88%, #000);
 }
 
@@ -370,20 +383,21 @@ button.ghost:hover:not(:disabled) {
  * single-valued variant could not express that. */
 button.danger {
   border-color: transparent;
-  background: color-mix(in srgb, var(--error) 12%, transparent);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
   color: var(--error);
   font-weight: 500;
 }
 
 button.danger:hover:not(:disabled) {
-  /* 16%, not 20%: measured, 20% of --error under the text drops it to 4.24:1 and 16% holds 4.52:1. A hover
-     state is not a licence to make the label unreadable for the length of a mouse-over. */
-  background: color-mix(in srgb, var(--error) 16%, transparent);
+  /* 12%, not more: measured, 16% of --error under the label drops it to 4.38:1 light / 4.28:1 dark — under
+     the AA floor — and 12% holds 4.69:1 / 4.55:1. A hover state is not a licence to make the label
+     unreadable for the length of a mouse-over. */
+  background: color-mix(in srgb, var(--error) 12%, transparent);
 }
 
 button.primary.danger {
   background: var(--error);
-  color: #ffffff;
+  color: var(--on-accent); /* 5.7:1 light (white on #c81d31), 9:1 dark (ink on #fb7185) */
 }
 
 /* ---- segmented control -------------------------------------------------------------------------
@@ -451,8 +465,8 @@ select:focus-visible {
   outline: none;
   border-color: var(--line-strong);
   /* Full strength, not a tint of it: at 30% this ring measured 1.36:1, which is not "subtle", it is invisible —
-     and an invisible focus indicator is a worse fault than a blue one. `--focus-ring` at full is 3.2:1 light
-     and 6.8:1 dark, which is what a non-text indicator wants. It sits outside the field, so it recolours
+     and an invisible focus indicator is a worse fault than a blue one. `--focus-ring` at full is 3.6:1 light
+     and 5.7:1 dark, which is what a non-text indicator wants. It sits outside the field, so it recolours
      nothing. */
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
@@ -482,8 +496,14 @@ h3 {
   font-weight: 600;
 }
 
+h1 {
+  font-size: var(--fs-h1); /* 24px: the sheet's heading step, used by markdown's top level */
+  line-height: 1.35;
+}
+
 h2 {
   font-size: var(--fs-title);
+  line-height: 1.4;
 }
 
 h3 {
@@ -742,18 +762,30 @@ h3 {
 }
 
 /* A view's own outcome line, pinned to the bottom of its region. Was duplicated verbatim in the three
-   views that have one; it belongs here with the rest of the shared bits. */
+   views that have one; it belongs here with the rest of the shared bits.
+
+   Every bare notice this app renders is a confirmation (「已保存」「已删除 #3」「已入队…」 — grepped, no
+   exceptions), so the strip carries the success tint: a success prompt that looks like body text is easy
+   to miss at the bottom of a toolbar. An error notice opts into its own tint below; both tints were
+   measured with their own ink on top (4.9:1 or better, worst case dark). */
 .notice {
   margin: 0;
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-block-start: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
 }
 
-/* "Nothing here" — a real answer, so it is stated rather than left as blank space. */
+.error.notice {
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+
+/* "Nothing here" — a real answer, so it is stated rather than left as blank space. Centered with air
+   around it: an empty state that is just grey text at the top-left of a pane reads like a rendering bug. */
 .empty {
   margin: 0;
-  padding: var(--space-3);
+  padding: var(--space-5) var(--space-3);
   color: var(--text-2);
+  text-align: center;
 }
 
 /* "Not known yet" — a different answer from "nothing here", and the difference matters.
@@ -1016,9 +1048,15 @@ h3 {
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: var(--fs-title);
+  /* 14px, two steps under the global 20px heading: on the settings page each group title is a row label
+     above a form, and at 20px it out-shouts every field under it. */
+  font-size: var(--fs-ui);
   font-weight: 600;
   text-align: start;
+  /* The global button rule centres its contents — right for a one-line toolbar button, wrong for a
+     full-width disclosure heading, where the chevron belongs at the text's edge and the text at the
+     card's start. */
+  justify-content: flex-start;
   cursor: pointer;
 }
 
@@ -1070,6 +1108,95 @@ h3 {
   font-size: var(--fs-meta);
   line-height: var(--lh-meta);
   color: var(--text-2);
+}
+
+/* ---- loading -----------------------------------------------------------------------------------
+
+   A disabled button is already styled above; this is the *other* half of the state pair — the control is
+   still the control, it is just mid-flight. `aria-busy` is the signal rather than a class, because it is
+   also the signal assistive technology gets (the composer sets it while a send or an interrupt is running).
+   No spinner: every busy control in this app changes its own label (「中断中…」「上传中…」), and a second
+   animated affordance next to a changed label is decoration. */
+button[aria-busy='true'] {
+  cursor: progress;
+}
+
+/* ---- skeletons ----------------------------------------------------------------------------------
+
+   "Not known yet" has two faces in this app. `.pending` (below) is the spoken one — a sentence, because the
+   difference between *empty* and *unread* is information. The block is the shape of the thing being waited
+   for, shown beside that sentence on the two list views' first load, so the pane does not read as blank
+   while the request is in flight. Opacity pulse rather than a shimmer gradient: the modernization brief
+   rules out decorative gradients, and reduced-motion already flattens this to a static block. */
+.skeleton-stack {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.skeleton-line {
+  block-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  animation: skeleton-breathe 1.4s ease-in-out infinite;
+}
+
+.skeleton-line:nth-child(2) {
+  inline-size: 92%;
+}
+
+.skeleton-line:nth-child(3) {
+  inline-size: 78%;
+}
+
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---- large screens ------------------------------------------------------------------------------
+
+   The workbench itself fills the window — that is what a workbench is for. What must not fill a 4K window
+   is a *form*: the settings cards cap at a readable width and centre, so the fields stay in one column the
+   eye does not have to chase. The event list deliberately stays uncapped: tool payloads want every pixel
+   they can get, and prose is already capped by --measure. The MCP and skills cards fill their pane — the
+   pane's own padding is the margin, and their fields stretch to match. */
+.cards {
+  max-inline-size: 64rem;
+  margin-inline: auto;
+}
+
+/* ---- touch --------------------------------------------------------------------------------------
+
+   44px targets wherever the pointer is a finger. This is a media query rather than a container query on
+   purpose: it is a fact about the input device, not about the window — a 1200px-wide tablet still wants
+   thumb-sized controls. Rows and buttons grow; nothing else about the layout moves, and the desktop is
+   untouched. */
+@media (pointer: coarse) {
+  button,
+  select,
+  input:not([type='checkbox']):not([type='radio']),
+  .list > li,
+  .nav > li {
+    min-block-size: 2.75rem; /* 44px */
+  }
+}
+
+/* ---- high contrast -------------------------------------------------------------------------------
+
+   The system's own "more contrast" flag, honoured: hairlines that are deliberately quiet in the default
+   scheme step up to the ones that must be found, so a row divider stops disappearing and a field edge
+   stops blending into its card. Nothing else changes — hue and layout are the user's to keep. */
+@media (prefers-contrast: more) {
+  :root {
+    --line: var(--line-strong);
+  }
 }
 
 /* ---- responsive: container queries, no fixed breakpoints in px --------------------------------- */

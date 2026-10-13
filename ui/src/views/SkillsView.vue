@@ -196,7 +196,8 @@ defineExpose({ refresh })
    page despite using the same token names. */
 
 .card h2 {
-  font-size: var(--fs-title);
+  /* 14px, two steps under the global 20px heading — a warning card's title, not a page title. */
+  font-size: var(--fs-ui);
   margin: 0 0 var(--space-1);
 }
 

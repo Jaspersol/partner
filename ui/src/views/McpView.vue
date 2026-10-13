@@ -249,16 +249,35 @@ defineExpose({ refresh })
 }
 
 h2 {
-  font-size: var(--fs-title);
+  /* 14px, two steps under the global 20px heading: these are card labels inside a form, and at full card
+     width a 20px title out-shouts the fields it titles. */
+  font-size: var(--fs-ui);
   margin: 0;
 }
 
 /* Not `.field`: styles.css has a global one that lays a settings row out as label + auto-sized control,
-   and a scoped rule that only sets gap and font-size does not stop that template from applying here. */
+   and a scoped rule that only sets gap and font-size does not stop that template from applying here.
+
+   Two columns — a narrow optional-control column and the text column — so the checkbox rows and the plain
+   text rows share one left edge instead of every block starting wherever its own first item puts it. */
 .mcp-field {
   display: grid;
-  gap: var(--space-1);
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
   font-size: var(--fs-ui);
+}
+
+label.mcp-field > span {
+  grid-column: 2;
+}
+
+/* The hint is its own line under its label, not the rest of the sentence. */
+label.mcp-field small {
+  display: block;
+}
+
+.mcp-field:not(label) > * {
+  grid-column: 2;
 }
 
 .mcp-field > label {
@@ -299,17 +318,21 @@ h2 {
   font-size: var(--fs-meta);
   color: var(--text-3);
   min-inline-size: 0;
+  /* Every field takes a share of the row instead of the browser's default input width, so the columns of
+     one row line up with the columns of the next and the inputs stretch to their labels. The grow field
+     claims double; below ~16rem the row wraps and each field goes full-width. */
+  flex: 1 1 12rem;
 }
 
 .server-row .grow {
-  flex: 1;
-  min-inline-size: 12rem;
+  flex: 2 1 16rem;
 }
 
 .server-row input,
 .server-row textarea {
   font-size: var(--fs-ui);
   color: var(--text);
+  inline-size: 100%;
 }
 
 /* The global rule is scoped to .field, which this row is not, so the hint needs its own. */
@@ -322,5 +345,12 @@ h2 {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+/* The global button rule centres its label — right inside a toolbar chip, wrong for a full-width ghost
+   button in a form card, where "添加服务器" and "移除" belong on the same left edge as the fields. */
+.card button.ghost,
+.server button.ghost {
+  justify-self: start;
 }
 </style>

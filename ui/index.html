@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Lets the webview's own chrome (scrollbars, form controls, the page background before CSS lands) follow
+         the light/dark choice styles.css makes, instead of flashing a light frame around a dark app. -->
+    <meta name="color-scheme" content="light dark" />
     <!--
       No remote origins: the UI talks to the local API only.
 
