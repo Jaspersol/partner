@@ -25,10 +25,9 @@ engines/
     requirements.txt
   kws-asr/
     sherpa-onnx/               python -m venv 建的运行时（脚本不建，缺了会报错提示）
-    models/sensevoice/         model.int8.onnx + tokens.txt        ← 脚本下载（~230MB 模型，归档 999MB）
+    models/sensevoice/         model.int8.onnx + tokens.txt        ← 脚本下载（模型 228MB，归档 999MB）
     models/kws/                encoder/decoder/joiner onnx + tokens.txt + keywords.txt
                                                                ← 脚本下载（chunk-16，~320ms 延迟）
-    models/vad/silero_vad.onnx                                 ← 脚本下载（取自 sherpa-onnx release）
     asr-server.py              本仓 HTTP 壳（/recognize + /wake/infer + /health）
     requirements.txt
 ```
@@ -74,9 +73,15 @@ engines/tts/.venv/Scripts/pip install -r engines/tts/requirements.txt
   `sherpa-onnx-cli text2token --tokens kws/tokens.txt --tokens-type ppinyin raw.txt keywords.txt`；
   文件不能带 BOM。
 - **`test_wavs/` 的音频对应 `test_wavs/test_keywords.txt`**，不是 `keywords.txt`——拿它们验证要换表。
-- **`get_result()` 返回关键词字符串**（未命中为空串），不是结果对象；**`vad.empty` 是方法**（`vad.empty()`）。
-- **silero VAD 取自 sherpa-onnx release**：`raw.githubusercontent.com` 在本机不可达，snakers4 原始链接会失败。
-- 长音频：VAD 把单段上限定在 28 s（SenseVoice 只在 ≤30 s 训练过，长输入内存近似二次增长）。
+- **`get_result()` 返回关键词字符串**（未命中为空串），不是结果对象。
+- **不用 Silero VAD 切段**：实测把 VAD 切出来的段喂回 SenseVoice 会得到空文本或 `Yeah.` 这类乱码
+  （同一段音频整块喂进去则正常），而宿主端的停顿判定早把块限在 8 s 内。壳改成按 **≤28 s 定长切分**
+  ——保命条款（SenseVoice 只在 ≤30 s 训练过，长输入内存近似二次增长）仍然成立，少一个不稳定依赖。
+- **下载必须校验长度**：PowerShell 的 `Invoke-WebRequest` 曾把一个 999MiB 的资源静默截成 670MB 并报成功，
+  直到 `tar` 解包才发现。现在优先用 `curl.exe --fail -C -`（可续传），回退路径比对 Content-Length。
+- **CPU 只用 int8**：导出包里的 `model.onnx`（894MB fp32）装完即删。
+- **silero VAD 不再下载**；`raw.githubusercontent.com` 在本机不可达（snakers4 原始链接会失败），
+  GitHub release 资产可用。
 
 ## 大小
 

@@ -353,7 +353,7 @@ local.kws  → engines/kws-asr/asr-server.py  POST /recognize + /wake/infer（as
 
 **唤醒门**（`VoiceInputSetting.Wake`）：KWS 引擎开启时语音输入进入门控——麦克风持续采、音频照常进环形缓冲，但**不提交 ASR**；宿主每 ~320ms 把最近帧转发给 `/wake/infer`，命中后开闸一个会话窗；G2（整段静默闭合）即回闸等下一次唤醒。唤醒词后紧跟着的话不会被掐头（缓冲里还在）。KWS 失联只记日志、下一 tick 重试，不死半区。
 
-安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`；装好后 `engines/` 随安装包一起打进去（`tauri.conf.json` 的 resources）。实测事实：官方 KWS 包是 **chunk-16**（~320ms 延迟，chunk-8 若存在会自动优先），`keywords.txt` 自带 8 个词（小爱同学、小艺小艺…）；截断器 silero VAD 取自 sherpa-onnx release（`raw.githubusercontent.com` 在本机不可达）。
+安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`；装好后 `engines/` 随安装包一起打进去（`tauri.conf.json` 的 resources）。实测事实与踩坑清单见 [engines/README.md](engines/README.md)：官方 KWS 包只有 **chunk-16**（~320ms 延迟）、`keywords.txt` 自带 8 个词、`get_result()` 返回字符串、**不用 Silero VAD 切段**（切出来的段喂回 SenseVoice 会得到空文本，30 s 保命条款改由定长切分承担）、下载必须校验长度（`Invoke-WebRequest` 曾把 999MiB 静默截成 670MB 并报成功）。
 
 ---
 

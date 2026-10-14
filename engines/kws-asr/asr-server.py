@@ -1,4 +1,4 @@
-"""engines/kws-asr/asr-server.py — 本仓提供的 KWS+VAD+ASR HTTP 壳。
+"""engines/kws-asr/asr-server.py — 本仓提供的 KWS+ASR HTTP 壳。
 
 Partner 设置里的 `asr.protocol=sensevoice` 直接用：
 
@@ -9,10 +9,9 @@ Partner 设置里的 `asr.protocol=sensevoice` 直接用：
     GET  /health
 
 模型（scripts/install-engines.ps1 -Engine kws 下载到 engines/kws-asr/models/）：
-  sensevoice/model.int8.onnx + tokens.txt      SenseVoice（非流式，30 s 为限）
+  sensevoice/model.int8.onnx + tokens.txt      SenseVoice（非流式，按 ≤28 s 定长切分）
   kws/encoder-*.onnx + decoder-* + joiner-*    zipformer KWS（本包是 chunk-16；chunk-8 若有会优先）
   kws/keywords.txt                             唤醒词表（拼音 token，@后是显示名）
-  vad/silero_vad.onnx                          Silero VAD（30 s 保命条款的切分器）
 
 架构纪律（本地音频.md）：KWS + VAD + ASR 同进程同一次 onnxruntime 初始化——本壳自己就是那个进程。
 麦克风在宿主端（Partner），引擎不抢音频源：宿主把同一份采集转发给 /wake/infer。
@@ -88,7 +87,7 @@ class WakeRing:
 
 
 class Recognizers:
-    """SenseVoice（VAD 兜底切分）+ KWS，一次 onnxruntime 初始化一起建。"""
+    """SenseVoice + KWS，一次 onnxruntime 初始化一起建。"""
 
     def __init__(self, models: Path, threads: int, keywords_path: Path | None, wake_ring: WakeRing) -> None:
         self.wake_ring = wake_ring
@@ -102,16 +101,6 @@ class Recognizers:
             language="auto",
             provider="cpu",
         )
-
-        vad_config = sherpa_onnx.VadModelConfig()
-        vad_config.silero_vad.model = str(models / "vad" / "silero_vad.onnx")
-        vad_config.silero_vad.threshold = 0.5
-        vad_config.silero_vad.min_silence_duration = 0.25
-        vad_config.silero_vad.min_speech_duration = 0.25
-        vad_config.sample_rate = SAMPLE_RATE
-        # 30 s 上限 + 2 s 余量：SenseVoice 只在 ≤30 s 上训练过，长输入内存近似二次增长（实测 611 s → 5.5 GB）。
-        vad_config.silero_vad.max_speech_duration = 28.0
-        self.vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=60)
 
         self.kws = None
         self._kws_lock = threading.Lock()
@@ -135,26 +124,28 @@ class Recognizers:
                 print(f"kws: {encoder.name} keywords={keywords_path.name}", file=sys.stderr)
 
     def recognize(self, samples: np.ndarray) -> str:
-        """VAD 切段转写。宿主已按停顿切过块，这里的 VAD 是兜底 + 30 s 保命条款。"""
-        self.vad.reset()
-        samples = np.asarray(samples, dtype="f4")
-        # 100ms 一喂：Silero 的窗口是 512 采样，整块塞进去也认，但分片喂在长输入上更稳。
-        for start in range(0, len(samples), 1600):
-            self.vad.accept_waveform(samples[start:start + 1600])
-        self.vad.flush()
+        """定长切分转写。宿主已按停顿切过块（≤ WindowSeconds），这里的切分是 30 s 保命条款。
+
+        <para>
+        刻意不用 Silero VAD 切段：实测把 VAD 切出来的段喂回 SenseVoice 会得到空文本或乱码
+        （整段喂进去则正常），而宿主端的停顿判定早就把块限在 8 s 内。少一个不稳定依赖，
+        也少一层对音频的改动——转写质量的边界由「宿主切块」和「这里强制 ≤28 s」两处说了算。
+        SenseVoice 只在 ≤30 s 上训练过，超过会内存近似二次增长（实测 611 s → 5.5 GB）。
+        </para>
+        """
+        samples = np.asarray(samples, dtype="f4").reshape(-1)
+        if samples.size == 0:
+            return ""
 
         pieces: list[str] = []
-        while not self.vad.empty():
-            segment = self.vad.front
-            self.vad.pop()
+        window = 28 * SAMPLE_RATE
+        for start in range(0, samples.size, window):
+            chunk = np.ascontiguousarray(samples[start:start + window])
             stream = self.recognizer.create_stream()
-            stream.accept_waveform(SAMPLE_RATE, np.asarray(segment.samples, dtype="f4"))
+            stream.accept_waveform(SAMPLE_RATE, chunk)
             self.recognizer.decode_stream(stream)
             pieces.append(stream.result.text.strip())
 
-        if not pieces:
-            # VAD 判定整段无声（或整段都是噪）时给空串，而不是把音频硬塞给 SenseVoice。
-            return ""
         return "".join(pieces)
 
     def wake_probe(self, samples: np.ndarray) -> tuple[bool, str, float]:
