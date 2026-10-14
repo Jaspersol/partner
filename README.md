@@ -334,6 +334,27 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5280/api/voice
 
 设置里改 `input`/`output`/`asr`/`tts` 任一段会**重启语音宿主**（重开设备）；只改 `model` 段不会——避免打断一次正在进行的识别。
 
+### 本地引擎（可选，`engines/`）
+
+调研与预算见 [本地音频.md](本地音频.md)。两个引擎是**独立进程**，由 `Api/Voice/LocalEngineHost.cs` 按设置拉起/杀掉：
+
+```
+local.tts  → engines/tts/tts-server.py      POST /v1/audio/speech   （设置：tts.protocol=openai）
+local.kws  → engines/kws-asr/asr-server.py  POST /recognize + /wake/infer（asr.protocol=sensevoice + 唤醒门）
+```
+
+| 设计点 | 为什么 |
+|---|---|
+| **关闭 = 杀进程** | ONNX 内存池扩张后不归还宿主（见调研 §4 坑一），只有进程退出才可靠释放。所以「不占资源」的单位是进程，不是客户端对象 |
+| 两个开关各自一个可执行文件 | TTS 占显存（~1.0–1.3GB），KWS/ASR 占内存（KWS 常驻 ~50MB，转写时 SenseVoice ~500MB）——关一个不影响另一个 |
+| 同配置不打抖 | 保存设置时若引擎配置没变且进程活着，不重启：一次无关的设置保存不该把正在跑的引擎掐掉 |
+| `{port}` 占位符 | 引擎要知道监听哪、宿主要知道连哪；一个模板同时喂两边，避免两处配置静默漂移 |
+| 端口从 `local.*.port` 来，不是从 `asr.baseUrl` 推 | 引擎托管与客户端地址是两件事：可以托管在 A 端口而客户端连 B（比如引擎先跑着、宿主后配） |
+
+**唤醒门**（`VoiceInputSetting.Wake`）：KWS 引擎开启时语音输入进入门控——麦克风持续采、音频照常进环形缓冲，但**不提交 ASR**；宿主每 ~320ms 把最近帧转发给 `/wake/infer`，命中后开闸一个会话窗；G2（整段静默闭合）即回闸等下一次唤醒。唤醒词后紧跟着的话不会被掐头（缓冲里还在）。KWS 失联只记日志、下一 tick 重试，不死半区。
+
+安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`；装好后 `engines/` 随安装包一起打进去（`tauri.conf.json` 的 resources）。实测事实：官方 KWS 包是 **chunk-16**（~320ms 延迟，chunk-8 若存在会自动优先），`keywords.txt` 自带 8 个词（小爱同学、小艺小艺…）；截断器 silero VAD 取自 sherpa-onnx release（`raw.githubusercontent.com` 在本机不可达）。
+
 ---
 
 ## 桌面操控的交互设计（四次实测之后的修订）
