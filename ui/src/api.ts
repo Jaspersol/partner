@@ -196,6 +196,37 @@ export interface TtsSettings {
   chunkMs: number
 }
 
+/** One local engine's process the runtime manages. Stopping it releases its memory for real. */
+export interface LocalEngineSettings {
+  enabled: boolean
+  /** Executable path; null/empty means not managed even when enabled. */
+  command: string | null
+  /** Argument template: `__PORT__` is replaced by the port below. */
+  arguments: string[]
+  workingDirectory: string | null
+  port: number
+  /** How long the process may take to prove it stays up before being reported started. */
+  readyTimeoutSeconds: number
+}
+
+export interface LocalSettings {
+  /** TTS server process (OpenAI protocol engine, e.g. qwentts.cpp server). */
+  tts: LocalEngineSettings
+  /** KWS+VAD+ASR server process (sherpa-onnx engine). */
+  kws: LocalEngineSettings
+}
+
+export interface LocalEngineState {
+  running: boolean
+  reason: string
+  processId: number | null
+}
+
+export interface LocalEnginesState {
+  tts: LocalEngineState
+  kws: LocalEngineState
+}
+
 /** What a client sends: the key is optional and write-only. */
 export interface ModelSettings {
   baseUrl: string | null
@@ -238,6 +269,7 @@ export interface RuntimeSettings {
   output: OutputSettings
   asr: AsrSettings
   tts: TtsSettings
+  local: LocalSettings
   model: ModelSettings
   desktop: DesktopSettings
   mcp: McpSettings
@@ -249,6 +281,7 @@ export interface SettingsView {
   output: OutputSettings
   asr: AsrSettings
   tts: TtsSettings
+  local: LocalSettings
   model: ModelSettingsView
   desktop: DesktopSettings
   mcp: McpSettings

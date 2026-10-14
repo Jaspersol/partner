@@ -16,7 +16,7 @@ var port = args.Length > 1 && int.TryParse(args[1], out var parsed) ? parsed : 5
 // absent one is generated, so running this by hand can never leave the runtime unauthenticated.
 var (token, generated) = TokenAuth.Resolve();
 
-var (app, _, consumer, voice, maintenance) = await ApiHost.BuildAsync(workspace, port, token);
+var (app, _, consumer, voice, localEngines, maintenance) = await ApiHost.BuildAsync(workspace, port, token);
 
 // Reported from ApplicationStarted rather than before RunAsync: a launcher waits for this line, so it must
 // mean "accepting connections", not "about to try".
@@ -59,6 +59,7 @@ finally
     // Graceful: the consumer stops claiming new work and lets the turn in flight finish.
     maintenance.Stop();
     await maintenance.DisposeAsync();
+    await localEngines.DisposeAsync();
     await voice.DisposeAsync();
     await consumer.DisposeAsync();
 }

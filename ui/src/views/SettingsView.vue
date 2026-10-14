@@ -36,6 +36,10 @@ const form = reactive<RuntimeSettings>({
   },
   asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+  local: {
+    tts: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30 },
+    kws: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30 },
+  },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS] },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
 
@@ -75,6 +79,7 @@ function fingerprint(): string {
     output: form.output,
     asr: form.asr,
     tts: form.tts,
+    local: form.local,
     model: form.model,
     desktop: form.desktop,
     // The key is write-only: it is either the draft or nothing, and it is the one field a fingerprint would
@@ -92,6 +97,14 @@ function onTitlesInput(event: Event) {
     .split(/[,，]/)
     .map((title) => title.trim())
     .filter((title) => title !== '')
+}
+
+/** Engine arguments are edited as one shell line; blank runs are dropped rather than stored. */
+function onEngineArgumentsInput(engine: 'tts' | 'kws', event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  form.local[engine].arguments = raw
+    .split(/\s+/)
+    .filter((part) => part !== '')
 }
 
 const status = ref('')
@@ -138,6 +151,11 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   Object.assign(form.output, settings.output)
   Object.assign(form.asr, settings.asr)
   Object.assign(form.tts, settings.tts)
+  // These two carry lists; replaced, not merged, so a row removed on the server stays removed.
+  Object.assign(form.local, {
+    tts: { ...settings.local?.tts, arguments: [...(settings.local?.tts?.arguments ?? [])] },
+    kws: { ...settings.local?.kws, arguments: [...(settings.local?.kws?.arguments ?? [])] },
+  })
   Object.assign(form.desktop, {
     enabled: settings.desktop?.enabled ?? false,
     leaseTtlMs: settings.desktop?.leaseTtlMs ?? 15000,
@@ -192,6 +210,10 @@ async function persist() {
     output: { ...form.output },
     asr: { ...form.asr },
     tts: { ...form.tts },
+    local: {
+      tts: { ...form.local.tts, arguments: [...form.local.tts.arguments] },
+      kws: { ...form.local.kws, arguments: [...form.local.kws.arguments] },
+    },
     // Carried, not edited: these two have pages of their own. Dropping them here would silently undo whatever
     // was decided there the next time anybody saved a voice setting.
     mcp: form.mcp,
@@ -304,7 +326,7 @@ function useAsDefault(index: number) {
  * from someone who came to change one thing — and the reader is the only one who knows which thing.
  * </para>
  */
-const GROUPS = ['input', 'output', 'asr', 'tts', 'desktop', 'model'] as const
+const GROUPS = ['input', 'output', 'asr', 'tts', 'local', 'desktop', 'model'] as const
 const FOLDED_KEY = 'partner.settings.folded'
 
 const folded = ref<Record<string, boolean>>({})
@@ -620,6 +642,61 @@ defineExpose({ refresh, hasUnsavedChanges })
             <span>播放块大小 (ms)</span>
             <input type="number" v-model.number="form.tts.chunkMs" />
           </label>
+          </div>
+        </section>
+
+        <section class="card" :class="{ 'is-folded': folded.local === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-local'"
+              :aria-expanded="folded.local !== true"
+              aria-controls="settings-body-local"
+              @click="toggleGroup('local')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              本地引擎进程
+            </button>
+          </h2>
+          <div v-show="folded.local !== true" :id="'settings-body-local'" class="card-body">
+          <p class="card-note">
+            由运行时拉起并停掉的本地语音服务进程。关闭 = 终止进程 = 真正释放显存/内存——
+            只是不发请求不会释放占用。服务地址照常填在 ASR/TTS 卡里指向这组端口。
+          </p>
+          <template v-for="engine in ['tts', 'kws'] as const" :key="engine">
+            <div class="field-group" :data-test="`local-engine-${engine}`">
+              <p class="field-head">
+                <strong>{{ engine === 'tts' ? 'TTS 服务（如 qwentts.cpp server）' : 'KWS+ASR 服务（如 sherpa-onnx）' }}</strong>
+              </p>
+              <label class="field">
+                <span>启用托管</span>
+                <input type="checkbox" v-model="form.local[engine].enabled" :data-test="`local-${engine}-enabled`" />
+              </label>
+              <label class="field">
+                <span>可执行文件</span>
+                <input type="text" v-model="form.local[engine].command" :data-test="`local-${engine}-command`" />
+              </label>
+              <label class="field">
+                <span>参数（一行分隔）</span>
+                <input type="text" :value="form.local[engine].arguments.join(' ')"
+                  :data-test="`local-${engine}-arguments`"
+                  @input="onEngineArgumentsInput(engine, $event)" />
+                <span class="source">端口占位符写作 {port}</span>
+              </label>
+              <label class="field">
+                <span>工作目录</span>
+                <input type="text" v-model="form.local[engine].workingDirectory" />
+              </label>
+              <label class="field">
+                <span>端口</span>
+                <input type="number" v-model.number="form.local[engine].port" :data-test="`local-${engine}-port`" />
+              </label>
+              <label class="field">
+                <span>就绪宽限 (s)</span>
+                <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
+              </label>
+            </div>
+          </template>
           </div>
         </section>
 

@@ -14,7 +14,7 @@ namespace Partner.Api;
 /// </summary>
 public static class ApiHost
 {
-    public static async Task<(WebApplication App, ApiContext Context, ConsumerHost Consumer, VoiceHost Voice, MemoryMaintenanceService Maintenance)> BuildAsync(
+    public static async Task<(WebApplication App, ApiContext Context, ConsumerHost Consumer, VoiceHost Voice, LocalEngineHost LocalEngines, MemoryMaintenanceService Maintenance)> BuildAsync(
         string workspace,
         int port,
         string token,
@@ -28,6 +28,7 @@ public static class ApiHost
         var context = await ApiContext.OpenAsync(workspace, clock).ConfigureAwait(false);
         var consumer = ConsumerHost.Create(context, workspace);
         var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents());
+        var localEngines = new LocalEngineHost();
 
         // The store ages whether or not a model is configured: the TTL and promotion rules do not need one.
         var maintenance = new MemoryMaintenanceService(context.Memory, clock);
@@ -46,6 +47,8 @@ public static class ApiHost
 
         maintenance.Start();
 
+        await localEngines.ReconfigureAsync(context.Settings.Load().Local).ConfigureAwait(false);
+
         await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);
 
         var builder = WebApplication.CreateBuilder();
@@ -53,6 +56,7 @@ public static class ApiHost
         builder.Services.AddSingleton(context);
         builder.Services.AddSingleton(consumer);
         builder.Services.AddSingleton(voice);
+        builder.Services.AddSingleton(localEngines);
         builder.Services.AddSingleton(maintenance);
 
         // The shell serves the UI from its own origin, so every API call is cross-origin. CORS here is a
@@ -81,12 +85,13 @@ public static class ApiHost
         app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
         app.MapGet("/api/consumer", (ConsumerHost host) => Results.Ok(host.State));
         app.MapGet("/api/voice", (VoiceHost host) => Results.Ok(host.State));
+        app.MapGet("/api/voice/local", (LocalEngineHost host) => Results.Ok(host.State));
 
         // What the tools have been failing at, most frequent first. Separate from /api/consumer because this
         // is a history rather than a state, and a caller refreshing a badge has no reason to read it.
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
 
-        return (app, context, consumer, voice, maintenance);
+        return (app, context, consumer, voice, localEngines, maintenance);
     }
 }

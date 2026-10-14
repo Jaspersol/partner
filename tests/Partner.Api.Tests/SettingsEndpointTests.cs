@@ -118,7 +118,7 @@ public sealed class SettingsEndpointTests : ApiFixture
             new LlmResponse("前几条：用户依次打了招呼。", Array.Empty<LlmToolCall>(), "stop"),
         });
 
-        var (app, context, consumer, voice, _) = await ApiHost.BuildAsync(workspace, port, token, clock: null, llm: llm);
+        var (app, context, consumer, voice, _, _) = await ApiHost.BuildAsync(workspace, port, token, clock: null, llm: llm);
         var run = app.RunAsync();
 
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };

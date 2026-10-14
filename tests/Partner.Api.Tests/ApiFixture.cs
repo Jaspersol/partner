@@ -25,6 +25,7 @@ public abstract class ApiFixture : IAsyncLifetime
     protected ApiContext _context = null!;
     protected ConsumerHost _consumer = null!;
     protected VoiceHost _voice = null!;
+    protected LocalEngineHost _localEngines = null!;
     protected WebApplication _app = null!;
     protected Task _run = null!;
     protected HttpClient _http = null!;
@@ -49,13 +50,14 @@ public abstract class ApiFixture : IAsyncLifetime
         _port = FreePort();
         _token = TokenAuth.Generate();
 
-        var (app, context, consumer, voice, _) = await ApiHost.BuildAsync(
+        var (app, context, consumer, voice, localEngines, _) = await ApiHost.BuildAsync(
             _workspace, _port, _token, clock: null, llm: Llm, components: Components);
 
         _app = app;
         _context = context;
         _consumer = consumer;
         _voice = voice;
+        _localEngines = localEngines;
         _run = _app.RunAsync();
 
         _http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_port}") };
@@ -85,6 +87,7 @@ public abstract class ApiFixture : IAsyncLifetime
         _http.Dispose();
         await _app.StopAsync();
         await _run;
+        await _localEngines.DisposeAsync();
         await _voice.DisposeAsync();
         await _consumer.DisposeAsync();
         await _context.DisposeAsync();

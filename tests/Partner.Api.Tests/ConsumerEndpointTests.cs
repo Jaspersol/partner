@@ -208,7 +208,7 @@ public sealed class UnconfiguredConsumerTests
             Environment.SetEnvironmentVariable(HttpLlmClient.BaseUrlVariable, null);
             Environment.SetEnvironmentVariable(HttpLlmClient.ModelVariable, null);
 
-            var (app, context, consumer, voice, _) = await ApiHost.BuildAsync(workspace, port, token);
+            var (app, context, consumer, voice, _, _) = await ApiHost.BuildAsync(workspace, port, token);
             var run = app.RunAsync();
 
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };

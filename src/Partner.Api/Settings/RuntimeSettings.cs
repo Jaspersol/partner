@@ -22,6 +22,8 @@ public sealed record RuntimeSettings
 
     public TtsSettings Tts { get; init; } = new();
 
+    public LocalSettings Local { get; init; } = new();
+
     public ModelSettings Model { get; init; } = new();
 
     public DesktopSettings Desktop { get; init; } = new();
@@ -301,6 +303,64 @@ public sealed record TtsSettings
     public int ChunkMs { get; init; } = 100;
 }
 
+/// <summary>
+/// 本地语音引擎的进程管理（本地音频.md 的部署形态）。
+/// <para>
+/// 两个独立的开关，各自一个可执行文件：<c>tts</c> 管 OpenAI 兼容的 TTS 服务进程，
+/// <c>kws</c> 管 KWS+VAD+ASR 的识别服务进程。关掉 = 杀进程 = 真正释放显存/内存——
+/// 调研文档的核心教训是 ONNX 的内存池扩张后<b>不归还</b>，只有进程退出才可靠，所以「不占资源」的
+/// 单位是进程，不是客户端对象。宿主自己不发请求，HTTP 客户端的地址仍由 <see cref="TtsSettings"/> /
+/// <see cref="AsrSettings"/> 指向该引擎的端口。
+/// </para>
+/// <para>
+/// 命令行按占位符 <c>{port}</c> 展开：引擎需要知道自己听哪个端口，宿主需要知道去连哪，
+/// 一个字段同时喂两边，避免两处配置静默漂移。
+/// </para>
+/// </summary>
+public sealed record LocalSettings
+{
+    /// <summary>托管本地 TTS 引擎进程。服务地址在 tts 段里配（协议 openai 时）。</summary>
+    public LocalEngineSettings Tts { get; init; } = new();
+
+    /// <summary>托管本地 KWS+VAD+ASR 引擎进程。服务地址在 asr 段里配。</summary>
+    public LocalEngineSettings Kws { get; init; } = new();
+
+    public bool Equals(LocalSettings? other) =>
+        other is not null && Tts == other.Tts && Kws == other.Kws;
+
+    public override int GetHashCode() => HashCode.Combine(Tts, Kws);
+}
+
+/// <summary>一个本地引擎进程：可执行文件、参数模板、端口。Command 空 = 不托管。</summary>
+public sealed record LocalEngineSettings : IEquatable<LocalEngineSettings>
+{
+    public bool Enabled { get; init; }
+
+    public string? Command { get; init; }
+
+    /// <summary>参数模板；<c>{port}</c> 占位符换成下面端口的实际值再启动。</summary>
+    public IReadOnlyList<string> Arguments { get; init; } = Array.Empty<string>();
+
+    public string? WorkingDirectory { get; init; }
+
+    public int Port { get; init; }
+
+    /// <summary>进程启动后到第一批请求可以发出去的宽限；启动慢于它的引擎会吃连接失败与重试。</summary>
+    public int ReadyTimeoutSeconds { get; init; } = 30;
+
+    public bool Equals(LocalEngineSettings? other) =>
+        other is not null
+        && Enabled == other.Enabled
+        && Command == other.Command
+        && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
+        && WorkingDirectory == other.WorkingDirectory
+        && Port == other.Port
+        && ReadyTimeoutSeconds == other.ReadyTimeoutSeconds;
+
+    public override int GetHashCode() =>
+        HashCode.Combine(Enabled, Command, Arguments.Count, WorkingDirectory, Port, ReadyTimeoutSeconds);
+}
+
 /// <summary>Mirrors <c>HttpLlmOptions</c>. The key is write-only; see <see cref="ModelSettingsView"/>.</summary>
 public sealed record ModelSettings
 {
@@ -391,6 +451,8 @@ public sealed record SettingsView
 
     public TtsSettings Tts { get; init; } = new();
 
+    public LocalSettings Local { get; init; } = new();
+
     public ModelSettingsView Model { get; init; } = new();
 
     public DesktopSettings Desktop { get; init; } = new();
@@ -407,6 +469,7 @@ public sealed record SettingsView
         Output = settings.Output,
         Asr = settings.Asr,
         Tts = settings.Tts,
+        Local = settings.Local,
         Model = new ModelSettingsView
         {
             BaseUrl = settings.Model.BaseUrl,

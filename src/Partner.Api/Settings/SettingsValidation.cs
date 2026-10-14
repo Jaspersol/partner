@@ -69,6 +69,9 @@ public static class SettingsValidation
             errors.Add("tts.speed 不能为负");
         }
 
+        ValidateEngine("local.tts", settings.Local.Tts, errors);
+        ValidateEngine("local.kws", settings.Local.Kws, errors);
+
         if (settings.Asr.SampleRate <= 0)
         {
             errors.Add("asr.sampleRate 必须为正");
@@ -136,6 +139,27 @@ public static class SettingsValidation
         if (companion is not null && string.IsNullOrWhiteSpace(companion))
         {
             errors.Add($"{section}.model 不能为空");
+        }
+    }
+
+    /// <summary>托管一个进程的前提是命令可执行、端口在合法范围、宽限为正。Command 空 = 没托管，直接放过。</summary>
+    private static void ValidateEngine(string section, LocalEngineSettings engine, List<string> errors)
+    {
+        ArgumentNullException.ThrowIfNull(engine);
+
+        if (string.IsNullOrWhiteSpace(engine.Command))
+        {
+            return;
+        }
+
+        if (engine.Port is < 1 or > 65535)
+        {
+            errors.Add($"{section}.port 必须在 1–65535 之间");
+        }
+
+        if (engine.ReadyTimeoutSeconds <= 0)
+        {
+            errors.Add($"{section}.readyTimeoutSeconds 必须为正");
         }
     }
 }

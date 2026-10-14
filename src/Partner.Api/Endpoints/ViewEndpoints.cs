@@ -816,7 +816,8 @@ public static class ViewEndpoints
         app.MapGet("/api/settings", (ApiContext ctx) => Results.Ok(SettingsView.From(ctx.Settings.Load())));
 
         app.MapPut("/api/settings", async (
-            RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, VoiceHost voice, CancellationToken ct) =>
+            RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, VoiceHost voice,
+            LocalEngineHost localEngines, CancellationToken ct) =>
         {
             var before = ctx.Settings.Load();
 
@@ -846,6 +847,13 @@ public static class ViewEndpoints
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
             }
 
+            // Local engines own the child processes behind the voice HTTP clients: a command/port/switch edit
+            // converges them here (matches() leaves a correctly running one alone), and Exit 对照进程码报状态。
+            if (before.Local != stored.Local)
+            {
+                await localEngines.ReconfigureAsync(stored.Local).ConfigureAwait(false);
+            }
+
             // Shrinking the window leaves history that no longer fits, so it is folded once, right here:
             // waiting for the next turn would send an over-long conversation to the model first.
             CompactionResult? compaction = null;
@@ -868,6 +876,7 @@ public static class ViewEndpoints
                 settings = SettingsView.From(stored),
                 consumer = consumer.State,
                 voice = voice.State,
+                local = localEngines.State,
                 compaction,
             });
         });

@@ -1714,7 +1714,7 @@ internal static class Program
         var uiWorkspace = Path.Combine(root, "ui");
         var apiPort = FreePort();
         var uiToken = TokenAuth.Generate();
-        var (apiApp, apiContext, apiConsumer, apiVoice, _) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
+        var (apiApp, apiContext, apiConsumer, apiVoice, _, _) = await ApiHost.BuildAsync(uiWorkspace, apiPort, uiToken, clock);
         var apiRun = apiApp.RunAsync();
 
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{apiPort}") };
@@ -1949,7 +1949,7 @@ internal static class Program
             var disabledWorkspace = Path.Combine(root, "consumer-off");
             var disabledPort = FreePort();
             var disabledToken = TokenAuth.Generate();
-            var (offApp, offContext, offConsumer, offVoice, _) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
+            var (offApp, offContext, offConsumer, offVoice, _, _) = await ApiHost.BuildAsync(disabledWorkspace, disabledPort, disabledToken, clock);
             var offRun = offApp.RunAsync();
             using var offHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{disabledPort}") };
             offHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", disabledToken);
@@ -2011,7 +2011,7 @@ internal static class Program
             {
                 new LlmResponse("书房的灯已经打开了。", Array.Empty<LlmToolCall>(), "stop"),
             });
-            var (onApp, onContext, onConsumer, onVoice, _) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, onLlm);
+            var (onApp, onContext, onConsumer, onVoice, _, _) = await ApiHost.BuildAsync(onWorkspace, onPort, onToken, clock, onLlm);
             var onRun = onApp.RunAsync();
             using var onHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{onPort}") };
             onHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", onToken);
@@ -2073,7 +2073,7 @@ internal static class Program
                 new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
                 new HttpLlmOptions { BaseUrl = $"http://127.0.0.1:{modelPort}/v1", Model = "smoke-model" });
 
-            var (wireApp, wireContext, wireConsumer, wireVoice, _) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
+            var (wireApp, wireContext, wireConsumer, wireVoice, _, _) = await ApiHost.BuildAsync(wireWorkspace, wirePort, wireToken, clock, httpClient);
             var wireRun = wireApp.RunAsync();
             using var wireHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{wirePort}") };
             wireHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", wireToken);
@@ -2289,7 +2289,7 @@ internal static class Program
             var leaseToken = TokenAuth.Generate();
             var leaseLlm = new ObserveThenActLlm();
 
-            var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _) =
+            var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _, _) =
                 await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, leaseLlm);
             var leaseRun = leaseApp.RunAsync();
             using var leaseHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{leasePort}") };
@@ -2506,7 +2506,7 @@ internal static class Program
             var grantPort = FreePort();
             var grantToken = TokenAuth.Generate();
             var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
-            var (grantApp, grantContext, grantConsumer, grantVoice, _) =
+            var (grantApp, grantContext, grantConsumer, grantVoice, _, _) =
                 await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, grantConsumerLlm);
             var grantRun = grantApp.RunAsync();
             using var grantHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{grantPort}") };
@@ -2665,7 +2665,7 @@ internal static class Program
                 new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
             });
 
-            var (desktopApp, desktopContext, desktopConsumer, desktopVoice, _) =
+            var (desktopApp, desktopContext, desktopConsumer, desktopVoice, _, _) =
                 await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, desktopScripted);
             var desktopRun = desktopApp.RunAsync();
             using var desktopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{desktopPort}") };
@@ -2827,7 +2827,7 @@ internal static class Program
             var settingsModelPort = FreePort();
 
             using var settingsProvider = new FakeChatProvider(settingsModelPort, "由设置驱动的回复。");
-            var (settingsApp, settingsContext, settingsConsumer, settingsVoice, _) =
+            var (settingsApp, settingsContext, settingsConsumer, settingsVoice, _, _) =
                 await ApiHost.BuildAsync(settingsWorkspace, settingsPort, settingsToken, clock);
             var settingsRun = settingsApp.RunAsync();
             using var settingsHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{settingsPort}") };
@@ -3182,7 +3182,7 @@ internal static class Program
                 new LlmResponse("书房的灯已经打开了。窗帘也拉上了。", Array.Empty<LlmToolCall>(), "stop"),
             });
 
-            var (loopApp, loopContext, loopConsumer, loopVoice, _) =
+            var (loopApp, loopContext, loopConsumer, loopVoice, _, _) =
                 await ApiHost.BuildAsync(loopWorkspace, loopPort, loopToken, clock, loopLlm, components);
             var loopRun = loopApp.RunAsync();
             using var loopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{loopPort}") };
