@@ -151,40 +151,38 @@ public sealed class LocalAsrClient : IAsrClient
 }
 
 /// <summary>
-/// 唤醒门检查器：宿主端问一次「上次问过之后有没有命中唤醒词」。
+/// 唤醒门检查器：宿主端把一段采集帧交给引擎跑 KWS，答案一次一个。
 /// <para>
-/// 长轮询语义——引擎端 KWS 是逐帧判定，宿主端只需要一次一个答案；<paramref name="lastSeq"/>
-/// 带回去，引擎端靠它去重。实现是 <see cref="LocalWakeClient"/>（HTTP 引擎），测试是脚本钩子。
+/// 麦克风在宿主端（Partner），引擎不抢音频源：<see cref="VoiceInputHalf"/> 每次 tick 把最近
+/// 的采集块交给 <see cref="IWakeChecker"/>，由实现转发给引擎的 <c>POST /wake/infer</c>。
+/// 实现是 HTTP（<see cref="LocalWakeClient"/>），测试是脚本钩子。
 /// </para>
 /// </summary>
 public interface IWakeChecker
 {
-    /// <summary>问一次。关键词非空 = 命中；返回的 <see cref="WakeHit.Seq"/> 是下次轮询的水位。</summary>
-    Task<LocalWakeClient.WakeHit> PollAsync(long lastSeq, CancellationToken ct = default);
+    /// <summary>喂一块采集，问一次。关键词非空 = 本块内命中。</summary>
+    Task<LocalWakeClient.WakeHit> PollAsync(float[] frame, CancellationToken ct = default);
 }
 
 /// <summary>
 /// 唤醒词检测的 HTTP 客户端（本地 <see cref="AsrProtocols.SenseVoice"/> 引擎的伴生接口）：
-/// <c>GET {BaseUrl}/wake?seq=&lt;n&gt;</c>，长轮询引擎端的检测流水，命中返回
-/// <c>{ "keyword": "小爱同学", "seq": 12, "confidence": 0.87 }</c>，超时返回 <c>{ "seq": &lt;n&gt; }</c>。
-/// <para>
-/// 实现之上的接口由 <see cref="IWakeChecker"/> 提供，包一层是为了测试注入。
-/// </para>
+/// 每个 <see cref="IWakeChecker.PollAsync"/> 把采集帧 <c>POST /wake/infer</c>；命中返回
+/// <c>{ "hit": true, "keyword": …, "confidence": … }</c>，未命中 <c>{ "hit": false }</c>。
 /// </summary>
 public sealed class LocalWakeClient : IWakeChecker, IDisposable
 {
     private const int ErrorBodyLimit = 512;
-    private const int PollTimeoutMs = 1000;
 
-    /// <summary>一次命中或一次空轮询。</summary>
+    /// <summary>一次命中或一次空探。</summary>
     public sealed record WakeHit(string? Keyword, long Seq, double Confidence)
     {
-        public bool IsHit => Keyword is not null;
+        /// <summary>keyword 空（引擎端匿名命中）也算命中：hit 位是权威，不是名字。</summary>
+        public bool IsHit => Keyword is not null || Seq > 0 || Confidence > 0;
     }
 
     private readonly HttpClient _http;
     private readonly bool _ownsClient;
-    private readonly Uri _endpoint;
+    private readonly Uri _inferEndpoint;
     private bool _disposed;
 
     public LocalWakeClient(string baseUrl, HttpMessageHandler? handler = null)
@@ -192,14 +190,18 @@ public sealed class LocalWakeClient : IWakeChecker, IDisposable
         _ownsClient = handler is null;
         _http = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
         {
-            Timeout = TimeSpan.FromMilliseconds(PollTimeoutMs + 2000),
+            Timeout = TimeSpan.FromSeconds(5),
         };
-        _endpoint = new Uri(baseUrl.TrimEnd('/') + "/wake", UriKind.Absolute);
+        _inferEndpoint = new Uri(baseUrl.TrimEnd('/') + "/wake/infer", UriKind.Absolute);
     }
 
-    public async Task<WakeHit> PollAsync(long lastSeq, CancellationToken ct = default)
+    public async Task<WakeHit> PollAsync(float[] frame, CancellationToken ct = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_endpoint}?seq={lastSeq}");
+        var bytes = new byte[frame.Length * sizeof(float)];
+        Buffer.BlockCopy(frame, 0, bytes, 0, bytes.Length);
+        using var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        using var request = new HttpRequestMessage(HttpMethod.Post, _inferEndpoint) { Content = content };
         using var response = await _http
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
             .ConfigureAwait(false);
@@ -208,21 +210,19 @@ public sealed class LocalWakeClient : IWakeChecker, IDisposable
         if (!response.IsSuccessStatusCode)
         {
             throw new AsrRequestException(
-                $"wake poll failed with status {(int)response.StatusCode} ({response.StatusCode}): {Truncate(body)}");
+                $"wake probe failed with status {(int)response.StatusCode} ({response.StatusCode}): {Truncate(body)}");
         }
 
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
-        var seq = root.TryGetProperty("seq", out var seqElement) && seqElement.ValueKind == JsonValueKind.Number
-            ? seqElement.GetInt64()
-            : lastSeq;
+        var hit = root.TryGetProperty("hit", out var hitElement) && hitElement.ValueKind == JsonValueKind.True;
         var keyword = root.TryGetProperty("keyword", out var keywordElement) && keywordElement.ValueKind == JsonValueKind.String
             ? keywordElement.GetString()
             : null;
         var confidence = root.TryGetProperty("confidence", out var confElement) && confElement.ValueKind == JsonValueKind.Number
             ? confElement.GetDouble()
-            : 0;
-        return new WakeHit(keyword, seq, confidence);
+            : hit ? 1.0 : 0;
+        return new WakeHit(hit ? keyword : null, 0, confidence);
     }
 
     public void Dispose()

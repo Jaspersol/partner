@@ -60,9 +60,8 @@ public sealed class VoiceInputHalf : IDisposable
     private bool _ambientChecked;
 
     // 唤醒门状态：_awake=false 时音频照常进环形缓冲，只是不推进停顿判定、不提交 ASR。
-    // 唤醒后的窗口由 Detector 自身的静音超时（UtteranceGap/SentenceGap）自然闭合——本半区只负责「回闸」。
+    // 唤醒会话在 G2（整段静默闭合）的那一 tick 回闸；中途提交（WindowCap/G1）不回闸。
     private bool _awake;
-    private long _wakeSeq;
 
     public VoiceInputHalf(
         VoiceInputSetting settings,
@@ -219,10 +218,21 @@ public sealed class VoiceInputHalf : IDisposable
 
     private async Task PollWakeAsync(CancellationToken ct)
     {
+        // 每次探针攒 ~320ms 的采集（16 tick × 20ms），既是引擎端的有效上下文，
+        // 也把 HTTP 开销摊到 3 次/秒。
+        _wakeProbe = _wakeProbe is null ? new List<float[]>() : _wakeProbe;
+        _wakeProbe.Add(Ring.ReadLast(0.32) ?? Array.Empty<float>());
+        if (AccumulatedProbeSamples() < 16_000 * 0.30)
+        {
+            return; // 攒不满就先不问；采集刚起头时一两 tick 就补齐。
+        }
+
+        var frame = MergeProbe(_wakeProbe);
+        _wakeProbe.Clear();
+
         try
         {
-            var hit = await _settings.Wake!.PollAsync(_wakeSeq, ct).ConfigureAwait(false);
-            _wakeSeq = Math.Max(_wakeSeq, hit.Seq);
+            var hit = await _settings.Wake!.PollAsync(frame, ct).ConfigureAwait(false);
             if (hit.IsHit && !_awake)
             {
                 _awake = true;
@@ -240,6 +250,24 @@ public sealed class VoiceInputHalf : IDisposable
             // KWS 失联必须可见，但该半区不能死：下一 tick 会再问，服务恢复后自动跟回。
             _log($"voice: wake poll failed: {ex.Message}");
         }
+    }
+
+    private List<float[]>? _wakeProbe;
+
+    private int AccumulatedProbeSamples() => _wakeProbe?.Sum(buffer => buffer.Length) ?? 0;
+
+    private static float[] MergeProbe(List<float[]> buffers)
+    {
+        var total = buffers.Sum(buffer => buffer.Length);
+        var merged = new float[total];
+        var offset = 0;
+        foreach (var buffer in buffers)
+        {
+            Array.Copy(buffer, 0, merged, offset, buffer.Length);
+            offset += buffer.Length;
+        }
+
+        return merged;
     }
 
     public void Stop()

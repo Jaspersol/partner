@@ -151,45 +151,50 @@ public sealed class LocalAsrClientTests
 
 public sealed class LocalWakeClientTests
 {
+    private static readonly float[] Frame = { 0.5f, -0.25f, 0.125f };
+
     [Fact]
-    public async Task Poll_parses_a_hit()
+    public async Task Poll_posts_the_frame_to_wake_infer_and_parses_a_hit()
     {
-        var (client, handler) = Create((_, _) => Task.FromResult(Json("""{"keyword":"小爱同学","seq":12,"confidence":0.87}""")));
+        var (client, handler) = Create((_, _) => Task.FromResult(
+            Json("""{"hit":true,"keyword":"小爱同学","confidence":0.87}""")));
 
         using (client)
         {
-            var hit = await client.PollAsync(11);
+            var hit = await client.PollAsync(Frame);
             Assert.Equal("小爱同学", hit.Keyword);
-            Assert.Equal(12, hit.Seq);
             Assert.Equal(0.87, hit.Confidence);
             Assert.True(hit.IsHit);
         }
 
-        Assert.Contains("seq=11", handler.LastQuery);
+        Assert.Equal("/wake/infer", handler.LastUri!.AbsolutePath);
+        Assert.Equal("application/octet-stream", handler.LastContentType);
+        var bytes = Convert.FromBase64String(handler.LastBodyRaw!);
+        Assert.Equal(12, bytes.Length);
+        Assert.Equal(0.5f, BitConverter.ToSingle(bytes, 0));
     }
 
     [Fact]
     public async Task Poll_parses_a_miss()
     {
-        var (client, _) = Create((_, _) => Task.FromResult(Json("""{"seq":9}""")));
+        var (client, _) = Create((_, _) => Task.FromResult(Json("""{"hit":false}""")));
         using (client)
         {
-            var hit = await client.PollAsync(9);
+            var hit = await client.PollAsync(Frame);
             Assert.Null(hit.Keyword);
             Assert.False(hit.IsHit);
-            Assert.Equal(9, hit.Seq);
         }
     }
 
     [Fact]
-    public async Task Missing_fields_fall_back_to_the_watermark()
+    public async Task Hit_without_keyword_still_hit()
     {
-        var (client, _) = Create((_, _) => Task.FromResult(Json("""{}""")));
+        var (client, _) = Create((_, _) => Task.FromResult(Json("""{"hit":true}""")));
         using (client)
         {
-            var hit = await client.PollAsync(42);
-            Assert.Equal(42, hit.Seq);
-            Assert.False(hit.IsHit);
+            var hit = await client.PollAsync(Frame);
+            Assert.True(hit.IsHit);
+            Assert.Equal(1.0, hit.Confidence); // 无 confidence 字段时默认 1：命中即事实。
         }
     }
 
@@ -210,14 +215,25 @@ public sealed class LocalWakeClientTests
         public RecordingHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) =>
             _respond = respond;
 
-        public string? LastQuery { get; private set; }
+        public Uri? LastUri { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        public string? LastContentType { get; private set; }
+
+        public string? LastBodyRaw { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            LastQuery = request.RequestUri!.Query;
-            return _respond(request, cancellationToken);
+            LastUri = request.RequestUri;
+            LastContentType = request.Content?.Headers.ContentType?.ToString();
+            if (request.Content is not null)
+            {
+                var bytes = await request.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                LastBodyRaw = Convert.ToBase64String(bytes);
+            }
+
+            return await _respond(request, cancellationToken).ConfigureAwait(false);
         }
     }
 }

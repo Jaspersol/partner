@@ -24,7 +24,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../src/Partner.Api/bin/Release/net8.0/win-x64/publish": "api/"
+      "../src/Partner.Api/bin/Release/net8.0/win-x64/publish": "api/",
+      "../engines": "engines/"
     }
   }
 }

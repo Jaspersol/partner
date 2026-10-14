@@ -1,0 +1,9 @@
+# engines/tts 的运行时依赖（server 壳只需要推理子集，比上游 requirements.txt 窄）。
+# 上游真相源是 HaujetZhao/Qwen3-TTS-GGUF 的 pyproject.toml + uv.lock，升级时对照着改。
+onnxruntime-directml>=1.24.4
+gguf>=0.19.0
+numpy>=2.5.2
+scipy>=1.18.1
+soundfile>=0.14.0
+sounddevice>=0.5.6
+tokenizers>=0.22

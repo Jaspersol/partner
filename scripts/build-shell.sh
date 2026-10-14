@@ -29,6 +29,14 @@ if [ ! -d ui/node_modules ]; then
 fi
 "$NPM" --prefix ui run build
 
+# engines/ is optional: without it the bundle is voice-HTTP-only; with it the local engines ride
+# along (~1.3GB). tauri.conf.json always names ../engines as a resource, but a MISSING directory
+# makes tauri fail — so when the installer has not been run, hand it an empty folder instead.
+if [ ! -d engines ]; then
+  mkdir -p engines
+  echo "(engines/ absent — bundling an empty folder; run scripts/install-engines.ps1 for real engines)"
+fi
+
 if [ -n "${SKIP_INSTALLER:-}" ]; then
   echo "== shell (compile only) =="
   cargo build --manifest-path src-tauri/Cargo.toml --release

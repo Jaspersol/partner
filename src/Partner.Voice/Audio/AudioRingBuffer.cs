@@ -128,6 +128,34 @@ public sealed class AudioRingBuffer
         }
     }
 
+    /// <summary>
+    /// Audio from the most recent <paramref name="seconds"/> worth of the stream (and nothing older),
+    /// or what is available when the buffer holds less. Empty rather than null when it cannot be
+    /// served: a probe consumer is asking, not synchronizing.
+    /// </summary>
+    public float[] ReadLast(double seconds)
+    {
+        lock (_gate)
+        {
+            var count = (int)Math.Min(_total, Math.Max(0, Math.Round(seconds * SampleRate)));
+            if (count <= 0)
+            {
+                return Array.Empty<float>();
+            }
+
+            var start = (_write - count + _capacity * 2) % _capacity;
+            var result = new float[count];
+            var first = Math.Min(count, _capacity - start);
+            Array.Copy(_buffer, start, result, 0, first);
+            if (count > first)
+            {
+                Array.Copy(_buffer, 0, result, first, count - first);
+            }
+
+            return result;
+        }
+    }
+
     /// <summary>RMS of the last <paramref name="seconds"/> of audio (the speech/silence test).</summary>
     public double Energy(double seconds)
     {
@@ -174,28 +202,5 @@ public sealed class AudioRingBuffer
         }
 
         return (double)voiced / frames;
-    }
-
-    private float[] ReadLast(double seconds)
-    {
-        lock (_gate)
-        {
-            var count = (int)Math.Min(_total, Math.Max(0, Math.Round(seconds * SampleRate)));
-            if (count <= 0)
-            {
-                return Array.Empty<float>();
-            }
-
-            var start = (_write - count + _capacity * 2) % _capacity;
-            var result = new float[count];
-            var first = Math.Min(count, _capacity - start);
-            Array.Copy(_buffer, start, result, 0, first);
-            if (count > first)
-            {
-                Array.Copy(_buffer, 0, result, first, count - first);
-            }
-
-            return result;
-        }
     }
 }

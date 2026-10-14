@@ -15,15 +15,15 @@ public sealed class WakeGateTests
 
     private sealed class ScriptedWake : IWakeChecker
     {
-        public Func<long, LocalWakeClient.WakeHit>? Respond { get; set; }
+        public Func<float[], LocalWakeClient.WakeHit>? Respond { get; set; }
 
         public int Polls { get; private set; }
 
-        public Task<LocalWakeClient.WakeHit> PollAsync(long lastSeq, CancellationToken ct = default)
+        public Task<LocalWakeClient.WakeHit> PollAsync(float[] frame, CancellationToken ct = default)
         {
             Polls++;
-            return Task.FromResult(Respond?.Invoke(lastSeq)
-                ?? new LocalWakeClient.WakeHit(null, lastSeq, 0));
+            return Task.FromResult(Respond?.Invoke(frame)
+                ?? new LocalWakeClient.WakeHit(null, 0, 0));
         }
     }
 
@@ -84,7 +84,7 @@ public sealed class WakeGateTests
     {
         var (half, source, wake, utterances) = Create();
 
-        wake.Respond = seq => new LocalWakeClient.WakeHit("小爱同学", seq + 1, 0.9);
+        wake.Respond = frame => new LocalWakeClient.WakeHit("小爱同学", 0, 0.9);
         await AdvanceAsync(half, source, 0.2, 0f); // 唤醒词本身过来（当噪声也罢）
         Assert.True(half.Awake);
         wake.Respond = null;

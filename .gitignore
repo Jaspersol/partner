@@ -19,3 +19,10 @@ capabilities/manifest.json
 # Test artifacts: `dotnet test --logger trx` writes one directory per run
 TestResults/
 *.trx
+
+# Local voice engines: downloaded/built by scripts/install-engines.ps1, too large for git (~1.3GB).
+# Engines themselves are ignored, but the HTTP wrappers and requirements stay tracked.
+engines/tts/qwen3_tts_gguf/
+engines/tts/model/
+engines/kws-asr/models/
+engines/kws-asr/sherpa-onnx/
