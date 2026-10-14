@@ -547,6 +547,7 @@ defineExpose({ refresh, hasUnsavedChanges })
             <select v-model="form.asr.protocol" data-test="asr-protocol">
               <option value="chat-audio">chat-audio（chat/completions 内联音频）</option>
               <option value="openai">openai（标准 /audio/transcriptions）</option>
+              <option value="sensevoice">sensevoice（本地引擎 /recognize）</option>
             </select>
           </label>
           <label class="field">
@@ -662,6 +663,8 @@ defineExpose({ refresh, hasUnsavedChanges })
           <p class="card-note">
             由运行时拉起并停掉的本地语音服务进程。关闭 = 终止进程 = 真正释放显存/内存——
             只是不发请求不会释放占用。服务地址照常填在 ASR/TTS 卡里指向这组端口。
+            KWS 引擎开启后，语音输入进入<b>唤醒门控</b>：平时只听不转写，
+            唤醒词命中后一段话内走 ASR，说完自动回监听。
           </p>
           <template v-for="engine in ['tts', 'kws'] as const" :key="engine">
             <div class="field-group" :data-test="`local-engine-${engine}`">

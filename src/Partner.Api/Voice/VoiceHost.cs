@@ -16,11 +16,11 @@ namespace Partner.Api.Voice;
 /// </summary>
 public static class VoiceSettingsMapping
 {
-    public static VoiceInputSetting ToInput(Settings.InputSettings settings)
+    public static VoiceInputSetting ToInput(Settings.InputSettings settings, Settings.LocalEngineSettings? wakeEngine = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
-        return new VoiceInputSetting
+        var setting = new VoiceInputSetting
         {
             Enabled = settings.Enabled,
             DeviceId = settings.DeviceId,
@@ -31,6 +31,18 @@ public static class VoiceSettingsMapping
             AsrStream = settings.AsrStream,
             MaxSplitChars = settings.MaxSplitChars,
         };
+
+        // 唤醒门只在本地引擎托管开启时生效：宿主自己不跑 KWS 模型，它是个服务。
+        // 地址跟 asr 段（同一引擎的伴生接口），端口由引擎托管那边配。
+        if (wakeEngine is { Enabled: true } && wakeEngine.Port > 0 && wakeEngine.Port <= 65535)
+        {
+            setting = setting with
+            {
+                Wake = new LocalWakeClient($"http://127.0.0.1:{wakeEngine.Port}"),
+            };
+        }
+
+        return setting;
     }
 
     public static VoiceOutputSetting ToOutput(Settings.OutputSettings settings)
@@ -126,9 +138,12 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
     public IAudioSink OpenSink(VoiceOutputSetting setting) => new WasapiAudioSink(setting);
 
     public IAsrClient CreateAsr(AsrOptions options) =>
-        AsrProtocols.Normalize(options.Protocol) == AsrProtocols.OpenAi
-            ? new OpenAiAsrClient(options)
-            : new HttpAsrClient(options);
+        AsrProtocols.Normalize(options.Protocol) switch
+        {
+            AsrProtocols.OpenAi => new OpenAiAsrClient(options),
+            AsrProtocols.SenseVoice => new LocalAsrClient(options),
+            _ => new HttpAsrClient(options),
+        };
 
     public ITtsClient CreateTts(TtsOptions options) =>
         TtsProtocols.Normalize(options.Protocol) == TtsProtocols.OpenAi
@@ -237,7 +252,7 @@ public sealed class VoiceHost : IAsyncDisposable
 
     private void StartInput(Settings.RuntimeSettings settings)
     {
-        var inputSetting = VoiceSettingsMapping.ToInput(settings.Input);
+        var inputSetting = VoiceSettingsMapping.ToInput(settings.Input, settings.Local.Kws);
         var asrOptions = VoiceSettingsMapping.ToAsr(settings.Asr);
 
         if (!inputSetting.Enabled)

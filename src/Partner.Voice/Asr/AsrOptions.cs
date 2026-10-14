@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace Partner.Voice.Asr;
 
-/// <summary>ASR 协议：Qwen 的 chat-audio（默认）还是 OpenAI 标准的 transcriptions 端点。</summary>
+/// <summary>ASR 协议：Qwen 的 chat-audio（默认）、OpenAI 标准端点，或本地 sherpa-onnx 服务。</summary>
 public static class AsrProtocols
 {
     /// <summary>Qwen3-ASR：<c>POST /v1/chat/completions</c>，音频内联 base64。</summary>
@@ -11,7 +11,10 @@ public static class AsrProtocols
     /// <summary>OpenAI 标准：<c>POST /audio/transcriptions</c>，multipart 上传 WAV。</summary>
     public const string OpenAi = "openai";
 
-    public static IReadOnlyList<string> Values { get; } = new[] { ChatAudio, OpenAi };
+    /// <summary>本地 sherpa-onnx 服务：<c>POST /recognize</c>，裸 float32 PCM 上传，返回 <c>{ "text": … }</c>。</summary>
+    public const string SenseVoice = "sensevoice";
+
+    public static IReadOnlyList<string> Values { get; } = new[] { ChatAudio, OpenAi, SenseVoice };
 
     public static string Normalize(string? value) =>
         Values.FirstOrDefault(p => string.Equals(p, value, StringComparison.OrdinalIgnoreCase)) ?? ChatAudio;

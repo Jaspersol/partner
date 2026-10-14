@@ -1,9 +1,17 @@
+using Partner.Voice.Asr;
+
 namespace Partner.Voice.Settings;
 
 /// <summary>Voice input settings (design doc §2.8.12 — control is settings, not buttons).</summary>
 public sealed record VoiceInputSetting
 {
     public bool Enabled { get; init; }
+
+    /// <summary>
+    /// 唤醒门（本地 KWS）：非 null 时麦克风持续监听但<b>不提交 ASR</b>，
+    /// 直到 <see cref="IWakeChecker"/> 报出命中。null = 不设门（纯语音输入，旧行为）。
+    /// </summary>
+    public IWakeChecker? Wake { get; init; }
 
     /// <summary>Input device name (partial, case/space-insensitive match) or null for the system default.</summary>
     public string? DeviceId { get; init; }

@@ -59,6 +59,11 @@ public sealed class VoiceInputHalf : IDisposable
     private bool _skippedHadSpeech;
     private bool _ambientChecked;
 
+    // 唤醒门状态：_awake=false 时音频照常进环形缓冲，只是不推进停顿判定、不提交 ASR。
+    // 唤醒后的窗口由 Detector 自身的静音超时（UtteranceGap/SentenceGap）自然闭合——本半区只负责「回闸」。
+    private bool _awake;
+    private long _wakeSeq;
+
     public VoiceInputHalf(
         VoiceInputSetting settings,
         IAudioSource source,
@@ -103,6 +108,9 @@ public sealed class VoiceInputHalf : IDisposable
 
     /// <summary>Speech was detected while the gate was closed (reported when the gate reopens).</summary>
     public bool DetectedSpeechWhileGated => _skippedHadSpeech;
+
+    /// <summary>The wake gate is currently open (only meaningful when <see cref="VoiceInputSetting.Wake"/> is set).</summary>
+    public bool Awake => _awake;
 
     public IReadOnlyList<VoiceUtterance> Utterances => _utterances;
 
@@ -165,6 +173,14 @@ public sealed class VoiceInputHalf : IDisposable
             return;
         }
 
+        // 唤醒门：未唤醒时只问 KWS，不推进停顿判定。音频仍进环形缓冲——一旦唤醒，
+        // 最近的窗口（≤ WindowSeconds）立刻可用，唤醒词后紧跟着的话不会被掐头。
+        if (_settings.Wake is not null && !_awake)
+        {
+            await PollWakeAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
         if (_wasGated)
         {
             // Playback finished: drop the whole played span and resume immediately.
@@ -182,13 +198,47 @@ public sealed class VoiceInputHalf : IDisposable
 
         var decision = Detector.Step(now, Ring.Energy(0.05));
 
+        // 唤醒会话结束（一段话被提交并被 Detector 闭合）之后回到监听态：下一段要先再喊一次唤醒词。
+        if (decision.SegmentEnded)
+        {
+            if (_settings.Wake is not null && _awake)
+            {
+                _awake = false;
+                _log("voice: wake session closed — waiting for the next wake word");
+            }
+
+            Detector.OnSegmentEnded(now);
+            return;
+        }
+
         if (decision.Submit)
         {
             await SubmitAsync(decision, ct).ConfigureAwait(false);
         }
-        else if (decision.SegmentEnded)
+    }
+
+    private async Task PollWakeAsync(CancellationToken ct)
+    {
+        try
         {
-            Detector.OnSegmentEnded(now);
+            var hit = await _settings.Wake!.PollAsync(_wakeSeq, ct).ConfigureAwait(false);
+            _wakeSeq = Math.Max(_wakeSeq, hit.Seq);
+            if (hit.IsHit && !_awake)
+            {
+                _awake = true;
+                // 唤醒瞬间相当于一段新语音的开始：重置判定，让唤醒词后的话从干净状态进停顿机。
+                Detector.OnGateReleased(Ring.Seconds);
+                _log($"voice: wake word \"{hit.Keyword}\" ({hit.Confidence:0.00}) — listening");
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // KWS 失联必须可见，但该半区不能死：下一 tick 会再问，服务恢复后自动跟回。
+            _log($"voice: wake poll failed: {ex.Message}");
         }
     }
 
@@ -266,6 +316,14 @@ public sealed class VoiceInputHalf : IDisposable
             }
 
             Detector.OnSubmitted(end, decision.Pause, SubmissionOutcome.Queued);
+
+            // 唤醒会话在整段静默闭合（G2）的那一刻结束：一句说完了，回闸等下一次唤醒。
+            // 中途提交（WindowCap/G1）不算——说话人还没说完。
+            if (_awake && decision.Trigger == BlockTrigger.UtteranceGap && decision.Pause)
+            {
+                _awake = false;
+                _log("voice: wake session closed after the utterance — waiting for the next wake word");
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
