@@ -107,22 +107,32 @@ Build it from pip once, then copy the whole venv:
         Remove-Item $archive
     }
 
-    # KWS zipformer (~4.5MB).
+    # KWS zipformer (~32MB archive). The official bundle ships several epoch/chunk variants; the shell
+    # picks one (chunk-8 if present, else chunk-16 — this bundle only has chunk-16, ~320ms latency).
     $kwsModels = Join-Path $models 'kws'
     if (-not (Test-Path $kwsModels)) {
-        $archive = Join-Path $models 'kws.part.tar.bz2'
+        $archive = Join-Path $models 'kws.tar.bz2'
         Get-Url 'https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2' $archive
         tar -xjf $archive -C $models
         Rename-Item (Join-Path $models 'sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01') 'kws'
         Remove-Item $archive
-        Write-Warning 'KWS models installed. Write engines/kws-asr/models/kws/keywords.txt next (one pinyin line per word; see the survey §5.3 for the format).'
+        Write-Warning @'
+KWS models installed. The bundle ships keywords.txt with 8 wake words (小爱同学, 小艺小艺, 小米小米, …).
+Edit engines/kws-asr/models/kws/keywords.txt to add your own: one pinyin-token line per word ending in @显示名.
+Generate the pinyin with the venv's CLI:
+  engines\kws-asr\sherpa-onnx\Scripts\sherpa-onnx-cli.exe text2token `
+    --tokens engines\kws-asr\models\kws\tokens.txt --tokens-type ppinyin raw.txt keywords.txt
+Keep the file BOM-free (a leading EF BB BF is parsed as garbage).
+'@
     }
 
-    # Silero VAD (~1MB).
-    $vad = Join-Path $models 'vad' / 'silero_vad.onnx'
+    # Silero VAD (~630KB). Taken from the sherpa-onnx release rather than snakers4's raw.githubusercontent
+    # URL: raw.githubusercontent is unreachable from this network, github.com release assets are reachable.
+    $vadDir = Join-Path $models 'vad'
+    $vad = Join-Path $vadDir 'silero_vad.onnx'
     if (-not (Test-Path $vad)) {
-        New-Item -ItemType Directory -Force -Path (Join-Path $models 'vad') | Out-Null
-        Get-Url 'https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx' $vad
+        New-Item -ItemType Directory -Force -Path $vadDir | Out-Null
+        Get-Url 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx' $vad
     }
 
     Write-Host "kws engine ready: engines/kws-asr (sherpa-onnx venv + sensevoice + kws + vad)"
