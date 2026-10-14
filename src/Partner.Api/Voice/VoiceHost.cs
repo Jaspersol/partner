@@ -63,6 +63,7 @@ public static class VoiceSettingsMapping
         return new AsrOptions
         {
             BaseUrl = settings.BaseUrl.TrimEnd('/'),
+            Protocol = AsrProtocols.Normalize(settings.Protocol),
             Model = settings.Model,
             Language = settings.Language,
             ConnectTimeout = TimeSpan.FromMilliseconds(settings.ConnectTimeoutMs),
@@ -83,6 +84,10 @@ public static class VoiceSettingsMapping
         return new TtsOptions
         {
             BaseUrl = settings.BaseUrl.TrimEnd('/'),
+            Protocol = TtsProtocols.Normalize(settings.Protocol),
+            Model = settings.Model,
+            Voice = settings.Voice,
+            Speed = settings.Speed,
             Lang = settings.Lang,
             SampleRate = settings.SampleRate,
             SpeakerRefPath = settings.SpeakerRefPath,
@@ -120,9 +125,15 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
 
     public IAudioSink OpenSink(VoiceOutputSetting setting) => new WasapiAudioSink(setting);
 
-    public IAsrClient CreateAsr(AsrOptions options) => new HttpAsrClient(options);
+    public IAsrClient CreateAsr(AsrOptions options) =>
+        AsrProtocols.Normalize(options.Protocol) == AsrProtocols.OpenAi
+            ? new OpenAiAsrClient(options)
+            : new HttpAsrClient(options);
 
-    public ITtsClient CreateTts(TtsOptions options) => new HttpTtsClient(options);
+    public ITtsClient CreateTts(TtsOptions options) =>
+        TtsProtocols.Normalize(options.Protocol) == TtsProtocols.OpenAi
+            ? new OpenAiTtsClient(options)
+            : new HttpTtsClient(options);
 
     public IReadOnlyList<string> ListInputDevices() => WasapiAudioSource.ListDevices();
 

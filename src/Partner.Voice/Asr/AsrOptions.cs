@@ -2,13 +2,31 @@ using System.Text.RegularExpressions;
 
 namespace Partner.Voice.Asr;
 
+/// <summary>ASR 协议：Qwen 的 chat-audio（默认）还是 OpenAI 标准的 transcriptions 端点。</summary>
+public static class AsrProtocols
+{
+    /// <summary>Qwen3-ASR：<c>POST /v1/chat/completions</c>，音频内联 base64。</summary>
+    public const string ChatAudio = "chat-audio";
+
+    /// <summary>OpenAI 标准：<c>POST /audio/transcriptions</c>，multipart 上传 WAV。</summary>
+    public const string OpenAi = "openai";
+
+    public static IReadOnlyList<string> Values { get; } = new[] { ChatAudio, OpenAi };
+
+    public static string Normalize(string? value) =>
+        Values.FirstOrDefault(p => string.Equals(p, value, StringComparison.OrdinalIgnoreCase)) ?? ChatAudio;
+}
+
 /// <summary>
-/// ASR 服务（Qwen3-ASR OpenAI 兼容端点）连接参数（设计文档 §2.8.10）。
+/// ASR 服务连接参数（设计文档 §2.8.10）。
 /// </summary>
 public sealed record AsrOptions
 {
     /// <summary>服务基址，例如 <c>http://127.0.0.1:45101</c>。</summary>
     public required string BaseUrl { get; init; }
+
+    /// <summary>协议：<see cref="AsrProtocols.ChatAudio"/>（默认）或 <see cref="AsrProtocols.OpenAi"/>。</summary>
+    public string Protocol { get; init; } = AsrProtocols.ChatAudio;
 
     public string Model { get; init; } = "qwen3-asr";
 

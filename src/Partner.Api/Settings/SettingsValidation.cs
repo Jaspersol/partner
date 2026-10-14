@@ -1,3 +1,6 @@
+using Partner.Voice.Asr;
+using Partner.Voice.Tts;
+
 namespace Partner.Api.Settings;
 
 /// <summary>
@@ -50,6 +53,21 @@ public static class SettingsValidation
         CheckEndpoint("asr", settings.Asr.BaseUrl, settings.Asr.Model, errors);
         CheckEndpoint("tts", settings.Tts.BaseUrl, null, errors);
         CheckEndpoint("model", settings.Model.BaseUrl, settings.Model.Model, errors);
+
+        if (settings.Asr.Protocol != AsrProtocols.ChatAudio && settings.Asr.Protocol != AsrProtocols.OpenAi)
+        {
+            errors.Add("asr.protocol 必须是 chat-audio 或 openai");
+        }
+
+        if (settings.Tts.Protocol != TtsProtocols.Native && settings.Tts.Protocol != TtsProtocols.OpenAi)
+        {
+            errors.Add("tts.protocol 必须是 native 或 openai");
+        }
+
+        if (settings.Tts.Speed < 0)
+        {
+            errors.Add("tts.speed 不能为负");
+        }
 
         if (settings.Asr.SampleRate <= 0)
         {

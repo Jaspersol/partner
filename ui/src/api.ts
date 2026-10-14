@@ -170,6 +170,8 @@ export interface OutputSettings {
 
 export interface AsrSettings {
   baseUrl: string | null
+  /** 'chat-audio' (Qwen inline base64) | 'openai' (standard /audio/transcriptions multipart). */
+  protocol: string
   model: string
   language: string | null
   connectTimeoutMs: number
@@ -179,6 +181,14 @@ export interface AsrSettings {
 
 export interface TtsSettings {
   baseUrl: string | null
+  /** 'native' (server's /tts raw float32 stream) | 'openai' (standard /audio/speech WAV). */
+  protocol: string
+  /** OpenAI protocol's model name (e.g. 'tts-1'); unused by native. */
+  model: string | null
+  /** OpenAI protocol's voice name (e.g. 'alloy'); native clones instead via speakerRefPath. */
+  voice: string | null
+  /** OpenAI protocol's speech rate; unused by native. */
+  speed: number
   lang: string
   sampleRate: number
   speakerRefPath: string | null

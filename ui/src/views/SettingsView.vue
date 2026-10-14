@@ -34,8 +34,8 @@ const form = reactive<RuntimeSettings>({
     sampleRate: 24000,
     muteDuringTts: true,
   },
-  asr: { baseUrl: null, model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-  tts: { baseUrl: null, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+  asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+  tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS] },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
 
@@ -519,7 +519,14 @@ defineExpose({ refresh, hasUnsavedChanges })
             </button>
           </h2>
           <div v-show="folded.asr !== true" :id="'settings-body-asr'" class="card-body">
-          <p class="card-note">OpenAI 兼容的识别端点。留空表示不配置——此时麦克风输入不会转写。</p>
+          <p class="card-note">识别端点。留空表示不配置——此时麦克风输入不会转写。</p>
+          <label class="field">
+            <span>协议</span>
+            <select v-model="form.asr.protocol" data-test="asr-protocol">
+              <option value="chat-audio">chat-audio（chat/completions 内联音频）</option>
+              <option value="openai">openai（标准 /audio/transcriptions）</option>
+            </select>
+          </label>
           <label class="field">
             <span>服务地址</span>
             <input type="text" v-model="form.asr.baseUrl" placeholder="http://127.0.0.1:45101" data-test="asr-base-url" />
@@ -563,7 +570,14 @@ defineExpose({ refresh, hasUnsavedChanges })
             </button>
           </h2>
           <div v-show="folded.tts !== true" :id="'settings-body-tts'" class="card-body">
-          <p class="card-note">留空表示不配置——此时助手回复不会朗读。</p>
+          <p class="card-note">合成端点。留空表示不配置——此时助手回复不会朗读。</p>
+          <label class="field">
+            <span>协议</span>
+            <select v-model="form.tts.protocol" data-test="tts-protocol">
+              <option value="native">native（服务端 /tts，流式 PCM）</option>
+              <option value="openai">openai（标准 /audio/speech）</option>
+            </select>
+          </label>
           <label class="field">
             <span>服务地址</span>
             <input type="text" v-model="form.tts.baseUrl" placeholder="http://127.0.0.1:45102" data-test="tts-base-url" />
@@ -571,6 +585,22 @@ defineExpose({ refresh, hasUnsavedChanges })
           <label class="field">
             <span>语言</span>
             <input type="text" v-model="form.tts.lang" />
+            <span class="source">native 协议的 lang 字段；openai 协议不用</span>
+          </label>
+          <label class="field">
+            <span>模型</span>
+            <input type="text" v-model="form.tts.model" placeholder="tts-1" />
+            <span class="source">openai 协议的模型名；native 协议不用</span>
+          </label>
+          <label class="field">
+            <span>音色 (voice)</span>
+            <input type="text" v-model="form.tts.voice" placeholder="alloy" />
+            <span class="source">openai 协议的音色名；native 协议用克隆参考音频</span>
+          </label>
+          <label class="field">
+            <span>语速 (speed)</span>
+            <input type="number" step="0.05" v-model.number="form.tts.speed" />
+            <span class="source">openai 协议的语速；native 协议不用</span>
           </label>
           <label class="field">
             <span>采样率</span>

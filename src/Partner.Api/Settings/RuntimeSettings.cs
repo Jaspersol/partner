@@ -1,4 +1,6 @@
 using Partner.Core.Agent.Llm;
+using Partner.Voice.Asr;
+using Partner.Voice.Tts;
 
 namespace Partner.Api.Settings;
 
@@ -255,6 +257,9 @@ public sealed record AsrSettings
 {
     public string? BaseUrl { get; init; }
 
+    /// <summary>Endpoint protocol: <see cref="AsrProtocols.ChatAudio"/> (default) or <see cref="AsrProtocols.OpenAi"/>.</summary>
+    public string Protocol { get; init; } = AsrProtocols.ChatAudio;
+
     public string Model { get; init; } = "qwen3-asr";
 
     /// <summary>Prefilled as the assistant turn so the model skips emitting metadata.</summary>
@@ -271,6 +276,18 @@ public sealed record AsrSettings
 public sealed record TtsSettings
 {
     public string? BaseUrl { get; init; }
+
+    /// <summary>Endpoint protocol: <see cref="TtsProtocols.Native"/> (default) or <see cref="TtsProtocols.OpenAi"/>.</summary>
+    public string Protocol { get; init; } = TtsProtocols.Native;
+
+    /// <summary>OpenAI protocol's model name (e.g. <c>tts-1</c>); unused by native.</summary>
+    public string? Model { get; init; }
+
+    /// <summary>OpenAI protocol's voice (e.g. <c>alloy</c>); native clones instead via <see cref="SpeakerRefPath"/>.</summary>
+    public string? Voice { get; init; }
+
+    /// <summary>OpenAI protocol's speech rate; unused by native.</summary>
+    public double Speed { get; init; } = 1.0;
 
     public string Lang { get; init; } = "zh";
 
