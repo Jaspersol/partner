@@ -351,7 +351,7 @@ local.kws  → engines/kws-asr/asr-server.py  POST /recognize + /wake/infer（as
 | `{port}` 占位符 | 引擎要知道监听哪、宿主要知道连哪；一个模板同时喂两边，避免两处配置静默漂移 |
 | 端口从 `local.*.port` 来，不是从 `asr.baseUrl` 推 | 引擎托管与客户端地址是两件事：可以托管在 A 端口而客户端连 B（比如引擎先跑着、宿主后配） |
 
-**唤醒门**（`VoiceInputSetting.Wake`）：KWS 引擎开启时语音输入进入门控——麦克风持续采、音频照常进环形缓冲，但**不提交 ASR**；宿主每 ~320ms 把最近帧转发给 `/wake/infer`，命中后开闸一个会话窗；G2（整段静默闭合）即回闸等下一次唤醒。唤醒词后紧跟着的话不会被掐头（缓冲里还在）。KWS 失联只记日志、下一 tick 重试，不死半区。
+**唤醒门**（`VoiceInputSetting.Wake`）：KWS 引擎开启时语音输入进入门控——麦克风持续采、音频照常进环形缓冲，但**不提交 ASR**；宿主每满 100ms 增量把新音频转发给 `/wake/infer`，命中后开闸一个会话窗；G2（整段静默闭合）即回闸等下一次唤醒——**只喊词不说话也算说完**，回闸与否只看 G2，不看这一块最后值不值得转写。前置音频只在引擎那条流刚建好时（首帧、命中换流、引擎重启）送一次：KWS 解码器要左边上下文才命中（裸增量和 0.3s 前置实测都打不出，1.0s 才行），但每帧都送会让同一条流把每句话听两遍——两遍「小克」正好凑出双声词「小克小克」，于是喊一声也唤醒（实测旧时序单声命中 5 次，改后 0 次）。唤醒词后紧跟着的话不会被掐头（缓冲里还在）。KWS 失联只记日志、下一 tick 重试，不死半区。
 
 安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`；装好后 `engines/` 随安装包一起打进去（`tauri.conf.json` 的 resources）。实测事实与踩坑清单见 [engines/README.md](engines/README.md)：官方 KWS 包只有 **chunk-16**（~320ms 延迟）、`keywords.txt` 自带 8 个词、`get_result()` 返回字符串、**不用 Silero VAD 切段**（切出来的段喂回 SenseVoice 会得到空文本，30 s 保命条款改由定长切分承担）、下载必须校验长度（`Invoke-WebRequest` 曾把 999MiB 静默截成 670MB 并报成功）。
 
@@ -675,7 +675,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 前端组件测试（34） | `ui/tests/components.test.ts` | 顶栏徽标 / 侧栏 / 状态栏 / 输入区 / 检视面板 / Markdown 渲染与转义 / 事件列表（工具卡配对与状态、流式行与它的 Markdown 渲染） |
 | 前端壳装配测试（2） | `ui/tests/app.test.ts` | 挂载真实 `App.vue`，逐个点开侧栏页签并断言**没有一条 Vue 警告**（模板里写了却没 import 的组件会退化成空自定义元素：类型查不出来、页面全白，只有运行时警告会报）；无令牌时说明原因且不发请求 |
 | **壳的端到端（34）** | `scripts/e2e-shell.mjs` | 启动**发布版壳**，经 CDP 驱动真实 webview：选中→编辑→保存、**删除一条 / 二次确认撤回**（并断言文本真的从日志里消失）、**队列页签只列待输入、并显示待输入正文**、**桌面卡片默认关闭且写明需批准**、切页签、投递一条输入、**在设置页改模型并看消费者起来**、**设备下拉列出真实端点**、**模型探测失败会说明原因**、**「支持图片」开关落盘并让运行中的消费者注册截图工具**、折叠侧栏、切主题、验鉴权、验 sidecar 回收。**不在 CI**（需要桌面会话），按需手动跑 |
-| 能力门禁（59） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败；因 `PARTNER_DESKTOP_LIVE` 未开而没跑到的检查记为 `not verified`，不失败 |
+| 能力门禁（70） | `capabilities/manifest.baseline.json` | 能力消失或降级即失败；因 `PARTNER_DESKTOP_LIVE` 未开而没跑到的检查记为 `not verified`，不失败 |
 
 ### 落盘点
 
@@ -790,7 +790,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 
 ---
 
-## 已实现能力（68）
+## 已实现能力（70）
 
 括号内是该能力的登记检查数（来自 smoke 生成的 `capabilities/manifest.json`；`--verify-baseline` 拿它与 baseline 逐条比对）。
 
@@ -800,7 +800,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | M2 队列 | `queue.single_fifo`(5)、`queue.idempotent_restart`(3)、`queue.crash_recovery`(2) |
 | M3 Agent | `agent.turn_state_machine`(5)、`agent.tool_loop`(1)、`agent.hook_phases`(1)、`agent.queue_consumer`(34) |
 | M4 调度 | `scheduler.durable_delivery`(3)、`scheduler.receipt_dedup`(1)、`scheduler.failure_retention`(2)、`scheduler.schedule_to_turn`(3) |
-| M5 记忆 | `memory.recall_pipeline`(2)、`memory.offline_degradation`(1)、`memory.privacy_delete`(1)、`memory.promotion`(1)、`memory.injection_budget`(2)、`memory.scale_p99`(1)、`memory.maintenance_pass`(1)、`memory.embeddings_switch`(1) |
+| M5 记忆 | `memory.recall_pipeline`(2)、`memory.offline_degradation`(1)、`memory.privacy_delete`(1)、`memory.promotion`(1)、`memory.injection_budget`(2)、`memory.scale_p99`(1)、`memory.scale_p99_cjk`(1)、`memory.maintenance_pass`(1)、`memory.embeddings_switch`(1) |
 | M6 治理 | `governance.policy_decisions`(2)、`governance.fail_closed`(1)、`governance.target_param_rules`(1)、`governance.enforced_in_turn`(1) |
 | M7 MCP | `mcp.stdio_lifecycle`(2)、`mcp.tool_bridge`(1)、`mcp.governed_turn`(1) |
 | M8 Skills | `skills.workspace_scan`(1)、`skills.injection`(2) |
@@ -821,7 +821,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 6. **改能力要更新基线**，否则下次门禁提示 `update the baseline to lock it in`。
 7. **改完 API 必须重新 `dotnet publish` 再打包**：壳打包的是 publish 快照，不是 Debug 输出。dev 下壳优先用 Debug 输出（改完 `dotnet build` 即生效），release 下只用打包目录。
 8. **`cargo build --release` 需要 `custom-protocol` feature**（已在 `Cargo.toml` 里设为 default）。少了它，release 二进制仍指向 `devUrl`，窗口里是 `ERR_CONNECTION_REFUSED`。`tauri dev` 用 `--no-default-features` 走 dev server，这是设计如此。
-9. **本仓库尚未纳入版本控制**（没有 `.git`）。改动没有回滚点，建议先 `git init` 并提交当前状态。
+9. **仓库已在 git 下**（这条此前写着「尚未纳入版本控制」，已过时）。默认分支 `main`，改动先开分支；能力基线、`capabilities/manifest.json` 都是跟踪文件，改能力就得跟着提交基线（坑 6）。
 10. **dev 壳的侧车路径写死过 TFM**：`api_exe_path()` 找的是 `src/Partner.Api/bin/Debug/net8.0/partner-api.exe`，而 API 的 TFM 是 `net8.0-windows10.0.19041.0` —— 这个路径根本不存在，于是 dev 壳静默回落到 `src-tauri/target/debug/api/`（**上一次 `dotnet publish` 的快照**）。函数的注释写着「prefer the .NET build output, so editing the API and re-running the shell picks up the change instead of silently using whatever the last `dotnet publish` produced」，而那正是它没做到的事：改完 API、重启壳，跑的还是一天前的二进制，看起来像「改的代码没生效」。现在按 `bin/Debug/*/` 扫描、取最新的那个。
 11. **桌面测试必须串行**：它们读的是全局共享的桌面，live 测试还会自己弹一个 TopMost 窗口。并行跑时「第一个前台窗口」会在两次观察之间消失，稳定的测试变成偶发失败。程序集级 `DisableTestParallelization` 就是这个原因。
 12. **跑 smoke 前要把应用停掉**：应用在跑时，桌面多一个 WebView2 窗口，一次 `desktop_observe` 实测 **30.2s**（停掉应用后同一台机器是 **10.2s**）——UIA 遍历每个窗口都要成本。这两个数是在给遍历加预算**之前**测的；加之后重测过的是那个预算真正针对的形状（一个 2000 个无用控件的窗口，**23.8s → 4.4s**），而「九窗口桌面」那个综合数字没重测。smoke 里那些 25ms 轮询、10s 等图的定时敏感场景仍会整片失败，连跟桌面无关的 `agent.queue_consumer` 一起降级。别把它当成代码回归。同理，应用在跑时 `cargo build` 会因为 `partner-shell.exe` 被占用而失败（os error 5）。
@@ -869,7 +869,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | 记忆的定期自我维护 | ✅ **已接通**（M0.2，此前 promote 只在写前、demote 只在召回后顺带跑、`TrimAsync` 生产零调用——**没人读没人写的库永不自我维护**，TTL 过期的 Working 记录永久滞留）：`Api/MemoryMaintenanceService` 随宿主起停，默认每日一跑，按序 `PromoteEligible → DemoteIdle（已公开为接口方法）→ Trim → Compact`，单遍失败只记 stderr、下个间隔重试——一次失败不能拖垮正在服务的消费者。smoke 能力 `memory.maintenance_pass` 用「90 天未召回 + TTL 过期」的库断言降级与清除（episodic 副本因无 TTL 幸存） |
 | 记忆的本地向量分量 | ✅ **已接线**（M0.3，此前 `ApiContext` 构造 store 不传 options，生产恒为 `NullEmbeddingProvider`、打分器 vector 权重 0.25 恒 0）：设置新增 `memory.embeddings`（**默认关**），开时接 `HashingEmbeddingProvider`（本地 n-gram 哈希、无外部依赖）；读在进程打开时生效——启动后改开关不影响已打开的库，也就不会让新记录悄悄带上旧记录没有的向量。模型端 embedding 端点不在本设置内（外部依赖，不默认开）。smoke 能力 `memory.embeddings_switch` 锁默认值与转换 |
 | 桌面回合也产记忆 | ✅ **已保守接通**（M3.1，此前炼取要求 assistant 文本非空——桌面任务以工具调用回答，关键结论（点了什么、成功没成）永不入库）：`MemoryDistilHook` 在无文本回合读末次 `ToolResult`，只收 `desktop_act` 且 ok、带执行成功标记（「已通过界面自动化执行 / 注入成功 / 已按控件中心点执行」）的结果；失败的、被拒的不收 |
-| 中文召回 | ✅ **已修**（此前**对中文完全失效**）：FTS 的 `unicode61` 把整句中文当**一个 token**，「我不太喜欢被打断」找不到「用户不喜欢被反复确认」。索引侧无版本机制、不能换分词器，故 CJK 查询改走 bigram 的参数化 `LIKE`（OR）；打分器仍负责排序。现有召回单测**全是英文**，是它一直没被发现的原因 |
+| 中文召回 | ✅ **已换成索引**（此前**对中文完全失效**，随后退化成全表扫描）：FTS 的 `unicode61` 把整句中文当**一个 token**，「我不太喜欢被打断」找不到「用户不喜欢被反复确认」。分词器不能换（SQLite 编译期选项），故 `memories` 增真列 `body_cjk`（正文 CJK 段的 bigram，空格分隔）+ 第二张 FTS5 外部内容表 `memory_fts_cjk`（与 `memory_fts` 同三触发器写法），CJK 查询走 `MATCH` + bm25，与 Latin 路径同一个 `CandidateLimit`。**旧库靠 v1→v2 迁移回填**：bigram 算不出 SQL，这一步是 `SchemaMigration.Data` 委托（逐行算 + 索引 `rebuild`）；触发器在回填**之后**才创建——对未入索引的行触发 FTS5 的 `'delete'` 会让 SQLite 直接报 `database disk image is malformed`（实测），且 `CREATE TRIGGER` 在 prepare 期就解析列名，老库上提前建会开不了库。实测 10 万行、查询词稀有：旧 LIKE-OR 中位 65.0ms / p99 67.7ms → 新索引 15.2ms / 17.4ms；smoke 能力 `memory.scale_p99_cjk`（10 万中文库 P99 <500ms，本机 125ms）。单测此前**全是英文**是它一直没被发现的原因，`CjkRecallTests` 已补（含改正文/软删后索引跟随、`RebuildIndexAsync` 后仍可召回、无共同 bigram 不误召） |
 | 记忆的冲突与降级 | ✅ **已做**：① **冲突按最新生效**——写入时与同层旧记录比对词集，重合够多就让旧的 `valid_to` 生效并记 `superseded_by`，**但不删**，两条都在列表里可读可改。② **三个月未被召回就降一级**（`Semantic→Episodic→Working`，之后由既有 Trim 清掉；`Procedural` 原来会被一次甩两级，已修）。③ **层级可手工改**（`POST /api/memory/{id}/tier`）——「这是我依赖的事实」和「这是我以前猜的」不是打分器能判断的，只有人能定。④ `GET /api/memory/all` 返回**含已失效**的全部记录：「完全可见」要求能看到「什么替换了它」 |
 | 记忆的可见性与可编辑 | ✅ **已做**：列表改用 `GET /api/memory/all`（**含已失效**），每行显示**层级的中文名**（`暂记/经过/确定/做法`）而不是枚举值，并把「什么时候被用过」写进有效性行——`已失效 → m9 · 3 天前用过` 一行说清三件事。层级可从面板直接改（`memory-set-tier`），改完按规范重读，不做乐观更新。摘要分开报「N 条生效 · 共 M 条」。层筛选固定列出**四层 + 各自计数**（含 0 条的层）——旧实现按数据里出现过的层动态生成，空层无法选中且显示裸枚举名 |
 | 记忆可被钉住 | ✅ **已接**（此前 `scope` 是一根**没人读的列**：`Retain`/`Recall`/`Global` 三值里，写入侧永远写 `Recall`，`Global` 因只有一条逻辑会话而没有可共享的对象，枚举已砍到 2 值）。`scope=Retain` 只锁**遗忘**：`DemoteIdleAsync`（90 天降级）与 `TrimAsync`（物理删除）都跳过它。**不锁层**——锁层会让 `Procedural`（做法）永久无法被钉住。⚠️ **保留只挡遗忘，不挡纠正**：同层新记录照样 `supersede` 它（人改口了就该覆盖旧的），UI 常驻文案已写明。改动路径仅一条：人工勾选（`POST /api/memory/{id}/scope`） |

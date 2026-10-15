@@ -12,4 +12,9 @@
     <ProjectReference Include="../Partner.Desktop/Partner.Desktop.csproj" />
     <ProjectReference Include="../Partner.Voice/Partner.Voice.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The settings-page verdicts are pure functions and must be testable without a microphone: the rule
+         they encode ("no signal means red, not green") is what a dead device used to hide behind. -->
+    <InternalsVisibleTo Include="Partner.Api.Tests" />
+  </ItemGroup>
 </Project>

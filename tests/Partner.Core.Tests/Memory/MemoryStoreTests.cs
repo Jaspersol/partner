@@ -526,6 +526,12 @@ public sealed class MemoryStoreTests : IDisposable
 
         await using var reopened = Open();
         Assert.Equal(MemoryScope.Recall, (await reopened.GetAsync("m1"))!.Scope);
+
+        // Falling back quietly must not mean falling back unnoticed: the drift is counted, so a store full of a
+        // scope this build does not have is visible instead of merely behaving as if everything was let go. Only
+        // the values that are actually unknown are counted — a readable scope leaves no entry.
+        Assert.Equal(1, reopened.UnknownScopes["Global"]);
+        Assert.Single(reopened.UnknownScopes);
     }
 
     private sealed class FailingEmbeddingProvider : IEmbeddingProvider

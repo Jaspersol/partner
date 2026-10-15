@@ -29,25 +29,110 @@ public sealed class MemoryStore : IMemoryStore
 
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
         _db.Open();
+
+        // Whether the file already held a store decides what the DDL means: for a new one it *is* the schema, for
+        // an old one it only adds what can be added idempotently, and the rest comes from the migration steps.
+        var existing = TableExists("memories");
         Execute(MemorySchema.Ddl);
 
-        // A column added after a store was created does not reach it through the DDL above — IF NOT EXISTS
-        // leaves the existing table alone — so each migration is attempted and its "already there" failure
-        // ignored. The alternative is a workspace that opens fine and then misbehaves on a column nobody
-        // remembered to add.
-        foreach (var migration in MemorySchema.Migrations)
+        try
         {
-            try
+            if (existing)
             {
-                Execute(migration);
+                SchemaVersion = Migrate();
             }
-            catch (SqliteException)
+            else
             {
-                // Duplicate column, or the table does not exist yet for some other reason. Either way the DDL
-                // above already established what exists; a column that is already there is not a failure.
+                // A new store is born at the current version: every step's work is already in the DDL, so running
+                // them would only replay history against a schema that never had the older shape.
+                SetUserVersion(MemorySchema.Version);
+                SchemaVersion = MemorySchema.Version;
             }
+
+            // Last, once every path above has established body_cjk: a new store from the DDL, an old one from the
+            // migration. The triggers name that column, and SQLite resolves a trigger body when the statement is
+            // prepared — creating them any earlier makes an old store fail to open at all (measured).
+            Execute(MemorySchema.CjkTriggers);
+        }
+        catch
+        {
+            // Refusing to open must not leave the file held: the caller has no store to dispose, and a connection
+            // this process will not use would keep the workspace locked for whoever does open it.
+            _db.Dispose();
+            throw;
         }
     }
+
+    /// <summary>
+    /// The schema version this store is at, after opening. Equal to <see cref="MemorySchema.Version"/> unless a
+    /// migration refused to run.
+    /// </summary>
+    public int SchemaVersion { get; }
+
+    /// <summary>
+    /// Brings an existing store up to <see cref="MemorySchema.Version"/>, one step at a time, stamping the version
+    /// after each step so a crash halfway leaves the store at the last step that completed rather than at zero.
+    /// </summary>
+    private int Migrate()
+    {
+        var version = ReadUserVersion();
+
+        // Reading a store written by a newer build would mean guessing at a schema this code has never seen —
+        // and writing to it could lose columns it added. Refusing is the only answer that cannot corrupt it.
+        if (version > MemorySchema.Version)
+        {
+            throw new InvalidOperationException(
+                $"memory store is at schema version {version}, this build knows {MemorySchema.Version} — "
+                + "it was written by a newer version of the app; open it with that one");
+        }
+
+        foreach (var step in MemorySchema.Migrations.Where(m => m.To > version).OrderBy(m => m.To))
+        {
+            foreach (var statement in step.Statements)
+            {
+                try
+                {
+                    Execute(statement);
+                }
+                catch (SqliteException) when (step.TolerateFailures)
+                {
+                    // "duplicate column" — the statement was already applied to this store. Only a step that says
+                    // so in advance is allowed to be satisfied by a failure; the rest would be a lie.
+                }
+            }
+
+            // SQL first, then the part SQL cannot express. A failure here propagates: the flag above covers the
+            // statements, not a half-written backfill.
+            step.Data?.Invoke(_db);
+
+            SetUserVersion(step.To);
+            version = step.To;
+        }
+
+        return version;
+    }
+
+    private bool TableExists(string name)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name";
+        cmd.Parameters.AddWithValue("$name", name);
+        return cmd.ExecuteScalar() is not null;
+    }
+
+    private int ReadUserVersion()
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "PRAGMA user_version";
+        return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private void SetUserVersion(int version)
+    {
+        // PRAGMA does not take parameters; the value is an int from this assembly, never user text.
+        Execute($"PRAGMA user_version = {version}");
+    }
+
     public async Task<string> WriteAsync(MemoryRecord record, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -81,11 +166,11 @@ public sealed class MemoryStore : IMemoryStore
         //
         // Bigrams for CJK, and the FTS expression for Latin, which has no bigrams to cut but a real
         // tokenizer. Whichever this body can use, the decision is still made by word overlap below.
-        var cjk = ContainsCjk(incoming.Body);
+        var cjk = CjkText.ContainsCjk(incoming.Body);
         var match = cjk ? null : BuildMatchExpression(incoming.Body);
-        var like = cjk ? BuildLikePattern(incoming.Body) : null;
+        var cjkMatch = cjk ? CjkText.MatchExpression(incoming.Body) : null;
 
-        var candidates = await LoadCandidatesAsync(match, like, ct).ConfigureAwait(false);
+        var candidates = await LoadCandidatesAsync(match, cjkMatch, ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
 
         foreach (var candidate in candidates)
@@ -221,9 +306,47 @@ public sealed class MemoryStore : IMemoryStore
         cmd.CommandText = $"{SelectColumns} WHERE source_event_seq = $seq AND valid_to IS NULL ORDER BY created_at, record_id";
         cmd.Parameters.AddWithValue("$seq", sourceEventSeq);
 
+        SourceQueries++;
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadRecord(reader) : null;
     }
+
+    public async Task<IReadOnlyList<MemoryRecord>> FindBySourceRangeAsync(
+        long fromSeq,
+        long toSeq,
+        CancellationToken ct = default)
+    {
+        if (toSeq < fromSeq)
+        {
+            return Array.Empty<MemoryRecord>();
+        }
+
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText =
+            $"{SelectColumns} WHERE source_event_seq BETWEEN $from AND $to AND valid_to IS NULL "
+            + "ORDER BY source_event_seq, created_at, record_id";
+        cmd.Parameters.AddWithValue("$from", fromSeq);
+        cmd.Parameters.AddWithValue("$to", toSeq);
+
+        SourceQueries++;
+        var records = new List<MemoryRecord>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            records.Add(ReadRecord(reader));
+        }
+
+        return records;
+    }
+
+    /// <summary>
+    /// How many source lookups this store has run, counting each query once however many rows it returned.
+    /// <para>
+    /// Exists for the deletion cascade's own test: "a thousand-event deletion is one query, not a thousand" is a
+    /// claim about the statement count, and a stopwatch cannot tell the two apart on a warm page cache.
+    /// </para>
+    /// </summary>
+    internal int SourceQueries { get; private set; }
 
     public async Task<IReadOnlyList<MemoryRecord>> ListAsync(MemoryQuery? query = null, CancellationToken ct = default)
     {
@@ -266,22 +389,20 @@ public sealed class MemoryStore : IMemoryStore
     {
         var take = Math.Max(1, limit ?? _options.RecallLimit);
 
-        // Two coarse filters, because the index cannot serve Chinese. unicode61 treats a whole CJK sentence as
-        // one token, so an FTS match for a differently-worded question finds nothing — and the tokenizer cannot
-        // be swapped underneath existing stores (there is no schema versioning). So a CJK query is matched
-        // against its own bigrams with OR: 我不太喜欢被打断 and 用户不喜欢被反复确认 share 喜欢/不被打,
-        // and that overlap is enough to bring the record in. The scorer still decides relevance; this is only
-        // a coarse filter.
-        var cjk = ContainsCjk(query);
+        // Two coarse filters, because one index cannot serve both scripts. unicode61 has no Chinese word
+        // segmentation, so a CJK question is matched against the bigrams in the second index instead (CjkText):
+        // 我不太喜欢被打断 and 用户不喜欢被反复确认 share 喜欢/欢被, and that overlap is enough to bring the
+        // record in. The scorer still decides relevance; this is only a coarse filter.
+        var cjk = CjkText.ContainsCjk(query);
         var match = cjk ? null : BuildMatchExpression(query);
-        var like = cjk ? BuildLikePattern(query) : null;
+        var cjkMatch = cjk ? CjkText.MatchExpression(query) : null;
 
-        if (match is null && like is null)
+        if (match is null && cjkMatch is null)
         {
             return Array.Empty<MemoryHit>();
         }
 
-        var candidates = await LoadCandidatesAsync(match, like, ct).ConfigureAwait(false);
+        var candidates = await LoadCandidatesAsync(match, cjkMatch, ct).ConfigureAwait(false);
         if (candidates.Count == 0)
         {
             return Array.Empty<MemoryHit>();
@@ -364,8 +485,10 @@ public sealed class MemoryStore : IMemoryStore
 
         await using (var cmd = _db.CreateCommand())
         {
-            cmd.CommandText = "UPDATE memories SET body = $body, edited_by = $actor WHERE record_id = $id";
+            cmd.CommandText =
+                "UPDATE memories SET body = $body, body_cjk = $cjk, edited_by = $actor WHERE record_id = $id";
             cmd.Parameters.AddWithValue("$body", newBody);
+            cmd.Parameters.AddWithValue("$cjk", CjkText.Index(newBody));
             cmd.Parameters.AddWithValue("$actor", actor.ToString());
             cmd.Parameters.AddWithValue("$id", recordId);
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -381,11 +504,13 @@ public sealed class MemoryStore : IMemoryStore
 
         var now = _clock.GetUtcNow();
 
-        // Step 1+3: soft invalidate and purge the text in one statement (the FTS trigger drops the old body).
+        // Step 1+3: soft invalidate and purge the text in one statement (the FTS triggers drop the old body and
+        // its bigrams — both indexes are projections, and a purge that left one of them holding the words would
+        // not be a purge).
         await using (var cmd = _db.CreateCommand())
         {
             cmd.CommandText =
-                "UPDATE memories SET valid_to = $now, body = '', pending_compact = 1, edited_by = $actor WHERE record_id = $id";
+                "UPDATE memories SET valid_to = $now, body = '', body_cjk = '', pending_compact = 1, edited_by = $actor WHERE record_id = $id";
             cmd.Parameters.AddWithValue("$now", Iso(now));
             cmd.Parameters.AddWithValue("$actor", actor.ToString());
             cmd.Parameters.AddWithValue("$id", recordId);
@@ -518,10 +643,14 @@ public sealed class MemoryStore : IMemoryStore
 
     public async Task<int> RebuildIndexAsync(CancellationToken ct = default)
     {
-        // FTS5 keeps a shadow index over the content table; 'rebuild' re-derives it from scratch.
+        // FTS5 keeps a shadow index over the content table; 'rebuild' re-derives it from scratch. Both indexes
+        // are projections of the same rows — the bodies and their bigrams — so both are rebuilt, or a repair
+        // would leave the CJK half answering from whatever it held before.
         await using (var cmd = _db.CreateCommand())
         {
-            cmd.CommandText = "INSERT INTO memory_fts(memory_fts) VALUES('rebuild')";
+            cmd.CommandText =
+                "INSERT INTO memory_fts(memory_fts) VALUES('rebuild');"
+                + "INSERT INTO memory_fts_cjk(memory_fts_cjk) VALUES('rebuild')";
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
 
@@ -601,16 +730,20 @@ public sealed class MemoryStore : IMemoryStore
         await using var cmd = _db.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = (insertOrIgnore ? "INSERT OR IGNORE INTO memories(" : "INSERT INTO memories(") + """
-            record_id, tier, scope, body, source_event_seq, created_at, valid_from, valid_to,
+            record_id, tier, scope, body, body_cjk, source_event_seq, created_at, valid_from, valid_to,
                                  ttl_expires_at, consolidated_at, confidence, importance, veracity, superseded_by,
                                  edited_by, pending_compact, last_recalled_at)
-            VALUES ($id, $tier, $scope, $body, $seq, $created, $from, $to, $ttl, $consolidated, $confidence,
+            VALUES ($id, $tier, $scope, $body, $cjk, $seq, $created, $from, $to, $ttl, $consolidated, $confidence,
                     $importance, $veracity, $superseded, $edited, 0, $recalled)
             """;
         cmd.Parameters.AddWithValue("$id", record.RecordId);
         cmd.Parameters.AddWithValue("$tier", record.Tier.ToString());
         cmd.Parameters.AddWithValue("$scope", record.Scope.ToString());
         cmd.Parameters.AddWithValue("$body", record.Body);
+
+        // The bigrams the CJK index reads. Written with the body, never derived at query time: the index is what
+        // makes a differently-worded question cheap, and it can only be built from what is stored here.
+        cmd.Parameters.AddWithValue("$cjk", CjkText.Index(record.Body));
         cmd.Parameters.AddWithValue("$seq", (object?)record.SourceEventSeq ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$created", Iso(createdAt));
         cmd.Parameters.AddWithValue("$from", Iso(validFrom));
@@ -774,16 +907,17 @@ public sealed class MemoryStore : IMemoryStore
     }
 
     /// <summary>
-    /// The rows a query could plausibly want.
+    /// The rows a query could plausibly want: one index for Latin, another for CJK, both bm25-ranked and both
+    /// bounded by the same candidate limit — so this stays a coarse filter and the scorer still decides what is
+    /// actually relevant.
     /// <para>
-    /// FTS when the query is Latin — bm25-ranked and fast. A character scan when it is CJK, because the index
-    /// holds whole sentences there and would match only the exact one. Both paths are bounded by the same
-    /// candidate limit, so this stays a coarse filter and the scorer still decides what is actually relevant.
+    /// The CJK branch used to be a scan of the whole table with a LIKE per bigram, which is the cost this
+    /// replaced: the same overlap, answered from an index instead of by reading every body.
     /// </para>
     /// </summary>
     private async Task<List<MemoryCandidate>> LoadCandidatesAsync(
         string? match,
-        IReadOnlyList<string>? bigrams,
+        string? cjkMatch,
         CancellationToken ct)
     {
         await using var cmd = _db.CreateCommand();
@@ -803,23 +937,16 @@ public sealed class MemoryStore : IMemoryStore
         }
         else
         {
-            // One parameter per bigram, OR-ed together. Every user-supplied string is still a bound parameter —
-            // the clause shape is fixed, only the count varies.
-            var clause = string.Join(" OR ", Enumerable.Range(0, bigrams!.Count).Select(i => $"body LIKE $b{i} ESCAPE '\\'"));
-
-            cmd.CommandText = $"""
-              SELECT record_id, body, tier, scope, created_at, importance, veracity, confidence,
-                     0.0 AS rank
-              FROM memories
-              WHERE valid_to IS NULL AND ({clause})
-              ORDER BY importance DESC, created_at DESC
+            cmd.CommandText = """
+              SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
+                     bm25(memory_fts_cjk) AS rank
+              FROM memory_fts_cjk
+              JOIN memories m ON m.rowid = memory_fts_cjk.rowid
+              WHERE memory_fts_cjk MATCH $q AND m.valid_to IS NULL
+              ORDER BY rank
               LIMIT $candidates
               """;
-
-            for (var i = 0; i < bigrams.Count; i++)
-            {
-                cmd.Parameters.AddWithValue($"$b{i}", "%" + Escape(bigrams[i]) + "%");
-            }
+            cmd.Parameters.AddWithValue("$q", cjkMatch!);
         }
 
         cmd.Parameters.AddWithValue("$candidates", _options.CandidateLimit);
@@ -853,72 +980,42 @@ public sealed class MemoryStore : IMemoryStore
     /// record a protection nobody asked for. Falling back to the ordinary behaviour is the only option that cannot
     /// surprise anybody.
     /// </para>
-    /// </summary>
-    private static MemoryScope ParseScope(string value) =>
-        Enum.TryParse<MemoryScope>(value, ignoreCase: true, out var scope) ? scope : MemoryScope.Recall;
-
-    /// <summary>
-    /// Escapes the LIKE wildcards, so a query containing <c>%</c> or <c>_</c> searches for them instead of
-    /// turning into a match-everything pattern.
-    /// </summary>
-    private static string Escape(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-             .Replace("%", "\\%", StringComparison.Ordinal)
-             .Replace("_", "\\_", StringComparison.Ordinal);
-
-    /// <summary>Whether the text contains a CJK character, and so cannot be served by the index.</summary>
-    private static bool ContainsCjk(string text) => text.Any(IsCjk);
-
-    /// <summary>
-    /// The query's bigrams, each of which becomes one OR-ed LIKE.
     /// <para>
-    /// All of them, not the most frequent: 我不太喜欢被打断 and 用户不喜欢被反复确认 share no substring, and
-    /// the bigrams they have in common are 喜欢 and 欢被. Picking by frequency picks 不太 — the negation, which
-    /// appears in neither the record nor anything it is about. Every bigram is tried and the scorer decides.
-    /// </para>
-    /// <para>
-    /// Each becomes a bound parameter, not an interpolated fragment: the clause's shape is fixed and only the
-    /// parameter count varies, so no user text reaches the SQL text itself.
+    /// The fallback is quiet, which is not the same as unnoticed: the value is counted here and named once on
+    /// stderr, because a store whose rows all carry a scope this build does not know behaves like a store where
+    /// everything was silently let go, and nothing else in the system would say so.
     /// </para>
     /// </summary>
-    private static IReadOnlyList<string>? BuildLikePattern(string query)
+    private MemoryScope ParseScope(string value)
     {
-        var tokens = Bigrams(query).Distinct(StringComparer.Ordinal).ToList();
-        return tokens.Count == 0 ? null : tokens;
-    }
-
-    /// <summary>Overlapping character pairs — what lets two differently-worded sentences intersect at all.</summary>
-    private static IEnumerable<string> Bigrams(string text)
-    {
-        var run = new StringBuilder();
-
-        foreach (var ch in text)
+        if (Enum.TryParse<MemoryScope>(value, ignoreCase: true, out var scope))
         {
-            if (IsCjk(ch))
-            {
-                run.Append(ch);
-                continue;
-            }
-
-            if (run.Length >= 2)
-            {
-                for (var i = 0; i + 1 < run.Length; i++)
-                {
-                    yield return run.ToString(i, 2);
-                }
-            }
-
-            run.Clear();
+            return scope;
         }
 
-        if (run.Length >= 2)
+        if (_unknownScopes.TryGetValue(value, out var seen))
         {
-            for (var i = 0; i + 1 < run.Length; i++)
-            {
-                yield return run.ToString(i, 2);
-            }
+            _unknownScopes[value] = seen + 1;
         }
+        else
+        {
+            _unknownScopes[value] = 1;
+            Console.Error.WriteLine(
+                $"memory: scope '{value}' is not one this build has — read as {MemoryScope.Recall}; "
+                + "rows carrying it behave as ordinary recall");
+        }
+
+        return MemoryScope.Recall;
     }
+
+    private readonly Dictionary<string, int> _unknownScopes = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Scope names read back that this build does not have, and how many times a row carrying each was read.
+    /// Reported per value on stderr the first time; kept here so a caller can see the drift without reading the
+    /// log.
+    /// </summary>
+    internal IReadOnlyDictionary<string, int> UnknownScopes => _unknownScopes;
 
     private async Task<List<string>> QueryIdsAsync(
         string sql,
@@ -962,7 +1059,7 @@ public sealed class MemoryStore : IMemoryStore
         cmd.ExecuteNonQuery();
     }
 
-    private static MemoryRecord ReadRecord(SqliteDataReader reader) => new()
+    private MemoryRecord ReadRecord(SqliteDataReader reader) => new()
     {
         RecordId = reader.GetString(0),
         Tier = Enum.Parse<MemoryTier>(reader.GetString(1)),
@@ -1033,12 +1130,14 @@ public sealed class MemoryStore : IMemoryStore
     /// Splits one run into searchable pieces: a CJK run into bigrams, anything else left whole.
     /// <para>
     /// A single CJK character is kept as itself, because it is a word often enough (「钱」「好」) and dropping it
-    /// would throw away the shortest queries.
+    /// would throw away the shortest queries. Kept for the <c>internal</c> expression builder's own sake: the
+    /// recall path never reaches here with CJK, because a CJK query is served by the bigram index
+    /// (<see cref="CjkText"/>) instead.
     /// </para>
     /// </summary>
     private static IEnumerable<string> SplitRun(string run)
     {
-        if (run.Length < 2 || !run.All(IsCjk))
+        if (run.Length < 2 || !run.All(CjkText.IsCjk))
         {
             return new[] { run };
         }
@@ -1056,9 +1155,6 @@ public sealed class MemoryStore : IMemoryStore
 
         return pieces;
     }
-
-    private static bool IsCjk(char ch) =>
-        ch is >= '一' and <= '鿿' || ch is >= '぀' and <= 'ヿ';
 
     private static string Iso(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);

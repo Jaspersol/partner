@@ -111,6 +111,9 @@ public sealed class VoiceInputHalf : IDisposable
 
     public double AmbientRms { get; private set; }
 
+    /// <summary>最近 0.5 s 的输入电平（RMS）。死麦、安静房间、正在说话三者的区别只有它说得清。</summary>
+    public double RecentRms { get; private set; }
+
     /// <summary>Speech was detected while the gate was closed (reported when the gate reopens).</summary>
     public bool DetectedSpeechWhileGated => _skippedHadSpeech;
 
@@ -129,7 +132,9 @@ public sealed class VoiceInputHalf : IDisposable
         // The source is a pure device adapter; the ring is written here so any source works the same way.
         _source.Start(samples => Ring.Write(samples));
         _running = true;
-        _log($"voice input started (device={DeviceId} threshold={_settings.SilenceThreshold})");
+        _log(
+            $"voice: input started (device={DeviceId} threshold={_settings.SilenceThreshold} "
+            + $"wake={(_settings.Wake is null ? "off" : "on")})");
     }
 
     public async Task RunAsync(TimeSpan? pollInterval = null, CancellationToken ct = default)
@@ -149,18 +154,38 @@ public sealed class VoiceInputHalf : IDisposable
         var now = Ring.Seconds;
         Detector.NoteNow(now);
 
+        // 电平条每 100 ms 刷一次：每 tick 都算 0.5 s 窗是白烧 CPU。门内门外都照样刷新——
+        // 播放期间的电平同样要如实上报，否则「助手说话时麦克风还活着吗」就没法回答。
+        if (_levelTicks == 0)
+        {
+            RecentRms = Ring.Energy(LevelWindowSeconds);
+        }
+
+        _levelTicks = (_levelTicks + 1) % LevelRefreshTicks;
+
         if (!_ambientChecked && now >= 0.5)
         {
             // Sampled on a quiet tick on purpose: taken unconditionally it lands inside the first sentence
-            // and reports *speech* as the noise floor.
-            _ambientChecked = true;
-            AmbientRms = Ring.Energy(0.5);
-            if (AmbientRms >= _settings.SilenceThreshold)
+            // and reports *speech* as the noise floor. "Quiet" therefore has to be checked, not assumed from
+            // the clock — a user who starts talking right away would otherwise be told their threshold is
+            // wrong, and a warning that cries wolf is worse than no warning. When no quiet window shows up
+            // within AmbientProbeSeconds the report is made anyway, on the quietest window seen, and says so.
+            var level = Ring.Energy(0.5);
+            _quietestRms = Math.Min(_quietestRms, level);
+            var quiet = level < _settings.SilenceThreshold;
+
+            if (quiet || now >= AmbientProbeSeconds)
             {
-                ThresholdMisconfigured = true;
-                _log(
-                    $"voice: threshold {_settings.SilenceThreshold:0.####} is not above the ambient level "
-                    + $"{AmbientRms:0.####} — silence can never be detected, so no utterance will ever end");
+                _ambientChecked = true;
+                AmbientRms = _quietestRms;
+                if (AmbientRms >= _settings.SilenceThreshold)
+                {
+                    ThresholdMisconfigured = true;
+                    _log(
+                        $"voice: threshold {_settings.SilenceThreshold:0.####} is not above the ambient level "
+                        + $"{AmbientRms:0.####} — silence can never be detected, so no utterance will ever end "
+                        + $"(no quiet window in the first {AmbientProbeSeconds:0} s)");
+                }
             }
         }
 
@@ -220,6 +245,16 @@ public sealed class VoiceInputHalf : IDisposable
         {
             await SubmitAsync(decision, ct).ConfigureAwait(false);
         }
+
+        // 唤醒会话的关闭与提交结果解耦：G2（整段静默闭合）一发生就算说完，不管这一块最后值不值得
+        // 转写。曾经只在 SubmitAsync 的成功路径里清 _awake，于是「只喊唤醒词、不说话」时块里全是静音
+        // → SpeechFraction 不达标 → 提前 return → _awake 卡 true → 唤醒探针再也不跑、提示音只响一次，
+        // 而闸门一直开着（此后每句话都不经唤醒词直接进 ASR）。
+        if (_awake && decision.Trigger == BlockTrigger.UtteranceGap && decision.Pause)
+        {
+            _awake = false;
+            _log("voice: wake session closed after the utterance — waiting for the next wake word");
+        }
     }
 
     private async Task PollWakeAsync(CancellationToken ct)
@@ -227,29 +262,31 @@ public sealed class VoiceInputHalf : IDisposable
         // 探针读增量：从上次探针读到的位置起把新增的采集拿走。曾经每 tick 读「最近 320ms」再攒
         // 几个 tick 合并成立刻发送——那样相邻探针重叠 5/6，同一段音频被引擎一张流反复灌入，
         // 流式状态被污染，真实说话永远打不出命中（干净整段喂则一切正常）。增量读一次不错位。
-        //
-        // 但增量还得带「前置静音」一起送。实测：同一个 KWS 引擎，喂同一个词音频，
-        // 前置 0.3s 静音打不出命中，前置 1.0s 才命中——zipformer KWS 的解码器要用一小段
-        // 左边上下文才能定住状态。裸增量前面什么都没有，所以之前「引擎没问题、探针也干净」
-        // 却永远不响。
         var delta = Ring.ReadSince(_wakeCursor, 2.0);
         if (delta is null || delta.Length < 16_000 * 0.10)
         {
             if (delta is null)
             {
-                // 环形已被冲刷（窗口过期）：游标跟到当前流位置，重新起步。
+                // 环形已被冲刷（窗口过期）：游标跟到当前流位置，重新起步，并按新流处理。
                 _wakeCursor = Ring.Seconds;
+                _wakeNeedsLead = true;
             }
 
             return; // 攒不满就不问：HTTP 频率被 100ms 增量摊薄到 ≤10 次/秒。
         }
 
-        // 增量前拼 1s 前置音频：KWS 解码器要左边上下文。拼的是「游标往前 1s 到游标」这一段，
-        // 重复喂给流里无害（同一个流本来就持续消费重叠内容），但裸增量一定不命中。
-        // 读的是 [cursor-1s, cursor]：maxSeconds 从被读位置起算，所以上限是前置长度本身——
-        // 传给 WakeLeadSeconds 正好把前置窗口读完，不会多带后续增量。
-        var lead = Ring.ReadSince(Math.Max(0, _wakeCursor - WakeLeadSeconds), WakeLeadSeconds)
-                   ?? Array.Empty<float>();
+        // 前置音频只在「引擎那条流是新的」时送。实测（同一个引擎、同一段音频）：
+        // 裸增量喂新流不命中，前置 0.3s 也不行、1.0s 才命中——zipformer KWS 的解码器要用一小段
+        // 左边上下文才能定住状态。但每帧都送就重复消费了：探针的帧是「[游标-1s, 游标] + 增量」，
+        // 上一帧的增量正好落在这一帧的前置里，同一句话被同一条流听了两遍——两遍「小克」正好凑出
+        // 双声词「小克小克」，于是喊一声也唤醒（实测：只首帧带前置 0 次命中，每帧都带 5 次）。
+        // 所以：新流送一次前置把状态定住，之后只送增量。
+        var lead = _wakeNeedsLead
+            ? Ring.ReadSince(Math.Max(0, _wakeCursor - WakeLeadSeconds), WakeLeadSeconds)
+              ?? Array.Empty<float>()
+            : Array.Empty<float>();
+        _wakeNeedsLead = false;
+
         var frame = new float[lead.Length + delta.Length];
         lead.CopyTo(frame, 0);
         delta.CopyTo(frame, lead.Length);
@@ -259,11 +296,25 @@ public sealed class VoiceInputHalf : IDisposable
         try
         {
             var hit = await _settings.Wake!.PollAsync(frame, ct).ConfigureAwait(false);
+
+            if (_wakeFailure is not null)
+            {
+                _wakeFailure = null;
+                _log("voice: wake probe recovered");
+            }
+
             if (hit.IsHit && !_awake)
             {
                 _awake = true;
+
+                // 引擎命中后会换一条新流重新听（同一条流会一直持有已匹配的前缀状态），
+                // 所以下一次探针要重新送前置。
+                _wakeNeedsLead = true;
+
                 // 唤醒瞬间相当于一段新语音的开始：重置判定，让唤醒词后的话从干净状态进停顿机。
-                Detector.OnGateReleased(Ring.Seconds);
+                // 用 OnWakeHit 而不是 OnGateReleased——唤醒词本身就是「已经听到人说话」，段必须
+                // 立起 dirty，否则喊完词不说话时 G2 永不成立，会话卡死（见 TickAsync 收尾注释）。
+                Detector.OnWakeHit(Ring.Seconds);
                 _wakeTone?.Invoke();
                 _log($"voice: wake word \"{hit.Keyword}\" ({hit.Confidence:0.00}) — listening");
             }
@@ -275,12 +326,43 @@ public sealed class VoiceInputHalf : IDisposable
         catch (Exception ex)
         {
             // KWS 失联必须可见，但该半区不能死：下一 tick 会再问，服务恢复后自动跟回。
-            _log($"voice: wake poll failed: {ex.Message}");
+            // 只在「第一次」和「换了原因」时打：引擎挂掉时每 tick 一条会把 stderr 淹掉。
+            if (!string.Equals(_wakeFailure, ex.Message, StringComparison.Ordinal))
+            {
+                _wakeFailure = ex.Message;
+                _log($"voice: wake poll failed: {ex.Message}");
+            }
+
+            // 引擎可能刚重启：它那条流没了，前置得重新送一次。
+            _wakeNeedsLead = true;
         }
     }
 
     /// <summary>上次探针读到的流位置（Ring.Seconds）；探针从它起读增量，不重叠。</summary>
     private double _wakeCursor;
+
+    /// <summary>
+    /// 下一次探针要不要带前置音频。只在引擎那条流是新的时为真（首帧、命中换流、引擎重启、游标重同步）；
+    /// 每帧都带会让同一条流把每句话听两遍，双声词于是能被单声喊醒。
+    /// </summary>
+    private bool _wakeNeedsLead = true;
+
+    /// <summary>上一次打过的探针失败原因；相同原因不再重复打（引擎挂掉时每 tick 一条会淹掉 stderr）。</summary>
+    private string? _wakeFailure;
+
+    /// <summary>电平条刷新周期（tick 数）：20 ms 一 tick 时即 100 ms。</summary>
+    private const int LevelRefreshTicks = 5;
+
+    /// <summary>电平条取样窗口（秒）：太短会跳，太长会把上一句话的电平拖进静音段。</summary>
+    private const double LevelWindowSeconds = 0.5;
+
+    /// <summary>底噪探测的最长等待（秒）：这段时间里没有一帧低于阈值，就按「误配」如实上报。</summary>
+    private const double AmbientProbeSeconds = 5.0;
+
+    /// <summary>底噪探测期内见过的最安静的一帧；安静帧一直等不到时用它下结论。</summary>
+    private double _quietestRms = double.MaxValue;
+
+    private int _levelTicks;
 
     /// <summary>
     /// 唤醒探针前置音频长度（秒）。KWS 解码器要靠左边上下文定状态，实测 0.3s 前置打不出命中、
@@ -298,7 +380,7 @@ public sealed class VoiceInputHalf : IDisposable
 
         _running = false;
         _source.Stop();
-        _log("voice input stopped");
+        _log("voice: input stopped");
     }
 
     public void Dispose()
@@ -363,14 +445,6 @@ public sealed class VoiceInputHalf : IDisposable
             }
 
             Detector.OnSubmitted(end, decision.Pause, SubmissionOutcome.Queued);
-
-            // 唤醒会话在整段静默闭合（G2）的那一刻结束：一句说完了，回闸等下一次唤醒。
-            // 中途提交（WindowCap/G1）不算——说话人还没说完。
-            if (_awake && decision.Trigger == BlockTrigger.UtteranceGap && decision.Pause)
-            {
-                _awake = false;
-                _log("voice: wake session closed after the utterance — waiting for the next wake word");
-            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

@@ -296,4 +296,37 @@ public sealed class MemoryHookTests : IDisposable
         Assert.Equal(0, removed);
         Assert.Single(await memory.ListAsync());
     }
+
+    [Fact]
+    public async Task Deleting_a_long_span_reads_it_in_one_query()
+    {
+        // Deleting a conversation walks its seq range. One query per seq made the cost of removing a long thread
+        // grow with its length — a thousand queries for a thousand events — and the walk was justified by the
+        // column having no index. It has one now, so the span is a single indexed range read.
+        var (_, memory) = Open();
+        await memory.WriteBatchAsync(new[]
+        {
+            new MemoryRecord
+            {
+                RecordId = "seq-100", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+                Body = "第一条", SourceEventSeq = 100,
+            },
+            new MemoryRecord
+            {
+                RecordId = "seq-500", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+                Body = "第二条", SourceEventSeq = 500,
+            },
+            new MemoryRecord
+            {
+                RecordId = "seq-900", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+                Body = "第三条", SourceEventSeq = 900,
+            },
+        });
+
+        var removed = await MemoryDeletion.CascadeAsync(memory, 1, 1000);
+
+        Assert.Equal(3, removed);
+        Assert.Equal(1, memory.SourceQueries);
+        Assert.Empty(await memory.ListAsync());
+    }
 }

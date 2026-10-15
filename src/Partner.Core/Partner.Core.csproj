@@ -6,4 +6,9 @@
     <!-- Memory layer (M5): SQLite + FTS5. The only third-party runtime dependency so far. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The schema's migration steps are internal, and "an old store still opens" is exactly the kind of claim
+         that has to be tested from outside the store rather than trusted. -->
+    <InternalsVisibleTo Include="Partner.Core.Tests" />
+  </ItemGroup>
 </Project>

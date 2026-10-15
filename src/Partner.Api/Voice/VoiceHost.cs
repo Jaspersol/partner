@@ -164,10 +164,25 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
 /// <summary>What one half is doing. The device and the reason are reported, never assumed.</summary>
 public sealed record VoiceHalfState(bool Running, string Reason, string? Device, int Count);
 
-public sealed record VoiceState(VoiceHalfState Input, VoiceHalfState Output)
+/// <summary>
+/// The input half adds what only a microphone can answer: how loud it is right now. A dead device, a quiet
+/// room and speech below the gate's threshold used to look identical in the UI — the level, the floor it was
+/// measured against, and whether the gate considers it noise are what tell them apart.
+/// </summary>
+public sealed record VoiceInputState(
+    bool Running,
+    string Reason,
+    string? Device,
+    int Count,
+    double Rms = 0,
+    double AmbientRms = 0,
+    bool ThresholdMisconfigured = false,
+    bool Awake = false);
+
+public sealed record VoiceState(VoiceInputState Input, VoiceHalfState Output)
 {
     public static VoiceState Idle { get; } = new(
-        new VoiceHalfState(false, "未启用", null, 0),
+        new VoiceInputState(false, "未启用", null, 0),
         new VoiceHalfState(false, "未启用", null, 0));
 }
 
@@ -206,7 +221,7 @@ public sealed class VoiceHost : IAsyncDisposable
     private CancellationTokenSource? _stop;
     private Task? _inputLoop;
     private Task? _outputLoop;
-    private VoiceHalfState _inputState = VoiceState.Idle.Input;
+    private VoiceInputState _inputState = VoiceState.Idle.Input;
     private VoiceHalfState _outputState = VoiceState.Idle.Output;
 
     /// <summary>输出设置里配的播放采样率。唤醒提示音按它合成，与 TTS 同档才不会被 sink 分到另一个流。</summary>
@@ -268,13 +283,13 @@ public sealed class VoiceHost : IAsyncDisposable
 
         if (!inputSetting.Enabled)
         {
-            _inputState = new VoiceHalfState(false, "未启用（设置里关闭了麦克风输入）", null, 0);
+            _inputState = new VoiceInputState(false, "未启用（设置里关闭了麦克风输入）", null, 0);
             return;
         }
 
         if (asrOptions is null)
         {
-            _inputState = new VoiceHalfState(false, "未配置 ASR 服务地址", null, 0);
+            _inputState = new VoiceInputState(false, "未配置 ASR 服务地址", null, 0);
             return;
         }
 
@@ -284,7 +299,7 @@ public sealed class VoiceHost : IAsyncDisposable
         }
         catch (Exception error)
         {
-            _inputState = new VoiceHalfState(false, $"打开输入设备失败：{error.Message}", null, 0);
+            _inputState = new VoiceInputState(false, $"打开输入设备失败：{error.Message}", null, 0);
             return;
         }
 
@@ -297,12 +312,21 @@ public sealed class VoiceHost : IAsyncDisposable
             _asr,
             _playbackGate,
             async utterance => await EnqueueAsync(utterance).ConfigureAwait(false),
+            log: VoiceLog,
             wakeTone: _sink is null ? null : PlayWakeTone);
 
         _input.Start();
         _inputLoop = RunInputAsync(_stop!.Token);
-        _inputState = new VoiceHalfState(true, "运行中", _source.DeviceName, 0);
+        _inputState = new VoiceInputState(true, "运行中", _source.DeviceName, 0);
     }
+
+    /// <summary>
+    /// The input half's log line, on stderr like everything else the API reports about itself. Without this
+    /// wiring the half's <c>_log</c> falls back to a no-op delegate, so "wake word hit", "probe failed" and
+    /// "threshold is not above ambient" were all unreachable — which is what made a wake failure read as
+    /// "everything looks fine, it just does not respond".
+    /// </summary>
+    private static void VoiceLog(string message) => Console.Error.WriteLine(message);
 
     /// <summary>
     /// 唤醒提示音：短促两音（880→1320 Hz，各 80 ms，能量 0.18）——高音在后的双音比单音更像「叮咚」，
@@ -382,7 +406,14 @@ public sealed class VoiceHost : IAsyncDisposable
             try
             {
                 await _input!.TickAsync(ct).ConfigureAwait(false);
-                _inputState = _inputState with { Count = _input.Utterances.Count };
+                _inputState = _inputState with
+                {
+                    Count = _input.Utterances.Count,
+                    Rms = _input.RecentRms,
+                    AmbientRms = _input.AmbientRms,
+                    ThresholdMisconfigured = _input.ThresholdMisconfigured,
+                    Awake = _input.Awake,
+                };
                 await Task.Delay(InputTickInterval, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)

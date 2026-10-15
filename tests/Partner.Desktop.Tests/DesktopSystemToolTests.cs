@@ -132,6 +132,33 @@ public sealed class DesktopSystemToolTests
     }
 
     /// <summary>
+    /// A timed-out command reports that its pipes were closed, and does not hang doing it.
+    /// <para>
+    /// The claim in the answer has to be true, because a model reads it: "the process tree and the pipes are
+    /// both closed" is what tells it the next command is safe to issue. The pipes are closed unconditionally on
+    /// this path, and the wait for the drains is bounded, so neither can park the turn.
+    /// </para>
+    /// <para>
+    /// Deliberately not a handle-count assertion. That was the first attempt and it was wrong twice over: the
+    /// tree kill already reaps a <c>start /b</c> child, so nothing leaks, and the number itself is moved as much
+    /// by a survivor's own handles and by when the GC happens to run as by anything the tool does — measured
+    /// flat over ten timed-out calls in both the before and after of the pipe-close change. A test that asserted
+    /// a bound there would have been pinning the noise.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Exec_a_timed_out_command_reports_that_it_closed_its_pipes()
+    {
+        var tool = new DesktopExecTool(TimeSpan.FromSeconds(1));
+
+        var result = await tool.InvokeAsync("""{"command":"start /b ping -n 30 127.0.0.1 > nul & exit 0"}""");
+
+        Assert.False(result.Ok);
+        Assert.Contains("进程树与管道均已关闭", result.Content, StringComparison.Ordinal);
+    }
+
+
+    /// <summary>
     /// The output a command produces is bounded while it is being read, not after. A command that prints
     /// without end used to be buffered whole and only then truncated — so "output is truncated" was true of
     /// what reached the conversation and false of what the process held in memory.

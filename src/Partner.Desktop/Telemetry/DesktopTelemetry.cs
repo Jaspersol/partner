@@ -53,9 +53,25 @@ public sealed class InMemoryTelemetrySink : ITelemetrySink
 
     /// <summary>How long an event stays answerable: a tuning decision reads the recent past, not the
     /// whole history — and unbounded memory for diagnostics is its own bug.</summary>
-    internal static readonly TimeSpan Retention = TimeSpan.FromHours(1);
+    internal static readonly TimeSpan DefaultRetention = TimeSpan.FromHours(1);
 
-    public InMemoryTelemetrySink(TimeProvider? clock = null) => _clock = clock ?? TimeProvider.System;
+    private readonly TimeSpan _retention;
+
+    /// <param name="clock">Time source; the retention cutoff is measured against it.</param>
+    /// <param name="retention">
+    /// How long an event stays answerable. The aggregate endpoint derives its own window from this, so the two
+    /// cannot say different things about the same events — a sink that keeps an hour while the endpoint claims
+    /// two would report a rate over events it never had, and one that keeps two while the endpoint claims one
+    /// would silently ignore half of what it holds.
+    /// </param>
+    public InMemoryTelemetrySink(TimeProvider? clock = null, TimeSpan? retention = null)
+    {
+        _clock = clock ?? TimeProvider.System;
+        _retention = retention ?? DefaultRetention;
+    }
+
+    /// <summary>How long an event stays answerable.</summary>
+    public TimeSpan Retention => _retention;
 
     public void Record(DesktopTelemetryEvent @event)
     {
@@ -66,7 +82,7 @@ public sealed class InMemoryTelemetrySink : ITelemetrySink
             lock (_gate)
             {
                 _events.Add(@event);
-                var cutoff = _clock.GetUtcNow() - Retention;
+                var cutoff = _clock.GetUtcNow() - _retention;
                 _events.RemoveAll(e => e.Ts < cutoff);
             }
         }

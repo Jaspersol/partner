@@ -40,26 +40,18 @@ public static class MemoryDeletion
             return 0;
         }
 
-        // Walk the range rather than a range query: SourceEventSeq has no index (most records have none), and
-        // the deleted span is a handful of events in practice. A missing index here is cheaper than a
-        // permanent one over a column that is usually null.
-        var victims = new List<string>();
-        for (var seq = fromSeq; seq <= toSeq; seq++)
-        {
-            var record = await memory.FindBySourceAsync(seq, ct).ConfigureAwait(false);
-            if (record is not null)
-            {
-                victims.Add(record.RecordId);
-            }
-        }
+        // One range query, not one per seq: a deleted span is a conversation, and its length is the person's to
+        // choose. Walking it made removing a long thread cost a query per event — and the walk was justified by
+        // source_event_seq having no index, which it now has, so the same range is one indexed scan.
+        var records = await memory.FindBySourceRangeAsync(fromSeq, toSeq, ct).ConfigureAwait(false);
 
-        foreach (var recordId in victims)
+        foreach (var record in records)
         {
             // The same four-step privacy delete as any other removal, so the text leaves the FTS index and
             // the vector table rather than only being marked invalid.
-            await memory.SoftDeleteAsync(recordId, actor, ct).ConfigureAwait(false);
+            await memory.SoftDeleteAsync(record.RecordId, actor, ct).ConfigureAwait(false);
         }
 
-        return victims.Count;
+        return records.Count;
     }
 }

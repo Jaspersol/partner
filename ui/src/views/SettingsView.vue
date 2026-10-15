@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState, VoiceTestResult } from '../api'
 
@@ -173,6 +173,50 @@ async function testConnection(kind: 'asr' | 'tts' | 'kws' | 'model') {
 
 const inputOptions = computed(() => withStored(devices.value.inputs, form.input.deviceId))
 const outputOptions = computed(() => withStored(devices.value.outputs, form.output.deviceId))
+
+/**
+ * The input level only means something while it is live: a number captured when the page opened says
+ * nothing about whether the microphone is delivering audio *now*. Polled at a rate the eye can follow,
+ * and only while this view is on screen — the level is not worth a request after the user leaves.
+ */
+let levelTimer: ReturnType<typeof setInterval> | null = null
+
+async function pollLevel() {
+  if (voice.value !== null && !voice.value.input.running) {
+    return
+  }
+
+  try {
+    voice.value = await props.api.voice()
+  } catch {
+    // A failed poll must not replace what is on screen: the save path is the one that reports errors.
+  }
+}
+
+onMounted(() => {
+  levelTimer = setInterval(pollLevel, 500)
+})
+
+onUnmounted(() => {
+  if (levelTimer !== null) {
+    clearInterval(levelTimer)
+    levelTimer = null
+  }
+})
+
+/** 电平条上限：RMS 0.2 已接近满幅说话，再往上没有分辨意义。 */
+const LEVEL_CEILING = 0.2
+
+function levelWidth(value: number): string {
+  const ratio = Math.min(1, Math.max(0, value / LEVEL_CEILING))
+  return `${(ratio * 100).toFixed(1)}%`
+}
+
+const levelPercent = computed(() => levelWidth(voice.value?.input.rms ?? 0))
+const thresholdPercent = computed(() => levelWidth(form.input.silenceThreshold ?? 0))
+
+/** 唤醒门只在本地引擎托管开启且端口合法时生效（后端同一条件），否则「等唤醒词」是句假话。 */
+const wakeGateOn = computed(() => form.local.kws.enabled === true && (form.local.kws.port ?? 0) > 0)
 
 
 const modelConfigured = computed(() => (form.model.baseUrl ?? '') !== '' && (form.model.model ?? '') !== '')
@@ -519,9 +563,36 @@ defineExpose({ refresh, hasUnsavedChanges })
           </label>
 
           <p class="card-note" data-test="input-effect">
-            <template v-if="voice?.input?.running">运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段</template>
+            <template v-if="voice?.input?.running">
+              运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段<template
+                v-if="wakeGateOn"
+              > · {{ voice.input.awake ? '已唤醒' : '等唤醒词' }}</template>
+            </template>
             <template v-else-if="voice?.input">未运行 · {{ voice.input.reason }}</template>
             <template v-else>（保存后查看运行状态）</template>
+          </p>
+
+          <!--
+            电平条：死麦、安静房间、说话低于阈值三种情况在文字状态上长得一模一样，只有实时电平能分开。
+            阈值刻度画在同一条上，因为「电平够不够得着阈值」正是用户要判断的那件事。
+          -->
+          <div v-if="voice?.input?.running" class="level" data-test="input-level">
+            <div class="level-track">
+              <div class="level-fill" :style="{ width: levelPercent }"></div>
+              <div class="level-mark" :style="{ left: thresholdPercent }"></div>
+            </div>
+            <span class="level-readout">
+              电平 {{ (voice.input.rms ?? 0).toFixed(4) }} · 阈值 {{ form.input.silenceThreshold }}
+              <template v-if="voice.input.thresholdMisconfigured"> · 底噪 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}</template>
+            </span>
+          </div>
+          <p
+            v-if="voice?.input?.thresholdMisconfigured"
+            class="card-note error"
+            data-test="input-threshold-warning"
+          >
+            阈值 {{ form.input.silenceThreshold }} 不高于环境底噪 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}：
+            静音永远判不出来，一段话不会结束（也就不会有转写）。
           </p>
           </div>
         </section>
@@ -1035,6 +1106,44 @@ defineExpose({ refresh, hasUnsavedChanges })
   border-radius: var(--radius-sm);
   background: var(--surface-0);
   font-size: 0.92em;
+}
+
+/* 输入电平：条 + 阈值刻度 + 读数，一行放下。 */
+.level {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-1);
+}
+
+.level-track {
+  position: relative;
+  flex: 1 1 auto;
+  block-size: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  overflow: hidden;
+}
+
+.level-fill {
+  block-size: 100%;
+  background: var(--accent, currentColor);
+  transition: width 120ms linear;
+}
+
+/* 阈值刻度：够不着它的电平就是「静音」，判不出静音的一段话永远不会结束。 */
+.level-mark {
+  position: absolute;
+  inset-block: 0;
+  inline-size: 2px;
+  background: var(--line);
+}
+
+.level-readout {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
 }
 
 /* Connectivity test sits at the card's end: result then audio trail it to the right. */

@@ -103,6 +103,12 @@ public sealed class DesktopAutomation : IDisposable
     private readonly Func<VirtualDesktop> _virtualDesktop;
 
     /// <summary>
+    /// One window's UI Automation walk. Overridable so an observation can be driven — and its truncation reason
+    /// chosen — without a real desktop, which is the only way to exercise the concurrent case.
+    /// </summary>
+    private readonly Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)> _walk;
+
+    /// <summary>
     /// The DOM side of a Chromium window, and the ports of the ones this agent launched. Null-safe everywhere:
     /// a window without a debug port simply has no DOM elements, which is the coordinate path's window.
     /// </summary>
@@ -158,14 +164,30 @@ public sealed class DesktopAutomation : IDisposable
     /// action is checked against already re-walks the target window, and that walk is the fresher of the two —
     /// re-walking inside the act only repeated work that had just been done, at a cross-process RPC per node.
     /// </para>
+    /// <para>
+    /// Published as a unit together with the truncation reasons (<see cref="WalkSnapshot"/>) rather than written
+    /// in place: the step budget allows parallel tool calls, so two observations can be in flight at once, and a
+    /// dictionary that both of them mutate mid-walk hands one call's truncation reasons to the other's entities.
+    /// </para>
     /// </summary>
-    private readonly Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)> _walks = new(StringComparer.Ordinal);
+    private WalkSnapshot _walkState = WalkSnapshot.Empty;
 
     /// <summary>
-    /// Windows whose last walk was cut off on a bound, and why. Kept beside <see cref="_walks"/> because it is
-    /// replaced at exactly the same moments — a re-observation is what refreshes both.
+    /// One observation's walks and truncation reasons, immutable once published.
+    /// <para>
+    /// The two belong together: they are replaced at exactly the same moments — a re-observation refreshes both —
+    /// and reading one from a different observation than the other is what produced a truncation count belonging
+    /// to somebody else's walk.
+    /// </para>
     /// </summary>
-    private readonly Dictionary<string, WalkStopReason> _truncated = new(StringComparer.Ordinal);
+    private sealed record WalkSnapshot(
+        IReadOnlyDictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)> Walks,
+        IReadOnlyDictionary<string, WalkStopReason> Truncated)
+    {
+        public static WalkSnapshot Empty { get; } = new(
+            new Dictionary<string, (IReadOnlyList<UiElement>, IReadOnlyList<System.Windows.Automation.AutomationElement>)>(StringComparer.Ordinal),
+            new Dictionary<string, WalkStopReason>(StringComparer.Ordinal));
+    }
 
     /// <summary>
     /// Whether a stop reason means "there may be more controls in this window".
@@ -182,7 +204,7 @@ public sealed class DesktopAutomation : IDisposable
         _ => null,
     };
 
-    private DesktopObservation? _lastObservation;
+    private volatile DesktopObservation? _lastObservation;
     private int _observationSequence;
 
     public DesktopAutomation(
@@ -199,8 +221,13 @@ public sealed class DesktopAutomation : IDisposable
         Func<nint, (int X, int Y)>? clientOrigin = null,
         DesktopLaunchTool? desktopLaunch = null,
         Func<nint, string?>? integrityRefusal = null,
-        ITelemetrySink? telemetry = null)
+        ITelemetrySink? telemetry = null,
+        Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)>? walk = null)
     {
+        // Both seams exist so the observation's shared state can be exercised without a real desktop: a walk
+        // that returns a chosen truncation reason is the only way to drive the concurrent case, and window
+        // enumeration is a real API that would otherwise decide which windows the test is about.
+        _walk = walk ?? UiaTree.ReadNumberedWithNodes;
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
         _clock = clock ?? TimeProvider.System;
@@ -360,11 +387,24 @@ public sealed class DesktopAutomation : IDisposable
         // answer, not a handle that survives a new one — which is exactly what makes a stale element detectable.
         var elements = new List<UiElement>();
 
-        // A full observation walks every window, so every entry is about to be rewritten: dropping the rest
-        // here is what keeps a closed window's live controls from being held for the life of the process.
-        if (elementsFor is null)
+        // This call's own walks and truncation reasons, seeded from the published state and published back at
+        // the end. Two observations may be in flight (the step budget allows parallel tool calls), so neither
+        // the dictionaries nor the entries inside them are written in place: a full walk replaces both wholesale,
+        // a one-window walk carries the other windows' entries forward untouched — which is the same lockstep
+        // pair the previous walk produced, and the invariant an element id's meaning rests on.
+        var walks = new Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)>(StringComparer.Ordinal);
+        var truncated = new Dictionary<string, WalkStopReason>(StringComparer.Ordinal);
+        if (elementsFor is not null)
         {
-            _walks.Clear();
+            foreach (var (id, walk) in _walkState.Walks)
+            {
+                walks[id] = walk;
+            }
+
+            foreach (var (id, reason) in _walkState.Truncated)
+            {
+                truncated[id] = reason;
+            }
         }
 
         foreach (var window in windows)
@@ -378,26 +418,28 @@ public sealed class DesktopAutomation : IDisposable
 
             // Numbered by the same helper the picture's marks go through, so an id on a mark and the id in
             // this observation are the same control — not two independent walks that happen to agree today.
-            var (numbered, nodes, stopped) = UiaTree.ReadNumberedWithNodes(window.Handle, windowId);
+            var (numbered, nodes, stopped) = _walk(window.Handle, windowId);
             elements.AddRange(numbered);
 
-            // The live controls behind them, kept so an action on this window does not have to walk the same
-            // tree again. Only a re-walked window's entry is replaced, so the pair stays the lockstep pair one
-            // walk produced — which is the invariant an element id's meaning rests on.
-            _walks[windowId] = (numbered, nodes);
+            walks[windowId] = (numbered, nodes);
 
             // A walk cut off on nodes or time has not seen the whole window, and the model has to be able to
             // tell that from a window that simply has few controls. Otherwise a control that exists goes
             // missing with nothing in the answer to say why.
             if (CutOff(stopped) is { } reason)
             {
-                _truncated[windowId] = reason;
+                truncated[windowId] = reason;
             }
             else
             {
-                _truncated.Remove(windowId);
+                truncated.Remove(windowId);
             }
         }
+
+        // Published before the observation that reads them: the entities below and any act that follows see one
+        // consistent pair. A full walk drops the previous snapshot entirely, which is what keeps a closed
+        // window's live controls from being held for the life of the process.
+        _walkState = new WalkSnapshot(walks, truncated);
 
         if (elementsFor is not null && _lastObservation is not null)
         {
@@ -436,8 +478,8 @@ public sealed class DesktopAutomation : IDisposable
                 IsMinimized = w.IsMinimized,
                 Rect = new PixelRect(w.X, w.Y, w.Width, w.Height),
                 Confidence = 1.0,
-                ElementsTruncated = _truncated.TryGetValue(w.Handle.ToString("x"), out var cutOff),
-                ElementsTruncation = _truncated.GetValueOrDefault(w.Handle.ToString("x")),
+                ElementsTruncated = truncated.TryGetValue(w.Handle.ToString("x"), out var cutOff),
+                ElementsTruncation = truncated.GetValueOrDefault(w.Handle.ToString("x")),
                 IdentityDigest = DesktopObservation.Identity(
                     w.Handle.ToString("x"), w.ProcessId, w.ProcessStartTicks, w.ProcessName),
                 LayoutDigest = DesktopObservation.Layout(new PixelRect(w.X, w.Y, w.Width, w.Height)),
@@ -710,7 +752,7 @@ public sealed class DesktopAutomation : IDisposable
     /// walking the same tree again. Null when the window was never walked here, and then the act walks it.
     /// </summary>
     private (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? WalkOf(
-        string entityId) => _walks.TryGetValue(entityId, out var walk) ? walk : null;
+        string entityId) => _walkState.Walks.TryGetValue(entityId, out var walk) ? walk : null;
 
     /// <summary>
     /// Adds the page's own controls to a window that UI Automation cannot see into.

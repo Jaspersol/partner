@@ -474,6 +474,19 @@
       ]
     },
     {
+      "id": "memory.scale_p99_cjk",
+      "owner": "M5",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "memory: 100000 Chinese records \u2014 retrieval P99 under 500ms",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
       "id": "governance.policy_decisions",
       "owner": "M6",
       "level": "product-supported",
@@ -976,6 +989,31 @@
       "evidence": [
         {
           "check": "voice: a threshold at or below the noise floor is detected",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        }
+      ]
+    },
+    {
+      "id": "voice.input_level",
+      "owner": "M10",
+      "level": "product-supported",
+      "evidence": [
+        {
+          "check": "voice: the reported input level rises while the microphone hears speech",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "voice: the reported input level falls back when the speaking stops",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "voice: speech at startup is not mistaken for the noise floor",
           "ran": true,
           "passed": true,
           "skipped": false

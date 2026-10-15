@@ -71,11 +71,7 @@ public static class VoiceTestEndpoints
         try
         {
             var text = await client.TranscribeAsync(audio, ct).ConfigureAwait(false);
-            var cleaned = text.Trim();
-            var reply = cleaned.Length > 0
-                ? $"识别到：「{cleaned}」（{note}）"
-                : $"可达但没识别出内容（{note}）";
-            return new AsrTestResult(true, reply, (int)watch.ElapsedMilliseconds, cleaned);
+            return JudgeAsr(audio, settings.Input.SilenceThreshold, text, note, (int)watch.ElapsedMilliseconds);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -196,6 +192,54 @@ public static class VoiceTestEndpoints
         }
     }
 
+    /// <summary>
+    /// 判定一次 ASR 实测的结果。抽成纯函数是因为它承载了「设置页假绿」的解药：整段低于判定阈值 =
+    /// 麦克风没送来任何东西，引擎可达也救不回来——管线上永远不会有转写，所以这一条必须红，
+    /// 否则「拔麦」「安静房间」「阈值配高了」在设置页上都长成绿色。
+    /// </summary>
+    internal static AsrTestResult JudgeAsr(
+        float[] audio,
+        double silenceThreshold,
+        string text,
+        string note,
+        int latencyMs)
+    {
+        var cleaned = text.Trim();
+        var rms = Rms(audio);
+
+        if (rms < silenceThreshold)
+        {
+            return new AsrTestResult(
+                false,
+                $"没听到声音（RMS {rms:0.0000} 低于阈值 {silenceThreshold:0.0000}）：设备无信号，或测试时没说话（{note}）"
+                + (cleaned.Length > 0 ? $"；引擎却转出「{cleaned}」" : ""),
+                latencyMs,
+                cleaned);
+        }
+
+        var reply = cleaned.Length > 0
+            ? $"识别到：「{cleaned}」（RMS {rms:0.0000}，{note}）"
+            : $"可达但没识别出内容（有声音，RMS {rms:0.0000}；{note}）";
+        return new AsrTestResult(true, reply, latencyMs, cleaned);
+    }
+
+    /// <summary>整段 RMS。设备无信号时它是 0（或 1 LSB 级），说话时远高于阈值——一个数就能分开两种绿。</summary>
+    private static double Rms(float[] pcm)
+    {
+        if (pcm.Length == 0)
+        {
+            return 0;
+        }
+
+        var sum = 0.0;
+        foreach (var sample in pcm)
+        {
+            sum += (double)sample * sample;
+        }
+
+        return Math.Sqrt(sum / pcm.Length);
+    }
+
     private static async Task<float[]> SynthesizeOnceAsync(TtsOptions options, string text, CancellationToken ct)
     {
         using var client = WasapiVoiceComponents.CreateTtsClient(options);
@@ -265,9 +309,9 @@ public static class VoiceTestEndpoints
     }
 
     /// <summary>
-    /// KWS: needs the engine's own health endpoint rather than an utterance — a wake probe feeds a stream
-    /// stateful across calls, so a synthetic "hello" would pollute the very state being tested. Reads
-    /// keywords too, so the settings page can show the live word list next to its editor.
+    /// KWS: health + the live keyword list + one real probe. The probe feeds recorded audio into
+    /// <c>/wake/infer</c>, because reading <c>/health</c> only proves the endpoint exists — a dictionary that
+    /// lists the right words while the wake path never fires is exactly the state this test has to separate.
     /// </summary>
     private static async Task<VoiceTestResult> TestKwsAsync(ApiContext ctx, CancellationToken ct)
     {
@@ -278,7 +322,7 @@ public static class VoiceTestEndpoints
             return new VoiceTestResult(false, "未配置 sensevoice 协议的 ASR 地址（KWS 与 ASR 同引擎）", 0);
         }
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
@@ -303,11 +347,12 @@ public static class VoiceTestEndpoints
                 // /keywords 是本仓壳的扩展，第三方 sherpa 服务没有它不算失败。
             }
 
+            var (probeOk, probeText) = await WakeProbeAsync(http, base_!, settings, ct).ConfigureAwait(false);
             var keywordText = keywords.Length > 0 ? $"：{string.Join("、", keywords)}" : "";
             var kwsText = kws ? "已启用" : "未启用";
             return new VoiceTestResult(
-                true,
-                $"可达，唤醒词{kwsText}{keywordText}",
+                probeOk,
+                $"可达，唤醒词{kwsText}{keywordText}{probeText}",
                 (int)watch.ElapsedMilliseconds);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -318,6 +363,65 @@ public static class VoiceTestEndpoints
         {
             return new VoiceTestResult(false, $"不可达：{error.Message}", (int)watch.ElapsedMilliseconds);
         }
+    }
+
+    /// <summary>
+    /// 唤醒实测：录一段真实音频送进 <c>/wake/infer</c>，返回 (是否通过, 说明)。对着麦克风说一遍唤醒词
+    /// 就能看到命中——这正是「字典正常、引擎可达、却不响应」那类故障唯一能被一眼看出来的地方。
+    /// 没听到声音（设备无信号）算不通过；听到了但没命中算通过，因为「测试时没说话」与「词表不对」在
+    /// 音频里长得一样，如实写进说明而不是替用户下结论。
+    /// </summary>
+    private static async Task<(bool Ok, string Detail)> WakeProbeAsync(
+        HttpClient http,
+        string baseUrl,
+        Settings.RuntimeSettings settings,
+        CancellationToken ct)
+    {
+        // KWS 只吃 16 kHz 单声道 float32：采样率不是这一档时喂进去的是错的速度，宁可说跳过。
+        if (settings.Asr.SampleRate != 16_000)
+        {
+            return (true, $"；唤醒实测跳过（KWS 只吃 16 kHz，当前 ASR 采样率 {settings.Asr.SampleRate}）");
+        }
+
+        const double listenSeconds = 3.0;
+        float[] audio;
+        try
+        {
+            audio = RecordFromInputAsync(settings.Input.DeviceId, listenSeconds, 16_000, ct);
+        }
+        catch (Exception error)
+        {
+            return (false, $"；唤醒实测无法录音：{error.Message}");
+        }
+
+        var rms = Rms(audio);
+        var floor = settings.Input.SilenceThreshold;
+        if (rms < floor)
+        {
+            return (false, $"；唤醒实测没听到声音（RMS {rms:0.0000} 低于阈值 {floor:0.0000}）：设备无信号");
+        }
+
+        var bytes = new byte[audio.Length * sizeof(float)];
+        Buffer.BlockCopy(audio, 0, bytes, 0, bytes.Length);
+        using var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        using var response = await http.PostAsync($"{baseUrl}/wake/infer", content, ct).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            return (false, $"；唤醒实测 HTTP {(int)response.StatusCode}");
+        }
+
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+        var root = document.RootElement;
+        var hit = root.TryGetProperty("hit", out var hitElement) && hitElement.ValueKind == JsonValueKind.True;
+        var keyword = root.TryGetProperty("keyword", out var keywordElement) && keywordElement.ValueKind == JsonValueKind.String
+            ? keywordElement.GetString()
+            : null;
+
+        var heard = $"（录了 {listenSeconds:0} s，RMS {rms:0.0000}）";
+        return hit
+            ? (true, $"；唤醒实测命中「{keyword ?? "?"}」{heard}")
+            : (true, $"；唤醒实测这 {listenSeconds:0} s 没命中唤醒词{heard}：测试时说了唤醒词吗？");
     }
 
     /// <summary>

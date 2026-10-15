@@ -814,6 +814,59 @@ internal static class Program
                 $"p99={p99:0.0}ms median={samples[samples.Count / 2]:0.0}ms seed={seedWatch.Elapsed.TotalSeconds:0.0}s");
         }
 
+        // The same scale in Chinese, which is a different index: unicode61 cannot tokenize it, so those rows are
+        // found through the bigram index instead. The number matters here in a way it does not for the Latin
+        // store — the previous implementation of this path scanned every body once per bigram, and at 100k rows
+        // that is the difference between an index and a stopwatch.
+        await using (var cjkStore = new MemoryStore(Path.Combine(root, "memory", "cjk-scale.db"), clock: clock))
+        {
+            const int cjkScale = 100_000;
+            var cjkRecords = new List<MemoryRecord>(cjkScale);
+            for (var i = 0; i < cjkScale; i++)
+            {
+                cjkRecords.Add(new MemoryRecord
+                {
+                    RecordId = $"cjk-{i}",
+                    Tier = MemoryTier.Semantic,
+                    Scope = MemoryScope.Recall,
+                    Body = $"第 {i} 条记录，讲的是部署流程和蓝绿发布，区域 {i % 16}",
+                });
+            }
+
+            var cjkSeedWatch = System.Diagnostics.Stopwatch.StartNew();
+            await cjkStore.WriteBatchAsync(cjkRecords);
+            cjkSeedWatch.Stop();
+
+            var cjkQueries = new[]
+            {
+                "部署流程", "蓝绿发布", "区域 7", "第 9999 条记录", "流程 区域 3",
+            };
+
+            var cjkSamples = new List<double>();
+            for (var i = 0; i < 3; i++)
+            {
+                await cjkStore.RecallAsync(cjkQueries[i % cjkQueries.Length]);
+            }
+
+            for (var i = 0; i < 60; i++)
+            {
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                await cjkStore.RecallAsync(cjkQueries[i % cjkQueries.Length]);
+                watch.Stop();
+                cjkSamples.Add(watch.Elapsed.TotalMilliseconds);
+            }
+
+            cjkSamples.Sort();
+            var cjkP99 = cjkSamples[(int)Math.Ceiling(cjkSamples.Count * 0.99) - 1];
+            Console.WriteLine(
+                $"  INFO  memory scale (Chinese): {cjkScale} records, seed {cjkSeedWatch.Elapsed.TotalSeconds:0.0}s, "
+                + $"recall median {cjkSamples[cjkSamples.Count / 2]:0.0}ms p99 {cjkP99:0.0}ms");
+            Check($"memory: {cjkScale} Chinese records — retrieval P99 under 500ms",
+                cjkP99 < 500,
+                $"p99={cjkP99:0.0}ms median={cjkSamples[cjkSamples.Count / 2]:0.0}ms "
+                + $"seed={cjkSeedWatch.Elapsed.TotalSeconds:0.0}s");
+        }
+
         // ---- 9. M6: tool governance -------------------------------------------------
         var policyPath = Path.Combine(root, "tools.policy.json");
         File.WriteAllText(policyPath, """
@@ -1510,7 +1563,10 @@ internal static class Program
                 log.Add);
 
             input.Start();
-            for (var i = 0; i < 40; i++)
+
+            // 6 s: the floor is only taken from a *quiet* window, and this input is never quiet (threshold 0
+            // means nothing can fall below it), so the verdict comes from the probe's own deadline.
+            for (var i = 0; i < 300; i++)
             {
                 source.Emit(0.05f, 320);
                 await input.TickAsync();
@@ -3217,11 +3273,39 @@ internal static class Program
                     await Task.Delay(25);
                 }
 
+                // The reported level has to follow the microphone: a dead device, a quiet room and speech
+                // under the threshold used to be the same "运行中" on the settings page.
+                var levelWhileSpeaking = 0.0;
+                for (var attempt = 0; attempt < 40 && levelWhileSpeaking < 0.03; attempt++)
+                {
+                    var level = await loopHttp.GetFromJsonAsync<JsonElement>("/api/voice");
+                    levelWhileSpeaking = level.GetProperty("input").GetProperty("rms").GetDouble();
+                    await Task.Delay(25);
+                }
+
+                Check("voice: the reported input level rises while the microphone hears speech",
+                    levelWhileSpeaking >= 0.03,
+                    $"rms={levelWhileSpeaking:0.0000} threshold=0.03");
+
                 for (var i = 0; i < 70; i++)
                 {
                     source.Emit(0f, 320);
                     await Task.Delay(25);
                 }
+
+                var levelWhileQuiet = (await loopHttp.GetFromJsonAsync<JsonElement>("/api/voice"))
+                    .GetProperty("input").GetProperty("rms").GetDouble();
+
+                Check("voice: the reported input level falls back when the speaking stops",
+                    levelWhileQuiet < 0.03,
+                    $"rms={levelWhileQuiet:0.0000}");
+
+                // 底噪探测不能把「一开始就说话」的能量当底噪——那会报出假的阈值误配。
+                var loopInput = (await loopHttp.GetFromJsonAsync<JsonElement>("/api/voice")).GetProperty("input");
+                Check("voice: speech at startup is not mistaken for the noise floor",
+                    !loopInput.GetProperty("thresholdMisconfigured").GetBoolean(),
+                    $"ambient={loopInput.GetProperty("ambientRms").GetDouble():0.0000} "
+                    + $"misconfigured={loopInput.GetProperty("thresholdMisconfigured").GetBoolean()}");
 
                 // Capture → queue → turn → session → speech.
                 var answered = false;
@@ -4464,6 +4548,10 @@ internal static class Program
         {
             "memory: 100000 records — retrieval P99 under 500ms",
         }),
+        ("memory.scale_p99_cjk", "M5", new[]
+        {
+            "memory: 100000 Chinese records — retrieval P99 under 500ms",
+        }),
         ("governance.policy_decisions", "M6", new[]
         {
             "governance: policy allows a listed tool",
@@ -4610,6 +4698,12 @@ internal static class Program
         ("voice.threshold_guard", "M10", new[]
         {
             "voice: a threshold at or below the noise floor is detected",
+        }),
+        ("voice.input_level", "M10", new[]
+        {
+            "voice: the reported input level rises while the microphone hears speech",
+            "voice: the reported input level falls back when the speaking stops",
+            "voice: speech at startup is not mistaken for the noise floor",
         }),
         ("voice.failure_visibility", "M10/M11", new[]
         {

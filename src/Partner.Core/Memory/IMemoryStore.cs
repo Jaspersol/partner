@@ -84,11 +84,23 @@ public interface IMemoryStore : IAsyncDisposable
     /// The record distilled from a given session event, or null when there is none.
     /// <para>
     /// The schema carries no unique constraint on <c>source_event_seq</c>: a memory may be written with no source
-    /// at all, and an index over a column that is mostly null buys nothing. So making writes at-least-once is
-    /// the caller's job, and this is the question that lets it.
+    /// at all, so making writes at-least-once is the caller's job, and this is the question that lets it. The
+    /// column <b>is</b> indexed — the cascade that deletes a session's memories reads it in ranges, and a
+    /// thousand-event deletion would otherwise be a thousand scans.
     /// </para>
     /// </summary>
     Task<MemoryRecord?> FindBySourceAsync(long sourceEventSeq, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every live record distilled from the events in <paramref name="fromSeq"/>..<paramref name="toSeq"/>, in one
+    /// query.
+    /// <para>
+    /// The range form exists for deletion: what has to be found is everything a deleted span of the session log
+    /// left behind, and asking one event at a time makes the cost of removing a long conversation grow with its
+    /// length.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<MemoryRecord>> FindBySourceRangeAsync(long fromSeq, long toSeq, CancellationToken ct = default);
 
     /// <summary>
     /// Moves a record to another tier, on a person's judgement. False when the id is unknown.

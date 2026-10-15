@@ -420,6 +420,17 @@ export interface VoiceHalfState {
   count: number
 }
 
+/**
+ * The input half also reports how loud the microphone is. Without it a dead device, a quiet room and speech
+ * under the gate's threshold all render as the same "运行中".
+ */
+export interface VoiceInputState extends VoiceHalfState {
+  rms: number
+  ambientRms: number
+  thresholdMisconfigured: boolean
+  awake: boolean
+}
+
 /** Device names the runtime can actually see. */
 export interface DeviceList {
   inputs: string[]
@@ -434,7 +445,7 @@ export interface ModelProbe {
 }
 
 export interface VoiceState {
-  input: VoiceHalfState
+  input: VoiceInputState
   output: VoiceHalfState
 }
 

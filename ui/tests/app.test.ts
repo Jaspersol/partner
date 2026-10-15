@@ -115,7 +115,7 @@ function respond(path: string): unknown {
   if (path.includes('/api/voice/devices')) return { inputs: [], outputs: [] }
   if (path.includes('/api/voice')) {
     return {
-      input: { running: false, reason: '未启用', device: null, count: 0 },
+      input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false },
       output: { running: false, reason: '未启用', device: null, count: 0 },
     }
   }

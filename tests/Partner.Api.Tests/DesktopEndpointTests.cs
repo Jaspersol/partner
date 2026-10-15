@@ -254,6 +254,42 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task The_telemetry_window_is_the_retention_it_is_read_from()
+    {
+        // The window and the retention are one number kept in one place. When the endpoint wrote its own 1h
+        // and the sink kept another, every rate was computed over a window the answer said it was not using —
+        // and nothing failed, the numbers were just quietly about a different span.
+        var telemetry = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+
+        Assert.Equal(
+            telemetry.GetProperty("retentionHours").GetDouble(),
+            telemetry.GetProperty("windowHours").GetDouble());
+
+        // And it is the sink's own retention, read off the context the host was opened with.
+        Assert.Equal(
+            _context.Telemetry.Retention.TotalHours,
+            telemetry.GetProperty("retentionHours").GetDouble(),
+            3);
+    }
+
+    [Fact]
+    public async Task A_caller_may_narrow_the_telemetry_window_but_not_widen_it()
+    {
+        // Asking for more than is kept can only return less than it says, so the request is clamped rather
+        // than honoured — a caller that could widen the window would be told a rate over events already evicted.
+        var narrowed = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry?hoursRaw=0.25");
+        Assert.Equal(0.25, narrowed.GetProperty("windowHours").GetDouble());
+
+        var widened = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry?hoursRaw=999");
+        Assert.Equal(
+            widened.GetProperty("retentionHours").GetDouble(),
+            widened.GetProperty("windowHours").GetDouble());
+
+        var negative = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry?hoursRaw=-5");
+        Assert.Equal(0, negative.GetProperty("windowHours").GetDouble());
+    }
+
+    [Fact]
     public async Task Telemetry_reports_its_shape_before_any_desktop_traffic()
     {
         // An empty sink is a valid answer, not an error: the aggregates exist before the first observe,

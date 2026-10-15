@@ -648,7 +648,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     createMemory: vi.fn(async () => 'm-manual-new'),
     memory: vi.fn(async () => []),
     listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9/v1', models: ['qwen3', 'llama3'] })),
-    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
+    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
     recall: vi.fn(async () => []),
     editMemory: vi.fn(async () => {}),
     deleteMemory: vi.fn(async () => {}),
@@ -668,7 +668,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
       settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
       consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
-      voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+      voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
       compaction: null,
     })),
     ...overrides,

@@ -24,7 +24,7 @@ public class DesktopTelemetryTests
 
         sink.Record(Act());
         sink.Record(new DesktopTelemetryEvent(
-            At(0) - InMemoryTelemetrySink.Retention - TimeSpan.FromMinutes(1),
+            At(0) - InMemoryTelemetrySink.DefaultRetention - TimeSpan.FromMinutes(1),
             "desktop_observe", null, "9", true, null, null, null, null, 5, null));
 
         var snapshot = sink.Snapshot();

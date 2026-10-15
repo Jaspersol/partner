@@ -27,8 +27,10 @@ public sealed class ApiContext : IAsyncDisposable
         DesktopAutomation desktop,
         QueuedApprovalHandler approvals,
         TaskLeaseStore taskLeases,
-        InMemoryTelemetrySink telemetry)
+        InMemoryTelemetrySink telemetry,
+        TimeProvider clock)
     {
+        Clock = clock;
         Workspace = workspace;
         Session = session;
         Queue = queue;
@@ -77,6 +79,11 @@ public sealed class ApiContext : IAsyncDisposable
     /// restart, because a tuning question spans turns.
     /// </summary>
     public InMemoryTelemetrySink Telemetry { get; }
+
+    /// <summary>The clock the host was opened with. The telemetry endpoint reads it so its window can be stated
+    /// in the same time base the sink stamped its events in — a window measured against a different clock would
+    /// be a second, silently different answer.</summary>
+    public TimeProvider Clock { get; }
 
     public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
     {
@@ -127,7 +134,8 @@ public sealed class ApiContext : IAsyncDisposable
             desktop,
             new QueuedApprovalHandler(),
             new TaskLeaseStore(clock: clock),
-            telemetry))
+            telemetry,
+            clock ?? TimeProvider.System))
             .ConfigureAwait(false);
     }
 

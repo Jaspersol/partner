@@ -102,6 +102,61 @@ public sealed class WakeGateTests
         Assert.True(half.Utterances.Single().Transcript.Length > 0);
     }
 
+    /// <summary>
+    /// 只喊唤醒词、不说话：会话必须自己回闸。曾经 <c>_awake</c> 只在提交的成功路径里清，纯静音的块
+    /// 撞上提前 return，于是闸门一直开着、唤醒探针再也不跑，提示音只响一次（实测复现）。
+    /// </summary>
+    [Fact]
+    public async Task A_wake_hit_without_following_speech_closes_the_session()
+    {
+        var (half, source, wake, utterances) = Create();
+
+        wake.Respond = frame => new LocalWakeClient.WakeHit("小克小克", 0, 0.9);
+        await AdvanceAsync(half, source, 0.2, 0f);
+        Assert.True(half.Awake);
+
+        // 喊完词就沉默：整段静默闭合（G2）必须关掉会话，而不是等一次成功的转写。
+        wake.Respond = null;
+        var pollsWhileAwake = wake.Polls;
+        await AdvanceAsync(half, source, 2.5, 0f);
+
+        Assert.False(half.Awake);
+        Assert.Empty(utterances); // 纯静音不值得一次 ASR 请求。
+        Assert.True(wake.Polls > pollsWhileAwake, "探针必须在会话关掉之后重新跑起来");
+
+        // 再喊一次必须再次进入会话（提示音那条路径由 Wake_hit_plays_the_tone… 覆盖）。
+        wake.Respond = frame => new LocalWakeClient.WakeHit("小克小克", 0, 0.9);
+        await AdvanceAsync(half, source, 0.2, 0f);
+        Assert.True(half.Awake);
+    }
+
+    /// <summary>
+    /// 引擎命中后会换一条新流（同一条流会一直持有已匹配的前缀状态），所以会话结束、探针恢复时的第一帧
+    /// 必须重新带前置——否则新流没有左边上下文，第二次唤醒会静默失效。
+    /// </summary>
+    [Fact]
+    public async Task Wake_probe_re_primes_the_stream_after_a_hit()
+    {
+        var (half, source, wake, _) = Create();
+
+        wake.Respond = frame => new LocalWakeClient.WakeHit("小克小克", 0, 0.9);
+        await AdvanceAsync(half, source, 0.2, 0f);
+        Assert.True(half.Awake);
+
+        var probesAtHit = wake.FrameLengths.Count;
+        wake.Respond = null;
+        await AdvanceAsync(half, source, 3.0, 0f);
+        Assert.False(half.Awake);
+
+        Assert.True(wake.FrameLengths.Count > probesAtHit, "探针没有在会话结束后恢复");
+        var resumed = wake.FrameLengths[probesAtHit];
+
+        // 增量上限 2s，超过它的长度只可能来自重新拼上的前置。
+        Assert.True(
+            resumed > SampleRate * 2,
+            $"first probe after the session is {resumed} samples — the lead was not re-sent");
+    }
+
     [Fact]
     public async Task Wake_hit_plays_the_tone_exactly_once_per_transition()
     {
@@ -154,25 +209,29 @@ public sealed class WakeGateTests
     }
 
     /// <summary>
-    /// 探针帧必须比纯增量长：KWS 解码器要左边上下文才命中（实测前置 0.3s 打不出、1.0s 才命中），
-    /// 裸增量永远不会响。前置窗口要等音频写满 1s 才成形，所以只对那之后的探针断言。
+    /// 前置音频只送一次：新流的解码器要左边上下文才命中（实测裸增量和 0.3s 前置都打不出、1.0s 才命中），
+    /// 但每帧都送就让同一条流把每句话听两遍——两遍「小克」正好凑出双声词，喊一声也唤醒。
     /// </summary>
     [Fact]
-    public async Task Wake_probe_carries_lead_context_not_bare_increment()
+    public async Task Wake_probe_primes_the_stream_once_then_sends_bare_increments()
     {
         var (half, source, wake, _) = Create();
 
-        // 4s 语音：远超 1s 前置窗口，足够发生多次「前置已满」的探针。
+        // 4s 语音：远超 1s 前置窗口，足够发生多次探针。
         await AdvanceAsync(half, source, 4.0, 0.5f);
 
         Assert.True(wake.Polls > 0);
         Assert.True(wake.FrameLengths.Count >= 20, "not enough probes to judge the lead window");
 
-        // 最小增量 100ms + 满前置 1s = 1.1s；少一个样本都说明前置掉了。
-        var settled = wake.FrameLengths.Skip(10).ToList();
-        Assert.All(settled, length => Assert.True(
-            length >= (int)(SampleRate * 1.1),
-            $"probe frame {length} samples lacks the 1s lead context"));
+        // 首帧：100ms 增量之外还拼上了当时能读到的前置（这一刻环形里只有 100ms，所以是 3200 样本）。
+        Assert.True(
+            wake.FrameLengths[0] > 320,
+            $"first probe {wake.FrameLengths[0]} samples carries no lead at all");
+
+        // 之后：纯增量。最小增量 100ms，加上前置就 ≥1.1s——出现这种长度说明前置又被送了一遍。
+        Assert.All(wake.FrameLengths.Skip(1), length => Assert.True(
+            length < (int)(SampleRate * 1.1),
+            $"probe frame {length} samples re-sent the lead context"));
     }
 
     /// <summary>前置窗口之外的音频不占探针帧：帧有上限，否则一次请求会灌进整段历史。</summary>

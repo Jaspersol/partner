@@ -239,6 +239,19 @@ public sealed class PauseBlockingDetector
         _called = false;
     }
 
+    /// <summary>
+    /// Called when the wake word hits: a new segment starts here. Identical to
+    /// <see cref="OnGateReleased"/> except that it marks the segment as speech-bearing — the wake word
+    /// <b>is</b> something the user said. Without it a session where the user says nothing after the word
+    /// never satisfies G2 (<c>_dirty</c> stays false), so the gate stays open, the wake probe stops running,
+    /// and the tone sounds exactly once.
+    /// </summary>
+    public void OnWakeHit(double nowSeconds)
+    {
+        OnGateReleased(nowSeconds);
+        _dirty = true;
+    }
+
     /// <summary>The tick needs the current stream position to compute leftover; set it on every step.</summary>
     public void NoteNow(double nowSeconds) => _lastNow = nowSeconds;
 

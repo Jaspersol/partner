@@ -117,7 +117,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     queue: vi.fn(async () => queue),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], })),
     devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),
-    listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9/v1', models: ['qwen3', 'llama3'] })),    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
+    listModels: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9/v1', models: ['qwen3', 'llama3'] })),    voice: vi.fn(async () => ({ input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } })),
     submitInput: vi.fn(async (payload: string, source: string) => {
       calls.submits.push({ payload, source })
       return { itemId: 'in-test', seq: 9, status: 'Queued', deduplicated: false }
@@ -174,7 +174,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
       return {
         settings: SETTINGS_FIXTURE as unknown as SettingsView,
         consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
-        voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+        voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
         compaction: null,
       }
     }),
@@ -1403,7 +1403,16 @@ describe('settings view', () => {
   it('reports each voice half, so an enabled-but-dead one is visible', async () => {
     const { stub } = createStub({
       voice: vi.fn(async () => ({
-        input: { running: true, reason: '运行中', device: 'synthetic-mic', count: 3 },
+        input: {
+          running: true,
+          reason: '运行中',
+          device: 'synthetic-mic',
+          count: 3,
+          rms: 0.0621,
+          ambientRms: 0.004,
+          thresholdMisconfigured: false,
+          awake: false,
+        },
         output: { running: false, reason: '未配置 TTS 服务地址', device: null, count: 0 },
       })),
     })
@@ -1415,6 +1424,62 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="input-effect"]').text()).toContain('已识别 3 段')
     // Enabled but not running: the reason must be on screen, not in a log.
     expect(wrapper.find('[data-test="output-effect"]').text()).toContain('未配置 TTS')
+  })
+
+  it('shows the live input level, so a dead microphone is not just "运行中"', async () => {
+    const { stub } = createStub({
+      voice: vi.fn(async () => ({
+        input: {
+          running: true,
+          reason: '运行中',
+          device: 'synthetic-mic',
+          count: 0,
+          rms: 0.0621,
+          ambientRms: 0.004,
+          thresholdMisconfigured: false,
+          awake: false,
+        },
+        output: { running: false, reason: '未配置 TTS 服务地址', device: null, count: 0 },
+      })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const level = wrapper.find('[data-test="input-level"]')
+    expect(level.exists()).toBe(true)
+    // The number itself, not a bar whose width nobody can read off a screenshot.
+    expect(level.text()).toContain('0.0621')
+    expect(level.text()).toContain('0.03')
+    // The threshold is drawn on the same track: "is the level above it" is the question being asked.
+    expect(wrapper.find('[data-test="input-level"] .level-mark').attributes('style')).toContain('15.0%')
+    wrapper.unmount()
+  })
+
+  it('says when the threshold sits below the noise floor instead of looking healthy', async () => {
+    const { stub } = createStub({
+      voice: vi.fn(async () => ({
+        input: {
+          running: true,
+          reason: '运行中',
+          device: 'synthetic-mic',
+          count: 0,
+          rms: 0.02,
+          ambientRms: 0.055,
+          thresholdMisconfigured: true,
+          awake: false,
+        },
+        output: { running: false, reason: '未配置 TTS 服务地址', device: null, count: 0 },
+      })),
+    })
+
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const warning = wrapper.find('[data-test="input-threshold-warning"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('0.055')
+    wrapper.unmount()
   })
 
   it('offers the devices the runtime can see instead of asking for a name', async () => {
@@ -1529,7 +1594,7 @@ describe('settings view', () => {
             skills: { disabled: [] },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
-          voice: { input: { running: false, reason: '未启用', device: null, count: 0 }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+          voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
           compaction: { foldedEvents: 3, summarySeq: 9, reason: '已压缩 3 条 → #9', compacted: true },
         }
       }),

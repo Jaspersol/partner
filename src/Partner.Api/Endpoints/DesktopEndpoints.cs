@@ -55,9 +55,17 @@ public static class DesktopEndpoints
         // The tuning aggregates the todo's O phase exists to collect: snap hit rate, the verification
         // verdict distribution, how often actions carry a picture and how heavy those are, and the walk /
         // action latencies. Read-only — the sink is written by the tools, never by this endpoint.
-        app.MapGet("/api/desktop/telemetry", (ApiContext ctx) =>
+        app.MapGet("/api/desktop/telemetry", (ApiContext ctx, double? hoursRaw = null) =>
         {
-            var events = ctx.Telemetry.Snapshot();
+            // The window is derived from the sink's retention, not written here a second time: two numbers that
+            // have to agree, kept in two places, is how a rate ends up computed over events the endpoint claims
+            // not to be looking at. The caller may narrow it, never widen it — asking for more than is kept can
+            // only return less than it says.
+            var retention = ctx.Telemetry.Retention;
+            var hours = Math.Clamp(hoursRaw ?? retention.TotalHours, 0, retention.TotalHours);
+            var since = ctx.Clock.GetUtcNow() - TimeSpan.FromHours(hours);
+
+            var events = ctx.Telemetry.Snapshot().Where(e => e.Ts >= since).ToList();
 
             var acts = events.Where(e => e.Tool == "desktop_act").ToList();
             var observes = events.Where(e => e.Tool == "desktop_observe").ToList();
@@ -69,7 +77,8 @@ public static class DesktopEndpoints
 
             return Results.Ok(new
             {
-                windowHours = 1,
+                windowHours = Math.Round(hours, 3),
+                retentionHours = Math.Round(retention.TotalHours, 3),
                 acts = acts.Count,
 
                 // Of the calls that offered a px/py point, how many were upgraded to a control. The

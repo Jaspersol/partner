@@ -118,11 +118,22 @@ public sealed class DesktopExecTool : ITool
         {
             KillQuietly(process);
 
+            // Then close our ends of the pipes and wait for the drains to finish. Belt and braces, and stated
+            // as such: with `Kill(entireProcessTree: true)` above, a `start /b` survivor is reaped too, so the
+            // read observes EOF and the handle goes with it — measured over 10 timed-out calls, the handle
+            // count is flat in both the before and after of this change, which is why there is no test
+            // asserting a leak here. What this does cover is the case the tree kill cannot reach: a process
+            // that left the tree before the kill, or a launcher that outlives it. An anonymous pipe read does
+            // not observe a cancelled token until the read itself completes, so without closing the readers
+            // the drains would stay parked on them. Closing is deterministic; the wait is bounded so a read
+            // that still will not return cannot reintroduce the hang this method exists to prevent.
+            ClosePipes(process);
+            await WaitForDrainsAsync(outTask, errTask).ConfigureAwait(false);
+
             // Whatever arrived before the deadline is the evidence for why the model reached for this
             // command, so it is reported rather than thrown away.
             return new ToolResult(false,
-                $"命令超过 {_timeout.TotalSeconds:0} 秒未结束，已终止"
-                + "（若命令启动了后台进程，管道可能仍未关闭）"
+                $"命令超过 {_timeout.TotalSeconds:0} 秒未结束，已终止（进程树与管道均已关闭）"
                 + Describe(outText, errText, timedOut: true));
         }
 
@@ -196,6 +207,44 @@ public sealed class DesktopExecTool : ITool
             }
         }
     }
+
+    /// <summary>
+    /// Closes this process's ends of the child's pipes, which is what unblocks a drain that is parked on a
+    /// handle a survivor still holds. Failures are ignored for the same reason the kill is: the tool is already
+    /// returning a timeout, and a pipe that is already closed is not news.
+    /// </summary>
+    private static void ClosePipes(Process process)
+    {
+        try
+        {
+            process.StandardOutput.Close();
+            process.StandardError.Close();
+        }
+        catch (Exception error) when (error is InvalidOperationException or IOException or ObjectDisposedException)
+        {
+            // Already closed, or the child never got far enough to have pipes.
+        }
+    }
+
+    /// <summary>
+    /// Waits for the drains to finish, but not forever: closing the readers normally ends them at once, and this
+    /// bound is only here so that a read which still will not return cannot park the turn again.
+    /// </summary>
+    private static async Task WaitForDrainsAsync(params Task[] drains)
+    {
+        try
+        {
+            await Task.WhenAll(drains).WaitAsync(DrainCloseGrace).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Either the drain faulted on a closed reader or the grace ran out. Both are the timeout path's
+            // business, not an error to raise over the timeout the caller is about to be told about.
+        }
+    }
+
+    /// <summary>How long a drain may take to notice its reader was closed.</summary>
+    private static readonly TimeSpan DrainCloseGrace = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Kills the command and everything it started. A failure here is not worth reporting: the tool is
