@@ -314,7 +314,12 @@ public sealed class VoiceInputHalf : IDisposable
                 // 唤醒瞬间相当于一段新语音的开始：重置判定，让唤醒词后的话从干净状态进停顿机。
                 // 用 OnWakeHit 而不是 OnGateReleased——唤醒词本身就是「已经听到人说话」，段必须
                 // 立起 dirty，否则喊完词不说话时 G2 永不成立，会话卡死（见 TickAsync 收尾注释）。
-                Detector.OnWakeHit(Ring.Seconds);
+                // 游标回溯 WakeCatchUpSeconds：命中是延迟报出来的，命令往往已经说在命中点之前。
+                // 回溯窗里已经是成片人声 = 命令和唤醒词一口气说的，宽限期不必再等（见 WakeCatchUpSeconds）。
+                var catchUpStart = Math.Max(0, Ring.Seconds - WakeCatchUpSeconds);
+                var heardSpeechAtHit =
+                    Ring.SpeechFraction(_settings.SilenceThreshold, WakeCatchUpSeconds) >= WakeCatchUpSpeechFraction;
+                Detector.OnWakeHit(catchUpStart, heardSpeechAtHit);
                 _wakeTone?.Invoke();
                 _log($"voice: wake word \"{hit.Keyword}\" ({hit.Confidence:0.00}) — listening");
             }
@@ -369,6 +374,31 @@ public sealed class VoiceInputHalf : IDisposable
     /// 1.0s 才稳——取 1s 与实测一致，不靠猜。这段音频会重复喂给流的同一位置，无害。
     /// </summary>
     private const double WakeLeadSeconds = 1.0;
+
+    /// <summary>
+    /// 唤醒命中时块起点回溯的秒数：覆盖 KWS 的 chunk 级检测延迟。官方包只有 chunk-16（≈320 ms），
+    /// 加上探针 100 ms 节奏的排队，命中报出来的位置实测落在命令开头之后 320–440 ms。
+    /// <para>
+    /// 游标原定在命中时刻（<c>Ring.Seconds</c>），于是命中点之前的音频全被丢：连读「小克小克打开灯」时
+    /// 命令的首段进不了块；命令短到整句都落在延迟窗里时，块里只剩静音 → <c>SpeechFraction</c> 不达标
+    /// → 提前 return，命令一个字都进不了 ASR，会话随即回闸。这就是「唤醒后说的话没进对话」。
+    /// </para>
+    /// <para>
+    /// 回溯的代价是唤醒词尾巴（≤ 这个值）可能一起被转写进去。宁可有半句唤醒词，也不能丢整句命令。
+    /// </para>
+    /// </summary>
+    private const double WakeCatchUpSeconds = 0.45;
+
+    /// <summary>
+    /// 判定「回溯窗里已经是成片人声」的比例下限，用来决定命中后还要不要走唤醒宽限期。
+    /// <para>
+    /// 取 0.5 而不是提交门的 <see cref="MinVoicedFraction"/>（0.15）：唤醒词的尾巴本身就在回溯窗的头部
+    /// （chunk-16 的 320 ms 延迟意味着它占满窗的 ~29%），0.15 会把「喊完词停着不说话」也判成人声，
+    /// 于是宽限期失效——那正是 b7396f8 修掉的老 bug。0.5 让「唤醒词尾巴 + 命令」这种成片的凑得够，
+    /// 而「尾巴 + 静默」凑不够。
+    /// </para>
+    /// </summary>
+    private const double WakeCatchUpSpeechFraction = 0.5;
 
 
     public void Stop()

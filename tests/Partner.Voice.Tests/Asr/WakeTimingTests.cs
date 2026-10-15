@@ -184,6 +184,56 @@ public sealed class WakeTimingTests
         Assert.Single(rig.Utterances);
     }
 
+    /// <summary>
+    /// 唤醒词和命令一口气说完、中间不停：KWS 有 ~320 ms 检测延迟，命中那一刻命令往往已经说完，
+    /// 命中点之前的音频必须回溯进块。曾经游标定在命中时刻，于是整块只剩静音 → SpeechFraction 不达标
+    /// → 提前 return → 命令永远进不了 ASR（用户看到「唤醒后说的话没进对话」）。
+    /// </summary>
+    [Fact]
+    public async Task A_command_finished_before_the_hit_still_reaches_the_asr()
+    {
+        var rig = Create();
+
+        // 唤醒词 + 命令连读，1.2 s 全说完。
+        await rig.AdvanceAsync(1.2, 0.5f);
+
+        // 引擎 ~320 ms 检测延迟：命中在语音结束后才回来。
+        rig.Wake.Respond = _ => new LocalWakeClient.WakeHit("小克小克", 0, 0.9);
+        await rig.AdvanceAsync(0.12, 0f);
+        rig.Wake.Respond = null;
+
+        // 静默闭合提交。
+        await rig.AdvanceAsync(1.4, 0f);
+
+        Assert.Single(rig.Utterances);
+        Assert.Equal("打开书房的灯", rig.Utterances[0].Transcript);
+    }
+
+    /// <summary>
+    /// 唤醒词是真声、命中带 ~320 ms 延迟（chunk-16）：回溯窗里是「唤醒词尾巴 + 静默」，不是成片人声，
+    /// 宽限期必须仍生效。否则「喊完词停着想一下再说」会退化成 1.2 s 关会话，b7396f8 白修。
+    /// </summary>
+    [Fact]
+    public async Task A_thinking_pause_after_a_spoken_wake_word_still_waits()
+    {
+        var rig = Create();
+
+        // 唤醒词是真声（0.6 s），说完后引擎 ~320 ms 检测延迟才报命中。
+        await rig.AdvanceAsync(0.6, 0.5f);
+        await rig.AdvanceAsync(0.32, 0f);
+        rig.Wake.Respond = _ => new LocalWakeClient.WakeHit("小克小克", 0, 0.9);
+        await rig.AdvanceAsync(0.12, 0f);
+        rig.Wake.Respond = null;
+
+        // 停 2 s 想一下再开口：宽限期必须还开着。
+        await rig.AdvanceAsync(2.0, 0f);
+        await rig.AdvanceAsync(1.0, 0.5f);
+        await rig.AdvanceAsync(1.4, 0f);
+
+        Assert.Single(rig.Utterances);
+        Assert.Equal("打开书房的灯", rig.Utterances[0].Transcript);
+    }
+
     /// <summary>没有唤醒门时宽限期不参与：老行为（纯语音输入）一字不变。</summary>
     [Fact]
     public async Task Without_a_wake_gate_the_timeout_is_not_used()

@@ -272,12 +272,18 @@ public sealed class PauseBlockingDetector
     /// "wake word, then think for a moment, then speak" flow drop the whole command — the session ended
     /// ~1.1 s after the tone, and everything said afterwards was only ever fed to the wake probe.
     /// </para>
+    /// <para>
+    /// <paramref name="heardSpeechAtHit"/> 为真时不进宽限期：命中是延迟报出来的，唤醒词和命令一口气说完时，
+    /// 命令的音频落在命中点之前，命中之后再没有声音——那看上去和「喊完词在想说什么」一模一样。宽限期一旦
+    /// 生效就会把整块拖到 5 s 静默，<c>SpeechFraction</c> 被稀释到阈值以下，命令照样进不了 ASR。
+    /// 调用方按命中点之前那段音频里有没有人声来判断：有 = 命令已经在说了，直接按判句间隔收尾。
+    /// </para>
     /// </summary>
-    public void OnWakeHit(double nowSeconds)
+    public void OnWakeHit(double nowSeconds, bool heardSpeechAtHit = false)
     {
         OnGateReleased(nowSeconds);
         _dirty = true;
-        _awaitingSpeech = true;
+        _awaitingSpeech = !heardSpeechAtHit;
     }
 
     /// <summary>The tick needs the current stream position to compute leftover; set it on every step.</summary>
