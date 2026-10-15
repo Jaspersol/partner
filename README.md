@@ -353,6 +353,8 @@ local.kws  → engines/kws-asr/asr-server.py  POST /recognize + /wake/infer（as
 
 **唤醒门**（`VoiceInputSetting.Wake`）：KWS 引擎开启时语音输入进入门控——麦克风持续采、音频照常进环形缓冲，但**不提交 ASR**；宿主每满 100ms 增量把新音频转发给 `/wake/infer`，命中后开闸一个会话窗；G2（整段静默闭合）即回闸等下一次唤醒——**只喊词不说话也算说完**，回闸与否只看 G2，不看这一块最后值不值得转写。前置音频只在引擎那条流刚建好时（首帧、命中换流、引擎重启）送一次：KWS 解码器要左边上下文才命中（裸增量和 0.3s 前置实测都打不出，1.0s 才行），但每帧都送会让同一条流把每句话听两遍——两遍「小克」正好凑出双声词「小克小克」，于是喊一声也唤醒（实测旧时序单声命中 5 次，改后 0 次）。唤醒词后紧跟着的话不会被掐头（缓冲里还在）。KWS 失联只记日志、下一 tick 重试，不死半区。
 
+**唤醒后的宽限期**（`input.wakeTimeoutMs`，默认 5000）：提示音到用户开口之间那段沉默是「在想说什么」，不是「说完了」——命中后还没听到人说话时，静默按宽限期计而不是 `utteranceGapMs`（默认 1200）；一听到语音就立刻回到正常判句。这条是必须分开的：只喊唤醒词不说话时 `_dirty` 必须立起来（否则 G2 永不成立、会话卡死，见上），而 `_dirty` 一旦立起来，用判句间隔去关会话就变成「唤醒后约 1.1 s 内不开口，会话就关」——实测唤醒后停 1.2 s / 2.0 s 再说话，`utterance` 为 0、ASR 调用 0 次，用户看到的就是「唤醒之后说的话没变成输入」。宽限期之外的静默仍照常关会话（误唤醒不会一直敞着闸门收环境音），纯静音块也仍然不提交 ASR。流式模式（`asrStream`）下 G1 的句界判定同样跳过宽限期内的静默。
+
 安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`；装好后 `engines/` 随安装包一起打进去（`tauri.conf.json` 的 resources）。实测事实与踩坑清单见 [engines/README.md](engines/README.md)：官方 KWS 包只有 **chunk-16**（~320ms 延迟）、`keywords.txt` 自带 8 个词、`get_result()` 返回字符串、**不用 Silero VAD 切段**（切出来的段喂回 SenseVoice 会得到空文本，30 s 保命条款改由定长切分承担）、下载必须校验长度（`Invoke-WebRequest` 曾把 999MiB 静默截成 670MB 并报成功）。
 
 ---

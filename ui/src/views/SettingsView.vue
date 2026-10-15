@@ -19,6 +19,7 @@ const form = reactive<RuntimeSettings>({
     deviceId: null,
     silenceThreshold: 0.03,
     utteranceGapMs: 1200,
+    wakeTimeoutMs: 5000,
     sentenceGapMs: 450,
     windowSeconds: 8,
     asrStream: false,
@@ -534,6 +535,14 @@ defineExpose({ refresh, hasUnsavedChanges })
             <span>整句间隔 (ms)</span>
             <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
             <span class="source">停顿超过此值切句；实测默认 1200</span>
+          </label>
+          <label class="field" data-test="wake-timeout">
+            <span>唤醒后等待开口 (ms)</span>
+            <input type="number" v-model.number="form.input.wakeTimeoutMs" />
+            <span class="source">
+              提示音到开口之间的沉默是「在想说什么」，不是「说完了」——这段最多等这么久；
+              一开口就回到整句间隔
+            </span>
           </label>
           <label class="field">
             <span>句间间隔 (ms)</span>

@@ -64,6 +64,7 @@ public sealed class PauseBlockingDetector
     private readonly double _sentenceGapMs;
     private readonly double _utteranceGapMs;
     private readonly double _windowSeconds;
+    private readonly double _wakeTimeoutMs;
 
     private double? _quietSince;
     private bool _dirty;
@@ -71,12 +72,22 @@ public sealed class PauseBlockingDetector
     private bool _leftover;
     private bool? _heldPause;
 
+    /// <summary>
+    /// 当前这一段「有声音」的判定只来自唤醒词本身：还没等到真正的一句话。
+    /// <para>
+    /// 与 <see cref="_dirty"/> 分开是因为两者要的静默长度不同：唤醒词之后用户要想一下才开口，
+    /// 用判句的 <see cref="VoiceInputSetting.UtteranceGapMs"/> 去关会话，人还没出声闸门就合上了。
+    /// </para>
+    /// </summary>
+    private bool _awaitingSpeech;
+
     public PauseBlockingDetector(VoiceInputSetting settings)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _sentenceGapMs = settings.SentenceGapMs;
         _utteranceGapMs = settings.UtteranceGapMs;
         _windowSeconds = settings.WindowSeconds;
+        _wakeTimeoutMs = settings.WakeTimeoutMs;
         Cursor = 0;
     }
 
@@ -133,6 +144,9 @@ public sealed class PauseBlockingDetector
             _called = false;
             silenceMs = 0;
             _dirty = true;
+
+            // 真听到人说话了：宽限期结束，此后按正常的判句静默收尾。
+            _awaitingSpeech = false;
         }
 
         // Long unbroken speech: submit anyway so the block cannot grow past the window.
@@ -151,9 +165,11 @@ public sealed class PauseBlockingDetector
             };
         }
 
-        // G1 (streaming only): one complete sentence per request.
+        // G1 (streaming only): one complete sentence per request. 唤醒后还没等到人开口时不算句界——
+        // 那 450 ms 的静默是「用户在组织句子」，切出来的是纯静音块，白费一次判句。
         if (_settings.AsrStream
             && quiet
+            && !_awaitingSpeech
             && silenceMs >= _sentenceGapMs
             && !_called
             && _heldPause is null)
@@ -169,8 +185,10 @@ public sealed class PauseBlockingDetector
             };
         }
 
-        // G2: the utterance is over in both modes.
-        if (quiet && silenceMs >= _utteranceGapMs && _dirty && _heldPause is null)
+        // G2: the utterance is over in both modes. 唤醒后还没等到人开口时用宽限期而不是判句间隔：
+        // 提示音到人开口之间那段沉默不是「说完了」，按判句间隔去关会话会在人出声之前就合上闸门。
+        var gapMs = _awaitingSpeech ? _wakeTimeoutMs : _utteranceGapMs;
+        if (quiet && silenceMs >= gapMs && _dirty && _heldPause is null)
         {
             var submit = _leftover || !_settings.AsrStream;
 
@@ -225,6 +243,7 @@ public sealed class PauseBlockingDetector
         _leftover = false;
         _heldPause = null;
         _dirty = false;
+        _awaitingSpeech = false;
         _quietSince = null;
         _called = false;
     }
@@ -235,6 +254,7 @@ public sealed class PauseBlockingDetector
         Cursor = nowSeconds;
         _heldPause = null;
         _leftover = false;
+        _awaitingSpeech = false;
         _quietSince = null;
         _called = false;
     }
@@ -245,11 +265,19 @@ public sealed class PauseBlockingDetector
     /// <b>is</b> something the user said. Without it a session where the user says nothing after the word
     /// never satisfies G2 (<c>_dirty</c> stays false), so the gate stays open, the wake probe stops running,
     /// and the tone sounds exactly once.
+    /// <para>
+    /// It also arms the wake grace period (<see cref="_awaitingSpeech"/>): until the user actually says
+    /// something, the silence after the word is measured against <see cref="VoiceInputSetting.WakeTimeoutMs"/>
+    /// rather than the sentence gap. Closing the session on the sentence gap is what made a normal
+    /// "wake word, then think for a moment, then speak" flow drop the whole command — the session ended
+    /// ~1.1 s after the tone, and everything said afterwards was only ever fed to the wake probe.
+    /// </para>
     /// </summary>
     public void OnWakeHit(double nowSeconds)
     {
         OnGateReleased(nowSeconds);
         _dirty = true;
+        _awaitingSpeech = true;
     }
 
     /// <summary>The tick needs the current stream position to compute leftover; set it on every step.</summary>

@@ -28,6 +28,17 @@ public sealed record VoiceInputSetting
     /// <summary>G2: absolute silence that ends the utterance.</summary>
     public double UtteranceGapMs { get; init; } = 1200;
 
+    /// <summary>
+    /// 唤醒词命中后、用户还没开口时，会话最多再等多久的静默。
+    /// <para>
+    /// 与 <see cref="UtteranceGapMs"/> 分开：提示音到人开口之间的那段沉默是「在想说什么」，
+    /// 不是「说完了」。用判句间隔去关会话，人还没出声闸门就合上了——之后说的全部只喂给唤醒探针，
+    /// 永远不进 ASR（实测：唤醒后停 1.2 s 再说话，utterance 为 0）。
+    /// 一旦真听到语音，立刻回到 <see cref="UtteranceGapMs"/> 的正常判句。
+    /// </para>
+    /// </summary>
+    public double WakeTimeoutMs { get; init; } = 5000;
+
     /// <summary>G1: silence that ends a sentence (streaming mode only).</summary>
     public double SentenceGapMs { get; init; } = 450;
 

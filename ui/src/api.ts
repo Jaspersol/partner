@@ -153,6 +153,8 @@ export interface InputSettings {
   /** Ding when the wake word hits; only meaningful while a wake gate is active. */
   wakeTone: boolean
   utteranceGapMs: number
+  /** Grace period after a wake hit, before the user speaks. Not the sentence gap: thinking time is not "done talking". */
+  wakeTimeoutMs: number
   sentenceGapMs: number
   windowSeconds: number
   asrStream: boolean

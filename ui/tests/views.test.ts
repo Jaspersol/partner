@@ -49,6 +49,7 @@ const SETTINGS_FIXTURE: SettingsView = {
     deviceId: null,
     silenceThreshold: 0.03,
     utteranceGapMs: 1200,
+    wakeTimeoutMs: 5000,
     sentenceGapMs: 450,
     windowSeconds: 8,
     asrStream: false,
@@ -1339,7 +1340,7 @@ describe('settings view', () => {
   it('never fills the key field from the server and says whether one is stored', async () => {
     const { stub } = createStub({
       settings: vi.fn(async () => ({
-        input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
+        input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
@@ -1363,7 +1364,7 @@ describe('settings view', () => {
   it('does not send an untouched key, and sends an explicit clear when asked', async () => {
     const { stub, calls } = createStub({
       settings: vi.fn(async () => ({
-        input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
+        input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
@@ -1506,7 +1507,7 @@ describe('settings view', () => {
   it('keeps a stored device that no longer enumerates selectable', async () => {
     const { stub } = createStub({
       settings: vi.fn(async () => ({
-        input: { enabled: false, deviceId: '拔掉的麦克风', silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
+        input: { enabled: false, deviceId: '拔掉的麦克风', silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
@@ -1583,7 +1584,7 @@ describe('settings view', () => {
         calls.saves.push(patch)
         return {
           settings: {
-            input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
+            input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true },
             output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
             asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
             tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },

@@ -23,6 +23,14 @@
   命中时游标仍定在 `Ring.Seconds`(即丢弃唤醒词自身音频)——刻意保留:唤醒词不该被转写后送进 LLM,实测唤醒词后紧跟的命令能完整进块。若以后出现「命令首字被掐」,再改成定在探针增量起点。
   验收:`WakeGateTests.A_wake_hit_without_following_speech_closes_the_session`(新用例)——只喊词不说话(2.5 s 静音)后 `Awake` 必回 false、无 utterance、探针重新跑起来、再喊一次再次进会话。已验:把 `OnWakeHit` 换回 `OnGateReleased` 该用例必红(实测 `Expected: False / Actual: True`);`Partner.Voice.Tests` 85/85 绿。
 
+- [x] **V0.3 唤醒后约 1.1 s 不开口，会话就关 —— 之后说的全不进 ASR**(2026-10-15 修复)
+  现象:用户报「唤醒后 ASR 识别到的文字没作为输入」。不是队列接线问题(`VoiceHost.EnqueueAsync` 一直通),是**唤醒会话提前关闭**。
+  复现(新增 `WakeTimingTests.Speech_after_a_thinking_pause_reaches_the_asr`,5 档参数化):唤醒命中后停 N 秒再说话 + 沉默收尾,`N=0.3/0.8` 通过,`N=1.2/2.0` **utterances=0、asrCalls=0、awake=false**。
+  真因:V0.1 的修复(`OnWakeHit` 立 `_dirty`)把「喊完词不说话」这条死路堵上了,代价是**唤醒词本身被当成了「一段话说完了」**。`OnWakeHit` 同时把 `Cursor` 推到命中时刻,于是 `silenceMs` 从命中那一刻起算;`_dirty` 已为真 → G2 在 `UtteranceGapMs`(1200)减掉 `SilenceOffsetMs`(100)即**实测静默 1.1 s** 时成立 → 提交的是纯静音块 → `SpeechFraction < 0.15` 提前 return → `TickAsync` 收尾那条 `_awake && Trigger==UtteranceGap && Pause` 把 `_awake` 清掉。此后说的话只喂 KWS 探针,提示音也不再响。触发门槛极低:提示音 160 ms + 人从听到提示音到组织出句子,轻松超过 1.1 s。
+  改法:把「唤醒词立的 dirty」和「真听到人说话的 dirty」分开。`PauseBlockingDetector` 加 `_awaitingSpeech`(`OnWakeHit` 置位;任何一 tick 能量过阈值即清位,`OnSegmentEnded`/`OnGateReleased` 也清),G2 的间隔改 `_awaitingSpeech ? WakeTimeoutMs : UtteranceGapMs`;G1(流式句界)在宽限期内同样不成立(那 450 ms 静默切出来的是纯静音块)。新设置 `input.wakeTimeoutMs` 默认 5000,贯通 `RuntimeSettings` → `VoiceSettingsMapping` → `VoiceInputSetting`,设置页加输入框,`SettingsValidation` 加非负校验。
+  验收:`WakeTimingTests` 9 条——5 档停顿都进 ASR;宽限期内不关会话、越过后关且不提交纯静音;一开口立刻回到判句间隔(用 30 s 宽限期 + 1.4 s 静默证明没在等宽限期);唤醒词与命令一口气说完;无唤醒门时宽限期不参与(老行为不变)。变异验证:`gapMs` 改回恒 `_utteranceGapMs` 后 4 条必红(实测)。既有 `WakeGateTests` 两条曾把旧时序写死(2.5 s 静音即关会话、3 s 静音后探针恢复),现把它们的 `WakeTimeoutMs` 显式压到 1200——那两条测的是「沉默最终会关会话」这个机制,不是宽限期该多长。`Partner.Voice.Tests` 99/99、`Partner.Core.Tests` 461/461、UI 202/202 + `vue-tsc` 0 错。
+  未做(留观察):命中时 `Cursor` 仍定在 `Ring.Seconds`,而 KWS 有 ~320 ms 检测延迟,连读「小克小克打开灯」时命令首字可能被掐。V0.1 已记过这条;真出现「首字丢失」再改成定在探针增量起点。
+
 - [x] **V0.2 单声「小克」即命中双声唤醒词 → 探针把每句话喂了两遍**(2026-10-15 修复)
   复核:原判断(引擎/词表把单声认成双声)**不成立**。干净整段喂入同一引擎(venv `sherpa_onnx` 1.13.8,`epoch-12-avg-2` int8):单声「小克」→ 无命中;双声「小克小克」→ 命中 `小克小克`;不含唤醒词的句子 → 无命中。词表写法与 `keywords_threshold=0.25` / `keywords_score=1.5` 都对:阈值/加分扫描(0.25/0.5/1.0/2.0/4.0 × 1.5/3.0/6.0)里,0.25+1.5 是唯一同时「双声命中、单声不中」的一档,0.5 起连双声都不中。探针音频内容用 SenseVoice 回读确认过(`wake_single.wav` = 「小克。」),不是把双声当单声喂。
   真因:**探针时序**。帧是「[游标-1s, 游标] + 增量」,于是上一帧的增量正好落在下一帧的前置里——同一条持久流把每句话消费两遍,两遍「小克」凑出双声词。实测(复刻宿主 100ms 节奏,对真引擎 `/wake/infer`):旧时序单声 5 次命中、双声 10 次;只首帧带前置则单声 0 次、双声 1 次。

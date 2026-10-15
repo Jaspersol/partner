@@ -42,6 +42,11 @@ public sealed class WakeGateTests
             Enabled = true,
             SilenceThreshold = 0.03,
             UtteranceGapMs = 1200,
+
+            // 唤醒后的宽限期在这里刻意压短，与本文件的用例意图一致：它们测的是「沉默最终会关掉会话」
+            // 这个机制，不是宽限期该多长。真实的默认值（5000）与「唤醒后停多久再说话还算数」由
+            // WakeTimingTests 负责——那条用例在引入宽限期之前必红。
+            WakeTimeoutMs = 1200,
             WindowSeconds = 8,
         };
         var half = new VoiceInputHalf(

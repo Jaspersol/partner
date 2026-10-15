@@ -18,6 +18,7 @@ const SETTINGS = {
     deviceId: null,
     silenceThreshold: 0.03,
     utteranceGapMs: 1200,
+    wakeTimeoutMs: 5000,
     sentenceGapMs: 450,
     windowSeconds: 8,
     asrStream: false,

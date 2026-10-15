@@ -225,6 +225,9 @@ public sealed record InputSettings
     /// <summary>Absolute silence that ends the utterance.</summary>
     public double UtteranceGapMs { get; init; } = 1200;
 
+    /// <summary>唤醒后等用户开口的宽限期（毫秒）。开口前不按判句间隔关会话。</summary>
+    public double WakeTimeoutMs { get; init; } = 5000;
+
     /// <summary>Silence that ends a sentence (streaming mode only).</summary>
     public double SentenceGapMs { get; init; } = 450;
 

@@ -27,6 +27,7 @@ public static class VoiceSettingsMapping
             SilenceThreshold = settings.SilenceThreshold,
             WakeTone = settings.WakeTone,
             UtteranceGapMs = settings.UtteranceGapMs,
+            WakeTimeoutMs = settings.WakeTimeoutMs,
             SentenceGapMs = settings.SentenceGapMs,
             WindowSeconds = settings.WindowSeconds,
             AsrStream = settings.AsrStream,

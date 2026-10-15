@@ -20,7 +20,9 @@ public static class SettingsValidation
             errors.Add("input.silenceThreshold 不能为负");
         }
 
-        if (settings.Input.UtteranceGapMs < 0 || settings.Input.SentenceGapMs < 0)
+        if (settings.Input.UtteranceGapMs < 0
+            || settings.Input.SentenceGapMs < 0
+            || settings.Input.WakeTimeoutMs < 0)
         {
             errors.Add("input 的间隔不能为负");
         }
