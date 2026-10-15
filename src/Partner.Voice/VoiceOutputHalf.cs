@@ -119,6 +119,9 @@ public sealed class VoiceOutputHalf : IDisposable
     /// <summary>
     /// Ends the turn: flushes the trailing fragment, starts playback and closes the gate. Until this point
     /// everything has been synthesized but held — the assistant must not start speaking mid-sentence.
+    /// <para>
+    /// 上闩在这里而不是 sink 构造里：sink 跨回合复用，构造时的初值只在第一回合有效。
+    /// </para>
     /// </summary>
     public async Task FlushTurnAsync(CancellationToken ct = default)
     {
@@ -126,6 +129,12 @@ public sealed class VoiceOutputHalf : IDisposable
         {
             return;
         }
+
+        // 每回合都重新上闩：本回合的全部句子先合成进 sink 的队列，最后一次放出去。
+        // 不上的话第 2 句要等第 1 句合成完才开始合成，两句之间就是一段随文本变长的静音。
+        // 提示音走同一个 sink，所以闩住时它也只是排队——Release 前它不响，这是唤醒瞬间那一 tick
+        // 就上闩的直接后果，不是提示音本身的问题。
+        _sink.Hold();
 
         foreach (var sentence in DeduplicateAgainstPending(Segmenter.Flush()))
         {

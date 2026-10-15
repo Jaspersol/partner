@@ -141,7 +141,11 @@ public sealed class WasapiAudioSink : IAudioSink
     private BufferedWaveProvider? _provider;
     private IWavePlayer? _player;
     private int _openRate;
-    private bool _held = true;
+
+    // 初值 false，闩锁由每一回合的 FlushTurnAsync 自己上：sink 实例跨回合复用，初值 true 只在
+    // 第一回合生效——之后每个回合都是「第 1 句边合成边播，第 2 句等第 1 句合成完才出声」，
+    // 句间静音长度 = 后一句的合成耗时，正好随文本变长。
+    private bool _held;
     private bool _running;
     private bool _disposed;
     private DateTimeOffset _busyUntil = DateTimeOffset.MinValue;

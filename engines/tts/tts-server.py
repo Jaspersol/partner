@@ -64,6 +64,15 @@ from qwen3_tts_gguf.inference.schema.constants import SPEAKER_MAP  # noqa: E402
 SAMPLE_RATE = 24_000
 VOICE_ANCHORS = ENGINE_DIR / "output" / "elaborate"
 
+# 必须关掉上游的流式播放：TTSConfig.streaming 默认 True，而 DecoderProxy 一构造就无条件拉起
+# SpeakerWorker（workers/speaker.py 里一个裸的 sd.OutputStream，不带 device=，也就是系统默认输出
+# 设备）。streaming=True 时每个解码块都会同时进 play_q（proxy.py:126），于是引擎自己也在放。
+#
+# 症状：本机永远多出一次「外放」，跟设置里的输出设备无关——设置成音箱就同一只音箱响两遍，
+# 设置成虚拟声卡就是「音箱一遍 + 虚拟通道一遍」。我们这条链路只消费 HTTP 返回的完整 WAV，
+# 流式播放对宿主毫无用处，关掉既消掉这次外放，也省掉分块解码。
+OFFLINE = TTSConfig(streaming=False)
+
 
 def resolve_voice(voice: str | None) -> str | None:
     """名字 → 可直接交给引擎的音色源。认不出来返回 None（调用方要报错，不能静默用默认音色）。
@@ -119,9 +128,14 @@ class EngineState:
             default_voice = resolved
         self.default_voice = default_voice
         if default_voice:
-            if not self.stream.set_voice(default_voice, "你好，很高兴见到你。"):
+            # config 只在「内置说话人 ID」那条路上被 set_voice 透传（json 锚点直接读文件，不合成）；
+            # 传上是为了那种情况下合成锚点样音时不外放。
+            if not self.stream.set_voice(default_voice, "你好，很高兴见到你。", config=OFFLINE):
                 raise SystemExit(f"voice anchor failed for {default_voice}")
-        print(f"tts-server ready: model={model_dir} voice={default_voice!r} device={device}")
+        print(
+            f"tts-server ready: model={model_dir} voice={default_voice!r} device={device} "
+            f"playback={'off' if not OFFLINE.streaming else 'ON'}"
+        )
 
 
 def float32_to_wav_bytes(samples, rate: int) -> bytes:
@@ -182,11 +196,11 @@ class Handler(BaseHTTPRequestHandler):
         with self.state.lock:
             try:
                 if voice and voice != self.state.default_voice:
-                    if not self.state.stream.set_voice(voice, text=text):
+                    if not self.state.stream.set_voice(voice, text=text, config=OFFLINE):
                         self._json(400, {"error": f"voice anchor failed for {voice!r}"})
                         return
 
-                result = self.state.stream.clone(text, language=language)
+                result = self.state.stream.clone(text, language=language, config=OFFLINE)
                 if result is None or result.audio is None:
                     self._json(500, {"error": "synthesis failed"})
                     return
