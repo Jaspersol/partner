@@ -8,6 +8,11 @@ src-tauri/gen/
 # Dependencies
 node_modules/
 
+# Python bytecode: engines/kws-asr/__pycache__ and engines/tts/__pycache__ are caches of the
+# wrappers, not inputs. Committing them means every edit re-commits a binary.
+__pycache__/
+*.pyc
+
 # IDE / editor
 .vs/
 .idea/
@@ -20,9 +25,16 @@ capabilities/manifest.json
 TestResults/
 *.trx
 
-# Local voice engines: downloaded/built by scripts/install-engines.ps1, too large for git (~1.3GB).
-# Engines themselves are ignored, but the HTTP wrappers and requirements stay tracked.
+# Local voice engines: downloaded/built by scripts/install-engines.ps1, too large for git (~2.7GB TTS
+# + ~380MB KWS+ASR). Engines themselves are ignored, but the HTTP wrappers and requirements stay tracked.
+# The TTS runtime is the GUI zip's own layout: Qwen3-TTS-GUI.exe + internal/ (Python 3.14 runtime,
+# qwen3_tts_gguf, ggml-vulkan.dll) + output/elaborate/ (voice anchors).
 engines/tts/qwen3_tts_gguf/
+engines/tts/internal/
+engines/tts/output/
 engines/tts/model/
+engines/tts/.venv/
+engines/tts/*.exe
+engines/tts/test-output.wav
 engines/kws-asr/models/
 engines/kws-asr/sherpa-onnx/

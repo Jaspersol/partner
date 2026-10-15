@@ -1,7 +1,7 @@
 # Install or update the local voice engines into engines/.
 #
 # What each engine costs on disk (see 根目录 本地音频.md for the runtime budget):
-#   tts : ~130MB runtime (Qwen3-TTS-GUI vulkan) + ~700MB of 0.6B GGUF models
+#   tts : ~130MB runtime (Qwen3-TTS-GUI vulkan zip) + ~2.4GB of 1.7B-Base model files
 #   kws : ~200MB (sherpa-onnx runtime) + ~240MB models + silero VAD
 #
 # Usage:
@@ -75,29 +75,51 @@ if ($Engine -in 'both', 'tts') {
         }
     }
 
-    # Models: the exporter's OUTPUT_DIR contains all six files tts-server needs. HuggingFace mirror
-    # via hf-mirror.com (GitHub raw is unreachable from this machine; modelscope is the alternative).
+    # Models: upstream ships the export bundle nowhere — its own "models" release tag carries zero
+    # assets, so the six files plus embeddings/ have to come from a re-upload. Solidaxel/Qwen3-TTS-GGUF
+    # is a 1.7B-Base export (the only variant mirrored); HuggingFace is unreachable from this network,
+    # hf-mirror.com serves the same repo. Embeddings are not optional: AssetsManager raises
+    # FileNotFoundError without text_embedding_projected.npy.
     $models = Join-Path $tts 'model'
-    if (-not (Test-Path (Join-Path $models 'qwen3_tts_predictor.q8_0.gguf'))) {
-        throw @"
-TTS engine runtime is in place, but the exported model files are not: $models
-They come from running the exporter inside the repo (stages 1–3 of its README) or from the
-companion export bundle. Place these six files into engines/tts/model/:
-    qwen3_tts_talker.q5_k.gguf        (~500MB)
-    qwen3_tts_predictor.q8_0.gguf     (~120MB)
-    qwen3_tts_decoder.fp16.onnx       (~60MB)
-    qwen3_tts_codec_encoder.fp16.onnx (~30MB)
-    qwen3_tts_speaker_encoder.fp16.onnx (~10MB)
-    tokenizer.json                    (~10MB)
-"@
+    $hf = 'https://hf-mirror.com/Solidaxel/Qwen3-TTS-GGUF/resolve/main'
+    $modelFiles = @(
+        'qwen3_tts_talker.q5_k.gguf'                # 1006MB  LLM backbone (llama.cpp, q5_k)
+        'qwen3_tts_predictor.q8_0.gguf'             #  151MB  acoustic predictor
+        'qwen3_tts_decoder.fp16.onnx'               #  230MB  renderer (DirectML)
+        'qwen3_tts_codec_encoder.fp16.onnx'         #  114MB  cloning
+        'qwen3_tts_speaker_encoder.fp16.onnx'       #   24MB  cloning
+        'tokenizer.json'                            #   11MB
+        'embeddings/text_embedding_projected.npy'   #  622MB
+        'embeddings/proj_weight.npy'
+        'embeddings/proj_bias.npy'
+    ) + (0..15 | ForEach-Object { "embeddings/codec_embedding_$_.npy" })
+
+    foreach ($relative in $modelFiles) {
+        $target = Join-Path $models ($relative -replace '/', '\')
+        if (Test-Path $target) { continue }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Get-Url "$hf/$relative" $target
     }
+
+    # tts-server.py needs a real interpreter (the zip's GUI exe is not used by the shell).
+    $venv = Join-Path $tts '.venv'
+    if (-not (Test-Path (Join-Path $venv 'Scripts\python.exe'))) {
+        Write-Host "creating venv (3.13; upstream pins 3.14 but the inference subset installs on 3.13)"
+        & py -3.13 -m venv $venv
+    }
+    & (Join-Path $venv 'Scripts\python.exe') -m pip install --quiet --upgrade pip
+    & (Join-Path $venv 'Scripts\pip.exe') install --quiet -r (Join-Path $tts 'requirements.txt')
 
     # FFmpeg must be on PATH for reference-WAV reading (upstream requirement).
     if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
         Write-Warning "ffmpeg not on PATH — TTS reference audio (cloning) will fail until it is."
     }
 
-    Write-Host "tts engine ready: engines/tts (qwen3_tts_gguf + models/)"
+    Write-Host @"
+tts engine ready: engines/tts (internal/ runtime + model/ + .venv)
+run it with:
+  engines\tts\.venv\Scripts\python.exe engines\tts\tts-server.py --port 45102
+"@
 }
 
 # ---- KWS+ASR: sherpa-onnx runtime + SenseVoice + zipformer KWS ----

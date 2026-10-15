@@ -13,6 +13,12 @@ public sealed record VoiceInputSetting
     /// </summary>
     public IWakeChecker? Wake { get; init; }
 
+    /// <summary>
+    /// 唤醒命中瞬间的提示音（叮），在输出设备上自发播放。null/关 = 静默进会话。
+    /// 无回调依赖：宿主把 sink 交给 <see cref="VoiceInputHalf"/>，命中那 tick 直接 Enqueue。
+    /// </summary>
+    public bool WakeTone { get; init; } = true;
+
     /// <summary>Input device name (partial, case/space-insensitive match) or null for the system default.</summary>
     public string? DeviceId { get; init; }
 

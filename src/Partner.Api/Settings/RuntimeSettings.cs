@@ -219,6 +219,9 @@ public sealed record InputSettings
     /// <summary>Fixed RMS gate; must sit above the room noise floor or silence is never detected.</summary>
     public double SilenceThreshold { get; init; } = 0.03;
 
+    /// <summary>唤醒命中时在输出设备上播放一声提示（叮）。跟输入同卡，因为它是唤醒门的附属反馈。</summary>
+    public bool WakeTone { get; init; } = true;
+
     /// <summary>Absolute silence that ends the utterance.</summary>
     public double UtteranceGapMs { get; init; } = 1200;
 
@@ -348,6 +351,12 @@ public sealed record LocalEngineSettings : IEquatable<LocalEngineSettings>
     /// <summary>进程启动后到第一批请求可以发出去的宽限；启动慢于它的引擎会吃连接失败与重试。</summary>
     public int ReadyTimeoutSeconds { get; init; } = 30;
 
+    /// <summary>
+    /// 唤醒词（显示名），引擎支持时整表替换：引擎端负责转拼音、落盘并重建识别流。仅 KWS 语义；
+    /// 空 = 不下发，引擎保留自己的默认词表—— Bazı 引擎（纯 TTS）没有词表概念。
+    /// </summary>
+    public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
+
     public bool Equals(LocalEngineSettings? other) =>
         other is not null
         && Enabled == other.Enabled
@@ -355,10 +364,11 @@ public sealed record LocalEngineSettings : IEquatable<LocalEngineSettings>
         && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
         && WorkingDirectory == other.WorkingDirectory
         && Port == other.Port
-        && ReadyTimeoutSeconds == other.ReadyTimeoutSeconds;
+        && ReadyTimeoutSeconds == other.ReadyTimeoutSeconds
+        && Keywords.SequenceEqual(other.Keywords, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Enabled, Command, Arguments.Count, WorkingDirectory, Port, ReadyTimeoutSeconds);
+        HashCode.Combine(Enabled, Command, Arguments.Count, WorkingDirectory, Port, ReadyTimeoutSeconds, Keywords.Count);
 }
 
 /// <summary>Mirrors <c>HttpLlmOptions</c>. The key is write-only; see <see cref="ModelSettingsView"/>.</summary>

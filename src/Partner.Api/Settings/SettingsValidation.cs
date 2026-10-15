@@ -54,14 +54,16 @@ public static class SettingsValidation
         CheckEndpoint("tts", settings.Tts.BaseUrl, null, errors);
         CheckEndpoint("model", settings.Model.BaseUrl, settings.Model.Model, errors);
 
-        if (settings.Asr.Protocol != AsrProtocols.ChatAudio && settings.Asr.Protocol != AsrProtocols.OpenAi)
+        var asrProtocols = AsrProtocols.Values;
+        if (!asrProtocols.Contains(settings.Asr.Protocol, StringComparer.Ordinal))
         {
-            errors.Add("asr.protocol 必须是 chat-audio 或 openai");
+            errors.Add($"asr.protocol 必须是 {string.Join(" / ", asrProtocols)}");
         }
 
-        if (settings.Tts.Protocol != TtsProtocols.Native && settings.Tts.Protocol != TtsProtocols.OpenAi)
+        var ttsProtocols = TtsProtocols.Values;
+        if (!ttsProtocols.Contains(settings.Tts.Protocol, StringComparer.Ordinal))
         {
-            errors.Add("tts.protocol 必须是 native 或 openai");
+            errors.Add($"tts.protocol 必须是 {string.Join(" / ", ttsProtocols)}");
         }
 
         if (settings.Tts.Speed < 0)
