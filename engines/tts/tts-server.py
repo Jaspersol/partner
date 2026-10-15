@@ -8,16 +8,22 @@
 
 用法（engines/tts 下，先 pip install -r requirements.txt）:
 
-    python tts-server.py --model-dir model-base --voice vivian --port 45102 --device vulkan
+    .venv/Scripts/python.exe tts-server.py --voice vivian --port 45102 --device vulkan
 
-`voice` 可以是内置音色 ID（vivian/serena/…，CustomVoice 模型）或 wav/json 参考文件路径
-（Base 模型克隆）；每次请求可用 `voice` 覆盖默认音色，未提供则用启动时的默认锚点。
+模型走 `--model-dir`（默认 `model/`，即 engines/tts/model）。`voice` 三种写法，按顺序解析：
+
+  1. `output/elaborate/Vivian.json` 这类路径 → 直接当音色锚点（Base 模型克隆）
+  2. `vivian` / `晓晓` 这类名字 → 命中 `output/elaborate/<名字>.json`（zip 自带 8 个锚点）
+  3. 其它名字 → 交给上游当内置说话人 ID（vivian/serena/… 需 CustomVoice 导出，本仓默认装的是 Base）
+
+每次请求可用 `voice` 覆盖默认音色，未提供则用启动时的默认锚点。
 """
 from __future__ import annotations
 
 import argparse
 import io
 import json
+import os
 import struct
 import sys
 import threading
@@ -25,33 +31,92 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# 上游到处 print emoji；Windows 控制台默认 GBK，`print('🔊 …')` 会抛 UnicodeEncodeError。
+# 对宿主无所谓，对解码器子进程是致命的：worker 一崩，主进程 wait_until_ready 超时，
+# 报出来的是「engine init failed — missing model files?」，跟真实原因差了十万八千里。
+# 环境变量让 spawn 出来的子进程也吃这套（子进程会重新 import 本模块），reconfigure 管当前进程。
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):  # 被重定向成非 TextIO 时不值得为它挂掉
+        pass
+
 ENGINE_DIR = Path(__file__).resolve().parent
 
-# qwen3_tts_gguf 包在 engines/tts/qwen3_tts_gguf/（GUI zip 解包后）
+# GUI zip 的布局：Qwen3-TTS-GUI.exe + internal/（包本体与 llama.dll）+ output/elaborate/（音色锚点）。
+# 包在 internal/ 下，所以 internal 要进 sys.path——上游的 __init__.py 还会往 PROJECT_ROOT
+# （也就是 internal/）写 log/。
+#
+# 但必须**追加**而不是插到最前：internal/ 是 PyInstaller 的 Python 3.14 运行时（53 个 dll + 19 个
+# cp314 .pyd，含 python314.dll）。排在 stdlib 前面会遮蔽本 venv 的 _ctypes 等，报
+# "Module use of python314.dll conflicts with this version of Python"。追加后
+# venv 的 site-packages 优先，只把 internal/ 里独有包名（qwen3_tts_gguf）当兜底。
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
+if str(ENGINE_DIR / "internal") not in sys.path:
+    sys.path.append(str(ENGINE_DIR / "internal"))
 
-from qwen3_tts_gguf import TTSEngine, TTSConfig  # noqa: E402
+from qwen3_tts_gguf.inference import TTSEngine, TTSConfig  # noqa: E402
+from qwen3_tts_gguf.inference.schema.constants import SPEAKER_MAP  # noqa: E402
 
 SAMPLE_RATE = 24_000
+VOICE_ANCHORS = ENGINE_DIR / "output" / "elaborate"
+
+
+def resolve_voice(voice: str | None) -> str | None:
+    """名字 → 可直接交给引擎的音色源。认不出来返回 None（调用方要报错，不能静默用默认音色）。
+
+    三种命中：锚点路径（json/wav）→ 原样；锚点名（大小写不敏感）→ output/elaborate 下的 json；
+    内置说话人 ID（vivian/serena/…）→ 原样，由上游走 spk_embd。
+
+    最后那一路是上游的兜底逻辑：name 不在表里时 map_speaker 只打个 warning、返回 None，
+    然后照样合成出一段默认音色的音频。所以「没认出来」必须在这里挡住——否则用户把音色名
+    打错一个字，得到的是默认嗓子而不是错误。
+    """
+    if not voice:
+        return None
+    path = Path(voice)
+    if path.suffix.lower() in (".json", ".wav") or path.exists():
+        return str(path)
+    for candidate in sorted(VOICE_ANCHORS.glob("*.json")):
+        if candidate.stem.lower() == voice.lower():
+            return str(candidate)
+    if voice.lower() in SPEAKER_MAP:
+        return voice
+    return None
 
 
 class EngineState:
     """一个流一个音色锚点；并发请求排队串行化（引擎本质是单流推理）。"""
 
-    def __init__(self, model_dir: str, default_voice: str, device: str):
+    def __init__(self, model_dir: str, default_voice: str | None, device: str):
         onnx_provider = {"vulkan": "DML", "cpu": "CPUExecutionProvider"}.get(device, "DML")
+        # 绝对路径：解码器子进程（multiprocessing spawn）的 cwd 不保证一样。
+        model_path = str(Path(model_dir).resolve())
         self.engine = TTSEngine(
-            model_dir=model_dir,
+            model_dir=model_path,
             onnx_provider=onnx_provider,
             llm_use_gpu=device != "cpu",
             verbose=False,
         )
         if not self.engine.ready:
-            raise SystemExit("engine init failed — missing model files?")
+            raise SystemExit(
+                f"engine init failed — 检查 {Path(model_path)} 下六个模型文件是否齐全，"
+                "以及 internal/log/latest.log（解码器子进程崩在这里，不看日志只会看到这句）"
+            )
 
         self.lock = threading.Lock()
         self.stream = self.engine.create_stream()
+        if default_voice:
+            resolved = resolve_voice(default_voice)
+            if resolved is None:
+                raise SystemExit(
+                    f"unknown voice {default_voice!r} — 锚点见 {VOICE_ANCHORS}/*.json，"
+                    f"或内置 ID {sorted(SPEAKER_MAP)}"
+                )
+            default_voice = resolved
         self.default_voice = default_voice
         if default_voice:
             if not self.stream.set_voice(default_voice, "你好，很高兴见到你。"):
@@ -103,7 +168,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "input is required"})
             return
 
-        voice = request.get("voice") or self.state.default_voice
+        requested = request.get("voice")
+        if requested:
+            voice = resolve_voice(requested)
+            if voice is None:
+                self._json(400, {"error": f"unknown voice {requested!r}"})
+                return
+        else:
+            voice = self.state.default_voice
         language = request.get("language") or "chinese"
         speed = float(request.get("speed") or 1.0)
 
@@ -161,8 +233,8 @@ def _resample(samples, speed: float):
 
 def serve():
     parser = argparse.ArgumentParser(description="Qwen3-TTS GGUF OpenAI-compatible server")
-    parser.add_argument("--model-dir", required=True, help="e.g. model-base / model-custom")
-    parser.add_argument("--voice", default=None, help="内置音色 ID 或 wav/json 参考路径；不设则每次请求必须给 voice")
+    parser.add_argument("--model-dir", default=str(ENGINE_DIR / "model"), help="默认 engines/tts/model")
+    parser.add_argument("--voice", default="Vivian", help="锚点名/路径/内置 ID；默认 Vivian（zip 自带锚点）")
     parser.add_argument("--port", type=int, default=45102)
     parser.add_argument("--device", default="vulkan", choices=["vulkan", "cpu"])
     args = parser.parse_args()

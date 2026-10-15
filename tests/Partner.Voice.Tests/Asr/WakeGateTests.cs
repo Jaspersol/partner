@@ -19,9 +19,13 @@ public sealed class WakeGateTests
 
         public int Polls { get; private set; }
 
+        /// <summary>每次探针帧的长度，用来证明前置音频真的拼上去了。</summary>
+        public List<int> FrameLengths { get; } = new();
+
         public Task<LocalWakeClient.WakeHit> PollAsync(float[] frame, CancellationToken ct = default)
         {
             Polls++;
+            FrameLengths.Add(frame.Length);
             return Task.FromResult(Respond?.Invoke(frame)
                 ?? new LocalWakeClient.WakeHit(null, 0, 0));
         }
@@ -99,6 +103,45 @@ public sealed class WakeGateTests
     }
 
     [Fact]
+    public async Task Wake_hit_plays_the_tone_exactly_once_per_transition()
+    {
+        var tones = 0;
+        var source = new SyntheticAudioSource(SampleRate);
+        var wake = new ScriptedWake();
+        var half = new VoiceInputHalf(
+            new VoiceInputSetting
+            {
+                Enabled = true,
+                SilenceThreshold = 0.03,
+                UtteranceGapMs = 1200,
+                WindowSeconds = 8,
+                Wake = wake,
+                WakeTone = true,
+            },
+            source,
+            new NullAsr(),
+            new PlaybackGate(),
+            _ => Task.CompletedTask,
+            wakeTone: () => tones++);
+
+        half.Start();
+        wake.Respond = frame => new LocalWakeClient.WakeHit("军哥", 0, 0.9);
+        await AdvanceAsync(half, source, 1.0, 0.1f);
+
+        // 多次 tick 只在关→开的那一瞬达拨过一声；引擎持续命中时不再重复。
+        Assert.Equal(1, tones);
+
+        wake.Respond = null;
+        await AdvanceAsync(half, source, 3.0, 0.5f);
+        await AdvanceAsync(half, source, 1.5, 0f);
+        Assert.False(half.Awake); // 会话闭了。
+
+        wake.Respond = frame => new LocalWakeClient.WakeHit("军哥", 0, 0.9);
+        await AdvanceAsync(half, source, 1.0, 0.1f);
+        Assert.Equal(2, tones); // 第二次唤醒再拨一声——每次进入会话都有。
+    }
+
+    [Fact]
     public async Task Wake_poll_failure_does_not_kill_the_half()
     {
         var (half, source, _, utterances) = Create();
@@ -108,6 +151,43 @@ public sealed class WakeGateTests
 
         Assert.Empty(utterances);
         Assert.True(half.IsRunning); // 半区活着。
+    }
+
+    /// <summary>
+    /// 探针帧必须比纯增量长：KWS 解码器要左边上下文才命中（实测前置 0.3s 打不出、1.0s 才命中），
+    /// 裸增量永远不会响。前置窗口要等音频写满 1s 才成形，所以只对那之后的探针断言。
+    /// </summary>
+    [Fact]
+    public async Task Wake_probe_carries_lead_context_not_bare_increment()
+    {
+        var (half, source, wake, _) = Create();
+
+        // 4s 语音：远超 1s 前置窗口，足够发生多次「前置已满」的探针。
+        await AdvanceAsync(half, source, 4.0, 0.5f);
+
+        Assert.True(wake.Polls > 0);
+        Assert.True(wake.FrameLengths.Count >= 20, "not enough probes to judge the lead window");
+
+        // 最小增量 100ms + 满前置 1s = 1.1s；少一个样本都说明前置掉了。
+        var settled = wake.FrameLengths.Skip(10).ToList();
+        Assert.All(settled, length => Assert.True(
+            length >= (int)(SampleRate * 1.1),
+            $"probe frame {length} samples lacks the 1s lead context"));
+    }
+
+    /// <summary>前置窗口之外的音频不占探针帧：帧有上限，否则一次请求会灌进整段历史。</summary>
+    [Fact]
+    public async Task Wake_probe_frame_stays_bounded()
+    {
+        var (half, source, wake, _) = Create();
+
+        await AdvanceAsync(half, source, 4.0, 0.5f);
+
+        Assert.True(wake.Polls > 0);
+        // 增量上限 2s + 前置 1s，再加一个 tick 的余量。
+        Assert.All(wake.FrameLengths, length => Assert.True(
+            length <= SampleRate * 3.2,
+            $"probe frame {length} samples exceeds the 1s lead + 2s increment budget"));
     }
 
     [Fact]

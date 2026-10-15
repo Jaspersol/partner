@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Net.Http.Json;
 using Partner.Api.Settings;
 
 namespace Partner.Api.Voice;
@@ -40,6 +41,10 @@ public sealed class LocalEngineHost : IAsyncDisposable
 
             _tts = await ApplyAsync(_tts, settings.Tts, "TTS").ConfigureAwait(false);
             _kws = await ApplyAsync(_kws, settings.Kws, "KWS/ASR").ConfigureAwait(false);
+            if (_kws is { IsRunning: true })
+            {
+                await PushKeywordsAsync(_kws).ConfigureAwait(false);
+            }
             return State;
         }
         finally
@@ -48,7 +53,8 @@ public sealed class LocalEngineHost : IAsyncDisposable
         }
     }
 
-    /// <summary>Idempotent convergence: a correctly-running engine is left alone.</summary>
+    /// <summary>Idempotent convergence: a correctly-running engine is left alone. 词表在引擎活着时才推，
+    /// 所以引擎中途重启（Exited→下次 Reconfigure 重拉）后 _keywordsSynced 随新实例归零，会重新下发。</summary>
     private static async Task<ManagedEngine?> ApplyAsync(ManagedEngine? current, LocalEngineSettings wanted, string name)
     {
         // 同配置且进程活着：什么都不做——设置保存不应抖动已在跑的引擎。
@@ -70,6 +76,48 @@ public sealed class LocalEngineHost : IAsyncDisposable
         }
 
         return await ManagedEngine.StartAsync(wanted, name).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 词表下发。配置里的 Keywords 非空才推——引擎端ী换表要重建识别流（读文件、建 spotter），是实质动作；
+    /// 空表 = 用户没配 = 保留引擎当前的词表，不被宿主静默清空。失败不抛：词表没同步上不该让设置保存
+    /// 整个 500，状态里已能看到引擎在跑；下次改任意配置会再推。
+    /// </summary>
+    private static async Task PushKeywordsAsync(ManagedEngine engine)
+    {
+        var keywords = engine.SettingsSnapshot.Keywords;
+        if (keywords.Count == 0 || engine.KeywordsSynced)
+        {
+            return;
+        }
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+            // 引擎端点吃 {"keywords":[…]} 包装对象（和它的 GET 返回同形），不是裸数组。
+            // 手拼 UTF-8 字节直发：PutAsJsonAsync 的 formatter 层在真实机上把 body 变成 {}，
+            // 引擎读出来是空词表、词推不上去。
+            var payload = System.Text.Json.JsonSerializer.Serialize(
+                new Dictionary<string, object?> { ["keywords"] = keywords });
+            using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            using var response = await http.PutAsync(
+                $"http://127.0.0.1:{engine.SettingsSnapshot.Port}/keywords",
+                content).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                engine.KeywordsSynced = true;
+            }
+            else
+            {
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Console.Error.WriteLine(
+                    $"LocalEngineHost: KWS 词表下发失败 HTTP {(int)response.StatusCode} {body}");
+            }
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+        {
+            Console.Error.WriteLine($"LocalEngineHost: KWS 词表下发失败 {error.Message}");
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -98,6 +146,13 @@ public sealed class LocalEngineHost : IAsyncDisposable
     {
         private readonly LocalEngineSettings _settings;
         private Process? _process;
+        private EngineJob? _job;
+
+        /// <summary>词表已在本次进程生命周期里成功下发过；防止每次 Reconfigure 都重建一遍识别流。</summary>
+        public bool KeywordsSynced;
+
+        /// <summary>启动它时用的那份配置；词表下发要读它的 Keywords 与 Port。</summary>
+        public LocalEngineSettings SettingsSnapshot => _settings;
 
         private ManagedEngine(LocalEngineSettings settings, LocalEngineState state)
         {
@@ -171,6 +226,9 @@ public sealed class LocalEngineHost : IAsyncDisposable
             }
 
             engine._process = process;
+            // 作业对象是「应用退出=引擎退出」的兜底：引擎的显存/内存只在进程退出时释放（本地音频.md），
+            // 若 API 崩溃或被硬杀走不到 DisposeAsync，内核就必须代劳——作业句柄随本进程消亡，整树被杀。
+            engine._job = EngineJob.Create(process, name);
             var pid = process.Id;
 
             // 引擎进程闪退必须有理由：等一小段，退出即报进程码，活下来才算「运行中」。
@@ -211,6 +269,8 @@ public sealed class LocalEngineHost : IAsyncDisposable
                 // 已经退出或无法等待；无需再处理。
             }
 
+            _job?.Dispose();
+            _job = null;
             process.Dispose();
             State = new LocalEngineState(false, "已停止", null);
         }

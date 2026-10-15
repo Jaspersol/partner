@@ -25,6 +25,7 @@ public static class VoiceSettingsMapping
             Enabled = settings.Enabled,
             DeviceId = settings.DeviceId,
             SilenceThreshold = settings.SilenceThreshold,
+            WakeTone = settings.WakeTone,
             UtteranceGapMs = settings.UtteranceGapMs,
             SentenceGapMs = settings.SentenceGapMs,
             WindowSeconds = settings.WindowSeconds,
@@ -137,7 +138,16 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
 
     public IAudioSink OpenSink(VoiceOutputSetting setting) => new WasapiAudioSink(setting);
 
-    public IAsrClient CreateAsr(AsrOptions options) =>
+    public IAsrClient CreateAsr(AsrOptions options) => CreateAsrClient(options);
+
+    public ITtsClient CreateTts(TtsOptions options) => CreateTtsClient(options);
+
+    public IReadOnlyList<string> ListInputDevices() => WasapiAudioSource.ListDevices();
+
+    public IReadOnlyList<string> ListOutputDevices() => WasapiAudioSink.ListDevices();
+
+    /// <summary>Protocol → client. Shared so the settings test endpoint probes the same wiring as the host.</summary>
+    public static IAsrClient CreateAsrClient(AsrOptions options) =>
         AsrProtocols.Normalize(options.Protocol) switch
         {
             AsrProtocols.OpenAi => new OpenAiAsrClient(options),
@@ -145,14 +155,10 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
             _ => new HttpAsrClient(options),
         };
 
-    public ITtsClient CreateTts(TtsOptions options) =>
+    public static ITtsClient CreateTtsClient(TtsOptions options) =>
         TtsProtocols.Normalize(options.Protocol) == TtsProtocols.OpenAi
             ? new OpenAiTtsClient(options)
             : new HttpTtsClient(options);
-
-    public IReadOnlyList<string> ListInputDevices() => WasapiAudioSource.ListDevices();
-
-    public IReadOnlyList<string> ListOutputDevices() => WasapiAudioSink.ListDevices();
 }
 
 /// <summary>What one half is doing. The device and the reason are reported, never assumed.</summary>
@@ -203,6 +209,9 @@ public sealed class VoiceHost : IAsyncDisposable
     private VoiceHalfState _inputState = VoiceState.Idle.Input;
     private VoiceHalfState _outputState = VoiceState.Idle.Output;
 
+    /// <summary>输出设置里配的播放采样率。唤醒提示音按它合成，与 TTS 同档才不会被 sink 分到另一个流。</summary>
+    private int _toneSampleRate = 24_000;
+
     private VoiceHost(ApiContext context, IVoiceComponents components)
     {
         _context = context;
@@ -246,8 +255,10 @@ public sealed class VoiceHost : IAsyncDisposable
     {
         _stop = new CancellationTokenSource();
 
-        StartInput(settings);
+        // 输出先起：输入半区的唤醒提示音要往 sink 里灌音，输入建在输出之前就永远拿不到 sink
+        // （_sink 还是 null），提示音静默失效。反过来没有依赖，所以这个顺序不许换。
         StartOutput(settings);
+        StartInput(settings);
     }
 
     private void StartInput(Settings.RuntimeSettings settings)
@@ -279,16 +290,49 @@ public sealed class VoiceHost : IAsyncDisposable
 
         _asr = _components.CreateAsr(asrOptions);
 
+        // 唤醒提示音：在输出设备上短促一声。输出未启用（无 sink）时自然没有提示——输入开关照常工作。
         _input = new VoiceInputHalf(
             inputSetting,
             _source,
             _asr,
             _playbackGate,
-            async utterance => await EnqueueAsync(utterance).ConfigureAwait(false));
+            async utterance => await EnqueueAsync(utterance).ConfigureAwait(false),
+            wakeTone: _sink is null ? null : PlayWakeTone);
 
         _input.Start();
         _inputLoop = RunInputAsync(_stop!.Token);
         _inputState = new VoiceHalfState(true, "运行中", _source.DeviceName, 0);
+    }
+
+    /// <summary>
+    /// 唤醒提示音：短促两音（880→1320 Hz，各 80 ms，能量 0.18）——高音在后的双音比单音更像「叮咚」，
+    /// 也更容易和 TTS 的开口区分开。
+    /// <para>
+    /// 采样率必须跟 TTS 输出同一档：<see cref="WasapiAudioSink"/> 是「一种速率一个
+    /// <c>WaveOutEvent</c>」，频率不同就另外开一个流，而旧的那个还在播——同一句就会
+    /// 「前半段放到一半，第二段从头重叠」（用户报的双声 bug）。sink 在被首次写入前并不知道
+    /// 自己会开成什么速率，所以这里用输出设置里配好的那个值，不用 sink 的当前状态。
+    /// </para>
+    /// </summary>
+    private void PlayWakeTone()
+    {
+        var sink = _sink;
+        if (sink is null)
+        {
+            return;
+        }
+
+        const double toneSeconds = 0.08, firstFreq = 880, secondFreq = 1320, amplitude = 0.18;
+        var rate = _toneSampleRate;
+        var buffer = new float[(int)(toneSeconds * rate * 2)];
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            var freq = i < buffer.Length / 2 ? firstFreq : secondFreq;
+            var phase = i % (int)(buffer.Length / 2);
+            buffer[i] = (float)(amplitude * Math.Sin(2 * Math.PI * freq * phase / rate));
+        }
+
+        sink.Enqueue(buffer, rate);
     }
 
     private void StartOutput(Settings.RuntimeSettings settings)
@@ -320,6 +364,10 @@ public sealed class VoiceHost : IAsyncDisposable
 
         _tts = _components.CreateTts(ttsOptions);
         _sink.Start();
+
+        // 提示音的采样率跟着这里定：之后任何一路（TTS 块、提示音）都得用这一档，
+        // 否则 sink 会为不同速率各开一个设备流，正在播的那段会被从头再放一遍。
+        _toneSampleRate = outputSetting.SampleRate;
 
         _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate);
         _outputLoop = RunOutputAsync(_stop!.Token);

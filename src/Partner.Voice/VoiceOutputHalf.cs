@@ -98,7 +98,7 @@ public sealed class VoiceOutputHalf : IDisposable
         var ready = Segmenter.Push(cleaned);
         var items = new List<SpeechItem>();
 
-        foreach (var sentence in ready)
+        foreach (var sentence in DeduplicateAgainstPending(ready))
         {
             var item = new SpeechItem
             {
@@ -127,7 +127,7 @@ public sealed class VoiceOutputHalf : IDisposable
             return;
         }
 
-        foreach (var sentence in Segmenter.Flush())
+        foreach (var sentence in DeduplicateAgainstPending(Segmenter.Flush()))
         {
             _items.Add(new SpeechItem
             {
@@ -250,5 +250,33 @@ public sealed class VoiceOutputHalf : IDisposable
         {
             _items[index] = updated;
         }
+    }
+
+    /// <summary>
+    /// 同文本句子去重：新句子若与仍在播/仍在队里的上一句一字不差，丢弃。真实复现里 assistant 文本
+    /// 重复到达（重试、日志重放等上层未知路径）时，听众听到的是「第一段放到一半，第二段从头又来」——
+    /// 合成层拦截比在播放层找两个播放器便宜，也直接对得上症状。
+    /// </summary>
+    private IReadOnlyList<string> DeduplicateAgainstPending(IReadOnlyList<string> sentences)
+    {
+        if (sentences.Count == 0)
+        {
+            return sentences;
+        }
+
+        var result = new List<string>(sentences.Count);
+        foreach (var sentence in sentences)
+        {
+            // 与最近尚未播完的一句比对即可：重复的来源是把同一文本再走一遍流程，中间必然隔着播放时长。
+            var duplicate = _items
+                .Where(i => i.Status is not (SpeechStatus.Played or SpeechStatus.Failed))
+                .Any(i => string.Equals(i.Text, sentence, StringComparison.Ordinal));
+            if (!duplicate)
+            {
+                result.Add(sentence);
+            }
+        }
+
+        return result;
     }
 }

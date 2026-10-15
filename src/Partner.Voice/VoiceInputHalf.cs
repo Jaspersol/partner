@@ -53,6 +53,9 @@ public sealed class VoiceInputHalf : IDisposable
     private readonly Action<string> _log;
     private readonly List<VoiceUtterance> _utterances = new();
 
+    /// <summary>唤醒命中时播放提示音的回调（宿主给 output sink 的 Enqueue）；null = 静默进会话。</summary>
+    private readonly Action? _wakeTone;
+
     private bool _running;
     private bool _wasGated;
     private double _gateCursor;
@@ -69,7 +72,8 @@ public sealed class VoiceInputHalf : IDisposable
         IAsrClient asr,
         PlaybackGate gate,
         Func<VoiceUtterance, Task> onUtterance,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        Action? wakeTone = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _source = source ?? throw new ArgumentNullException(nameof(source));
@@ -77,6 +81,8 @@ public sealed class VoiceInputHalf : IDisposable
         _gate = gate ?? throw new ArgumentNullException(nameof(gate));
         _onUtterance = onUtterance ?? throw new ArgumentNullException(nameof(onUtterance));
         _log = log ?? (_ => { });
+        // 提示音是输出设备的职责，输入半区不该知道 sink 类型——只收一个动作。
+        _wakeTone = settings.WakeTone ? wakeTone : null;
 
         Ring = new AudioRingBuffer(settings.WindowSeconds + 2.0, source.SampleRate);
         Detector = new PauseBlockingDetector(settings);
@@ -218,17 +224,37 @@ public sealed class VoiceInputHalf : IDisposable
 
     private async Task PollWakeAsync(CancellationToken ct)
     {
-        // 每次探针攒 ~320ms 的采集（16 tick × 20ms），既是引擎端的有效上下文，
-        // 也把 HTTP 开销摊到 3 次/秒。
-        _wakeProbe = _wakeProbe is null ? new List<float[]>() : _wakeProbe;
-        _wakeProbe.Add(Ring.ReadLast(0.32) ?? Array.Empty<float>());
-        if (AccumulatedProbeSamples() < 16_000 * 0.30)
+        // 探针读增量：从上次探针读到的位置起把新增的采集拿走。曾经每 tick 读「最近 320ms」再攒
+        // 几个 tick 合并成立刻发送——那样相邻探针重叠 5/6，同一段音频被引擎一张流反复灌入，
+        // 流式状态被污染，真实说话永远打不出命中（干净整段喂则一切正常）。增量读一次不错位。
+        //
+        // 但增量还得带「前置静音」一起送。实测：同一个 KWS 引擎，喂同一个词音频，
+        // 前置 0.3s 静音打不出命中，前置 1.0s 才命中——zipformer KWS 的解码器要用一小段
+        // 左边上下文才能定住状态。裸增量前面什么都没有，所以之前「引擎没问题、探针也干净」
+        // 却永远不响。
+        var delta = Ring.ReadSince(_wakeCursor, 2.0);
+        if (delta is null || delta.Length < 16_000 * 0.10)
         {
-            return; // 攒不满就先不问；采集刚起头时一两 tick 就补齐。
+            if (delta is null)
+            {
+                // 环形已被冲刷（窗口过期）：游标跟到当前流位置，重新起步。
+                _wakeCursor = Ring.Seconds;
+            }
+
+            return; // 攒不满就不问：HTTP 频率被 100ms 增量摊薄到 ≤10 次/秒。
         }
 
-        var frame = MergeProbe(_wakeProbe);
-        _wakeProbe.Clear();
+        // 增量前拼 1s 前置音频：KWS 解码器要左边上下文。拼的是「游标往前 1s 到游标」这一段，
+        // 重复喂给流里无害（同一个流本来就持续消费重叠内容），但裸增量一定不命中。
+        // 读的是 [cursor-1s, cursor]：maxSeconds 从被读位置起算，所以上限是前置长度本身——
+        // 传给 WakeLeadSeconds 正好把前置窗口读完，不会多带后续增量。
+        var lead = Ring.ReadSince(Math.Max(0, _wakeCursor - WakeLeadSeconds), WakeLeadSeconds)
+                   ?? Array.Empty<float>();
+        var frame = new float[lead.Length + delta.Length];
+        lead.CopyTo(frame, 0);
+        delta.CopyTo(frame, lead.Length);
+
+        _wakeCursor = Ring.Seconds; // 送出后才推进游标：没送出的增量下个 tick 还在原地等。
 
         try
         {
@@ -238,6 +264,7 @@ public sealed class VoiceInputHalf : IDisposable
                 _awake = true;
                 // 唤醒瞬间相当于一段新语音的开始：重置判定，让唤醒词后的话从干净状态进停顿机。
                 Detector.OnGateReleased(Ring.Seconds);
+                _wakeTone?.Invoke();
                 _log($"voice: wake word \"{hit.Keyword}\" ({hit.Confidence:0.00}) — listening");
             }
         }
@@ -252,23 +279,15 @@ public sealed class VoiceInputHalf : IDisposable
         }
     }
 
-    private List<float[]>? _wakeProbe;
+    /// <summary>上次探针读到的流位置（Ring.Seconds）；探针从它起读增量，不重叠。</summary>
+    private double _wakeCursor;
 
-    private int AccumulatedProbeSamples() => _wakeProbe?.Sum(buffer => buffer.Length) ?? 0;
+    /// <summary>
+    /// 唤醒探针前置音频长度（秒）。KWS 解码器要靠左边上下文定状态，实测 0.3s 前置打不出命中、
+    /// 1.0s 才稳——取 1s 与实测一致，不靠猜。这段音频会重复喂给流的同一位置，无害。
+    /// </summary>
+    private const double WakeLeadSeconds = 1.0;
 
-    private static float[] MergeProbe(List<float[]> buffers)
-    {
-        var total = buffers.Sum(buffer => buffer.Length);
-        var merged = new float[total];
-        var offset = 0;
-        foreach (var buffer in buffers)
-        {
-            Array.Copy(buffer, 0, merged, offset, buffer.Length);
-            offset += buffer.Length;
-        }
-
-        return merged;
-    }
 
     public void Stop()
     {

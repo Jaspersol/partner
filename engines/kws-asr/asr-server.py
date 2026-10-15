@@ -91,6 +91,7 @@ class Recognizers:
 
     def __init__(self, models: Path, threads: int, keywords_path: Path | None, wake_ring: WakeRing) -> None:
         self.wake_ring = wake_ring
+        self.keywords_path = keywords_path
 
         asr_dir = models / "sensevoice"
         self.recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
@@ -105,23 +106,35 @@ class Recognizers:
         self.kws = None
         self._kws_lock = threading.Lock()
         self._kws_stream = None
+        self.models = models
+        self.threads = threads
+        self.picked = pick_kws_files(models / "kws") if keywords_path is not None else None
         if keywords_path is not None and keywords_path.exists():
-            picked = pick_kws_files(models / "kws")
-            if picked is not None:
-                encoder, decoder, joiner = picked
-                self.kws = sherpa_onnx.KeywordSpotter(
-                    tokens=str(models / "kws" / "tokens.txt"),
-                    encoder=str(encoder),
-                    decoder=str(decoder),
-                    joiner=str(joiner),
-                    keywords_file=str(keywords_path),
-                    num_threads=threads,
-                    keywords_score=1.5,
-                    keywords_threshold=0.25,
-                    provider="cpu",
-                )
-                self._kws_stream = self.kws.create_stream()
-                print(f"kws: {encoder.name} keywords={keywords_path.name}", file=sys.stderr)
+            self._build_kws(keywords_path.read_text(encoding="utf-8"))
+
+    def _build_kws(self, keywords_content: str) -> None:
+        """按给定关键词内容重建 spotter 与监听流。重建 ~1 s；期间锁着 /wake/infer 的调用方在排队。
+        绑定不接受内存里的词表（create_stream 的 extra keywords 是流的、非持久的），所以先落盘。"""
+        keywords_content = keywords_content.strip()
+        self.keywords_path.write_text(keywords_content + "\n", encoding="utf-8", newline="\n")
+        if self.picked is None:
+            return
+        encoder, decoder, joiner = self.picked
+        spotter = sherpa_onnx.KeywordSpotter(
+            tokens=str(self.models / "kws" / "tokens.txt"),
+            encoder=str(encoder),
+            decoder=str(decoder),
+            joiner=str(joiner),
+            keywords_file=str(self.keywords_path),
+            num_threads=self.threads,
+            keywords_score=1.5,
+            keywords_threshold=0.25,
+            provider="cpu",
+        )
+        with self._kws_lock:
+            self.kws = spotter
+            self._kws_stream = spotter.create_stream()
+            print(f"kws rebuilt: {len(keywords_content.splitlines())} keyword lines", file=sys.stderr)
 
     def recognize(self, samples: np.ndarray) -> str:
         """定长切分转写。宿主已按停顿切过块（≤ WindowSeconds），这里的切分是 30 s 保命条款。
@@ -175,10 +188,54 @@ class Recognizers:
                 self._kws_stream = self.kws.create_stream()
             return hit, keyword, 1.0 if hit else 0.0
 
+    def keywords_now(self) -> list[str]:
+        """当前词表的显示名；未开 KWS 返回空表。"""
+        if self.kws is None or self.keywords_path is None or not self.keywords_path.exists():
+            return []
+        return [
+            line.split("@", 1)[1].strip()
+            for line in self.keywords_path.read_text(encoding="utf-8").splitlines()
+            if "@" in line
+        ]
+
+    def set_keywords(self, words: list[str]) -> None:
+        """换词表：显示名 → 拼音 → 落盘 → 重建 spotter。KWS 未开则先补建。"""
+        content = format_keywords(words)
+        if content is None:
+            raise ValueError("没有一个可用唤醒词（词须能转拼音）")
+        if self.picked is None:
+            # 没开过 KWS（缺模型文件或 keywords 文件原本不存在）就到此为止：词已落盘，下次启动生效。
+            self.keywords_path.write_text(content + "\n", encoding="utf-8", newline="\n")
+            return
+        self._build_kws(content)
+
 
 class HandlerShared:
     wake_ring: WakeRing
     recognizers: "Recognizers"
+
+
+def keywords_pinyin(texts: list[str]) -> list[list[str]]:
+    """显示名 → pinyin token 行。用上游的 text2token（ppinyin，与关键词表同一口径），
+    而不是自己拼拼音：模型认的是这份 token 表里的符号，口径对了命中才稳。"""
+    from sherpa_onnx import text2token
+
+    return [
+        " ".join(tokens)
+        for tokens in text2token(
+            texts, str(ENGINES_DIR / "models" / "kws" / "tokens.txt"), tokens_type="ppinyin"
+        )
+    ]
+
+
+def format_keywords(words: list[str]) -> str | None:
+    """词表 → KWS 关键词文件格式（拼音行 @显示名）。含空词/全非中文词返回 None（调用方 400）。"""
+    rows: list[str] = []
+    for word, encoded in zip(words, keywords_pinyin(words)):
+        if not word.strip() or not encoded:
+            continue
+        rows.append(f"{encoded} @{word.strip()}")
+    return "\n".join(rows) if rows else None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -188,6 +245,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/health", "/healthz"):
             self._json(200, {"ok": True, "kws": HandlerShared.recognizers.kws is not None})
+            return
+        if self.path == "/keywords":
+            self._json(200, {"keywords": HandlerShared.recognizers.keywords_now()})
             return
         if self.path.startswith("/wake"):
             query = dict(
@@ -199,6 +259,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "bad seq"})
                 return
             self._json(200, HandlerShared.wake_ring.poll(last_seq))
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_PUT(self):
+        # 词表更新的语义是整表替换，REST 惯例上 PUT 更贴切；POST 同义支持，两者选一都能用。
+        if self.path == "/keywords":
+            self._do_keywords()
             return
         self._json(404, {"error": "not found"})
 
@@ -229,7 +296,35 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, payload)
             return
 
+        if self.path == "/keywords":
+            self._do_keywords()
+            return
+
         self._json(404, {"error": "not found"})
+
+    def _do_keywords(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) or b"{}"
+        try:
+            request = json.loads(raw)
+        except json.JSONDecodeError:
+            self._json(400, {"error": "bad json"})
+            return
+
+        words = request.get("keywords")
+        if not isinstance(words, list) or any(not isinstance(w, str) for w in words):
+            print(f"keywords PUT rejected: type={type(words).__name__} body={raw[:200]!r}", file=sys.stderr)
+            self._json(400, {"error": "keywords must be a list of strings"})
+            return
+
+        try:
+            HandlerShared.recognizers.set_keywords(words)
+        except Exception as error:  # noqa: BLE001 - 换词失败必须回 4xx/5xx，不能静默
+            message = str(error)
+            code = 400 if isinstance(error, ValueError) else 500
+            self._json(code, {"error": message})
+            return
+        self._json(200, {"keywords": HandlerShared.recognizers.keywords_now()})
 
     def _json(self, code: int, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
