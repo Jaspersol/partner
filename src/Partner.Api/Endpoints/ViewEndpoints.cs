@@ -21,6 +21,7 @@ public static class ViewEndpoints
     {
         MapInput(app);
         MapMedia(app);
+        VoiceTestEndpoints.Map(app, ctx);
         DesktopEndpoints.Map(app);
         MapSession(app);
         MapQueue(app);

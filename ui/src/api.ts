@@ -150,6 +150,8 @@ export interface InputSettings {
   enabled: boolean
   deviceId: string | null
   silenceThreshold: number
+  /** Ding when the wake word hits; only meaningful while a wake gate is active. */
+  wakeTone: boolean
   utteranceGapMs: number
   sentenceGapMs: number
   windowSeconds: number
@@ -207,6 +209,11 @@ export interface LocalEngineSettings {
   port: number
   /** How long the process may take to prove it stays up before being reported started. */
   readyTimeoutSeconds: number
+  /**
+   * Wake words (display names, Chinese only). Empty = leave whatever the engine has; non-empty is
+   * pushed to the engine which transliterates to pinyin, persists and rebuilds its stream.
+   */
+  keywords: string[]
 }
 
 export interface LocalSettings {
@@ -363,6 +370,18 @@ export interface SettingsSaved {
   compaction: CompactionReport | null
 }
 
+/** One settings-page connectivity probe: smallest real round-trip that proves the address speaks. */
+export interface VoiceTestResult {
+  ok: boolean
+  detail: string
+  latencyMs: number
+  /** ASR 测试：引擎转出来的原话（TTS 合成样本喂进去的）。 */
+  transcribed?: string
+  /** TTS 测试：合成好的 16-bit 单声道 WAV，base64，UI 转 Blob 播放。 */
+  audioBase64?: string
+  seconds?: number
+}
+
 /** What a delivery lands as: a queue item, not an executed turn. */
 export interface SubmitResult {
   itemId: string
@@ -515,6 +534,7 @@ export interface PartnerApiSurface {
   deleteMemory(recordId: string): Promise<void>
   memoryRevisions(recordId: string): Promise<MemoryRevision[]>
   settings(): Promise<SettingsView>
+  testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult>
   approvals(): Promise<ApprovalQueue>
   answerApproval(approvalId: string, approved: boolean): Promise<void>
   desktop(): Promise<DesktopState>
@@ -755,6 +775,11 @@ export class PartnerApi implements PartnerApiSurface {
 
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved> {
     return this.request<SettingsSaved>('PUT', '/api/settings', settings)
+  }
+
+  /** Settings-page connectivity probe against /api/voice/test/{kind}. */
+  testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult> {
+    return this.request('POST', `/api/voice/test/${kind}`)
   }
 
   // ---- plumbing --------------------------------------------------------------------------------

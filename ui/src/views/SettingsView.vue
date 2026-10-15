@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
-import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState } from '../api'
+import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState, VoiceTestResult } from '../api'
 
 
 /**
@@ -23,6 +23,7 @@ const form = reactive<RuntimeSettings>({
     windowSeconds: 8,
     asrStream: false,
     maxSplitChars: 40,
+    wakeTone: true,
   },
   output: {
     enabled: false,
@@ -37,8 +38,8 @@ const form = reactive<RuntimeSettings>({
   asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
   local: {
-    tts: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30 },
-    kws: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30 },
+    tts: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] as string[] },
+    kws: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS] },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
@@ -107,6 +108,25 @@ function onEngineArgumentsInput(engine: 'tts' | 'kws', event: Event) {
     .filter((part) => part !== '')
 }
 
+/** Wake words are edited as one comma line; 中英混排按序存，引擎端只对能转拼音的生效. */
+/** 输入框显示的原始串。按逗号切分回数组再 join 回显会让尾随逗号被切掉又拼没，打不进第二个词——
+ *  所以编辑期间整串保真，切分只发生在保存时。 */
+const keywordDrafts = ref<Record<'tts' | 'kws', string>>({ tts: '', kws: '' })
+
+function onEngineKeywordsInput(engine: 'tts' | 'kws', event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  keywordDrafts.value = { ...keywordDrafts.value, [engine]: raw }
+  form.local[engine].keywords = parseKeywords(raw)
+}
+
+/** 逗号分隔串 → 词表。中英文逗号都算分隔符；首尾空白丢弃，空段不入表。 */
+function parseKeywords(raw: string): string[] {
+  return raw
+    .split(/[,，]/)
+    .map((word) => word.trim())
+    .filter((word) => word !== '')
+}
+
 const status = ref('')
 const error = ref('')
 const consumer = ref<ConsumerState | null>(null)
@@ -115,6 +135,41 @@ const devices = ref<DeviceList>({ inputs: [], outputs: [] })
 const models = ref<string[]>([])
 const modelProbeError = ref('')
 const probing = ref(false)
+
+const voiceTest = ref<Record<string, VoiceTestResult | null>>({})
+const voiceTesting = ref<Record<string, boolean>>({})
+
+/** TTS 测试的音频（base64 WAV → blob URL）。结果被替换或组件卸载时回收。 */
+const testTtsUrl = computed(() => {
+  const result = voiceTest.value.tts
+  if (!result?.ok || !('audioBase64' in result) || !result.audioBase64) {
+    return ''
+  }
+  const binary = atob(result.audioBase64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  const blob = new Blob([bytes], { type: 'audio/wav' })
+  const url = URL.createObjectURL(blob)
+  return url
+})
+
+/** One /api/voice/test/{kind} round-trip; result text lands beside the corresponding card's button. */
+async function testConnection(kind: 'asr' | 'tts' | 'kws' | 'model') {
+  voiceTesting.value = { ...voiceTesting.value, [kind]: true }
+  try {
+    const result = await props.api.testVoice(kind)
+    voiceTest.value = { ...voiceTest.value, [kind]: result }
+  } catch (failure) {
+    voiceTest.value = {
+      ...voiceTest.value,
+      [kind]: { ok: false, detail: String(failure), latencyMs: 0 },
+    }
+  } finally {
+    voiceTesting.value = { ...voiceTesting.value, [kind]: false }
+  }
+}
 
 const inputOptions = computed(() => withStored(devices.value.inputs, form.input.deviceId))
 const outputOptions = computed(() => withStored(devices.value.outputs, form.output.deviceId))
@@ -153,9 +208,10 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   Object.assign(form.tts, settings.tts)
   // These two carry lists; replaced, not merged, so a row removed on the server stays removed.
   Object.assign(form.local, {
-    tts: { ...settings.local?.tts, arguments: [...(settings.local?.tts?.arguments ?? [])] },
-    kws: { ...settings.local?.kws, arguments: [...(settings.local?.kws?.arguments ?? [])] },
+    tts: { ...settings.local?.tts, arguments: [...(settings.local?.tts?.arguments ?? [])], keywords: [...(settings.local?.tts?.keywords ?? [])] },
+    kws: { ...settings.local?.kws, arguments: [...(settings.local?.kws?.arguments ?? [])], keywords: [...(settings.local?.kws?.keywords ?? [])] },
   })
+  keywordDrafts.value = { tts: form.local.tts.keywords.join(','), kws: form.local.kws.keywords.join(',') }
   Object.assign(form.desktop, {
     enabled: settings.desktop?.enabled ?? false,
     leaseTtlMs: settings.desktop?.leaseTtlMs ?? 15000,
@@ -211,8 +267,8 @@ async function persist() {
     asr: { ...form.asr },
     tts: { ...form.tts },
     local: {
-      tts: { ...form.local.tts, arguments: [...form.local.tts.arguments] },
-      kws: { ...form.local.kws, arguments: [...form.local.kws.arguments] },
+      tts: { ...form.local.tts, arguments: [...form.local.tts.arguments], keywords: [...form.local.tts.keywords] },
+      kws: { ...form.local.kws, arguments: [...form.local.kws.arguments], keywords: [...form.local.kws.keywords] },
     },
     // Carried, not edited: these two have pages of their own. Dropping them here would silently undo whatever
     // was decided there the next time anybody saved a voice setting.
@@ -425,6 +481,11 @@ defineExpose({ refresh, hasUnsavedChanges })
             <input type="number" step="0.01" min="0" v-model.number="form.input.silenceThreshold" />
             <span class="source">低于此电平视为静音；实测默认 0.03</span>
           </label>
+          <label class="field" data-test="wake-tone">
+            <span>唤醒提示音</span>
+            <input type="checkbox" v-model="form.input.wakeTone" />
+            <span class="source">唤醒词命中时「叮」一声（需语音输出开启）</span>
+          </label>
           <label class="field">
             <span>整句间隔 (ms)</span>
             <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
@@ -576,6 +637,14 @@ defineExpose({ refresh, hasUnsavedChanges })
             <span>采样率</span>
             <input type="number" v-model.number="form.asr.sampleRate" />
           </label>
+          <div class="row card-footer" data-test="asr-test-row">
+            <button class="ghost" :disabled="voiceTesting.asr" data-test="test-asr" @click="testConnection('asr')">
+              {{ voiceTesting.asr ? '测试中…' : '测试' }}
+            </button>
+            <span v-if="voiceTest.asr" class="break" data-test="test-asr-result" :class="voiceTest.asr.ok ? 'muted' : 'error'">
+              {{ voiceTest.asr.ok ? '✓' : '✗' }} {{ voiceTest.asr.detail }}（{{ voiceTest.asr.latencyMs }}ms）
+            </span>
+          </div>
           </div>
         </section>
 
@@ -643,6 +712,15 @@ defineExpose({ refresh, hasUnsavedChanges })
             <span>播放块大小 (ms)</span>
             <input type="number" v-model.number="form.tts.chunkMs" />
           </label>
+          <div class="row card-footer" data-test="tts-test-row">
+            <button class="ghost" :disabled="voiceTesting.tts" data-test="test-tts" @click="testConnection('tts')">
+              {{ voiceTesting.tts ? '测试中…' : '测试' }}
+            </button>
+            <span v-if="voiceTest.tts" class="break" data-test="test-tts-result" :class="voiceTest.tts.ok ? 'muted' : 'error'">
+              {{ voiceTest.tts.ok ? '✓' : '✗' }} {{ voiceTest.tts.detail }}（{{ voiceTest.tts.latencyMs }}ms）
+            </span>
+            <audio v-if="testTtsUrl" controls :src="testTtsUrl" data-test="tts-test-audio" class="tts-test-audio" />
+          </div>
           </div>
         </section>
 
@@ -698,8 +776,24 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <span>就绪宽限 (s)</span>
                 <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
               </label>
+              <label class="field" v-if="engine === 'kws'">
+                <span>唤醒词（逗号分隔）</span>
+                <input type="text" v-model="keywordDrafts[engine]"
+                  :data-test="`local-${engine}-keywords`"
+                  placeholder="你好军哥，蛋哥蛋哥"
+                  @input="onEngineKeywordsInput(engine, $event)" />
+                <span class="source">留空 = 保留引擎当前词表；保存后下发，引擎转拼音并立即生效</span>
+              </label>
             </div>
           </template>
+          <div class="row card-footer" data-test="kws-test-row">
+            <button class="ghost" :disabled="voiceTesting.kws" data-test="test-kws" @click="testConnection('kws')">
+              {{ voiceTesting.kws ? '测试中…' : '测试' }}
+            </button>
+            <span v-if="voiceTest.kws" class="break" data-test="test-kws-result" :class="voiceTest.kws.ok ? 'muted' : 'error'">
+              {{ voiceTest.kws.ok ? '✓' : '✗' }} {{ voiceTest.kws.detail }}（{{ voiceTest.kws.latencyMs }}ms）
+            </span>
+          </div>
           </div>
         </section>
 
@@ -909,6 +1003,14 @@ defineExpose({ refresh, hasUnsavedChanges })
             <template v-else-if="modelConfigured">已填好地址与模型名，保存后生效</template>
             <template v-else>未配置模型：队列不会被执行</template>
           </p>
+          <div class="row card-footer" data-test="model-test-row">
+            <button class="ghost" :disabled="voiceTesting.model" data-test="test-model" @click="testConnection('model')">
+              {{ voiceTesting.model ? '测试中…' : '测试' }}
+            </button>
+            <span v-if="voiceTest.model" class="break" data-test="test-model-result" :class="voiceTest.model.ok ? 'muted' : 'error'">
+              {{ voiceTest.model.ok ? '✓' : '✗' }} {{ voiceTest.model.detail }}（{{ voiceTest.model.latencyMs }}ms）
+            </span>
+          </div>
           </div>
         </section>
       </div>
@@ -933,6 +1035,23 @@ defineExpose({ refresh, hasUnsavedChanges })
   border-radius: var(--radius-sm);
   background: var(--surface-0);
   font-size: 0.92em;
+}
+
+/* Connectivity test sits at the card's end: result then audio trail it to the right. */
+.card-footer {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--line);
+  align-items: center;
+}
+
+.card-footer button {
+  flex: none;
+}
+
+.tts-test-audio {
+  inline-size: min(320px, 100%);
+  block-size: 2.2rem;
 }
 
 .gear-default {
