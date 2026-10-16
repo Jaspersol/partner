@@ -231,10 +231,11 @@ public sealed class LocalEngineHost : IAsyncDisposable
             engine._job = EngineJob.Create(process, name);
             var pid = process.Id;
 
-            // 引擎进程闪退必须有理由：等一小段，退出即报进程码，活下来才算「运行中」。
-            var probe = TimeSpan.FromSeconds(Math.Clamp(settings.ReadyTimeoutSeconds, 1, 30));
-            await Task.Delay(probe).ConfigureAwait(false);
-            engine.State = !process.HasExited
+            // 引擎进程闪退必须有理由：退出即报进程码，活下来才算「运行中」。但就绪要早退——引擎 1s
+            // 起好就 1s 返回，不再固定睡满 ReadyTimeoutSeconds（默认 30s，两引擎串行曾是启动的主瓶颈）。
+            var grace = TimeSpan.FromSeconds(Math.Clamp(settings.ReadyTimeoutSeconds, 1, 30));
+            var ready = await WaitUntilReadyAsync(process, settings.Port, grace).ConfigureAwait(false);
+            engine.State = ready
                 ? new LocalEngineState(true, "运行中", pid)
                 : new LocalEngineState(false, $"进程已退出（代码 {process.ExitCode}）", null);
 
@@ -244,6 +245,52 @@ public sealed class LocalEngineHost : IAsyncDisposable
             process.Exited += (_, _) => engine.State = new LocalEngineState(false, $"进程已退出（代码 {engine.SafeExitCode()}）", null);
 
             return engine;
+        }
+
+        /// <summary>
+        /// 等引擎就绪：轮询 /health（2xx 即就绪）提前返回，进程闪退立即返回 false，上限是配置的宽限。
+        /// 端口没配就无从探测，退化为「睡满宽限只验证没闪退」的旧行为。
+        /// </summary>
+        private static async Task<bool> WaitUntilReadyAsync(Process process, int port, TimeSpan timeout)
+        {
+            if (port <= 0)
+            {
+                await Task.Delay(timeout).ConfigureAwait(false);
+                return !process.HasExited;
+            }
+
+            var deadline = Stopwatch.StartNew();
+            using var http = new HttpClient
+            {
+                BaseAddress = new Uri($"http://127.0.0.1:{port}/"),
+                Timeout = TimeSpan.FromMilliseconds(300),
+            };
+
+            while (deadline.Elapsed < timeout)
+            {
+                if (process.HasExited)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    using var response = await http.GetAsync("health").ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        return true;
+                    }
+                }
+                catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+                {
+                    // 还没监听/还没就绪，继续轮询。
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+            }
+
+            // 到上限仍未见 /health：进程活着就按「运行中」报，宁可让后续请求吃重试，也不假报闪退。
+            return !process.HasExited;
         }
 
         public async Task StopAsync(string name)

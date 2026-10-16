@@ -795,6 +795,26 @@ export class PartnerApi implements PartnerApiSurface {
     return this.request('POST', `/api/voice/test/${kind}`)
   }
 
+  /**
+   * One readiness probe. The three answers mean different things to a caller that is still starting up:
+   * 'ok' — the API is listening and the token checks out; 'unauthorized' — listening but the token is
+   * rejected (retrying cannot help); 'unavailable' — the port is not answering yet (retry).
+   */
+  async health(): Promise<'ok' | 'unauthorized' | 'unavailable'> {
+    let response: Response
+    try {
+      response = await this.send('GET', '/api/health')
+    } catch {
+      return 'unavailable'
+    }
+
+    if (response.ok) {
+      return 'ok'
+    }
+
+    return response.status === 401 ? 'unauthorized' : 'unavailable'
+  }
+
   // ---- plumbing --------------------------------------------------------------------------------
 
   private send(method: string, path: string, payload?: unknown): Promise<Response> {

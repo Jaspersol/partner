@@ -205,14 +205,20 @@ public static class VoiceTestEndpoints
         int latencyMs)
     {
         var cleaned = text.Trim();
-        var rms = Rms(audio);
+        var rms = SpeechLevel(audio);
 
         if (rms < silenceThreshold)
         {
+            // 有信号但低于阈值（引擎都转出来了）与「一根针都没有」是两回事：前者是音量/阈值配错，
+            // 后者是设备没送来东西。两者都该红，但话术不能一样——否则「引擎却转出」跟在「设备无信号」
+            // 后面自相矛盾。
+            var noSignal = rms < NoSignalFloor;
+            var detail = noSignal
+                ? $"没听到声音（RMS {rms:0.0000} 低于阈值 {silenceThreshold:0.0000}）：设备无信号，或测试时没说话（{note}）"
+                : $"声音太小（RMS {rms:0.0000} 低于阈值 {silenceThreshold:0.0000}）：调高麦克风音量，或调低 silenceThreshold（{note}）";
             return new AsrTestResult(
                 false,
-                $"没听到声音（RMS {rms:0.0000} 低于阈值 {silenceThreshold:0.0000}）：设备无信号，或测试时没说话（{note}）"
-                + (cleaned.Length > 0 ? $"；引擎却转出「{cleaned}」" : ""),
+                detail + (cleaned.Length > 0 ? $"；引擎却转出「{cleaned}」" : ""),
                 latencyMs,
                 cleaned);
         }
@@ -223,22 +229,42 @@ public static class VoiceTestEndpoints
         return new AsrTestResult(true, reply, latencyMs, cleaned);
     }
 
-    /// <summary>整段 RMS。设备无信号时它是 0（或 1 LSB 级），说话时远高于阈值——一个数就能分开两种绿。</summary>
-    private static double Rms(float[] pcm)
+    /// <summary>
+    /// 最响一帧的 RMS（50 ms 窗）。整段平均会被一句话前后的静音稀释：2 s 里只说 0.15 s 的话，整段
+    /// RMS 掉到这句话本身的 1/3.6，正常响度也被判成「没声音」。取峰值才与判句机一致——那边用
+    /// <c>Ring.Energy(0.05)</c> 即 50 ms 窗 RMS 对阈值，这边用同一把尺子。
+    /// </summary>
+    private static double SpeechLevel(float[] pcm)
     {
         if (pcm.Length == 0)
         {
             return 0;
         }
 
-        var sum = 0.0;
-        foreach (var sample in pcm)
+        const int frame = 800; // 50 ms @ 16 kHz（本路径恒定 16 kHz）
+        var peak = 0.0;
+        for (var i = 0; i < pcm.Length; i += frame)
         {
-            sum += (double)sample * sample;
+            var count = Math.Min(frame, pcm.Length - i);
+            double sum = 0;
+            for (var j = 0; j < count; j++)
+            {
+                var s = pcm[i + j];
+                sum += (double)s * s;
+            }
+
+            var rms = Math.Sqrt(sum / count);
+            if (rms > peak)
+            {
+                peak = rms;
+            }
         }
 
-        return Math.Sqrt(sum / pcm.Length);
+        return peak;
     }
+
+    /// <summary>低于此值视为「设备根本没送信号」（纯静音 / 1 LSB 抖动），再往上才叫「声音太小」。</summary>
+    private const double NoSignalFloor = 0.001;
 
     private static async Task<float[]> SynthesizeOnceAsync(TtsOptions options, string text, CancellationToken ct)
     {
@@ -394,11 +420,13 @@ public static class VoiceTestEndpoints
             return (false, $"；唤醒实测无法录音：{error.Message}");
         }
 
-        var rms = Rms(audio);
+        var rms = SpeechLevel(audio);
         var floor = settings.Input.SilenceThreshold;
         if (rms < floor)
         {
-            return (false, $"；唤醒实测没听到声音（RMS {rms:0.0000} 低于阈值 {floor:0.0000}）：设备无信号");
+            return (false, rms < NoSignalFloor
+                ? $"；唤醒实测没听到声音（RMS {rms:0.0000} 低于阈值 {floor:0.0000}）：设备无信号"
+                : $"；唤醒实测声音太小（RMS {rms:0.0000} 低于阈值 {floor:0.0000}）：调高麦克风音量或调低 silenceThreshold");
         }
 
         var bytes = new byte[audio.Length * sizeof(float)];

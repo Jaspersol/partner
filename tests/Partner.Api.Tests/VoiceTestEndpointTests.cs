@@ -86,4 +86,44 @@ public sealed class VoiceTestEndpointTests
         Assert.False(result.Ok);
         Assert.Contains("输入设备不可用", result.Detail, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 有信号但低于阈值（引擎都转出来了）不是「设备无信号」——是音量/阈值配错。话术必须区分，
+    /// 否则「引擎却转出」跟在「设备无信号」后面自相矛盾。
+    /// </summary>
+    [Fact]
+    public void Quiet_speech_with_a_transcript_is_too_quiet_not_no_signal()
+    {
+        var audio = new float[16_000];
+        for (var i = 0; i < 4_800; i++)
+        {
+            audio[i] = 0.01f;
+        }
+
+        var result = VoiceTestEndpoints.JudgeAsr(audio, 0.03, "你是谁", "实听 2 s", 39);
+
+        Assert.False(result.Ok);
+        Assert.Contains("声音太小", result.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("设备无信号", result.Detail, StringComparison.Ordinal);
+        Assert.Contains("你是谁", result.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 一句话只占 2 s 里的一小段：整段 RMS 被静音稀释到阈值以下，但最响帧够得着阈值——必须按峰值判，
+    /// 否则正常响度的短命令在设置页上是假红。
+    /// </summary>
+    [Fact]
+    public void A_brief_loud_burst_is_not_diluted_by_silence()
+    {
+        var audio = new float[16_000];
+        for (var i = 0; i < 1_600; i++)
+        {
+            audio[i] = 0.08f;
+        }
+
+        var result = VoiceTestEndpoints.JudgeAsr(audio, 0.03, "好", "实听 2 s", 5);
+
+        Assert.True(result.Ok);
+        Assert.Contains("好", result.Detail, StringComparison.Ordinal);
+    }
 }

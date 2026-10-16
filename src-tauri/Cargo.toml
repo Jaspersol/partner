@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+rand = "0.8"
 
 [features]
 # Without this, a release binary still points at devUrl and shows ERR_CONNECTION_REFUSED because no dev

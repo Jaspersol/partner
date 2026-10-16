@@ -1,10 +1,10 @@
 //! The desktop shell: it hosts the Vue UI in a webview and owns the API sidecar's lifetime.
 //!
-//! Two things are load-bearing here. The shell picks a free port and starts `partner-api` on it, then reads
-//! the token the API generated from its stdout and injects it into the webview — so the token never appears
-//! in a command line, never lands in a file, and never has to be typed by a human. The stdout pipe is drained
-//! on a thread for the lifetime of the process: the API logs requests to stdout, and an unread pipe fills up
-//! and blocks the server.
+//! Two things are load-bearing here. The shell picks a free port, generates a token, and passes both to the
+//! `partner-api` sidecar — the token through the child's environment, never a command line and never a file —
+//! then injects the same token into the webview. The window is built without waiting for the sidecar to finish
+//! starting, and the UI retries until `/api/health` answers. The stdout pipe is drained on a thread for the
+//! lifetime of the process: the API logs requests to stdout, and an unread pipe fills up and blocks the server.
 
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
+use rand::RngCore;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 /// Keeps the sidecar handle so it can be killed when the shell exits.
@@ -21,7 +22,12 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let port = free_port()?;
-            let (child, token) = start_api(port)?;
+            // The shell owns the token now: generated here, passed to the sidecar through the environment
+            // (never argv, never a file), and injected into the webview. Because it no longer arrives from the
+            // sidecar's stdout, the window does not wait for the API to finish starting — it appears at once
+            // and the UI retries until /api/health answers.
+            let token = generate_token();
+            let child = start_api(port, &token)?;
 
             // The UI reads these two globals; it never has a token of its own.
             let script = format!("window.__PARTNER_TOKEN__ = {token:?}; window.__PARTNER_PORT__ = {port};");
@@ -60,17 +66,19 @@ fn free_port() -> Result<u16, String> {
     Ok(port)
 }
 
-fn start_api(port: u16) -> Result<(Child, String), String> {
+fn start_api(port: u16, token: &str) -> Result<Child, String> {
     let exe = api_exe_path()?;
     let workspace = workspace_dir()?;
 
     let mut child = Command::new(&exe)
         .arg(&workspace)
         .arg(port.to_string())
-        // The child watches this pipe: if the shell dies without running its cleanup, the pipe closes and the
-        // API exits instead of lingering as an orphan holding the port and the SQLite lock. The handle must
-        // stay alive for the whole process, which is why it is never taken out of the Child.
+        // The token travels in the child's environment, never argv and never a file. The child also watches
+        // this pipe: if the shell dies without running its cleanup, the pipe closes and the API exits instead
+        // of lingering as an orphan holding the port and the SQLite lock. The handle must stay alive for the
+        // whole process, which is why it is never taken out of the Child.
         .env("PARTNER_API_PARENT_WATCH", "1")
+        .env("PARTNER_API_TOKEN", token)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -80,38 +88,26 @@ fn start_api(port: u16) -> Result<(Child, String), String> {
     let stdout = child.stdout.take().ok_or("the sidecar has no stdout")?;
     let stderr = child.stderr.take().ok_or("the sidecar has no stderr")?;
 
-    // Read until the token appears, then keep draining so the API never blocks writing its log.
-    let (token_sender, token_receiver) = std::sync::mpsc::channel::<String>();
+    // Drain both pipes for the lifetime of the process: the API logs to stdout, and an unread pipe fills up
+    // and blocks the server. Nothing is read back for startup — the token is already ours, and the UI retries
+    // /api/health instead of waiting on a line here.
     std::thread::spawn(move || {
-        let mut sender = Some(token_sender);
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(rest) = line.strip_prefix("token: ") {
-                if let Some(channel) = sender.take() {
-                    let _ = channel.send(rest.trim().to_string());
-                }
-            }
-        }
+        for _ in BufReader::new(stdout).lines().map_while(Result::ok) {}
+    });
+    std::thread::spawn(move || {
+        for _ in BufReader::new(stderr).lines().map_while(Result::ok) {}
     });
 
-    // The API's own log is the only diagnostic if it fails to start, so keep the last of it.
-    let (error_sender, error_receiver) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let mut sender = Some(error_sender);
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if let Some(channel) = sender.take() {
-                let _ = channel.send(line);
-            }
-        }
-    });
+    Ok(child)
+}
 
-    let token = token_receiver
-        .recv()
-        .map_err(|_| match error_receiver.try_recv() {
-            Ok(detail) => format!("the API exited before reporting a token: {detail}"),
-            Err(_) => "the API exited before reporting a token".to_string(),
-        })?;
-
-    Ok((child, token))
+/// A fresh bearer token for this launch. Any strong random string works — the API compares the bytes it is
+/// given, so the only requirement is that it survives the round-trip through the environment and the
+/// initialization script. Hex over URL-safe base64 only because it needs no extra dependency.
+fn generate_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Where the sidecar lives. A release shell only ever uses the folder bundled beside it; a debug shell

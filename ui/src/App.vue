@@ -311,6 +311,25 @@ function cycleTheme() {
   applyTheme(theme.value)
 }
 
+/**
+ * Waits until the API answers. The shell shows the window before the sidecar has finished starting, so the
+ * first reads can race a port that is not listening yet. 'unauthorized' is terminal — the token is rejected
+ * and retrying cannot help; 'unavailable' retries until the deadline.
+ */
+async function waitForApi(client: PartnerApi): Promise<'ok' | 'unauthorized' | 'unavailable'> {
+  const deadline = Date.now() + 15_000
+  for (;;) {
+    const state = await client.health()
+    if (state !== 'unavailable') {
+      return state
+    }
+    if (Date.now() > deadline) {
+      return 'unavailable'
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+}
+
 onMounted(async () => {
   applyTheme(theme.value)
 
@@ -325,7 +344,22 @@ onMounted(async () => {
   }
 
   endpoint.value = `http://127.0.0.1:${resolved.connection.port}`
-  api.value = new PartnerApi(resolved.connection)
+  const client = new PartnerApi(resolved.connection)
+
+  // The window can appear before the API is listening. Show a connecting state, then hand the client to the
+  // views only once it answers — a 401 is terminal, a still-down port retries until the deadline.
+  connectionError.value = '连接中…'
+  const up = await waitForApi(client)
+  if (up !== 'ok') {
+    connectionError.value =
+      up === 'unauthorized'
+        ? 'token 失效（401）——请重启壳以获取新令牌'
+        : '无法连接到本地服务——请确认 Partner API 已启动'
+    return
+  }
+
+  connectionError.value = ''
+  api.value = client
 
   await Promise.all([refreshSummary(), refreshGears()])
   // Two cadences: the badge can wait five seconds, a parked turn cannot.
