@@ -60,6 +60,37 @@ public sealed class PauseBlockingDetector
     /// <summary>Compensation for the energy window + poll cadence (design doc: 100 ms).</summary>
     public const double SilenceOffsetMs = 100;
 
+    /// <summary>
+    /// 宽限期内「用户开口了」的最短有声时长（毫秒）：同一簇声音里**累计**这么久过阈值才算数。
+    /// <para>
+    /// 单个能量窗不够：提示音回灌、咳嗽、键盘、桌面磕碰都能让一个 50 ms 窗超阈值，
+    /// 而宽限期一旦被清掉，静默就按判句间隔计——人还没开口会话就关了。
+    /// </para>
+    /// <para>
+    /// 必须是累计、不能是连续：汉语一个音节过阈值只有 60–190 ms，音节之间就掉到阈值以下（实测 VB-Cable
+    /// 喂「今天天气怎么样」，最长一段连续有声 190 ms）。要求连续 200 ms 时整句命令都打不掉宽限期，
+    /// 块被拖到最后一个音节后 5 s，<c>SpeechFraction</c> 稀释到 0.08，命令被当噪声丢掉（真机复现）。
+    /// </para>
+    /// </summary>
+    public const double WakeOnsetMs = 200;
+
+    /// <summary>
+    /// 同一簇声音里允许的最长静默（秒）：短于它的间隙算音节间隙，累计不清零；长于它算新的一簇。
+    /// 实测音节间隙 ≤ 140 ms；300 ms 把它们连起来，又不会把隔了几秒的两下磕碰攒成一次「开口」。
+    /// </summary>
+    public const double OnsetBridgeSeconds = 0.3;
+
+    /// <summary>
+    /// 宽限期结束时块起点回退到这簇声音开头之前多少秒：辅音起音低于阈值，不留余量会把首字掐掉。
+    /// </summary>
+    public const double OnsetPreRollSeconds = 0.3;
+
+    /// <summary>调用方传进来的能量窗长度（毫秒）：一个窗过阈值时，人声最早在窗头就开始了。</summary>
+    public const double EnergyWindowMs = 50;
+
+    /// <summary>单个 tick 计入累计的上限（秒）：tick 卡顿时不让一次长间隔把累计一下子撑满。</summary>
+    private const double MaxTickSeconds = 0.1;
+
     private readonly VoiceInputSetting _settings;
     private readonly double _sentenceGapMs;
     private readonly double _utteranceGapMs;
@@ -80,6 +111,15 @@ public sealed class PauseBlockingDetector
     /// </para>
     /// </summary>
     private bool _awaitingSpeech;
+
+    /// <summary>宽限期内当前这一簇声音的起点（流时钟）；簇的定义见 <see cref="OnsetBridgeSeconds"/>。</summary>
+    private double? _onsetClusterStart;
+
+    /// <summary>当前这一簇里累计的有声秒数，攒够 <see cref="WakeOnsetMs"/> 即算开口。</summary>
+    private double _onsetVoicedSeconds;
+
+    /// <summary>宽限期内上一次过阈值（且不在屏蔽窗里）的 tick 时刻；用来判断间隙是否超过 <see cref="OnsetBridgeSeconds"/>。</summary>
+    private double? _onsetLastLoud;
 
     public PauseBlockingDetector(VoiceInputSetting settings)
     {
@@ -103,11 +143,21 @@ public sealed class PauseBlockingDetector
     /// <summary>A block was refused by a full backlog and is still owed.</summary>
     public bool HasHeldPause => _heldPause is not null;
 
-    /// <summary>One tick. <paramref name="nowSeconds"/> is the stream clock, <paramref name="energy"/> the RMS.</summary>
-    public PauseDecision Step(double nowSeconds, double energy)
+    /// <summary>
+    /// One tick. <paramref name="nowSeconds"/> is the stream clock, <paramref name="energy"/> the RMS.
+    /// <para>
+    /// <paramref name="suppressSpeechOnset"/> 为真时，这一 tick 的有声不算「用户开口」：唤醒提示音由输出设备
+    /// 外放，非耳机时会被麦克风收回来，幅度轻松超过阈值——不屏蔽就等于「唤醒瞬间用户就开口了」，宽限期当场
+    /// 失效，会话在提示音结束后约 1.1 s 关上，此后说的命令一个字都进不了 ASR（真机实测）。音频照常计入块，
+    /// 只是不从这里清 <see cref="_awaitingSpeech"/>。
+    /// </para>
+    /// </summary>
+    public PauseDecision Step(double nowSeconds, double energy, bool suppressSpeechOnset = false)
     {
         // The tick time is recorded here so callers cannot forget it: it is what decides whether a
         // submission left audio behind.
+        var tickSeconds = Math.Clamp(nowSeconds - (_prevStep ?? nowSeconds), 0, MaxTickSeconds);
+        _prevStep = nowSeconds;
         _lastNow = nowSeconds;
 
         var quiet = energy < _settings.SilenceThreshold;
@@ -146,7 +196,11 @@ public sealed class PauseBlockingDetector
             _dirty = true;
 
             // 真听到人说话了：宽限期结束，此后按正常的判句静默收尾。
-            _awaitingSpeech = false;
+            // 要求一簇声音累计 WakeOnsetMs 而不是「一个能量窗」：见 WakeOnsetMs。
+            if (_awaitingSpeech && !suppressSpeechOnset)
+            {
+                NoteOnsetCandidate(nowSeconds, tickSeconds);
+            }
         }
 
         // Long unbroken speech: submit anyway so the block cannot grow past the window.
@@ -244,6 +298,7 @@ public sealed class PauseBlockingDetector
         _heldPause = null;
         _dirty = false;
         _awaitingSpeech = false;
+        ResetOnset();
         _quietSince = null;
         _called = false;
     }
@@ -255,6 +310,7 @@ public sealed class PauseBlockingDetector
         _heldPause = null;
         _leftover = false;
         _awaitingSpeech = false;
+        ResetOnset();
         _quietSince = null;
         _called = false;
     }
@@ -289,7 +345,49 @@ public sealed class PauseBlockingDetector
     /// <summary>The tick needs the current stream position to compute leftover; set it on every step.</summary>
     public void NoteNow(double nowSeconds) => _lastNow = nowSeconds;
 
+    /// <summary>
+    /// 宽限期内一个过阈值的 tick：并进当前这一簇（或另起一簇），攒够 <see cref="WakeOnsetMs"/> 即算开口。
+    /// <para>
+    /// 开口那一刻把块起点前移到这簇声音开头（留 <see cref="OnsetPreRollSeconds"/>）：块里在那之前只有
+    /// 唤醒词尾巴、提示音、用户想说什么的那段沉默——没有一个字值得转写，留着只会稀释
+    /// <c>SpeechFraction</c>，让命令被当噪声丢掉；停得够久时还会把块撑过 <c>WindowSeconds</c>，
+    /// 命令说到一半就被 WindowCap 切开。
+    /// </para>
+    /// </summary>
+    private void NoteOnsetCandidate(double nowSeconds, double tickSeconds)
+    {
+        if (_onsetLastLoud is null || nowSeconds - _onsetLastLoud.Value > OnsetBridgeSeconds)
+        {
+            // 新的一簇：这一 tick 的能量窗整段都可能是人声，所以起点算到窗头、时长先记一个窗。
+            _onsetClusterStart = nowSeconds - (EnergyWindowMs / 1000);
+            _onsetVoicedSeconds = EnergyWindowMs / 1000;
+        }
+        else
+        {
+            _onsetVoicedSeconds += tickSeconds;
+        }
+
+        _onsetLastLoud = nowSeconds;
+
+        if (_onsetVoicedSeconds * 1000 >= WakeOnsetMs)
+        {
+            _awaitingSpeech = false;
+            Cursor = Math.Max(Cursor, _onsetClusterStart!.Value - OnsetPreRollSeconds);
+            ResetOnset();
+        }
+    }
+
+    private void ResetOnset()
+    {
+        _onsetClusterStart = null;
+        _onsetVoicedSeconds = 0;
+        _onsetLastLoud = null;
+    }
+
     private double _lastNow;
+
+    /// <summary>上一次 <see cref="Step"/> 的流时刻：累计有声时长按真实 tick 间隔算，不按 tick 个数。</summary>
+    private double? _prevStep;
 }
 
 public enum SubmissionOutcome

@@ -53,12 +53,19 @@ public sealed class WakeTimingTests
         }
     }
 
+    /// <summary>提示音回调被调用的次数。为 0 说明这台装置上宿主根本没响过提示音，回灌断言就没意义。</summary>
+    private sealed class ToneCounter
+    {
+        public int Plays;
+    }
+
     private sealed record Rig(
         VoiceInputHalf Half,
         SyntheticAudioSource Source,
         ScriptedWake Wake,
         CountingAsr Asr,
-        List<VoiceUtterance> Utterances)
+        List<VoiceUtterance> Utterances,
+        ToneCounter Tone)
     {
         public async Task AdvanceAsync(double seconds, float amplitude)
         {
@@ -77,14 +84,25 @@ public sealed class WakeTimingTests
             await AdvanceAsync(0.2, 0f);
             Wake.Respond = null;
         }
+
+        /// <summary>
+        /// 提示音那一 0.16 s 从扬声器出来又被麦克风收回来的样子：先等 sink 出声延迟，再喂一段幅度 0.1
+        /// 的音（远高于 0.03 的阈值）。
+        /// </summary>
+        public async Task WakeToneEchoAsync(double latencySeconds = 0.15)
+        {
+            await AdvanceAsync(latencySeconds, 0f);
+            await AdvanceAsync(0.16, 0.1f);
+        }
     }
 
-    private static Rig Create(double wakeTimeoutMs = 5000, double utteranceGapMs = 1200)
+    private static Rig Create(double wakeTimeoutMs = 5000, double utteranceGapMs = 1200, bool wakeTone = false)
     {
         var source = new SyntheticAudioSource(SampleRate);
         var wake = new ScriptedWake();
         var asr = new CountingAsr();
         var utterances = new List<VoiceUtterance>();
+        var tone = new ToneCounter();
         var half = new VoiceInputHalf(
             new VoiceInputSetting
             {
@@ -102,10 +120,11 @@ public sealed class WakeTimingTests
             {
                 utterances.Add(utterance);
                 return Task.CompletedTask;
-            });
+            },
+            wakeTone: wakeTone ? () => tone.Plays++ : null);
 
         half.Start();
-        return new Rig(half, source, wake, asr, utterances);
+        return new Rig(half, source, wake, asr, utterances, tone);
     }
 
     /// <summary>
@@ -232,6 +251,107 @@ public sealed class WakeTimingTests
 
         Assert.Single(rig.Utterances);
         Assert.Equal("打开书房的灯", rig.Utterances[0].Transcript);
+    }
+
+    /// <summary>
+    /// 唤醒提示音被麦克风收回来：提示音那一下在停顿机里就是「用户开口了」，宽限期当场失效——会话在提示音
+    /// 结束后 ~1.1 s 关掉（判句间隔），用户停一下再说的命令一个字都进不了 ASR，此后说的只喂给唤醒探针。
+    /// 这是 V0.3 那条 bug 在真机上换的入口：外放（非耳机）时提示音 RMS 轻松过阈值，而单测里提示音只是
+    /// 一个计数回调、从不回灌，所以改前全绿。
+    /// <para>去掉提示音屏蔽窗后这条必红（实测 utterances=0、asrCalls=0）。</para>
+    /// </summary>
+    [Fact]
+    public async Task A_wake_tone_echo_does_not_end_the_grace_period()
+    {
+        var rig = Create(wakeTone: true);
+        await rig.WakeAsync();
+        await rig.WakeToneEchoAsync();
+
+        // 用户想一下再说：宽限期必须还开着。
+        await rig.AdvanceAsync(1.5, 0f);
+        Assert.True(rig.Half.Awake);
+
+        await rig.AdvanceAsync(1.0, 0.5f);
+        await rig.AdvanceAsync(1.4, 0f);
+
+        Assert.Equal(1, rig.Tone.Plays);
+        Assert.Equal(1, rig.Asr.Calls);
+        Assert.Single(rig.Utterances);
+        Assert.Equal("打开书房的灯", rig.Utterances[0].Transcript);
+        Assert.False(rig.Half.Awake);
+    }
+
+    /// <summary>
+    /// 用户和提示音同时开口：屏蔽窗只挡「判开口」，不挡音频——只要窗过后还在说，命令照样进 ASR。
+    /// </summary>
+    [Fact]
+    public async Task A_command_that_starts_during_the_wake_tone_is_not_lost()
+    {
+        var rig = Create(wakeTone: true);
+        await rig.WakeAsync();
+        await rig.WakeToneEchoAsync();
+
+        // 提示音还在响用户就开口，一直说到屏蔽窗之外。
+        await rig.AdvanceAsync(1.2, 0.5f);
+        await rig.AdvanceAsync(1.4, 0f);
+
+        Assert.Equal(1, rig.Tone.Plays);
+        Assert.Equal(1, rig.Asr.Calls);
+        Assert.Single(rig.Utterances);
+    }
+
+    /// <summary>
+    /// 宽限期内的短促响动（咳嗽、键盘、桌面磕碰）不算开口：单个 50 ms 能量窗过阈值就清宽限期，
+    /// 等于把「唤醒后想一下再说」又交回给判句间隔——提示音窗之外的那些响动就靠这条挡。
+    /// </summary>
+    [Fact]
+    public async Task A_short_noise_blip_inside_the_grace_period_is_not_speech()
+    {
+        var rig = Create();
+        await rig.WakeAsync();
+
+        await rig.AdvanceAsync(1.0, 0f);
+        await rig.AdvanceAsync(0.06, 0.5f); // 一个 3 tick 的响动
+        await rig.AdvanceAsync(1.5, 0f);
+
+        Assert.True(rig.Half.Awake);
+
+        await rig.AdvanceAsync(1.0, 0.5f);
+        await rig.AdvanceAsync(1.4, 0f);
+
+        Assert.Single(rig.Utterances);
+    }
+
+    /// <summary>
+    /// 真实汉语是一个个音节：每个音节过阈值 60–190 ms，音节间掉到阈值以下 ~100–140 ms（VB-Cable 喂
+    /// 「今天天气怎么样」实测的能量轮廓）。「开口」若要求**连续** 200 ms，整句命令都打不掉宽限期，块被拖到
+    /// 最后一个音节后 5 s，<c>SpeechFraction</c> 稀释到 0.08，命令被当噪声丢掉——真机上 ASR 一次都没调用。
+    /// <para>改回连续判定、或开口时不把块起点前移，这条都必红。</para>
+    /// </summary>
+    [Fact]
+    public async Task Syllabic_speech_after_a_thinking_pause_reaches_the_asr()
+    {
+        var rig = Create(wakeTone: true);
+        await rig.WakeAsync();
+        await rig.WakeToneEchoAsync();
+        await rig.AdvanceAsync(1.5, 0f);
+
+        // 8 个音节：100 ms 有声 + 120 ms 间隙。过 50 ms 能量窗后每段约 140 ms 过阈值，与实测轮廓同形。
+        for (var i = 0; i < 8; i++)
+        {
+            await rig.AdvanceAsync(0.10, 0.5f);
+            await rig.AdvanceAsync(0.12, 0f);
+        }
+
+        await rig.AdvanceAsync(1.4, 0f);
+
+        Assert.Equal(1, rig.Asr.Calls);
+        Assert.Single(rig.Utterances);
+        Assert.False(rig.Half.Awake);
+
+        // 判句间隔收尾而不是宽限期：块从命令开头（留 pre-roll）起算，不含唤醒后那 1.5 s 沉默。
+        var utterance = rig.Utterances[0];
+        Assert.InRange(utterance.SegEndMs - utterance.SegStartMs, 2500, 4000);
     }
 
     /// <summary>没有唤醒门时宽限期不参与：老行为（纯语音输入）一字不变。</summary>

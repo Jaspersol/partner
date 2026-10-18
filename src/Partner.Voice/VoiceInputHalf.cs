@@ -226,7 +226,7 @@ public sealed class VoiceInputHalf : IDisposable
             Detector.OnGateReleased(now);
         }
 
-        var decision = Detector.Step(now, Ring.Energy(0.05));
+        var decision = Detector.Step(now, Ring.Energy(0.05), suppressSpeechOnset: now < _toneUntil);
 
         // 唤醒会话结束（一段话被提交并被 Detector 闭合）之后回到监听态：下一段要先再喊一次唤醒词。
         if (decision.SegmentEnded)
@@ -234,7 +234,7 @@ public sealed class VoiceInputHalf : IDisposable
             if (_settings.Wake is not null && _awake)
             {
                 _awake = false;
-                _log("voice: wake session closed — waiting for the next wake word");
+                _log($"voice: wake session closed — {SessionSummary()}; waiting for the next wake word");
             }
 
             Detector.OnSegmentEnded(now);
@@ -253,9 +253,17 @@ public sealed class VoiceInputHalf : IDisposable
         if (_awake && decision.Trigger == BlockTrigger.UtteranceGap && decision.Pause)
         {
             _awake = false;
-            _log("voice: wake session closed after the utterance — waiting for the next wake word");
+            _log($"voice: wake session closed after the utterance — {SessionSummary()}; waiting for the next wake word");
         }
     }
+
+    /// <summary>
+    /// 关会话时那半句日志：一个字都没送 ASR 时也必须说清「什么都没提交」。曾经无论有没有提交都只写
+    /// 「wake session closed after the utterance」，于是「命令被丢」和「命令转出来了」在 stderr 里长得一样。
+    /// </summary>
+    private string SessionSummary() => _sessionChars > 0
+        ? $"{_sessionChars} chars submitted"
+        : $"nothing submitted (ASR calls {_sessionAsrCalls})";
 
     private async Task PollWakeAsync(CancellationToken ct)
     {
@@ -306,6 +314,8 @@ public sealed class VoiceInputHalf : IDisposable
             if (hit.IsHit && !_awake)
             {
                 _awake = true;
+                _sessionChars = 0;
+                _sessionAsrCalls = 0;
 
                 // 引擎命中后会换一条新流重新听（同一条流会一直持有已匹配的前缀状态），
                 // 所以下一次探针要重新送前置。
@@ -320,7 +330,15 @@ public sealed class VoiceInputHalf : IDisposable
                 var heardSpeechAtHit =
                     Ring.SpeechFraction(_settings.SilenceThreshold, WakeCatchUpSeconds) >= WakeCatchUpSpeechFraction;
                 Detector.OnWakeHit(catchUpStart, heardSpeechAtHit);
-                _wakeTone?.Invoke();
+
+                // 提示音是外放的：非耳机时麦克风会把它收回来，在停顿机眼里和「用户开口了」一样。
+                // 响之前先把屏蔽窗立起来（AudioRingBuffer 的流时钟，Step 用的就是它）。
+                if (_wakeTone is not null)
+                {
+                    _toneUntil = Ring.Seconds + ToneEchoSeconds;
+                    _wakeTone();
+                }
+
                 _log($"voice: wake word \"{hit.Keyword}\" ({hit.Confidence:0.00}) — listening");
             }
         }
@@ -354,6 +372,30 @@ public sealed class VoiceInputHalf : IDisposable
 
     /// <summary>上一次打过的探针失败原因；相同原因不再重复打（引擎挂掉时每 tick 一条会淹掉 stderr）。</summary>
     private string? _wakeFailure;
+
+    /// <summary>
+    /// 提示音回灌的屏蔽窗终点（流时钟秒）。窗内 <see cref="PauseBlockingDetector.Step"/> 的有声不算
+    /// 「用户开口」，宽限期不被提示音打掉。
+    /// <para>
+    /// 窗长 = 提示音 0.16 s（880/1320 Hz 各 80 ms）+ WASAPI 出声延迟（实测数十至 ~200 ms）+ 房间余响。
+    /// 命中那一刻的流位置起算，所以这里是一段绝对时间而不是「下一次 tick」：探针 100 ms 一跑，
+    /// 按 tick 计数会被 tick 节奏和队列延迟带偏。窗外已经恢复判开口——用户在提示音里就开的口，
+    /// 只要还在说，窗一过就要连续 <see cref="PauseBlockingDetector.WakeOnsetMs"/> 才作数。
+    /// </para>
+    /// <para>
+    /// <b>不要</b>改用 <see cref="PlaybackGate"/> 做这件事：闸门的 <c>OnGateReleased</c> 会清掉
+    /// <c>_awaitingSpeech</c> 并把游标推到当前，等于把「唤醒后停顿」和「命中回溯」两条修复一起退回去。
+    /// </para>
+    /// </summary>
+    private const double ToneEchoSeconds = 0.6;
+
+    private double _toneUntil;
+
+    /// <summary>本次唤醒会话送进队列的字符数：关会话时用来区分「说了 N 字」和「什么都没提交」。</summary>
+    private int _sessionChars;
+
+    /// <summary>本次唤醒会话里真正调用过 ASR 的次数；0 说明连一次请求都没发出去。</summary>
+    private int _sessionAsrCalls;
 
     /// <summary>电平条刷新周期（tick 数）：20 ms 一 tick 时即 100 ms。</summary>
     private const int LevelRefreshTicks = 5;
@@ -428,6 +470,9 @@ public sealed class VoiceInputHalf : IDisposable
 
         if (duration < MinBlockSeconds)
         {
+            _log(
+                $"voice: block dropped — {duration:0.00}s is under the {MinBlockSeconds:0.0}s minimum "
+                + "(no ASR request)");
             Detector.OnSubmitted(end, decision.Pause, SubmissionOutcome.Skipped);
             return;
         }
@@ -440,15 +485,20 @@ public sealed class VoiceInputHalf : IDisposable
             return;
         }
 
-        if (Ring.SpeechFraction(_settings.SilenceThreshold, duration) < MinVoicedFraction)
+        // Pure silence or noise: not worth a request. 留下比例：块被丢的原因只有这一行说得清。
+        var speechFraction = Ring.SpeechFraction(_settings.SilenceThreshold, duration);
+        if (speechFraction < MinVoicedFraction)
         {
-            // Pure silence or noise: not worth a request.
+            _log(
+                $"voice: block dropped — speech fraction {speechFraction:0.00} is under "
+                + $"{MinVoicedFraction:0.00} across {duration:0.00}s (no ASR request)");
             Detector.OnSubmitted(end, decision.Pause, SubmissionOutcome.Skipped);
             return;
         }
 
         AsrBusy = true;
         PendingBlock = true;
+        _sessionAsrCalls++;
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
         try
@@ -471,6 +521,7 @@ public sealed class VoiceInputHalf : IDisposable
                 };
 
                 _utterances.Add(utterance);
+                _sessionChars += utterance.Transcript.Length;
                 await _onUtterance(utterance).ConfigureAwait(false);
             }
 
