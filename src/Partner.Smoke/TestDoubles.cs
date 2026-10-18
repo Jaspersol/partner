@@ -26,3 +26,57 @@ internal sealed class InjectingHook : AgentHookBase
         return ValueTask.FromResult(HookOutcome.Continue);
     }
 }
+
+/// <summary>
+/// Lets a scripted model that used to drive the desktop tools as the main agent do the same work as the desktop
+/// sub-agent, through the real delegation path.
+/// <para>
+/// The main agent's side is fixed: a user message becomes a delegation of that text, a delegation result becomes a
+/// short acknowledgement, and the sub-agent's report coming back becomes another. The sub-agent's side is the
+/// wrapped model, with one adjustment — when it would end its turn with text, it reports success instead, which is
+/// what a job needs to end. Nothing in between is changed, so the checks still exercise governance, approval,
+/// leases and the tools exactly as they did.
+/// </para>
+/// </summary>
+internal sealed class DesktopAgentShim(ILlmClient inner) : ILlmClient
+{
+    public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+    {
+        var isSubAgent = (request.Messages.FirstOrDefault()?.Content ?? string.Empty).Contains("## 汇报方式", StringComparison.Ordinal);
+        var last = request.Messages[^1];
+
+        if (!isSubAgent)
+        {
+            if (last.Role == "tool")
+            {
+                return new LlmResponse("交给桌面操控了。", [], "stop");
+            }
+
+            var text = last.Content ?? string.Empty;
+            return text.StartsWith("[子 agent", StringComparison.Ordinal)
+                ? new LlmResponse("收到子 agent 的汇报。", [], "stop")
+                : new LlmResponse(
+                    null,
+                    [new LlmToolCall("delegate", "agent_delegate", System.Text.Json.JsonSerializer.Serialize(new { scenario = "desktop", goal = text }))],
+                    "tool_calls");
+        }
+
+        if (last is { Role: "tool", Name: "task_report" })
+        {
+            return new LlmResponse("已汇报。", [], "stop");
+        }
+
+        var response = await inner.CompleteAsync(request, ct).ConfigureAwait(false);
+        return response.ToolCalls.Count > 0
+            ? response
+            : new LlmResponse(
+                null,
+                [new LlmToolCall("report", "task_report", System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    status = "success",
+                    summary = string.IsNullOrWhiteSpace(response.Text) ? "完成" : response.Text,
+                    evidence = "脚本化模型的收尾",
+                }))],
+                "tool_calls");
+    }
+}

@@ -1,206 +1,386 @@
-# Todo — 记忆/桌面/核心能力优化(2026-10-13 全仓分析)
+# Todo — 主 / 子 Agent 分工（修订 2）：两个场景、逐轮重试、失败如实回报（方案稿，分支 local-voice-stack）
 
-基准:2026-10-13 状态——全 solution 983 单测绿 / smoke SMOKE OK / GATE PASS 65 能力。上轮桌面优化(O 遥测、F1、C1、C2、S1–S4)已收尾,工作树改动待提交。
+一句话：主 agent 只对话和派活；重活交给**按场景路由的子 agent**。场景是个只有两项的封闭目录：桌面操控、读取文件。每个 agent 都有自己可编辑的提示词，在侧边栏新增「提示词」页集中编辑。子 agent 每个任务最多试 5 轮，全败就向主 agent 回报「无法执行」和错误原因。没人占用的场景，一切照旧由主 agent 自己执行。
 
-本轮来源:记忆(M5)、桌面(M9)、核心(M1–M4/M7/M8)三路全仓探查。优先级:**先修生产接线缺位(记忆多数弱点是"功能在、没接上"),再修稳健性,调参仍等遥测数字**。
+需求（逐条在下文有对应校验或任务）：
 
-每期收尾不变:smoke `Check(...)` + `Capabilities` 表 → `--update-baseline capabilities/manifest.baseline.json` → README 补节 → 跑 smoke 前停应用(坑 11/12)。
-
----
-
-## V — 语音唤醒(2026-10-15 实测,分支 local-voice-stack)
-
-现象:ASR/TTS 正常、字典正常,唤醒词只响一次提示音,之后再也不响。
-
-### V0 根因(已复现,最高优先)
-
-- [x] **V0.1 只喊唤醒词、不说话 → 唤醒会话永不回闸,此后不再探测**(2026-10-15 修复)
-  现状:`_awake` 只在 `SubmitAsync` 的**成功路径**清;三条提前 return——块 < `MinBlockSeconds` / 音频被环形冲掉 / `SpeechFraction < MinVoicedFraction`——全部跳过它。而 `AsrStream=false` 时 G2 的 `SegmentEnded` 恒为 false(`PauseBlockingDetector.cs:175-187`),所以 `TickAsync` 里那条兜底清闸永远走不到。加上唤醒命中时 `Detector.OnGateReleased(Ring.Seconds)` 把游标推到**命中那一刻**,唤醒词本身的音频落在游标之前被丢——只喊词不说话时块里只剩静音 → 撞上提前 return → `_awake` 卡 true → `PollWakeAsync` 因 `!_awake` 永不执行 → 提示音再也不响,而闸门一直开着(此后所有话都不经唤醒词直接进 ASR)。
-  复现(app 输入指向 VB-Cable,用音频喂,绕开麦克风):喂「小克小克」→ 无转写;喂「今天天气怎么样」(**不含唤醒词**)→ 被转写,证明闸门仍开;再喂「小克小克」→ 仍无转写。
-  改法(两处,缺一不可):
-  1. `PauseBlockingDetector.OnWakeHit(now)`——与 `OnGateReleased` 同体,额外把 `_dirty` 立起来(唤醒词本身就是「已经听到人说话」)。不立则喊完词不说话时 G2 永不成立,会话照样卡死。
-  2. `VoiceInputHalf.TickAsync` 在 `SubmitAsync` 之后收尾:`_awake && Trigger == UtteranceGap && Pause` 即关闸,**与提交结果解耦**;原先 `SubmitAsync` 成功路径里那段删除。三条提前 return 现在都走同一段收尾。
-  命中时游标原定在 `Ring.Seconds`(即丢弃唤醒词自身音频)——刻意保留:唤醒词不该被转写后送进 LLM,实测唤醒词后紧跟的命令能完整进块。这个「实测完整」后来被证伪(KWS 延迟 320 ms,连读时命令落在命中点之前),见 V0.4。
-  验收:`WakeGateTests.A_wake_hit_without_following_speech_closes_the_session`(新用例)——只喊词不说话(2.5 s 静音)后 `Awake` 必回 false、无 utterance、探针重新跑起来、再喊一次再次进会话。已验:把 `OnWakeHit` 换回 `OnGateReleased` 该用例必红(实测 `Expected: False / Actual: True`);`Partner.Voice.Tests` 85/85 绿。
-
-- [x] **V0.3 唤醒后约 1.1 s 不开口，会话就关 —— 之后说的全不进 ASR**(2026-10-15 修复)
-  现象:用户报「唤醒后 ASR 识别到的文字没作为输入」。不是队列接线问题(`VoiceHost.EnqueueAsync` 一直通),是**唤醒会话提前关闭**。
-  复现(新增 `WakeTimingTests.Speech_after_a_thinking_pause_reaches_the_asr`,5 档参数化):唤醒命中后停 N 秒再说话 + 沉默收尾,`N=0.3/0.8` 通过,`N=1.2/2.0` **utterances=0、asrCalls=0、awake=false**。
-  真因:V0.1 的修复(`OnWakeHit` 立 `_dirty`)把「喊完词不说话」这条死路堵上了,代价是**唤醒词本身被当成了「一段话说完了」**。`OnWakeHit` 同时把 `Cursor` 推到命中时刻,于是 `silenceMs` 从命中那一刻起算;`_dirty` 已为真 → G2 在 `UtteranceGapMs`(1200)减掉 `SilenceOffsetMs`(100)即**实测静默 1.1 s** 时成立 → 提交的是纯静音块 → `SpeechFraction < 0.15` 提前 return → `TickAsync` 收尾那条 `_awake && Trigger==UtteranceGap && Pause` 把 `_awake` 清掉。此后说的话只喂 KWS 探针,提示音也不再响。触发门槛极低:提示音 160 ms + 人从听到提示音到组织出句子,轻松超过 1.1 s。
-  改法:把「唤醒词立的 dirty」和「真听到人说话的 dirty」分开。`PauseBlockingDetector` 加 `_awaitingSpeech`(`OnWakeHit` 置位;任何一 tick 能量过阈值即清位,`OnSegmentEnded`/`OnGateReleased` 也清),G2 的间隔改 `_awaitingSpeech ? WakeTimeoutMs : UtteranceGapMs`;G1(流式句界)在宽限期内同样不成立(那 450 ms 静默切出来的是纯静音块)。新设置 `input.wakeTimeoutMs` 默认 5000,贯通 `RuntimeSettings` → `VoiceSettingsMapping` → `VoiceInputSetting`,设置页加输入框,`SettingsValidation` 加非负校验。
-  验收:`WakeTimingTests` 9 条——5 档停顿都进 ASR;宽限期内不关会话、越过后关且不提交纯静音;一开口立刻回到判句间隔(用 30 s 宽限期 + 1.4 s 静默证明没在等宽限期);唤醒词与命令一口气说完;无唤醒门时宽限期不参与(老行为不变)。变异验证:`gapMs` 改回恒 `_utteranceGapMs` 后 4 条必红(实测)。既有 `WakeGateTests` 两条曾把旧时序写死(2.5 s 静音即关会话、3 s 静音后探针恢复),现把它们的 `WakeTimeoutMs` 显式压到 1200——那两条测的是「沉默最终会关会话」这个机制,不是宽限期该多长。`Partner.Voice.Tests` 99/99、`Partner.Core.Tests` 461/461、UI 202/202 + `vue-tsc` 0 错。
-  未做(留观察):命中时 `Cursor` 仍定在 `Ring.Seconds`,而 KWS 有 ~320 ms 检测延迟,连读「小克小克打开灯」时命令首字可能被掐。V0.1 已记过这条。→ 已修,见 V0.4。
-
-- [x] **V0.4 唤醒后连读命令，命令落在 KWS 延迟窗里整块被丢**(2026-10-16 修复)
-  现象:用户报「唤醒后继续说，ASR 内容没写进对话」。
-  真因:`OnWakeHit` 把块起点定在命中那一刻，而 KWS 报命中晚 ~320 ms(chunk-16)——与唤醒词连读时，命令的音频落在命中点**之前**。块 `[命中点, 结束]` 里只剩静音 → `SpeechFraction < 0.15` 提前 return → 命令一个字都进不了 ASR → 会话回闸。命令越短越必中；且命中后再无声音时 `_awaitingSpeech` 仍真 → 5 s 宽限期把整块拖成静音，稀释得更彻底。
-  改法(两处):
-  1. `VoiceInputHalf` 命中时游标回溯 `WakeCatchUpSeconds = 0.45` s，盖过 KWS 延迟，把命中点之前的命令音频兜进块。
-  2. `PauseBlockingDetector.OnWakeHit(now, heardSpeechAtHit)`——回溯窗里已是成片人声时(`SpeechFraction ≥ WakeCatchUpSpeechFraction = 0.5`)不进宽限期，直接按判句间隔收尾，否则 5 s 宽限期稀释块。0.5 不是 0.15：唤醒词尾巴自身占回溯窗 ~29%，0.15 会把「喊完词停着想」也判成人声、宽限期失效(V0.3 老 bug 复活)。
-  验收:`WakeTimingTests` 两条——`A_command_finished_before_the_hit_still_reaches_the_asr`(命令全在命中前，改前红)、`A_thinking_pause_after_a_spoken_wake_word_still_waits`(真声唤醒词+停顿，护住 V0.3 不被 0.5 阈值误伤)。`Partner.Voice.Tests` 101/101。
-
-- [x] **V0.2 单声「小克」即命中双声唤醒词 → 探针把每句话喂了两遍**(2026-10-15 修复)
-  复核:原判断(引擎/词表把单声认成双声)**不成立**。干净整段喂入同一引擎(venv `sherpa_onnx` 1.13.8,`epoch-12-avg-2` int8):单声「小克」→ 无命中;双声「小克小克」→ 命中 `小克小克`;不含唤醒词的句子 → 无命中。词表写法与 `keywords_threshold=0.25` / `keywords_score=1.5` 都对:阈值/加分扫描(0.25/0.5/1.0/2.0/4.0 × 1.5/3.0/6.0)里,0.25+1.5 是唯一同时「双声命中、单声不中」的一档,0.5 起连双声都不中。探针音频内容用 SenseVoice 回读确认过(`wake_single.wav` = 「小克。」),不是把双声当单声喂。
-  真因:**探针时序**。帧是「[游标-1s, 游标] + 增量」,于是上一帧的增量正好落在下一帧的前置里——同一条持久流把每句话消费两遍,两遍「小克」凑出双声词。实测(复刻宿主 100ms 节奏,对真引擎 `/wake/infer`):旧时序单声 5 次命中、双声 10 次;只首帧带前置则单声 0 次、双声 1 次。
-  改法:`VoiceInputHalf.PollWakeAsync` 只在引擎那条流是新的时送前置(`_wakeNeedsLead`:首帧、命中换流、探针失败即引擎可能重启、游标重同步),之后只送增量。引擎侧与词表不动。
-  验收:`WakeGateTests.Wake_probe_primes_the_stream_once_then_sends_bare_increments`(首帧带前置、其后不得 ≥1.1s——把 `_wakeNeedsLead` 改回恒真该用例必红)+ `Wake_probe_re_primes_the_stream_after_a_hit`(命中后首帧必须重新带前置:>2s 只可能来自前置,增量上限就是 2s);真引擎往返见上。
-
-### V1 三处真缺陷(诊断能力,与 V0 无关也该修)
-
-- [x] **V1.1 `VoiceInputHalf` 的日志全是死代码**(2026-10-15)
-  改法:`VoiceHost.StartInput` 传 `log: VoiceLog`(落 stderr,与 `LocalEngineHost` 同一路);文案统一 `voice: ` 前缀,`input started` 顺带报 `wake=on/off`。另修一个会随之暴露的问题:`wake poll failed` 原来每 tick 一条,引擎挂掉时把 stderr 淹掉——现在只在「第一次」和「换了原因」时打,恢复时补一条 `wake probe recovered`。
-  验收:接线已通;实跑 stderr 应出现 `voice: input started (device=… threshold=… wake=on)`、命中行(带 keyword 与 confidence)、探针失败原因、阈值误配告警。
-
-- [x] **V1.2 `/api/voice` 不报输入电平**(2026-10-15)
-  改法:`VoiceInputHalf.RecentRms`(最近 0.5s,每 100ms 刷一次,门内门外都刷);新增 `VoiceInputState` = `VoiceHalfState` + `rms`/`ambientRms`/`thresholdMisconfigured`/`awake`,`/api/voice` 的 input 用它(output 仍是 `VoiceHalfState`,不给它安无意义的字段)。设置页:电平条(阈值刻度画在同一条上——「够不够得着阈值」正是要判断的事)、底噪误配红字、唤醒门开着时「已唤醒/等唤醒词」;电平只在本视图挂载期间按 500ms 轮询。
-  顺带修一个会被这次暴露放大成假告警的缺陷:底噪原来在 `now>=0.5s` 那一帧**无条件**取,用户一开机就说话就量到说话的能量、报出「阈值误配」;改成等真正安静的一帧,5s 等不到才按这段时间最安静的一帧如实上报(并在日志里说明「no quiet window in the first 5 s」)。
-  验收:Core 单测 `InputLevelTests`(电平跟随音频;说话期间的能量不算底噪;阈值 0 与永不安静的屋子都在 5s 后上报);smoke 三条(电平升、电平落、开机说话不被当底噪);前端 `views.test.ts` 两条(电平条含阈值刻度、误配红字)。
-
-- [x] **V1.3 ASR 测试没识别出内容仍报 Ok**(2026-10-15)
-  改法:判定抽成纯函数 `VoiceTestEndpoints.JudgeAsr`——整段 RMS 低于 `input.silenceThreshold` 即 `Ok=false`「没听到声音(RMS x 低于阈值 y):设备无信号,或测试时没说话」,引擎从静音里「转出」文本也不翻绿(音频是证据,转写是引擎的意见);有声音但没转出文本仍算通过,但把 RMS 写进说明,两种「绿」可区分。KWS 测试补真实往返:录 3s 喂 `/wake/infer`——命中报「命中「小克小克」」,有声音没命中如实说明(测试时是否说了唤醒词),没声音/录不到 = 红,采样率非 16k 时写「跳过」。
-  验收:`Partner.Api.Tests/VoiceTestEndpointTests` 六条(静音红、1 LSB 底噪红、幻觉文本不翻绿、有声音有文本绿、有声音无文本绿且带 RMS、设备打不开的静音探测红);KWS 的真实往返需真机(拔麦即红)。
-
-**smoke 已跑(2026-10-15,应用未开)**:首跑 SMOKE OK,`voice.input_level` 三条全 PASS;新能力已锁进 `capabilities/manifest.baseline.json`(69 能力 / 25 行纯插入 / `checksFailed: 0`)。
-
-注意:后两跑各挂一条**桌面**检查(`desktop: px/py on the desktop picture resolves to the point it was taken from`、`desktop: an approved action looks again instead of trusting a dead lease`),各自把所属能力(`desktop.desktop_scope` / `agent.queue_consumer`)从 product-supported 拖成 covered——同一台机器连跑三遍结果不同,是既有环境敏感抖动,与本批语音改动无关。D1 批复核:把全部改动 `git stash` 后于干净 HEAD 重跑,同一条 px/py 检查仍红、报错逐字相同(msedge 窗口在 observe 与 act 之间变动),证明确非 D1 改动所致;当前桌面布局下这条已从「偶发」变「持续」,跑 `--verify-baseline` 必红。因此 baseline **不**从抖动跑里写(`--update-baseline` 会把 `passed:false` 与降级一并写进去,还会掩盖以后真降级),改为手工只插 `voice.input_level` 一段。副作用:本机跑 `scripts/ci.sh` 的 `--verify-baseline` 门禁同样会随机红在桌面检查上。
+1. 主、子 agent 的提示词都能在 UI 编辑。
+2. 调用场景只有两个：`desktop`（桌面操控）、`file-read`（读取文件）。
+3. 同一场景只能有一个子 agent。`desktop` 由内置的「桌面操控」子 agent 占用；`file-read` 可选，用户新增子 agent 时选它。
+4. 桌面操控开启时**必须**有启用的桌面子 agent；它默认使用主模型。
+5. 子 agent 默认最多 5 轮；不成功就返回「无法执行」和错误原因给主 agent。
 
 ---
 
-## M — 记忆能力(最大缺口:生产接线缺位)
+## 1. 现状核对（已读代码，行号为当前工作区）
 
-### M0 接线缺位(功能已实现但生产未用——最高优先,全是小改动)
-
-- [x] **M0.1 回忆注入走 token 预算路径**(2026-10-13)
-  做法:`MemoryRecallHook` 改走 `IMemoryStore.InjectAsync`(生产预算即默认 5000),首次放不下即带截断标记;`recallLimit` 参数顺带退役。验收:单测超预算注入带标记(`Injection_stops_at_the_budget_and_says_so`);smoke `memory.injection_budget` 现断言 store 侧 + 生产钩子侧两_paths。
-
-- [x] **M0.2 生命周期维护挂调度器,不再寄居读写路径**(2026-10-13)
-  做法:`Api/MemoryMaintenanceService`(TimeProvider 注入,默认每日)随 `ApiHost` 起停,单遍 `PromoteEligible → DemoteIdle(已公开到 IMemoryStore)→ Trim → Compact`,失败只记 stderr 下次重试。无生产调度器实例(JsonlScheduler 仅 smoke),故用定时器而非调度器——与 todo 的「倾向调度器」取舍为**宿主生命周期对齐**(调度器会话与 queue 绑定,维护不该有自己的输出口)。验收:Core 单测「90 天未召回 + TTL 过期」例程后降级/清除(episodic 副本无 TTL 幸存);Api 单测跑真实工作区 store 计数回执;smoke `memory.maintenance_pass`。
-
-- [x] **M0.3 嵌入 provider 接线(或如实声明 FTS-only)**(2026-10-13)
-  做法:settings 增 `memory.embeddings` 段(默认关),开时 `ApiContext.OpenAsync` 接 `HashingEmbeddingProvider`;**启动时读一次**——中途改开关不动已开的库(不会让新记录悄悄带上旧记录没有的向量),重启生效即文档语义。模型端 embedding 端点仍不做(外部依赖)。验收:单测开=vector 分量非零(`Memory_embeddings_saved_to_settings_take_effect_at_the_next_open`);关=行为不变(默认路径未传入 provider);README 写默认 FTS-only。
-
-- [x] **M0.4 无模型时缩窗保存不再抛异常**(2026-10-13)
-  现状核实:`ConsumerHost.CompactAsync` 无 llm 时**已不抛**(返 `CompactionResult(0, null, "未配置模型，无法压缩")`),todo 描述的 500 已不存在——本轮只补验证与兜底确认。验收:Api 单测无 llm + 缩窗保存 → 200 + `compaction.compacted=false` + reason,历史不丢(`Shrinking_the_context_folds_the_history_once`);smoke 无模型宿主外加同形状检查 `settings.no_model_shrink_saves`。补压(「下次回合开始或调度器例程补压」)未做:compaction 是一次性补叠,搁在保存时机的决定已由 no-llm 报告承担,先不加第二条触发路径。
-
-### M1 检索质量
-
-- [x] **M1.1 CJK 真分词(替换 bigram LIKE OR 全表扫描)**(2026-10-15)
-  改法:新 `CjkText`(bigram 切分、`Index` 出「空格分隔的 CJK bigram 串」、`MatchExpression` 出 FTS5 表达式)统一持有那套规则;`memories` 加真列 `body_cjk` + 第二张 FTS5 外部内容表 `memory_fts_cjk`(与 `memory_fts` 同三触发器写法),写/改/软删三处同步维护;CJK 查询走 `MATCH` + bm25,与 Latin 同一 `CandidateLimit`,旧 LIKE 分支与 `Escape`/`BuildLikePattern` 删除。既有库靠 **v1→v2 迁移步骤**回填:`SchemaMigration` 新增 `Data` 委托(`Action<SqliteConnection>`,在 `Statements` 之后跑),因为 bigram 算不出 SQL——逐行算 `body_cjk`,再用索引自己的 `rebuild` 命令建索引。
-  两个实测坑(都写进代码注释):① 对**未入索引**的行 UPDATE 会触发 FTS5 的 `'delete'` 命令撞空 → SQLite 直接报 `database disk image is malformed`;② `CREATE TRIGGER` 在 **prepare 期**就解析列名,老库上先建引用 `body_cjk` 的触发器会**开不了库**(`no such column: new.body_cjk`,Microsoft.Data.Sqlite 的 SQLite 版本如此;python 的 sqlite3 3.50 反而推迟解析,别拿它当依据)。因此 DDL 拆成「无条件部分」+「触发器单独一批」,触发器由 store 在**迁移之后**创建;回填时它们还不存在,索引由 `rebuild` 建。
-  验收:`CjkRecallTests` 七条(换词问句命中、无共同 bigram 不命中、中英混排记录能被中文半边找到、改正文后新旧措辞一进一出、软删后召回为空、`RebuildIndexAsync` 后仍命中、无中文的正文不进索引);`MemorySchemaMigrationTests.An_old_store_backfills_the_bigrams_its_rows_were_never_indexed_with`(老库中文行迁移后可被换词问句召回 + 迁移后新写入照常进索引);smoke 新能力 `memory.scale_p99_cjk`(10 万中文库 P99 <500ms,本机 median 84.9ms / p99 125.3ms,seed 9.5s)。
-  实测对照(临时脚本,10 万行、查询词只在 5% 的行里出现):旧 LIKE-OR 扫描 median **65.0ms** / p99 67.7ms → 新 bigram 索引 median **15.2ms** / p99 17.4ms。注意第一次用「每行都含查询词」的语料量,两条路径都是 200 行、耗时也接近(41ms vs 82ms,索引反而更慢——FTS 在排序一个几乎全中的候选集),那测的是排序不是检索,已换成稀有词语料。
-
-- [x] **M1.2 `FindBySourceAsync` 建索引**(2026-10-15)
-  改法:DDL 加 `ix_memories_source ON memories(source_event_seq)`(既有库靠 `CREATE INDEX IF NOT EXISTS` 自动补上,无需迁移步骤);接口加 `FindBySourceRangeAsync(from,to)`——一条 `WHERE source_event_seq BETWEEN $from AND $to AND valid_to IS NULL`,`MemoryDeletion.CascadeAsync` 改用它,原来「逐 seq 走一遍」的循环和「列没索引所以走一遍更便宜」的理由一并删掉。`FindBySourceAsync`/`FindBySourceRangeAsync` 各自给 `MemoryStore.SourceQueries` 记一次数(`internal`,给测试用:`internal` 可见性靠新增的 `InternalsVisibleTo("Partner.Core.Tests")`)。
-  验收:`MemoryHookTests.Deleting_a_long_span_reads_it_in_one_query`——3 条记录落在 seq 100/500/900,级联 1..1000 后 `removed == 3` 且 `SourceQueries == 1`(逐 seq 版必红:1000)。既有两条级联用例不回归。
-
-### M2 数据层稳健性
-
-- [x] **M2.1 schema 版本号 + 显式迁移**(2026-10-15)
-  改法:`PRAGMA user_version` 打版本,`MemorySchema.Version`(当前 1)+ `MemorySchema.Migrations` 步骤表驱动(`SchemaMigration(To, Description, Statements, TolerateFailures)`,升序执行、每步之后立刻打版本戳,中途崩只退到上一个完成的步)。现有「试跑吞异常」归为 v0→v1 的兼容步骤(`TolerateFailures: true`,只有明说这一步的失败才是预期结果)。新库不走步骤——DDL 就是当前 schema,直接盖当前版本戳(`memories` 表在 DDL 之前是否存在决定走哪条路)。库版本 > 本 build 已知版本即拒开(读了只会瞎猜,写了可能丢新 build 加的列);拒开时连自己那条连接一起 dispose,否则文件被这个进程锁着。
-  验收:`MemorySchemaMigrationTests` 六条——旧库(手工造 v0 形状 + 真 DDL 补齐 FTS/触发器/索引,再插一行)打开后版本盖章、列存在、原记录还在、降级扫描(唯一读 `last_recalled_at` 的查询)真的能跑、写与召回正常;已有该列的库照样打开;新库直接是当前版本;重复打开不重复迁移;`user_version = Version+1` 的库被拒(`newer`);步骤表自检(号不超过当前版本、有描述、有语句)。
-  坑:v0 夹具必须**先建表、再跑真 DDL、最后插行**——行插在触发器存在之前,更新它时 FTS5 的 `'delete'` 命令撞上不存在的索引项,SQLite 直接报 `database disk image is malformed`(实测)。
-
-- [x] **M2.2 `ParseScope` 未知值显式记录**(2026-10-15)
-  改法:兜底行为不变(未知值仍当 `Recall`),但不再静默——`ParseScope` 变成实例方法,按值计数存进 `UnknownScopes`(`internal`),第一次遇到某个值打一条 stderr(同类值只打一次,不刷屏)。理由:整库 scope 全是本 build 不认识的值,表现和「全部被悄悄放掉」一模一样,没有别的信号会说出来。
-  验收:`MemoryStoreTests.An_unknown_stored_scope_reads_as_recall_rather_than_throwing` 加断言——`Global` 计数 1、且只有它一个键(可读的 scope 不留记录)。
-
-### M3 蒸馏与覆盖面
-
-- [x] **M3.1 工具型回合也产记忆**(2026-10-13,与 M0 同批)
-  做法:`Core/Memory/ToolAppearance.Summarize`——无 assistant 文本的回合取本回合内最长一条 `desktop_act` 成功 ToolResult(ok=true 且带「已通过界面自动化执行 / 注入成功 / 已按控件中心点执行」标记),其余一律不收;拒绝、校验失败、`ok=false` 全排除。验收:单测成功 act 产 Working 记录(`A_tool_only_turn_is_remembered_from_a_successful_act`)、纯失败回合不产(`A_all_failed_tool_turn_leaves_no_memory`)。
-
-- [ ] **M3.2 蒸馏词表外置可扩充**(低优先,M3.1 后再看)
-  现状:SelfReferential/Chitchat/importance 词表硬编码中英短语(`ConversationDistiller.cs:46-60, 128-138`),"别忘了"/"note that" 等漏网;`MaxBodyLength=400` 截断不挑句界。
-  改法:词表外置到设置或数据文件;截断对齐句子边界(句号/问号/换行回退)。
-  验收:单测"别忘了"被蒸馏、"note that"命中 importance;截断点落在句界。
-
-- [ ] **M3.3 矛盾检测阈值改密度**(低优先)
-  现状:`MinSharedKeywords=5` 绝对计数(`MemoryLifecycle.cs:32`),超短句共享词不足漏掉 supersede,新旧事实并存。
-  改法:改密度比(交集/较短句关键词数 ≥ 阈值),短句不再漏;阈值拿现有单测数据回归调。
-  验收:单测"换用 D 盘了"类短句能 supersede;既有矛盾用例不回归。
-
-### 不做(记忆)
-
-- 记忆库导出/备份 UI:存储立场是"删除即丢失、库即权威",先不做;README 已明示。
-- 语义 embedding 服务默认接入:依赖外部端点,留在 M0.3 的可选项,不默认开。
+- **主提示词目前无处可改。** `BaseSystemPrompt` 恒为 null（`ConsumerHost.cs:292`），回落到写死的 `"You are a single-user local assistant."`（`IContextAssembler.cs:74`）。
+- **一个 runner、一个会话、一个读者。** 会话 id 写死 `"main"`（`AgentTurnRunner.cs:217`）；`TurnLoop` 同一时刻只跑一个 turn（`TurnLoop.cs:61`）。桌面任务 20–40 步会占住队列。
+- **工具表在 `ConsumerHost.Start()` 里一次性建好**（`ConsumerHost.cs:295-331`）。设置保存时只有模型 / 桌面 / MCP 的结构变化才重启消费者（`ViewEndpoints.cs:843-845`）。
+- **步数预算按 registry 里的工具名前缀算**（`desktop`、`mcp_` 为 32，`AgentTurnRunner.cs:27`、`:264`）。子 agent 的 registry 只放 `desktop_*` 就自动 32 步；主 registry 拿掉桌面原语后回到 8 步。
+- **桌面状态是进程内单例**（`DesktopAutomation`）：任何一次 `Observe` 都让旧租约失效（`DesktopAutomation.cs:566`）。同一时刻只能有一个 agent 持有 `desktop_*`。
+- **项目里没有读文件工具。** `ITool` 的实现只有桌面和 MCP 两类（grep `src` 确认），场景 2 要新写工具。
+- **运行器已给失败打了可识别的前缀**：治理拒绝 `denied:`（`AgentTurnRunner.cs:647`）、审批被拒或超时 `approval denied:`（`:662`）、工具超时 `timeout after`（`:682`）、其余 `error:`。这正是判断「重试有没有意义」的现成依据。`ToolFailureReason.From` 还把失败消息归成可分组的形状（`ToolFailureLog.cs`），取值我没读。
+- `ToolPolicy` 已有 `AllowedPathPrefixes`（支持 `${workspace}` 展开，`ToolPolicy.cs:12`），但运行时用的 `DesktopGovernance` 没接它。读文件的目录白名单可借用这套语义。
+- **截图工具是否注册取决于主模型的 `SupportsImages`**（`ConsumerHost.cs:305`）。桌面子 agent 可覆盖模型后，这个判断要改成看桌面子 agent 的有效模型。
+- **治理 fail-closed**：`DesktopGovernance` 对不认识的工具一律 Deny（`DesktopGovernance.cs:46`），新增工具必须先登记。
+- **审批请求不带来源**（`QueuedApprovalHandler.cs:13`）：后台子 agent 弹审批，用户不知道是谁在问。
+- **设置里带列表的 record 必须手写值相等**，否则每次保存都被判「变了」而重启消费者（`DesktopSettings`、`McpSettings` 的注释记录了这个坑）。
+- **回填陷阱**：设置响应漏掉某一段，UI 保存后就把它清空（`SettingsView.From` 里 Desktop / Skills 的注释）。
+- `InputSource` 只有 Voice / Text / Schedule 三种（`InputSource.cs:4`），引用分布在 13 个文件、约 27 处。
 
 ---
 
-## D — 桌面操控(T 区数字未到前,只修结构性弱点)
+## 2. 概念与数据模型
 
-### D0 遥测兑现(先收上轮埋点的数,决定 T 区)
+| 概念 | 含义 |
+|---|---|
+| **场景（scenario）** | 代码里的封闭目录，只有两项。名称和「什么时候该交给我」的描述都固定在代码里，不可编辑。 |
+| **子 agent** | 一份提示词 + 一个场景 + （可选）模型覆盖 + 最大轮数。工具由场景决定，不让用户勾选。 |
+| **任务（job）** | 主 agent 一次委派产生的一次子 agent 运行，有自己的会话文件、轮次记录和状态。 |
 
-- [ ] **D0.1 跑一轮真实会话,读 `GET /api/desktop/telemetry`,按结果裁定 T 区四项**
-  snap 命中率 <90% → 吸附半径按控件尺寸归一化;zoom 用得多且命中低 → `zoomAt` 参数化;附图 token 占比 >25% → feedback 默认挡换 `on-failure`;租约耗尽率 >30% → 租约 10 步调参。
-  **数字不到,四项都不动**(上轮原则延续)。
-  产出:数字记进本文件 T 区条目,做出/不做结论。
+场景目录：
 
-### D1 稳健性小修(不依赖遥测)
+| key | 名称 | 子 agent 持有的工具 | 能力开关 | 谁可以占用 |
+|---|---|---|---|---|
+| `desktop` | 桌面操控 | `desktop_*` | `desktop.enabled` | 仅内置的 `desktop` 子 agent |
+| `file-read` | 读取文件 | `file_list`、`file_read`（新写，只读） | `files.enabled`（新增，默认关） | 用户新增的子 agent |
 
-- [x] **D1.1 遥测 windowHours 与 sink 保留期联动**(2026-10-15)
-  现状:聚合端点硬编码 1h(`DesktopEndpoints.cs:72`),sink 保留 1h——改其一即静默不一致。
-  改法:`InMemoryTelemetrySink` 加 `DefaultRetention` 静态字段 + 实例 `Retention` 属性(构造可传);`ApiContext` 带 `Clock`;端点从 `ctx.Telemetry.Retention` 派生窗口,`hoursRaw` 只可收窄不可放宽(`Math.Clamp(0, retention)`),响应回 `windowHours` + `retentionHours`。
-  验收:`The_telemetry_window_is_the_retention_it_is_read_from`(端点窗 == sink 保留期)+ `A_caller_may_narrow_the_telemetry_window_but_not_widen_it`(0.25 收窄生效、999 被 clamp 到保留期、负数归 0)。
+设置新增两段：
 
-- [x] **D1.2 `desktop_exec` 后台子进程管道关闭**(2026-10-15)
-  现状:30s 超时后管道可能不关(`DesktopSystemTools.cs:124-126` 自认),子进程与句柄滞留。
-  改法:超时路径 kill 进程树后新增 `ClosePipes(process)` + `WaitForDrainsAsync(outTask, errTask)`(1s `DrainCloseGrace` 兜底)。仅杀进程树不够:`start /b` 这类脱离子进程仍持有继承的写句柄,匿名管道读在读到数据前不响应取消,两条 drain 就停在无人持有的 reader 上。
-  **更正(实测推翻原判)**:原以为「修前 5 句柄、修后 1」,是噪声。10 次超时命令 × 4 轮句柄计数,修前/修后均平(`grew` 在 5/1/1/-6 与 5/0/1/-5 间抖动)——`KillQuietly` 用 `Kill(entireProcessTree: true)`,`start /b` 子进程已被回收,管道随 EOF 关闭,本就不泄漏。此改动是无泄漏场景的防御性加固(覆盖「杀树前已脱离子进程/启动器比杀更长寿」),不是修一个已复现的泄漏。原 `grew <= 2` 测试钉的是噪声,已删。
-  验收:`Exec_a_timed_out_command_reports_that_it_closed_its_pipes`——超时结果如实声明「进程树与管道均已关闭」,且不挂起。**不声称句柄不泄漏**(无可复现泄漏)。
+```jsonc
+"agents": {
+  "main": { "prompt": null },                 // null = 用内置默认
+  "subAgents": [
+    { "id": "desktop", "name": "桌面操控", "enabled": true, "scenario": "desktop",
+      "prompt": null, "model": null, "maxRounds": 5 },   // 内置：不可删，id / scenario 锁定
+    { "id": "reader", "name": "文件阅读", "enabled": true, "scenario": "file-read",
+      "prompt": null, "model": null, "maxRounds": 5 }    // 用户新增，可选
+  ]
+},
+"files": { "enabled": false, "roots": [] }    // 允许读取的目录白名单；默认关，fail-closed，同桌面
+```
 
-- [x] **D1.3 并发 observe 共享 walks/truncated**(2026-10-15)
-  现状:并发 observe 互相覆盖 walks/truncated(`DesktopAutomation.cs:185`,注释假设工具循环单线程);步预算 4 并行已在打破该假设。
-  改法:`_walks`/`_truncated` 字典换成不可变 `WalkSnapshot` 记录(`volatile _walkState`),per-call 建字典、末尾整体发布;`_lastObservation` 加 `volatile`;构造加 `walk` 接缝以驱动交错。
-  验收:单测 `ObservationConcurrencyTests`。**关键**:第一版测试旧码也过(交错没落在真正的窗口上),重写为「定向 observe 停在自身 walk 中 → 全量 observe 清空共享字典并跑完 → 定向 observe 读出别人的截断原因」。回退到共享字典实测红(`Expected: False / Actual: True`,拿到的正是并发 walk 的 `Visited`),新码绿——测试确实锁住该修复。
-
-### 不做(桌面,上轮已判,防回流)
-
-- attach 半(扫端口找已开调试目标)、WebView2 走 CDP、grounding 模型副路、OCR/沙箱/第二桌面/MCP 化桌面工具。
-- UIPI fail-open 改 fail-closed:刻意设计,级别读不出的进程放行;改了会拒掉大量合法动作。
-- region BitBlt 快路径竞态:窗口极小、代价是加锁;等真实误报再说。
-
----
-
-## C — 核心能力(验证与补缺)
-
-- [ ] **C.1 真实模型供应商往返验证**
-  现状:`HttpLlmClient` 只验过线格式与假端点(FakeChatProvider/ScriptedLlmClient),OpenAI/Ollama 实跑未做——README"未做/未验证"表现在这么写。
-  改法:一次性人工验证脚本(`scripts/`),对配置的真实端点跑一轮 chat + `/tokenize` + `/models`,结果记 README;**不进 smoke**(smoke 不依赖外部服务)。
-  验收:README 未验证表删该项,记录实测供应商与版本。
-
-- [ ] **C.2 ASR/TTS 真服务验证**(同 C.1 性质)
-  现状:本机无服务,走脚本实现。
-  改法:同上,人工验证一次,结果记 README。
-
-- [x] **C.3 README 坑 9 已过时清理**(2026-10-15)
-  改法:坑 9 从「尚未纳入版本控制(没有 `.git`)」改成现状(默认分支 `main`、改动先开分支、改能力要连基线一起提交);顺检坑列表其余条目,未见其它过时项(坑 10/11/12 记的都是已修的事与仍成立的约束)。
-  验收:`node scripts/check-docs.mjs` 过(ci.sh 首步,设计文档引用仍解析)。
-
-- [ ] **C.4 offscreen 控件挤占 40 配额缓解**(低优先)
-  现状:长列表 offscreen 控件可把视野内按钮挤出产出配额,现缓解=先 scrollIntoView。
-  改法:`UiaTree` 产出优先保留 viewport 相交控件,offscreen 按剩余配额截断;截断标记沿用 `ElementsTruncated`。
-  验收:单测深列表场景视野内控件必在产出里。
-
-### 不做(核心)
-
-- slash-command dispatch(PreDispatch 无条件跑是既有设计,钩子可 ShortCircuit,无需求);
-- 跨进程双消费者(队列进程内单消费者是结构立场,TFM 带 windows 后缀因语音须同进程);
-- set-of-marks 编号徽章 / Phase 5c 帧级闭环:保持 README 未做表现状,无触发信号。
+- `model: null` = **跟随主模型（默认）**。非空时是一份完整的端点配置（baseUrl、model、apiKey、supportsImages、contextTokens、maxTokens），apiKey 只写不回显，沿用 `ModelSettingsView` 的做法。
+- 提示词只存覆盖值，`null` 表示用代码里的内置默认；「恢复默认」就是写回 `null`。
+- **能力归属（一个能力只有一个持有者）**：
+  - `desktop_*`：永远只在桌面子 agent 上，主 agent 没有。
+  - `file_*`：`files.enabled` 且存在启用的读文件子 agent ⇒ 归它；没有这样的子 agent ⇒ 归主 agent（这就是「没人占用 = 主 agent 自己执行」）；`files.enabled=false` ⇒ 谁都没有。
+- 能力开关关闭时，对应场景不对主 agent 提供（有效场景 = 已启用且能力已开的子 agent 的场景）。
+- **封闭目录 + 一场景一 agent 的直接后果：子 agent 总数最多 2 个。** 「＋新增子 agent」实际只能新增读文件那一个，UI 要如实表现（见 §7）。
+- **加载 vs 保存的宽严不同**：保存严格校验（§5）；加载时旧文件没有 `agents` 段就用默认（含内置桌面子 agent），缺内置项则补回。补回后仍不满足规则 4，则 **fail-closed**：桌面工具不注册给任何人，`/api/consumer` 的 reason 明说「桌面已启用但没有可用的桌面子 agent」。
 
 ---
 
-## 执行顺序建议
+## 3. 路由与工具契约
 
-1. **M0.1–M0.4**(接线缺位,小改动大收益,一批做完一起收尾)**✅ 2026-10-13 完成**(同批顺带 M3.1)
-2. **D0.1**(跑会话收数,裁定 T 区——不确定工期,尽早启动)
-3. **M1.1 + M1.2**(检索质量,依赖 M2.1 的迁移框架先行)**✅ 2026-10-15(M2.1 → M1.2 → M1.1 全部完成)**
-4. **D1.1–D1.3 + C.3**(小修,可穿插)**全部 ✅ 2026-10-15(C.3 → D1.1 → D1.2 → D1.3)**
-5. **M2.x → M3.x → C.4**(数据层→覆盖面→低优先;M3.1 已随 M0 批完成;**M2.1/M2.2 ✅ 2026-10-15**)
-6. **C.1/C.2**(人工验证,不占开发周期,有真实端点时顺手)
+**为什么必须异步。** 同步等子 agent，主 turn 仍被占着，单读者队列照样堵；而且 `ToolTimeout` 全局 30 s（`AgentTurnRunner.cs:673`）、`ToolDispatchTimeout` 180 s，装不下一个桌面任务。所以：派活立刻返回，完成后把汇报当新输入塞回队列，主 agent 起新 turn 转述。
 
-收尾清单(每期完成后勾):
-- [x] smoke 新检查写进 `src/Partner.Smoke/Program.cs` + `Capabilities` 表(M0 批:4 条新检查、injection_budget 加 1)
-- [x] `dotnet run --project src/Partner.Smoke -- --update-baseline capabilities/manifest.baseline.json`(2026-10-13 已刷新:163 检查 / 68 能力 / 66 product-supported;含上轮待提交的 desktop.telemetry_aggregates)
-- [x] README 相应小节补行(含未做/未验证表)
-- [x] 跑 smoke 前停应用(本轮连跑两遍均 SMOKE OK;px/py 检查为环境敏感,无应用干扰时通过)
+主 registry 在「有效场景 ≥ 1」时才注册（没有场景 = 主 agent 自己干）：
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `agent_delegate` | `scenario`（枚举，取自有效场景）、`goal`、`context?` | `{jobId, agent, status:"started"}`，立即返回 |
+| `agent_job_status` | `jobId?` | 状态、当前第几轮 / 共几轮、最近一步摘要 |
+| `agent_job_cancel` | `jobId` | 是否已请求取消 |
+
+- 工具描述和主 agent 系统提示里的「可委派场景」块由场景目录自动生成（只读）。
+- 同一子 agent 同时只跑一个 job；再委派同场景返回 `busy` + 在跑的 jobId。
+- 三个工具在 `DesktopGovernance` 里登记为 Allow（委派本身不动机器，真正的动作由子 agent 自己的治理 / 审批把关）。
+- **回灌**：job 结束后入队一条 `InputItem`：`Source = Agent`（新增），`IdempotencyKey = "agent-job:{jobId}"`。幂等键沿用现有的至少一次语义，重复完成不会重复入队。
+
+**汇报有两种形态，主 agent 看第一行就能分辨：**
+
+```
+[子 agent「桌面操控」任务 job-17 · 已完成 · 第 2/5 轮]
+结论：已打开网易云音乐并开始播放“夜曲”
+证据：最后一次动作校验=画面已变化；截图 media-83
+```
+
+```
+[子 agent「桌面操控」任务 job-17 · 无法执行]
+目标：打开网易云音乐并播放“夜曲”
+原因类别：rounds_exhausted
+错误：desktop_act 被拒：(512,300) 这个点上是 'XXX'，不是目标窗口……（最后一次的原文，截断）
+已尝试：5/5 轮
+  1. 步数耗尽（32 步）  2. 元素找不到  3. …
+已执行过的动作：desktop_launch ×1，desktop_act ×14（含 3 次 type）
+```
+
+原因类别：`rounds_exhausted`、`approval_denied`、`governance_denied`、`cancelled`、`timeout`、`model_error`、`interrupted`、`reported_impossible`。主 agent 的默认提示词要写明：收到「无法执行」就用人话告诉用户原因，**不得**说成功，也不要拿同一个目标原样再委派一遍。
+
+---
+
+## 4. 提示词
+
+**主 agent 的有效系统提示** = 用户的主提示词（或内置默认）＋ 自动生成的「可委派场景」块（只读）＋ 现有钩子注入（技能、记忆，不变）。
+
+**子 agent 的有效系统提示** = 它自己的提示词（或内置默认）＋ 汇报契约（只读，要求以 `task_report` 工具收尾，见 §6）。任务目标放在 user 消息里。
+
+- 内置默认是代码常量：`MainDefault`（保持现有那句不变，避免无意改变行为）、`DesktopDefault`、`FileReadDefault`。
+- `DesktopDefault` 要点：看-做-看循环；动作后必须看校验结果；没有证据不报成功；**重试前先观察现状，判断上一轮做到哪一步，不要把已完成的动作再做一遍**（发送、删除这类动作重做会有副作用）。
+- `FileReadDefault` 要点：先列目录再读；只读不改；找不到就换个办法找，确认没有就如实报告；大文件按需分段读，回报摘要而不是整篇粘回去。
+- **提示词是「非结构」改动，不重启消费者。** `SessionWindowContextAssembler` 改为持有 `Func<string?>`，每个 turn 读最新值；子 agent 在 job 开始时取一次快照。进行中的 job 不受后续编辑影响。
+- 子 agent 不挂记忆召回 / 提炼钩子和技能钩子：记忆应来自主对话，子会话里的工具往返不该被提炼进长期记忆。
+- 提示词计入上下文窗口。UI 显示 token 估算，超过提示预算的某个比例时拒绝保存（比例待定，暂定 50%）。
+
+---
+
+## 5. 规则 → 校验（`SettingsValidation` 新增，服务端为准）
+
+| # | 规则 | 错误文案（示意） |
+|---|---|---|
+| V1 | 每个子 agent 恰好一个场景，且在目录内；场景**全局唯一**，含已禁用的子 agent | `场景 'file-read' 已被「文件阅读」占用，同一场景只能有一个子 agent` |
+| V2 | 必须存在 id=`desktop` 的内置项，它的场景是 `desktop` 且不可改；不可删除 | `内置的桌面操控子 agent 不能删除或改场景` |
+| V3 | `desktop.enabled` ⇒ 桌面子 agent 已启用 | `桌面操控已开启，必须有一个启用的桌面操控子 agent` |
+| V4 | `files.enabled` ⇒ `roots` 非空，且每项是存在的绝对路径；不得覆盖应用自己的数据目录 | `读文件已开启，但没有配置允许读取的目录` |
+| V5 | `maxRounds` 在 1–10（范围待定） | `最大轮数必须在 1–10 之间` |
+| V6 | 提示词长度上限（§4） | `提示词过长（约 N token）` |
+| V7 | 模型覆盖非空时端点完整：URL 合法、模型名非空、`maxTokens < contextTokens`（复用现有 `CheckEndpoint` 规则） | `子 agent 的模型配置不完整` |
+
+- 规则 4 的另一半在 UI：设置页打开桌面开关时若 V3 不满足，直接提示并指向「提示词」页，而不是等服务端拒绝。
+- UI 里的即时检查只是便利；以服务端返回的 `errors` 为准，并用同一组用例钉住两边一致。
+
+---
+
+## 6. 运行时
+
+**前置重构（零行为变化，靠现有 1000+ 单测兜底）**
+
+- 从 `ConsumerHost.Start()` 抽出 `AgentRunnerFactory`：输入一份档案（会话存储、提示词来源、工具表、钩子、治理、审批、模型与选项），输出 `AgentTurnRunner`。主 agent 和每个子 job 走同一个工厂。
+- `AgentTurnOptions` 加 `SessionId`，替换写死的 `"main"`。
+- 模型覆盖要求每个子 agent 有自己的 `ILlmClient`、token 计数器、`ContextWindowTokens` / `MaxTokens`，都由工厂按有效模型生成。
+
+**`SubAgentHost`（Api 层新增）**
+
+- job 表（内存）＋ 追加式 `agents/jobs.jsonl`（started / round / finished 三种记录）。
+- 每个 job 一份独立会话文件 `agents/<agentId>/<jobId>.jsonl`。**子会话的截图和读到的文件内容永远不进主会话**，这是主上下文省下来的地方。
+- 每个子 agent 一个信号量，同时一个 job。
+- runner 要求拿到 `Status=Running` 的 `InputItem`（`AgentTurnRunner.cs:177`）。job 不是队列项，所以构造合成 item，并在代码里注明原因；不为此另写一套 turn 循环。
+- 治理复用 `DesktopGovernance`，审批复用同一个 `QueuedApprovalHandler` + `LeaseGrantingApprovalHandler`，「批准窗口 = 连续 10 步」的租约照常工作。`PendingApproval` 加 `Origin`（agent 名、jobId、目标一句话），横幅显示「来自子 agent「桌面操控」：…」。
+
+### 6.1 逐轮重试与失败回报
+
+**「轮」的定义**：一轮 = 对 job 会话跑一次完整的 `AgentTurnRunner.RunAsync`（含它自己的工具步数预算）。`maxRounds` 默认 5，**含首轮**（若你的意思是「首轮 + 5 次重试」，把默认值改成 6 即可，见 §10）。
+
+**判定一轮成败不靠解析自然语言。** 子 agent 的 registry 里多一个只在子会话里存在的 `task_report(status, summary, evidence?, error?, retryable?)`：
+
+- `status=success` ⇒ job 成功结束，汇报形态 1。
+- `status=failed` ⇒ 本轮失败；`retryable=false` 是模型自己声明「这事做不成」（例如全盘找不到那个文件），**直接终止**，不烧完 5 轮。
+- 没调用 `task_report`、步数耗尽（`turn.detail=step-limit`）、本轮抛异常 ⇒ 本轮失败，原因由代码记录，不是模型自述。
+
+**哪些失败不重试（终止类）**：重试它们要么没用，要么是在绕开人的决定。
+
+| 信号 | 原因类别 | 为什么不重试 |
+|---|---|---|
+| 工具结果以 `approval denied:` 开头 | `approval_denied` | 用户说了不，或没人回应。再试只会反复弹审批 |
+| 工具结果以 `denied:` 开头 | `governance_denied` | 治理规则拒绝（桌面未启用、窗口不在白名单、路径在目录外） |
+| 用户取消 | `cancelled` | — |
+| job 总时限到 | `timeout` | — |
+| 模型调用失败（`ModelCallFailure`） | `model_error` | 客户端自己已经重试过；再来多半同样失败 |
+| UIPI 拒绝（目标是提权窗口） | `governance_denied` | 本进程注入的输入会被系统吞掉，换轮次也不会好 |
+
+其余（元素找不到、租约过期、被遮挡、校验=画面无变化、工具超时、文件没找到、步数耗尽、没汇报）都算可重试。
+
+**轮与轮之间**：在同一个 job 会话里追加一条 user 消息，由**代码**生成，包含：第 k 轮失败的类别和原文错误、上一轮**已经执行过的动作清单**（从 ToolCall 事件汇总，如「desktop_act ×14，其中 type 3 次」）、「先观察现状再决定，不要重复已完成的动作」。理由：桌面动作不幂等，一轮可能已经把消息发出去了，只是校验没认出来，下一轮从头再做就是发两遍。
+
+**全部失败后**：状态 `cannot_execute`，汇报形态 2（§3），带类别、最后一次错误原文、逐轮一行原因、已执行动作清单。**不吞错误，也不把失败包装成"部分完成"。**
+
+**总时限**：每轮已受 `TurnTimeout`（10 分钟）约束，但 5 轮累计 50 分钟的桌面抢占不可接受，需要 job 级总时限（暂定 15 分钟，待定）。
+
+**主 agent 侧防循环**：同一条用户消息内，对同一场景在一次「无法执行」之后最多再委派 1 次（待定），超过则 `agent_delegate` 返回拒绝并要求直接告知用户。
+
+**成本上限心里有数**：桌面场景最坏 5 轮 × 32 步 = 160 次模型调用，且截图占上下文。同一会话里旧图会被窗口机制挤出，但要在 P1 实测一次，必要时每轮换新会话只带摘要。
+
+### 6.2 读文件工具（新写，只读）
+
+- `file_list(path)`、`file_read(path, offset?, limit?)`。治理放行（只读不问，同 `desktop_observe`），**但路径必须落在 `files.roots` 内**：规范化后比较，拒绝 `..` 穿越，以及指向目录外的符号链接 / junction（Windows 要显式处理）。
+- 硬拒绝名单，即使在 roots 内：应用自己的数据目录和 `settings.json`（里面有 ApiKey）、`.env`、私钥类文件（`*.pem`、`id_rsa*` 等）。
+- 限额：单次最多读 N 字节、整文件超限时截断并说明（N 待定）；二进制文件拒绝并说明。
+- 编码：先试 UTF-8，不合法再试 GBK（Windows 中文环境常见），在结果里写明用了哪个。
+- 工具失败原因要可区分：`not_found`、`outside_roots`、`too_large`、`binary`，便于 §6.1 分类与汇报。
+
+**取消与生命周期**
+
+- 取消入口：`agent_job_cancel`、状态栏「停止」、job 行按钮。主 turn 早已结束，队列项的 `RunningToken` 管不到 job，所以要独立的取消令牌；轮与轮之间也检查取消。
+- `ConsumerHost.ReconfigureAsync` 重建工具表前先取消所有 job，并各入队一条「被重配置中断」汇报。
+- 进程崩溃：启动时扫 `jobs.jsonl`，有 started 无 finished 的补一条 `interrupted` 汇报；幂等键保证不和正常汇报重复。
+- **物理抢占**：`SendInput` 是全局的，「后台」只是对话层面的后台，子 agent 仍会抢前台窗口和鼠标。v1 只做醒目指示（状态栏常驻「桌面任务进行中 · 第 k/5 轮 · 停止」）。
+
+---
+
+## 7. UI：侧边栏新增「提示词」
+
+- `App.vue` 的 `NAV` 在「技能」之后、「设置」之前加 `{ key: 'prompts', label: '提示词', icon: 'prompt' }`；`icons.ts` 补图标（`IconName` 是闭集）。键盘导航沿用 `SideBar.vue` 的 roving focus。
+- 新视图 `views/PromptsView.vue`，左列表右编辑：
+  - 左：「主 Agent」置顶；「桌面操控」（内置徽标，无删除）；「文件阅读」（若已新增）；底部「＋ 新增子 agent」。
+  - 「＋新增」打开一个小表单：名称 + 场景下拉。`desktop` 灰掉并写明「已被内置桌面操控占用」，`file-read` 可选；它也被占用时按钮禁用并说明「两个场景都已有子 agent」。
+  - 右（主 agent）：提示词文本框、**有效提示词预览**（含只读的「可委派场景」块）、token 估算、「恢复默认」、「已修改」标记。
+  - 右（子 agent）：名称、启用开关、场景（只读，附目录里的固定描述）、**模型**（默认「跟随主模型」，可切到自定义端点）、提示词、最大轮数（默认 5）、有效提示词预览（含只读汇报契约）。
+- 读文件的目录白名单放在**设置页**，做成和桌面并列的一张卡（开关 + 目录列表）；提示词页的读文件子 agent 在 `files.enabled=false` 时显示「读文件未开启」并链接过去。
+- 规则 4 联动：设置页打开桌面开关时检查 V3，不满足就提示并给「去提示词页」链接；提示词页顶部在「桌面已开启但桌面子 agent 不可用」时常驻警示条。
+- **保存路径：专用端点 `GET/PUT /api/agents`**，服务端读取 → 合并 → 走 `SettingsStore.Save`（整份校验照常）。理由：`SettingsView.vue` 整份回填整份 PUT，两个页面各自写同一份文档会互相覆盖。`PUT /api/settings` 里 `agents` 缺省 = 保持原值（同 ApiKey 的「缺省 = 保持」）。
+- 子任务可见性：会话页里 `agent_delegate` 渲染成一张卡（`toolAppearance.ts` 加名字映射），卡上显示轮次；P2 再加「子任务」抽屉，只读打开 job 会话（复用 `EventList`）。
+
+---
+
+## 8. 分期任务
+
+**P0 · 前置（不改行为）**
+
+- [x] 0.1 `AgentsSettings`、`FilesSettings` 数据模型：值相等（含列表）、默认含内置桌面子 agent、加载补齐；`SettingsView` 响应透传
+- [x] 0.2 内置提示词常量化；`IContextAssembler` 改读 `Func<string?>`，主提示词可配置
+- [x] 0.3 抽 `AgentRunnerFactory`；`AgentTurnOptions.SessionId` 取代写死的 `"main"`
+- [x] 0.4 `SettingsValidation` 加 V1–V7 与单测矩阵
+- [x] 0.5 读 `ToolFailureReason` 的实际取值，定出「可重试 / 终止」分类表（§6.1）
+
+**P1 · 后端闭环**
+
+- [x] 1.1 `InputSource.Agent`：逐处核对约 27 处引用，改掉「exactly three kinds」的注释
+- [x] 1.2 `SubAgentHost`：job 表、独立会话、信号量、取消、总时限、`jobs.jsonl`
+- [x] 1.3 `agent_delegate` / `agent_job_status` / `agent_job_cancel`；`DesktopGovernance` 登记
+- [x] 1.4 工具归属：桌面启用 ⇒ 主 registry 不再有 `desktop_*`；`file_*` 按 §2 归属；截图工具改看桌面子 agent 的有效模型；V3 不满足时 fail-closed 并写明 reason
+- [x] 1.5 `file_list` / `file_read`：roots、规范化、符号链接、硬拒绝名单、限额、GBK
+- [x] 1.6 `task_report` 工具 + 轮次循环 + 终止 / 可重试分类 + 轮间反馈 + 失败汇报
+- [x] 1.7 结果回灌（幂等键 `agent-job:{jobId}`）＋ 启动时的中断补偿
+- [x] 1.8 `PendingApproval.Origin`
+- [x] 1.9 `AgentsNeedsRestart`（比结构：子 agent 集合、场景、启用、模型覆盖；**不比提示词、不比 maxRounds**）与 `FilesNeedsRestart`
+
+**P2 · UI**
+
+- [x] 2.1 图标、`NAV`、`PromptsView` 骨架、`GET/PUT /api/agents`
+- [x] 2.2 主 agent 编辑：预览、token 估算、恢复默认
+- [x] 2.3 子 agent 新增 / 编辑、场景下拉与占用提示、最大轮数
+- [x] 2.4 子 agent 模型覆盖编辑（默认跟随主模型；apiKey 只写不回显）
+- [x] 2.5 设置页：读文件卡（开关 + 目录）；桌面开关与 V3 联动；提示词页警示条
+- [x] 2.6 审批横幅显示来源；状态栏任务与轮次指示、停止按钮
+- [ ] 2.7 子任务抽屉与只读 job 会话
+
+**P3 · 可选**
+
+- [ ] 3.1 `needs_input`：子 agent 需要用户决定时汇报，主 agent 带 `resumeJobId` 续跑同一个子会话
+- [ ] 3.2 用户自己在操作鼠标键盘时自动暂停桌面 job
+- [ ] 3.3 `task_report` 做成终止型工具，省掉汇报后多出的一次模型调用
+- [ ] 3.4 放开场景目录（新增场景）与「一场景多 agent」
+
+**P4 · 收尾**
+
+- [x] 4.1 README 补一节「主 / 子 agent、提示词与重试」，并更新「唯一逻辑会话」的表述（子会话是旁路，不是第二条主会话）
+- [ ] 4.2 真机验证清单（§9 末尾）
+
+---
+
+## 9. 测试
+
+沿用仓库习惯：每条保护性改动都要有「撤掉就红」的反例。
+
+**配置与归属**
+
+- 值相等：两个默认 `AgentsSettings` 相等；只改提示词或 `maxRounds` 不触发 `AgentsNeedsRestart`，改场景 / 启用 / 模型覆盖触发。
+- 校验矩阵：V1–V7 各一正一反，含「禁用的子 agent 仍占用场景」「试图把 `desktop` 给非内置项」。
+- 规则 4：开桌面且桌面子 agent 被禁用 ⇒ 保存被拒；旧文件加载 ⇒ 补齐内置项；补齐后仍不满足 ⇒ fail-closed 且 reason 可读。
+- 工具归属：主 registry 无 `desktop_*`；`files.enabled` 且无读文件子 agent ⇒ 主有 `file_*`；有 ⇒ 主没有、子有；`files.enabled=false` ⇒ 都没有。步数预算：桌面子 agent 32、主 8。
+- 模型覆盖：主模型 `SupportsImages=false` + 桌面子 agent 配视觉模型 ⇒ 子 registry 有截图工具、主没有。
+
+**委派与回灌**
+
+- 未知场景被拒；`busy` 路径；`agent_delegate` 不阻塞 turn；完成后队列出现 `Agent` 项；重复完成不重复入队；崩溃后补偿一条 `interrupted`。
+- 隔离：主会话日志里没有 `desktop_*` 事件，也没有文件内容；记忆钩子不对子会话触发。
+- 提示词时效：编辑后下一个 turn 生效；进行中的 job 用启动快照；用户提示词里写「忽略以上」不影响汇报契约仍被附加。
+
+**重试（本版重点）**
+
+- 前 4 轮失败、第 5 轮成功 ⇒ 成功，汇报写「第 5/5 轮」。
+- 5 轮全败 ⇒ `cannot_execute` / `rounds_exhausted`；汇报含逐轮原因和**最后一次错误原文**；主 agent 的下一个 turn 里能看到它。
+- `approval denied:` ⇒ 第 1 轮后立即终止，不再重试（撤掉分类必红：会反复弹 5 次审批）。
+- `denied:`、UIPI 拒绝、取消、总时限 ⇒ 立即终止，类别正确。
+- 模型自报 `retryable=false` ⇒ 提前终止，不烧完 5 轮。
+- `maxRounds=1` ⇒ 不重试。
+- 没调用 `task_report` ⇒ 判失败，原因写「未汇报」，不是静默成功。
+- 轮间反馈含上一轮已执行动作清单；取消在轮间生效。
+- 主 agent 防循环：同条用户消息内同场景「无法执行」后第二次再委派被拒。
+
+**读文件**
+
+- 目录外路径拒绝；`..` 穿越拒绝；指向目录外的符号链接 / junction 拒绝。
+- 应用数据目录、`settings.json`、`.env`、私钥文件即使在 roots 内也拒绝。
+- 超大文件截断并说明；二进制拒绝；GBK 文本正确解码。
+- 失败原因可区分：`not_found` / `outside_roots` / `too_large` / `binary`。
+
+**UI（vitest）**：场景下拉占用提示、「＋新增」禁用条件、恢复默认、规则 4 联动、`SettingsView` 保存往返后 `agents` 与 `files` 不丢。
+
+**回归**：P0 重构完成时现有 1000+ 单测 / 200 前端测试必须仍全绿。
+
+**真机验证清单（P4）**：桌面任务进行中仍能语音对话；取消真的停手；审批横幅写明来源；故意让桌面任务失败，主 agent 用人话说出原因而不是说成功；重试没有把已发出的消息再发一遍；任务中途重启后主 agent 收到「被中断」；读文件读不到目录外的东西。
+
+---
+
+## 10. 风险与待你拍板
+
+风险：
+
+- **重试的副作用**：桌面动作不幂等，重试可能重复发送 / 重复点击。靠「轮间动作清单」和 `DesktopDefault` 里的"先看现状"缓解，不能根治；不可逆动作仍由审批把关。
+- **成本与抢占时长**：最坏 5 轮 × 32 步；靠总时限和取消兜底。
+- **汇报不可信**：靠 `task_report` 的证据字段和主提示词里"没有证据的成功要说不确定"。主 agent 失去中途纠偏，只能查 status、取消、重发。
+- **读文件的泄密面**：模型读到的内容会进它的上下文并可能被转述。目录白名单、硬拒绝名单、默认关闭是三道防线；白名单配得过宽就等于没有。
+- **子 agent 总数最多 2 个**：封闭目录加一场景一 agent 的必然结果，不是 bug。
+
+默认决定，想改就说一声：
+
+1. 「5 轮」= 总共最多 5 次尝试（含首轮）。若你的意思是首轮 + 5 次重试，默认值改 6。
+2. 读文件用独立的 `files` 开关和目录白名单，默认关。轻量替代是「有读文件子 agent 就算开」，但那样没配子 agent 时主 agent 就无法读文件，与"没人占用 = 主 agent 自己执行"冲突。
+3. 场景名称与描述固定在代码里，不可编辑；用户能改的是各 agent 的提示词。
+4. 子 agent 本版不带 MCP 工具（上一版允许，现在收窄到两个场景）。
+5. 模型覆盖放在 P2 就做，因为「默认使用主模型」意味着它可以不用主模型。
+6. job 总时限 15 分钟、同条消息内同场景最多再委派 1 次、提示词上限 50% 预算、`maxRounds` 范围 1–10：都是暂定数字，需要真机数据校准。
+
+---
+
+## 11. 还没验证的（动手前先看）
+
+- `ToolFailureReason.From` 的实际取值，以及它是否足以支撑 §6.1 的分类。
+- `JsonlSessionStore.Open` 开第二个实例的路径与锁。
+- `InputSource` 约 27 处引用的真实语义：目前只数了数，没有逐个读。
+- `MemoryHook` 会不会因为 `Source=Agent` 误蒸馏。
+- `SettingsView.vue` 的回填方式，`SettingsStore.Save` 的并发 / 原子写。
+- `ApprovalBanner.vue` 能展示哪些字段。
+- Windows 下符号链接 / junction 的规范化方式（.NET 的 `LinkTarget` 对 junction 的支持需实测）。
+- 同一会话里 5 轮截图叠加后，上下文窗口机制的实际表现。
+
+---
+
+## 12. 实现状态与偏差（本次已落地）
+
+**验证**：.NET 全部单测 1164 通过 / 15 跳过（需真实桌面的活测）；前端类型检查、构建、223 个测试通过；`check-docs` 与 `check-css-names` 通过。smoke 的子 agent 相关检查全绿；`desktop: a picture's marks…`（读真实桌面的第一个窗口）在我这台机器上间歇失败，它跑在所有 API 宿主之前，没有走过本次改动过的代码，没有在改动前的提交上复现（3 次），所以我把它记成环境相关而不是回归。
+
+**未做**：2.7 子任务抽屉与只读 job 会话的界面（后端 `GET /api/agent-jobs/{id}/session` 已有，smoke 在用）；4.2 真机验证清单；全部 P3。
+
+**和方案不一样的地方**：
+
+- 没有单独抽出 `AgentRunnerFactory`：主 agent 仍在 `ConsumerHost.Start()` 里组装，子 agent 在 `SubAgentHost` 里组装，共用的只有 `AgentTurnOptions.SessionId` / `PromptSource` 这两个新选项。两处各约 30 行，抽工厂是纯重构，等第三个使用方出现再做。
+- **`PUT /api/settings` 缺省 `agents` = 保持原样**（用 `AgentsSpecified` 区分），别的段仍是缺省 = 默认。写测试时发现：不这样做，任何不带 `agents` 的保存（脚本、旧版设置页）都会把提示词和子 agent 清回默认。
+- 主 agent 防循环不是计数器，而是**同一目标在 10 分钟内失败过就拒绝原样再委派**（忽略空白与标点）。计数器需要知道"同一条用户消息"，工具层拿不到。
+- 目录白名单的"必须存在"只检查**新增**的条目；已有的目录消失了（拔掉的盘）只在 `problems` 里提示，不再让无关的保存失败。工作区目录永远拒读，所以不再校验"白名单不得覆盖数据目录"。
+- 每轮仍受 `TurnTimeout`（10 分钟）约束，任务总时限 15 分钟；`maxRounds` 不触发消费者重启。
+- `file_` 工具族的步预算 24（`AgentTurnOptions.ToolStepBudgets`）。
+- `GET /api/consumer` 新增 `agentTools`：子 agent 的工具表与治理决定，因为桌面工具已不在主 agent 的 `tools` 里。
+- `MemoryDistilHook` 对 `InputSource.Agent` 不提炼（子 agent 的汇报不是用户说的话）。
+- `DesktopGovernance` 同时负责委派工具、`task_report`、`file_*`（类名没改）。
+- 提示词里的换行统一成 `\n`（`StringBuilder.AppendLine` 在 Windows 上是 `\r\n`）。
+- smoke 里原来让脚本化模型直接当主 agent 调桌面工具的检查，改成经 `DesktopAgentShim` 走真实委派路径；读工具结果改读 job 自己的会话。
+
+---
+
+## 13. 会话：隐藏子 agent、只能删最新、撤回可取消（追加需求，已落地）
+
+需求：子 agent 的消息在会话里隐藏且不进记忆；删除只能删最新一次对话；「删除之后」改名「撤回」，撤回之后、发出新消息之前可以取消撤回。
+
+- **隐藏**：`GET /api/session` 过滤掉 `Agent` 来源的用户消息（日志和模型照常能读到）。主 agent 对汇报的回复是普通助手消息，照常显示，且不带来源标签。`Agent` 来源的整轮不进记忆（`MemoryDistilHook` 跳过，Core 里有对照测试）。
+- **对话**的定义：从有人发出的用户消息（打字 / 语音 / 定时）开始，到下一条这样的消息为止；子 agent 汇报不开始新对话。范围起点取到该轮的 `TurnStart`，轮次标记不会落单。
+- **删除**：只能删最新一次对话，整段物理清除（含修订、记忆）；更早的返回 409；有回合在跑返回 409；有待定的撤回也返回 409。
+- **撤回**：写一条带 `withdrawn` 标记的 `Retract`，只隐藏、不删；记忆也先不动。`POST /api/session/withdrawal/cancel` 把这条记录拿掉即恢复。**发出新消息**（`/api/input` 或语音）时、先于入队，才物理清除并级联删记忆。同一时刻最多一次待定撤回，从更早处再撤回会把它扩大；重启后待定状态从日志里读回。
+- `GET /api/session` 新增 `conversation: { latestFromSeq, withdrawn }`，界面据此决定哪些行有「删除」、是否显示「取消撤回」条。
+- `POST /api/session/{seq}/retract` 不再存在，改为 `.../withdraw`。原来行上的「撤回」（把输入放回输入框）改名「复用」。
+- 测试：Api 198 → 202 个（删除 / 撤回 / 取消 / 生效 / 扩大 / 记忆级联 / 重启后仍可取消），smoke 里 `session.removal` 能力换成四条新检查，`capabilities/manifest.baseline.json` 的证据名同步。
+
+**没做 / 取舍**：定时任务和子 agent 汇报到达不算「发出新消息」，不会让撤回生效（所以撤回后收到汇报，被隐藏的区间仍然可以取消）；撤回期间被隐藏对话的记忆仍可能被召回，直到新消息发出。

@@ -53,8 +53,14 @@ public sealed class IntegrityGate
 
     /// <summary>The refusal text, on its own so it can be asserted without an elevated process to point at.</summary>
     internal static string ElevatedRefusal(int pid) =>
-        $"目标以管理员（高完整性，进程 {pid}）运行，Windows 会静默丢弃本进程发出的输入："
+        $"目标以管理员（高完整性，进程 {pid}）运行，{ElevatedMarker}："
         + "请以相同权限重启本应用后再操作这个窗口";
+
+    /// <summary>
+    /// The part of the refusal that never changes. A job runner recognises "this can never work, do not retry" by
+    /// it, so the wording is a contract and lives in one place.
+    /// </summary>
+    public const string ElevatedMarker = "Windows 会静默丢弃本进程发出的输入";
 
     /// <summary>Whether a process's integrity level is above this process's own. Cached per process start.</summary>
     private bool IsElevated(uint pid)

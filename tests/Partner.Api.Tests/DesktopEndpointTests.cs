@@ -10,6 +10,23 @@ namespace Partner.Api.Tests;
 /// </summary>
 public sealed partial class ViewEndpointsTests
 {
+    /// <summary>
+    /// The desktop sub-agent's tools with the decision governance will make for each, read off /api/consumer.
+    /// The main agent no longer holds them, so they are reported under <c>agentTools</c>.
+    /// </summary>
+    private async Task<List<(string Name, string Decision)>> DesktopToolsAsync()
+    {
+        var state = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
+        var desktop = state.GetProperty("agentTools").EnumerateArray()
+            .FirstOrDefault(agent => agent.GetProperty("scenario").GetString() == "desktop");
+
+        return desktop.ValueKind == JsonValueKind.Undefined
+            ? []
+            : desktop.GetProperty("tools").EnumerateArray()
+                .Select(tool => (tool.GetProperty("name").GetString()!, tool.GetProperty("decision").GetString()!))
+                .ToList();
+    }
+
     [Fact]
     public async Task The_desktop_capability_is_off_until_it_is_switched_on()
     {
@@ -88,6 +105,7 @@ public sealed partial class ViewEndpointsTests
         // restart that makes the switch mean something, rather than asserting that a request returned 200.
         var off = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         Assert.Empty(off.GetProperty("tools").EnumerateArray());
+        Assert.Empty(await DesktopToolsAsync());
 
         await _http.PutAsJsonAsync("/api/settings", new
         {
@@ -95,12 +113,14 @@ public sealed partial class ViewEndpointsTests
             desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
 
+        // The main agent can only delegate: it never holds a desktop tool itself.
         var on = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
-        var tools = on.GetProperty("tools").EnumerateArray()
-            .Select(tool => tool.GetProperty("name").GetString() + ":" + tool.GetProperty("decision").GetString())
-            .ToList();
+        var mainTools = on.GetProperty("tools").EnumerateArray().Select(tool => tool.GetProperty("name").GetString()!).ToList();
+        Assert.Contains("agent_delegate", mainTools);
+        Assert.DoesNotContain(mainTools, name => name.StartsWith("desktop_", StringComparison.Ordinal));
 
-        // Looking is allowed outright; acting always asks a human.
+        // The desktop sub-agent has them: looking is allowed outright; acting always asks a human.
+        var tools = (await DesktopToolsAsync()).Select(tool => tool.Name + ":" + tool.Decision).ToList();
         Assert.Contains("desktop_observe:allow", tools);
         Assert.Contains("desktop_act:ask", tools);
 
@@ -113,6 +133,7 @@ public sealed partial class ViewEndpointsTests
 
         var offAgain = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         Assert.Empty(offAgain.GetProperty("tools").EnumerateArray());
+        Assert.Empty(await DesktopToolsAsync());
     }
 
     [Fact]
@@ -120,13 +141,8 @@ public sealed partial class ViewEndpointsTests
     {
         // Observable in /api/consumer: the tool table is what the model can call and what governance will do
         // about each one. A gear that changed nothing here would be a switch that does nothing.
-        async Task<List<string>> ToolsAsync()
-        {
-            var state = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
-            return state.GetProperty("tools").EnumerateArray()
-                .Select(tool => $"{tool.GetProperty("name").GetString()}:{tool.GetProperty("decision").GetString()}")
-                .ToList();
-        }
+        async Task<List<string>> ToolsAsync() =>
+            (await DesktopToolsAsync()).Select(tool => $"{tool.Name}:{tool.Decision}").ToList();
 
         await _http.PutAsJsonAsync("/api/settings", new
         {
@@ -168,13 +184,8 @@ public sealed partial class ViewEndpointsTests
     {
         // Sending an image to a text-only model fails the request, so the tool is registered from the claim
         // about the model — not always, and not never.
-        async Task<List<string>> ToolsAsync()
-        {
-            var state = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
-            return state.GetProperty("tools").EnumerateArray()
-                .Select(tool => tool.GetProperty("name").GetString()!)
-                .ToList();
-        }
+        async Task<List<string>> ToolsAsync() =>
+            (await DesktopToolsAsync()).Select(tool => tool.Name).ToList();
 
         await _http.PutAsJsonAsync("/api/settings", new
         {
@@ -193,10 +204,8 @@ public sealed partial class ViewEndpointsTests
         var withImages = await ToolsAsync();
         Assert.Contains("desktop_screenshot", withImages);
         // Looking is free whatever the gear says.
-        var screenshot = (await _http.GetFromJsonAsync<JsonElement>("/api/consumer"))
-            .GetProperty("tools").EnumerateArray()
-            .First(tool => tool.GetProperty("name").GetString() == "desktop_screenshot");
-        Assert.Equal("allow", screenshot.GetProperty("decision").GetString());
+        var screenshot = (await DesktopToolsAsync()).First(tool => tool.Name == "desktop_screenshot");
+        Assert.Equal("allow", screenshot.Decision);
 
         // And the setting is reported back, or the checkbox would forget itself on the next save.
         var settings = await _http.GetFromJsonAsync<JsonElement>("/api/settings");

@@ -10,12 +10,17 @@ namespace Partner.Core.Agent.Tools;
 /// <param name="ArgumentsJson">What it wants to do, verbatim.</param>
 /// <param name="RequestedAt">When it was asked.</param>
 /// <param name="ExpiresAt">When the question stops being answerable.</param>
+/// <param name="Origin">
+/// Who is asking, when it is not the main agent: a sub-agent's name and what it was asked to do. A question
+/// that arrives while nothing is on screen has to say whose it is, or a person cannot tell it from the others.
+/// </param>
 public sealed record PendingApproval(
     string ApprovalId,
     string ToolName,
     string ArgumentsJson,
     DateTimeOffset RequestedAt,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    string? Origin = null);
 
 /// <summary>
 /// Approval channel that parks a request until someone answers it, and **denies when nobody does**.
@@ -46,7 +51,11 @@ public sealed class QueuedApprovalHandler : IApprovalHandler
     public IReadOnlyList<PendingApproval> Pending =>
         _requests.Values.OrderBy(request => request.RequestedAt).ToList();
 
-    public async Task<bool> RequestAsync(string toolName, string argumentsJson, CancellationToken ct = default)
+    public Task<bool> RequestAsync(string toolName, string argumentsJson, CancellationToken ct = default) =>
+        RequestAsync(toolName, argumentsJson, origin: null, ct);
+
+    /// <summary>The same question, with the asker named. See <see cref="PendingApproval.Origin"/>.</summary>
+    public async Task<bool> RequestAsync(string toolName, string argumentsJson, string? origin, CancellationToken ct = default)
     {
         var now = _clock.GetUtcNow();
         var approvalId = $"ap-{Interlocked.Increment(ref _sequence)}-{now.UtcDateTime:HHmmss}";
@@ -58,7 +67,8 @@ public sealed class QueuedApprovalHandler : IApprovalHandler
             toolName,
             argumentsJson,
             now,
-            now + _timeout);
+            now + _timeout,
+            origin);
 
         try
         {

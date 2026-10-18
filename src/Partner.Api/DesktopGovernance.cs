@@ -43,6 +43,23 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
                 : new GovernanceDecision(ToolDecision.Ask, $"'{toolName}' 需要人工批准（外部进程）");
         }
 
+        // The delegation tools and the sub-agent's report tool only move words: starting a job does nothing to
+        // the machine, and the job's own tools answer to this same governance when they run.
+        if (toolName is Agents.AgentDelegateTool.ToolName or Agents.AgentJobStatusTool.ToolName
+            or Agents.AgentJobCancelTool.ToolName or Partner.Core.Agent.Delegation.TaskReportTool.ToolName)
+        {
+            return new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 只传递信息");
+        }
+
+        // Reading is read-only and never asks, like the desktop's own reads; what bounds it is the directory
+        // whitelist inside the tool. The switch is checked live so turning files off takes effect at once.
+        if (toolName is "file_list" or "file_read")
+        {
+            return _context.Settings.Load().Files.Enabled
+                ? new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 只读，限定在允许的目录内")
+                : new GovernanceDecision(ToolDecision.Deny, "读文件未启用");
+        }
+
         if (!DesktopToolCatalog.All.Contains(toolName, StringComparer.Ordinal))
         {
             return new GovernanceDecision(ToolDecision.Deny, $"'{toolName}' 不是桌面工具（fail-closed）");

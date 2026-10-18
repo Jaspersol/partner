@@ -55,6 +55,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     private readonly int _reserveForOutput;
     private readonly ITokenCounter _tokens;
     private readonly string _baseSystemPrompt;
+    private readonly Func<string?>? _promptSource;
     private readonly IMediaStore? _media;
 
     public SessionWindowContextAssembler(
@@ -63,7 +64,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         int reserveForOutput = 4096,
         ITokenCounter? tokens = null,
         string? baseSystemPrompt = null,
-        IMediaStore? media = null)
+        IMediaStore? media = null,
+        Func<string?>? promptSource = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(contextTokens);
 
@@ -71,9 +73,17 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         _contextTokens = contextTokens;
         _reserveForOutput = reserveForOutput;
         _tokens = tokens ?? new ApproximateTokenCounter();
-        _baseSystemPrompt = baseSystemPrompt ?? "You are a single-user local assistant.";
+        _baseSystemPrompt = baseSystemPrompt ?? AgentPrompts.MainDefault;
+        _promptSource = promptSource;
         _media = media;
     }
+
+    /// <summary>
+    /// The prompt in force right now: the live source when there is one and it has something to say, else the
+    /// fixed one. Read per call, never cached — that is the entire point of the source.
+    /// </summary>
+    private string BasePrompt =>
+        _promptSource?.Invoke() is { } live && !string.IsNullOrWhiteSpace(live) ? live : _baseSystemPrompt;
 
     public async Task<ContextUsage> MeasureAsync(CancellationToken ct = default)
     {
@@ -106,7 +116,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
         var messages = new List<LlmMessage>
         {
-            new("system", BuildSystem(_baseSystemPrompt, injectedPrompts, plan.Context)),
+            new("system", BuildSystem(BasePrompt, injectedPrompts, plan.Context)),
         };
 
         messages.AddRange(plan.Turns);
@@ -201,7 +211,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         var context = summaries.Select(summary => $"summary of earlier history: {summary.Body}").ToList();
 
         // The system block is always sent: dropping it would remove the instructions the turn runs under.
-        var systemTokens = await Cost(_baseSystemPrompt, ct).ConfigureAwait(false);
+        var systemTokens = await Cost(BasePrompt, ct).ConfigureAwait(false);
 
         foreach (var prompt in injectedPrompts)
         {

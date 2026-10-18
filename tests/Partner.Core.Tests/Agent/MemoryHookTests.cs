@@ -81,6 +81,37 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
+    public async Task A_sub_agents_report_is_not_filed_as_something_the_person_said()
+    {
+        // The same words, the same exchange: from a person they become a memory, from a sub-agent's report they
+        // must not — recall would later serve "用户喜欢深色主题" back as a fact about someone who never said it.
+        var (session, memory) = Open();
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User,
+            Source = InputSource.Agent,
+            Body = "我喜欢用深色主题",
+        });
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Assistant,
+            Source = InputSource.Agent,
+            Body = "好，已经切到深色",
+        });
+
+        var context = new HookContext
+        {
+            SessionId = "main",
+            Source = InputSource.Agent,
+            InputPayload = "我喜欢用深色主题",
+            WorkspaceDirectory = ".",
+        };
+        await new MemoryDistilHook(memory, session).RunAsync(context, default);
+
+        Assert.Empty(await memory.ListAsync());
+    }
+
+    [Fact]
     public async Task The_record_points_at_the_event_it_came_from()
     {
         var (session, memory) = Open();

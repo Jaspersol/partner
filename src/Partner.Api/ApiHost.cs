@@ -27,6 +27,10 @@ public static class ApiHost
 
         var context = await ApiContext.OpenAsync(workspace, clock).ConfigureAwait(false);
         var consumer = ConsumerHost.Create(context, workspace);
+
+        // A job that was running when the process last stopped never reported; say so to the main agent now,
+        // before anything new can start.
+        await consumer.Agents.RecoverAsync().ConfigureAwait(false);
         var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents());
         var localEngines = new LocalEngineHost();
 

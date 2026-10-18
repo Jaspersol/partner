@@ -1,4 +1,5 @@
 using Partner.Core.Agent.Llm;
+using Partner.Api.Agents;
 using Partner.Api.Settings;
 using Partner.Core.Agent;
 using Partner.Api.Voice;
@@ -27,6 +28,7 @@ public static class ViewEndpoints
         MapQueue(app);
         MapMemory(app);
         MapSettings(app);
+        AgentEndpoints.Map(app);
         MapSkills(app, ctx, workspace);
         MapProjections(app);
         MapDiscovery(app);
@@ -102,11 +104,13 @@ public static class ViewEndpoints
                 return Results.BadRequest(new { error = "payload must not be empty" });
             }
 
-            if (!Enum.TryParse<InputSource>(request.Source, ignoreCase: true, out var source))
+            // Agent is the runtime talking to itself (a sub-agent's report); a client that could send it could write
+            // a sub-agent's words, so it is not one of the sources this endpoint accepts.
+            if (!Enum.TryParse<InputSource>(request.Source, ignoreCase: true, out var source) || source == InputSource.Agent)
             {
                 return Results.BadRequest(new
                 {
-                    error = $"source must be one of {string.Join(", ", Enum.GetNames<InputSource>())}",
+                    error = $"source must be one of {string.Join(", ", Enum.GetNames<InputSource>().Where(name => name != nameof(InputSource.Agent)))}",
                 });
             }
 
@@ -139,6 +143,11 @@ public static class ViewEndpoints
             // A caller that supplies a key is asking for retry safety, so it is worth telling it whether this
             // call was the one that created the item. Scanning is only done when a key was supplied.
             var deduplicated = suppliedKey && await KeyExistsAsync(ctx, key, ct).ConfigureAwait(false);
+
+            // A new message is what makes a pending withdrawal final. Done before the message is queued, so the
+            // purge is finished — and what was remembered from the withdrawn conversations is gone — before any
+            // turn can start that might recall it.
+            await ctx.Withdrawals.CommitAsync(ct).ConfigureAwait(false);
 
             var seq = await ctx.Queue.EnqueueAsync(new InputItem
             {
@@ -252,7 +261,13 @@ public static class ViewEndpoints
             ApiContext ctx, ConsumerHost consumer, long? from, int? take, CancellationToken ct) =>
         {
             var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
+            var pending = await ctx.Withdrawals.PendingAsync(ct).ConfigureAwait(false);
+
+            // A sub-agent's report is the runtime talking to the main agent, not part of the conversation a person
+            // had: it stays in the log (the model reads it) and out of the view. The main agent's reply to it is
+            // an ordinary assistant message and is shown.
             var items = view.Items
+                .Where(i => !(i.Kind == SessionEventKind.User && i.Source == InputSource.Agent))
                 .Where(i => i.Seq >= (from ?? 1))
                 .Take(take ?? 200)
                 .Select(i => new
@@ -339,6 +354,22 @@ public static class ViewEndpoints
             {
                 lastSeq = view.LastSeq,
                 items,
+
+                // What the view needs to offer the right actions: delete is for the latest conversation only, and
+                // a pending withdrawal is the one thing that can still be taken back.
+                conversation = new
+                {
+                    latestFromSeq = WithdrawalService.LatestStart(view),
+                    withdrawn = pending is null
+                        ? null
+                        : new
+                        {
+                            fromSeq = pending.FromSeq,
+                            toSeq = pending.ToSeq,
+                            conversations = pending.Conversations,
+                            events = pending.Events,
+                        },
+                },
                 // Whether a turn is in flight. The view uses it to decide how often to re-read itself: a
                 // session that is being written to must show it while it happens, not five seconds later.
                 busy = consumer.LiveAssistant is not null || ctx.Queue.Snapshot().RunningItemId is not null,
@@ -390,56 +421,56 @@ public static class ViewEndpoints
             return Results.Ok(events.Select(e => new { seq = e.Seq, at = e.At, body = e.Body, meta = e.Meta }));
         });
 
-        // Both removals are physical: the lines leave the log, and one content-free retraction is left for the
-        // range so the seq space stays monotonic. "Deleted" has to mean deleted — a hidden line is still a line
-        // on disk, and the user asked for the log to lose it.
-        app.MapPost("/api/session/{seq:long}/delete", async (long seq, ApiContext ctx, CancellationToken ct) =>
+        // Deleting is for the latest conversation only, and it deletes the whole of it. It is physical: the lines
+        // leave the log, and one content-free retraction is left for the range so the seq space stays monotonic.
+        // "Deleted" has to mean deleted — a hidden line is still a line on disk, and the user asked for it to go.
+        //
+        // Not the earlier ones, and not a single event out of the middle: removing history from behind newer
+        // history leaves the rest of the conversation answering things that were never asked. Going back further
+        // is what withdrawing is for.
+        app.MapPost("/api/session/{seq:long}/delete", async (
+            long seq, ApiContext ctx, ConsumerHost consumer, CancellationToken ct) =>
         {
-            if (!await ExistsAsync(ctx, seq, ct).ConfigureAwait(false))
+            if (Busy(ctx, consumer) is { } busy)
+            {
+                return busy;
+            }
+
+            if (await ctx.Withdrawals.PendingAsync(ct).ConfigureAwait(false) is not null)
+            {
+                return Results.Conflict(new { error = "有一次还没定下来的撤回：先取消撤回，或发送新消息让它生效，再删除" });
+            }
+
+            var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
+            if (view.Items.All(item => item.Seq != seq))
             {
                 return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
             }
 
-            var purged = await ctx.Session.PurgeAsync(seq, seq, ct).ConfigureAwait(false);
+            if (WithdrawalService.LatestStart(view) is not { } latest)
+            {
+                return Results.NotFound(new { error = "没有可删除的对话" });
+            }
 
-            // What was remembered from the deleted event goes with it. A record left behind would still be
+            if (seq < latest)
+            {
+                return Results.Conflict(new { error = "只能删除最新一次对话；更早的对话请用撤回" });
+            }
+
+            // The turn's own markers go with it: they were written just before the message and belong to it.
+            var fromSeq = await ctx.Withdrawals.StartOfTurnAsync(latest, ct).ConfigureAwait(false);
+            var toSeq = ctx.Session.LastSeq;
+            var purged = await ctx.Session.PurgeAsync(fromSeq, toSeq, ct).ConfigureAwait(false);
+
+            // What was remembered from the deleted conversation goes with it. A record left behind would still be
             // recalled, and injected into a prompt weeks later, to a conversation where it was never said.
             var remembered = await MemoryDeletion
-                .CascadeAsync(ctx.Memory, seq, seq, Actor.Human, ct)
+                .CascadeAsync(ctx.Memory, fromSeq, toSeq, Actor.Human, ct)
                 .ConfigureAwait(false);
 
             return Results.Ok(new
             {
-                removedFrom = seq,
-                removedTo = seq,
-                purgedEvents = purged.RemovedEvents,
-                purgedRevisions = purged.RemovedRevisions,
-                purgedMemories = remembered,
-                eventSeq = purged.TombstoneSeq,
-            });
-        });
-
-        app.MapPost("/api/session/{seq:long}/retract", async (long seq, ApiContext ctx, CancellationToken ct) =>
-        {
-            if (!await ExistsAsync(ctx, seq, ct).ConfigureAwait(false))
-            {
-                return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
-            }
-
-            // The range is pinned here rather than at append time: events added afterwards stay visible, and
-            // only what existed when the user confirmed gets removed.
-            var toSeq = ctx.Session.LastSeq;
-            var purged = await ctx.Session.PurgeAsync(seq, toSeq, ct).ConfigureAwait(false);
-
-            // Same cascade as a single delete, over the whole truncated span: a retraction that emptied the
-            // conversation must not leave its memories behind to be recalled later.
-            var remembered = await MemoryDeletion
-                .CascadeAsync(ctx.Memory, seq, toSeq, Actor.Human, ct)
-                .ConfigureAwait(false);
-
-            return Results.Ok(new
-            {
-                removedFrom = seq,
+                removedFrom = fromSeq,
                 removedTo = toSeq,
                 purgedEvents = purged.RemovedEvents,
                 purgedRevisions = purged.RemovedRevisions,
@@ -447,7 +478,43 @@ public static class ViewEndpoints
                 eventSeq = purged.TombstoneSeq,
             });
         });
+
+        // Withdrawing hides the selected conversation and everything after it, and nothing else happens: the lines
+        // stay in the log and so do their memories. That is what lets it be taken back — until the next message is
+        // sent, which makes it final (see WithdrawalService).
+        app.MapPost("/api/session/{seq:long}/withdraw", async (
+            long seq, ApiContext ctx, ConsumerHost consumer, CancellationToken ct) =>
+        {
+            // Hiding history under a turn that is still writing it would leave the turn's tail visible and
+            // headless. Wait for it, or stop it.
+            if (Busy(ctx, consumer) is { } busy)
+            {
+                return busy;
+            }
+
+            var pending = await ctx.Withdrawals.WithdrawAsync(seq, ct).ConfigureAwait(false);
+            return pending is null
+                ? Results.NotFound(new { error = $"#{seq} 不在当前视图里" })
+                : Results.Ok(new
+                {
+                    withdrawnFrom = pending.FromSeq,
+                    withdrawnTo = pending.ToSeq,
+                    conversations = pending.Conversations,
+                    events = pending.Events,
+                });
+        });
+
+        app.MapPost("/api/session/withdrawal/cancel", async (ApiContext ctx, CancellationToken ct) =>
+            await ctx.Withdrawals.CancelAsync(ct).ConfigureAwait(false)
+                ? Results.Ok(new { cancelled = true })
+                : Results.NotFound(new { error = "没有可取消的撤回（发送新消息后撤回就不能再取消了）" }));
     }
+
+    /// <summary>A turn in flight makes removing history unsafe; null when nothing is running.</summary>
+    private static IResult? Busy(ApiContext ctx, ConsumerHost consumer) =>
+        consumer.LiveAssistant is not null || ctx.Queue.Snapshot().RunningItemId is not null
+            ? Results.Conflict(new { error = "正在回复：等它结束（或先停止）再删除或撤回" })
+            : null;
 
     /// <summary>
     /// Whether the desktop section changed in a way the running consumer cannot absorb: the tool table and the
@@ -842,7 +909,8 @@ public static class ViewEndpoints
             // does not, so only the former restarts.
             if (ModelConfig.Differs(before.Model, stored.Model)
                 || DesktopNeedsRestart(before.Desktop, stored.Desktop)
-                || McpNeedsRestart(before.Mcp, stored.Mcp))
+                || McpNeedsRestart(before.Mcp, stored.Mcp)
+                || AgentRouting.ToolTableDiffers(before, stored))
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);

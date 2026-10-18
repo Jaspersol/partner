@@ -1,3 +1,4 @@
+using Partner.Api.Agents;
 using Partner.Api.Settings;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Hooks;
@@ -9,6 +10,7 @@ using Partner.Desktop.Tools;
 using Partner.Core.Hosting;
 using Partner.Core.Memory;
 using Partner.Core.Sessions;
+using Partner.Core.Agent.Delegation;
 
 namespace Partner.Api;
 
@@ -16,12 +18,16 @@ namespace Partner.Api;
 /// <summary>One tool the model can call, with the decision governance will apply to it.</summary>
 public sealed record ToolExposure(string Name, string Decision);
 
+/// <summary>The tools a sub-agent's job gets for one scenario, with the decision governance will apply to each.</summary>
+public sealed record AgentToolExposure(string Scenario, string Agent, IReadOnlyList<ToolExposure> Tools);
+
 public sealed record ConsumerState(
     bool Running,
     string Reason,
     string? Model,
     TurnLoopStats Stats,
-    IReadOnlyList<ToolExposure> Tools);
+    IReadOnlyList<ToolExposure> Tools,
+    IReadOnlyList<AgentToolExposure> AgentTools);
 
 /// <summary>
 /// Owns the single consumer of the input queue (design doc §2.2) for the API process.
@@ -50,6 +56,10 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private IReadOnlyList<string> _toolNames = Array.Empty<string>();
     private DesktopGovernance? _governance;
     private string _reason = "未启动";
+
+    /// <summary>The main model's window, kept so a sub-agent that follows the main model gets the same numbers.</summary>
+    private int _mainContextTokens = 32768;
+    private int _mainMaxTokens = 4096;
 
     /// <summary>
     /// The MCP servers this consumer started, kept so a reconfigure can stop them.
@@ -92,6 +102,45 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         _context = context;
         _workspace = workspace;
+        _agents = new SubAgentHost(context, workspace, ResolveModel, _failures, _clock);
+    }
+
+    private readonly SubAgentHost _agents;
+
+    /// <summary>The sub-agents' jobs. Owned here because a job's life is tied to the consumer's: rebuilding one cancels the other's work.</summary>
+    public SubAgentHost Agents => _agents;
+
+    /// <summary>
+    /// The model a sub-agent's job should run on: its own when it has one, the main model otherwise. Null when
+    /// there is no main model to follow — a job started then would have nothing to think with.
+    /// </summary>
+    private ModelBinding? ResolveModel(SubAgentSettings agent)
+    {
+        if (agent.Model is { } own)
+        {
+            var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            var client = new HttpLlmClient(http, new HttpLlmOptions
+            {
+                BaseUrl = own.BaseUrl!.TrimEnd('/'),
+                Model = own.Model!,
+                ApiKey = own.ApiKey,
+                Timeout = TimeSpan.FromSeconds(own.TimeoutSeconds),
+                ReasoningEffort = own.ReasoningEffort,
+            });
+
+            return new ModelBinding(
+                client,
+                new DualArmTokenCounter(client, new ApproximateTokenCounter()),
+                own.ContextTokens,
+                own.MaxTokens,
+                own.SupportsImages,
+                http);
+        }
+
+        var llm = _llm;
+        return llm is null || _running is not { IsCompleted: false }
+            ? null
+            : new ModelBinding(llm, Tokens, _mainContextTokens, _mainMaxTokens, _context.Settings.Load().Model.SupportsImages);
     }
 
     public ConsumerState State => new(
@@ -106,7 +155,40 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             .Select(name => new ToolExposure(
                 name,
                 (_governance?.Decide(name, "{}").Decision ?? ToolDecision.Deny).ToString().ToLowerInvariant()))
-            .ToList());
+            .ToList(),
+        AgentTools: SubAgentTools());
+
+    /// <summary>
+    /// What each reachable sub-agent can call. The tools are not in the main agent's table any more, and
+    /// "what can the model touch, and what will it ask first" is exactly the thing a person needs to be able to
+    /// read off the status endpoint — so it is reported here, decided live like the main table.
+    /// </summary>
+    private IReadOnlyList<AgentToolExposure> SubAgentTools()
+    {
+        if (_governance is null)
+        {
+            return Array.Empty<AgentToolExposure>();
+        }
+
+        var settings = _context.Settings.Load();
+        return AgentRouting.Effective(settings)
+            .Select(route =>
+            {
+                var names = route.Scenario.Key == AgentScenarios.Desktop
+                    ? DesktopToolCatalog.All
+                        .Where(name => name != "desktop_screenshot" || (route.Agent.Model?.SupportsImages ?? settings.Model.SupportsImages))
+                        .ToList()
+                    : new List<string> { "file_list", "file_read" };
+
+                return new AgentToolExposure(
+                    route.Scenario.Key,
+                    route.Agent.Name,
+                    names.Select(name => new ToolExposure(
+                        name,
+                        _governance.Decide(name, "{}").Decision.ToString().ToLowerInvariant())).ToList());
+            })
+            .ToList();
+    }
 
     public static ConsumerHost Create(ApiContext context, string workspace)
     {
@@ -228,6 +310,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
+            // Before the tool table is rebuilt: a job holds the one it was started with.
+            await _agents.CancelAllAsync().ConfigureAwait(false);
             await StopAsync().ConfigureAwait(false);
 
             if (config is null && injected is null)
@@ -280,7 +364,12 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         {
             ContextWindowTokens = config?.ContextTokens ?? 32768,
             MaxTokens = config?.MaxTokens ?? 4096,
+
+            // Read at the start of every turn, so editing the main prompt does not restart anything.
+            PromptSource = () => AgentRouting.MainPrompt(_context.Settings.Load()),
         };
+        _mainContextTokens = turnOptions.ContextWindowTokens;
+        _mainMaxTokens = turnOptions.MaxTokens;
 
         // Built here rather than left to the runner's default: the assembler is the one that can reach the
         // media store, so it is the one that attaches the input's images.
@@ -290,45 +379,29 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             turnOptions.MaxTokens,
             Tokens,
             turnOptions.BaseSystemPrompt,
-            _context.Media);
+            _context.Media,
+            turnOptions.PromptSource);
 
-        var desktop = _context.Settings.Load().Desktop;
+        var settings = _context.Settings.Load();
         var tools = new InMemoryToolRegistry();
 
-        if (desktop.Enabled)
+        // Desktop tools are no longer registered here, and that is the point of the sub-agents: the main agent
+        // hands desktop work to the desktop sub-agent and never holds the tools itself. File tools stay with the
+        // main agent only while no enabled sub-agent has taken them ("no scenario configured" = main does it).
+        if (AgentRouting.MainOwnsFiles(settings))
         {
-            var policy = new DesktopToolPolicy(desktop.AllowedWindowTitles);
-            tools.Register(new DesktopObserveTool(_context.Desktop, policy));
-
-            // Only for a model that takes pictures: a screenshot handed to a text-only model fails the request,
-            // and the whole point of the setting is to be honest about which model is configured.
-            if (_context.Settings.Load().Model.SupportsImages)
-            {
-                tools.Register(new DesktopScreenshotTool(_context.Desktop, _context.Media));
-            }
-
-            tools.Register(new DesktopActTool(
-                _context.Desktop,
-                policy,
-                _context.Media,
-                // The picture rides along only for a model that can take one, for the same reason the
-                // screenshot tool is registered behind this switch: sending one to a text-only model fails
-                // the request, and consistent registration keeps the tool's answers honest about it.
-                supportsImages: _context.Settings.Load().Model.SupportsImages));
-
-            // Waiting is read-only and self-bounded (≤5 s): a slow page spends seconds, not steps, so it
-            // always exists while the desktop tools do.
-            tools.Register(new DesktopWaitTool(_context.Desktop));
-            // The automation's own launch tool, so the port it opens is one the observation can read: a
-            // browser launched without that link gets the flag and nothing else, and its buttons stay invisible
-            // for the rest of the process's life — which looks exactly like an app with no controls.
-            tools.Register(_context.Desktop.LaunchTool ?? new DesktopLaunchTool());
-            tools.Register(new DesktopExecTool());
-            tools.Register(new DesktopClipboardGetTool());
-            tools.Register(new DesktopClipboardSetTool());
+            FileToolSet.Register(tools, settings, _workspace);
         }
 
-        RegisterMcpTools(tools, _context.Settings.Load().Mcp);
+        RegisterMcpTools(tools, settings.Mcp);
+
+        var routes = AgentRouting.Effective(settings);
+        if (routes.Count > 0)
+        {
+            tools.Register(new AgentDelegateTool(_agents, AgentRouting.DelegationScenarios(settings)));
+            tools.Register(new AgentJobStatusTool(_agents));
+            tools.Register(new AgentJobCancelTool(_agents));
+        }
 
         _toolNames = tools.Specs.Select(spec => spec.Name).ToList();
 
@@ -516,6 +589,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
+            await _agents.DisposeAsync().ConfigureAwait(false);
             await StopAsync().ConfigureAwait(false);
         }
         finally

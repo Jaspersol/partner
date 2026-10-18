@@ -12,7 +12,7 @@
           "skipped": false
         },
         {
-          "check": "session has 6 content events (3 user \u002B 3 assistant)",
+          "check": "session has 6 content events (3 user + 3 assistant)",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -466,7 +466,7 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "memory: 100000 records \u2014 retrieval P99 under 500ms",
+          "check": "memory: 100000 records — retrieval P99 under 500ms",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -479,7 +479,7 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "memory: 100000 Chinese records \u2014 retrieval P99 under 500ms",
+          "check": "memory: 100000 Chinese records — retrieval P99 under 500ms",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -703,7 +703,7 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "desktop: a picture\u0027s marks carry each control\u0027s real screen point",
+          "check": "desktop: a picture's marks carry each control's real screen point",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -722,13 +722,13 @@
           "skipped": false
         },
         {
-          "check": "desktop: a minimized window is refused as a picture instead of a 160\u00D728 stub",
+          "check": "desktop: a minimized window is refused as a picture instead of a 160×28 stub",
           "ran": true,
           "passed": true,
           "skipped": false
         },
         {
-          "check": "desktop: a click into a minimized window\u0027s placeholder rect is refused",
+          "check": "desktop: a click into a minimized window's placeholder rect is refused",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -803,7 +803,7 @@
           "skipped": false
         },
         {
-          "check": "desktop: an act answer\u0027s attached picture maps back and is recorded by id",
+          "check": "desktop: an act answer's attached picture maps back and is recorded by id",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -1322,7 +1322,7 @@
           "skipped": false
         },
         {
-          "check": "desktop: the refusal is in the log with the tool\u0027s name",
+          "check": "desktop: the refusal is in the log with the tool's name",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -1389,13 +1389,25 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "session: deleting one event takes its text out of the log",
+          "check": "session: deleting the latest conversation takes its text out of the log",
           "ran": true,
           "passed": true,
           "skipped": false
         },
         {
-          "check": "session: retracting removes the selected event and takes its text out of the log",
+          "check": "session: withdrawing hides the conversation but leaves its text in the log",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "session: a withdrawal can be cancelled before anything new is sent",
+          "ran": true,
+          "passed": true,
+          "skipped": false
+        },
+        {
+          "check": "session: sending a new message makes the withdrawal final",
           "ran": true,
           "passed": true,
           "skipped": false

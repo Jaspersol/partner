@@ -117,6 +117,14 @@ public sealed class MemoryDistilHook : AgentHookBase
 
     public override async ValueTask<HookOutcome> RunAsync(HookContext ctx, CancellationToken ct)
     {
+        // A sub-agent's report is the runtime talking to itself, not something the person said. Distilling it would
+        // file "[子 agent … 无法执行 …]" as the person's own statement, and recall would later serve it back as
+        // a fact about them.
+        if (ctx.Source == InputSource.Agent)
+        {
+            return HookOutcome.Continue;
+        }
+
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
 
         // The last user/assistant exchange in the window: the one this turn produced.

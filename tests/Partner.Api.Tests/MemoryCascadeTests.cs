@@ -57,9 +57,10 @@ public sealed class MemoryCascadeTests : ApiFixture
     }
 
     [Fact]
-    public async Task Retracting_a_range_removes_every_memory_inside_it()
+    public async Task A_withdrawal_keeps_its_memories_until_it_is_final_and_then_removes_every_one()
     {
-        // A retraction empties the conversation; what it remembered is part of that conversation.
+        // Withdrawing is reversible, so what was remembered stays too: cancelling it must bring back a
+        // conversation that still has its memories. Sending a new message makes it final, and then they go.
         for (var i = 0; i < 3; i++)
         {
             await _context.Session.AppendAsync(new SessionEvent
@@ -80,14 +81,21 @@ public sealed class MemoryCascadeTests : ApiFixture
             });
         }
 
+        var withdrawn = await _http.PostAsync("/api/session/1/withdraw", null);
+        Assert.True(withdrawn.IsSuccessStatusCode);
         Assert.Equal(3, (await _http.GetFromJsonAsync<JsonElement>("/api/memory")).GetArrayLength());
 
-        var retracted = await _http.PostAsync($"/api/session/1/retract", null);
-        Assert.True(retracted.IsSuccessStatusCode);
+        // Taken back: nothing was lost.
+        Assert.True((await _http.PostAsync("/api/session/withdrawal/cancel", null)).IsSuccessStatusCode);
+        Assert.Equal(3, (await _http.GetFromJsonAsync<JsonElement>("/api/memory")).GetArrayLength());
 
-        var body = await retracted.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(3, body.GetProperty("purgedMemories").GetInt32());
+        // Withdrawn again, and then final.
+        await _http.PostAsync("/api/session/1/withdraw", null);
+        var sent = await _http.PostAsJsonAsync("/api/input", new { source = "Text", payload = "换个话题" });
+        Assert.True(sent.IsSuccessStatusCode);
+
         Assert.Empty((await _http.GetFromJsonAsync<JsonElement>("/api/memory")).EnumerateArray());
+        Assert.Empty(await _context.Memory.RecallAsync("细节"));
     }
 }
 

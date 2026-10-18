@@ -36,8 +36,8 @@ public sealed class SettingsStore
 
         try
         {
-            return JsonSerializer.Deserialize<RuntimeSettings>(File.ReadAllText(_path), Json)
-                ?? RuntimeSettings.Default;
+            return Repaired(JsonSerializer.Deserialize<RuntimeSettings>(File.ReadAllText(_path), Json)
+                ?? RuntimeSettings.Default);
         }
         catch (JsonException)
         {
@@ -46,6 +46,16 @@ public sealed class SettingsStore
             return RuntimeSettings.Default;
         }
     }
+
+    /// <summary>
+    /// Fills in what an older or hand-edited file leaves out. The built-in desktop agent is restored here rather
+    /// than refused, because a file that cannot be loaded cannot be fixed from the UI either.
+    /// </summary>
+    private static RuntimeSettings Repaired(RuntimeSettings loaded) => loaded with
+    {
+        Agents = (loaded.Agents ?? new AgentsSettings()).WithBuiltins(),
+        Files = loaded.Files ?? new FilesSettings(),
+    };
 
     /// <summary>
     /// Applies <paramref name="incoming"/> on top of what is stored and persists the result.
@@ -63,6 +73,7 @@ public sealed class SettingsStore
         var stored = Load();
         var merged = incoming with
         {
+            Agents = incoming.AgentsSpecified ? MergeAgentKeys(incoming.Agents, stored.Agents) : stored.Agents,
             Model = incoming.Model with
             {
                 ApiKey = ResolveKey(incoming.Model.ApiKey, stored.Model.ApiKey),
@@ -80,7 +91,7 @@ public sealed class SettingsStore
             },
         };
 
-        var errors = SettingsValidation.Validate(merged);
+        var errors = SettingsValidation.Validate(merged, stored);
         if (errors.Count > 0)
         {
             throw new SettingsValidationException(errors);
@@ -89,6 +100,31 @@ public sealed class SettingsStore
         Write(merged);
         return merged;
     }
+
+    /// <summary>
+    /// Sub-agent API keys follow the main model's rule — null keeps, empty clears — matched by agent id, and prompts
+    /// that are only whitespace are stored as "use the default" rather than as an empty prompt.
+    /// </summary>
+    private static AgentsSettings MergeAgentKeys(AgentsSettings incoming, AgentsSettings stored) => incoming with
+    {
+        Main = incoming.Main with { Prompt = Blank(incoming.Main.Prompt) },
+        SubAgents = incoming.SubAgents.Select(agent => agent with
+        {
+            Name = agent.Name?.Trim() ?? string.Empty,
+            Prompt = Blank(agent.Prompt),
+            Model = agent.Model is null
+                ? null
+                : agent.Model with
+                {
+                    ApiKeySet = false,
+                    ApiKey = ResolveKey(
+                        agent.Model.ApiKey,
+                        stored.SubAgents.FirstOrDefault(existing => existing.Id == agent.Id)?.Model?.ApiKey),
+                },
+        }).ToList(),
+    };
+
+    private static string? Blank(string? text) => string.IsNullOrWhiteSpace(text) ? null : text;
 
     private static string? ResolveKey(string? incoming, string? stored) => incoming switch
     {

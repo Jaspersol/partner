@@ -431,7 +431,11 @@ public sealed class VoiceHost : IAsyncDisposable
     }
 
     /// <summary>An utterance becomes a queue item with the half's boot-scoped key, so a retry cannot duplicate it.</summary>
-    private async Task EnqueueAsync(VoiceUtterance utterance) =>
+    private async Task EnqueueAsync(VoiceUtterance utterance)
+    {
+        // Speaking is sending a new message, and a new message is what makes a pending withdrawal final.
+        await _context.Withdrawals.CommitAsync().ConfigureAwait(false);
+
         await _context.Queue.EnqueueAsync(new InputItem
         {
             ItemId = "voice-" + utterance.UtteranceId,
@@ -439,6 +443,7 @@ public sealed class VoiceHost : IAsyncDisposable
             Payload = utterance.Transcript,
             IdempotencyKey = utterance.IdempotencyKey,
         }).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Speaks assistant text as it appears in the session. Only events written after this host started are

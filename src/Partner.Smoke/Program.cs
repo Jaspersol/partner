@@ -2346,7 +2346,7 @@ internal static class Program
             var leaseLlm = new ObserveThenActLlm();
 
             var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _, _) =
-                await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, leaseLlm);
+                await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, new DesktopAgentShim(leaseLlm));
             var leaseRun = leaseApp.RunAsync();
             using var leaseHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{leasePort}") };
             leaseHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", leaseToken);
@@ -2386,7 +2386,7 @@ internal static class Program
                 string? outcome = null;
                 for (var attempt = 0; attempt < 400; attempt++)
                 {
-                    var polled = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var polled = await JobSessionAsync(leaseHttp);
                     var results = polled.GetProperty("items").EnumerateArray()
                         .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                         .ToList();
@@ -2440,7 +2440,7 @@ internal static class Program
                     .Where(message => message.Images is { Count: > 0 })
                     .ToList();
 
-                var screenshotResult = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var screenshotResult = await JobSessionAsync(leaseHttp);
                 for (var attempt = 0; attempt < 400; attempt++)
                 {
                     if (screenshotResult.GetProperty("items").EnumerateArray()
@@ -2450,7 +2450,7 @@ internal static class Program
                     }
 
                     await Task.Delay(25);
-                    screenshotResult = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    screenshotResult = await JobSessionAsync(leaseHttp);
                 }
                 var shot = screenshotResult.GetProperty("items").EnumerateArray()
                     .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
@@ -2482,7 +2482,7 @@ internal static class Program
                     }
 
                     await Task.Delay(25);
-                    screenshotResult = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    screenshotResult = await JobSessionAsync(leaseHttp);
                 }
 
                 var allResults = screenshotResult.GetProperty("items").EnumerateArray()
@@ -2563,7 +2563,7 @@ internal static class Program
             var grantToken = TokenAuth.Generate();
             var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
             var (grantApp, grantContext, grantConsumer, grantVoice, _, _) =
-                await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, grantConsumerLlm);
+                await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, new DesktopAgentShim(grantConsumerLlm));
             var grantRun = grantApp.RunAsync();
             using var grantHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{grantPort}") };
             grantHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", grantToken);
@@ -2625,7 +2625,7 @@ internal static class Program
                         break;
                     }
 
-                    var polled = await grantHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var polled = await JobSessionAsync(grantHttp);
                     var results = polled.GetProperty("items").EnumerateArray()
                         .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                         .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
@@ -2673,7 +2673,7 @@ internal static class Program
                 TaskLeaseState? afterDeny = null;
                 for (var attempt = 0; attempt < 400; attempt++)
                 {
-                    var polled = await grantHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var polled = await JobSessionAsync(grantHttp);
                     if (polled.GetProperty("items").EnumerateArray()
                         .Any(item => (item.GetProperty("body").GetString() ?? string.Empty)
                             .Contains("denied:", StringComparison.Ordinal)))
@@ -2722,7 +2722,7 @@ internal static class Program
             });
 
             var (desktopApp, desktopContext, desktopConsumer, desktopVoice, _, _) =
-                await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, desktopScripted);
+                await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, new DesktopAgentShim(desktopScripted));
             var desktopRun = desktopApp.RunAsync();
             using var desktopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{desktopPort}") };
             desktopHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", desktopToken);
@@ -2733,8 +2733,11 @@ internal static class Program
 
                 async Task<List<string>> ExposedToolsAsync()
                 {
+                    // The desktop tools belong to the desktop sub-agent now, so that is where the table is read.
                     var consumer = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
-                    return consumer.GetProperty("tools").EnumerateArray()
+                    return consumer.GetProperty("agentTools").EnumerateArray()
+                        .First(agent => agent.GetProperty("scenario").GetString() == "desktop")
+                        .GetProperty("tools").EnumerateArray()
                         .Select(tool => $"{tool.GetProperty("name").GetString()}:{tool.GetProperty("decision").GetString()}")
                         .ToList();
                 }
@@ -2773,7 +2776,7 @@ internal static class Program
                 string? observeResult = null;
                 for (var attempt = 0; attempt < 400 && !observed; attempt++)
                 {
-                    var polled = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                    var polled = await JobSessionAsync(desktopHttp);
                     var results = polled.GetProperty("items").EnumerateArray()
                         .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                         .ToList();
@@ -2797,6 +2800,8 @@ internal static class Program
                     $"result={(observeResult ?? "(none)")[..Math.Min(80, (observeResult ?? "(none)").Length)]}");
 
                 // Acting is irreversible, so governance parks it. The smoke answers — and denies.
+                // One job at a time per sub-agent: the second request waits for the first to report.
+                await WaitJobsIdleAsync(desktopHttp);
                 await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "点一下" });
 
                 string? approvalId = null;
@@ -2829,7 +2834,7 @@ internal static class Program
                     string? denyResult = null;
                     for (var attempt = 0; attempt < 400 && !denied; attempt++)
                     {
-                        var polled = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                        var polled = await JobSessionAsync(desktopHttp);
                         var results = polled.GetProperty("items").EnumerateArray()
                             .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                             .ToList();
@@ -2849,7 +2854,8 @@ internal static class Program
                         $"result={(denyResult ?? "(none)")[..Math.Min(90, (denyResult ?? "(none)").Length)]}");
                 }
 
-                var log = await ReadSharedAsync(Path.Combine(desktopWorkspace, "session", "events.jsonl"));
+                // The tool calls are in the sub-agent's own session, not the main one.
+                var log = (await JobSessionAsync(desktopHttp)).GetRawText();
                 Check("desktop: the refusal is in the log with the tool's name",
                     log.Contains("desktop_act", StringComparison.Ordinal)
                     && log.Contains("approval denied", StringComparison.Ordinal),
@@ -3079,7 +3085,7 @@ internal static class Program
                 var stillThere = afterDelete.GetProperty("items").EnumerateArray()
                     .Any(i => i.GetProperty("seq").GetInt64() == target);
 
-                Check("session: deleting one event takes its text out of the log",
+                Check("session: deleting the latest conversation takes its text out of the log",
                     delete.IsSuccessStatusCode
                     && !stillThere
                     && !LogHolds(settingsWorkspace, "要删掉的")
@@ -3088,22 +3094,36 @@ internal static class Program
                     + $"inLog={LogHolds(settingsWorkspace, "要删掉的")} "
                     + $"lastSeq {beforeRemoval.GetProperty("lastSeq").GetInt64()}->{afterDelete.GetProperty("lastSeq").GetInt64()}");
 
-                // Retraction takes everything from the selected event onward, as of now.
+                // Withdrawing hides everything from the selected conversation onward, as of now — and deletes nothing
+                // until a new message is sent, which is what lets it be taken back.
                 var keptItem = afterDelete.GetProperty("items").EnumerateArray().First();
                 var kept = keptItem.GetProperty("seq").GetInt64();
                 var keptBody = keptItem.GetProperty("body").GetString() ?? string.Empty;
-                var retract = await settingsHttp.PostAsync($"/api/session/{kept}/retract", content: null);
-                var afterRetract = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+                var withdraw = await settingsHttp.PostAsync($"/api/session/{kept}/withdraw", content: null);
+                var afterWithdraw = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
 
-                Check("session: retracting removes the selected event and takes its text out of the log",
-                    retract.IsSuccessStatusCode
-                    && afterRetract.GetProperty("items").GetArrayLength() == 0
-                    && !LogHolds(settingsWorkspace, keptBody),
-                    $"retracted={retract.IsSuccessStatusCode} "
-                    + $"remaining={afterRetract.GetProperty("items").GetArrayLength()} "
+                Check("session: withdrawing hides the conversation but leaves its text in the log",
+                    withdraw.IsSuccessStatusCode
+                    && afterWithdraw.GetProperty("items").GetArrayLength() == 0
+                    && afterWithdraw.GetProperty("conversation").GetProperty("withdrawn").ValueKind == JsonValueKind.Object
+                    && LogHolds(settingsWorkspace, keptBody),
+                    $"withdrawn={withdraw.IsSuccessStatusCode} "
+                    + $"remaining={afterWithdraw.GetProperty("items").GetArrayLength()} "
                     + $"inLog={LogHolds(settingsWorkspace, keptBody)}");
 
-                // And the conversation continues: a closed range must not swallow what comes next.
+                // Taken back: the view is what it was.
+                var cancelWithdrawal = await settingsHttp.PostAsync("/api/session/withdrawal/cancel", content: null);
+                var afterCancel = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
+
+                Check("session: a withdrawal can be cancelled before anything new is sent",
+                    cancelWithdrawal.IsSuccessStatusCode
+                    && afterCancel.GetProperty("items").GetArrayLength() == afterDelete.GetProperty("items").GetArrayLength()
+                    && afterCancel.GetProperty("conversation").GetProperty("withdrawn").ValueKind == JsonValueKind.Null,
+                    $"cancelled={cancelWithdrawal.IsSuccessStatusCode} "
+                    + $"items {afterDelete.GetProperty("items").GetArrayLength()}->{afterCancel.GetProperty("items").GetArrayLength()}");
+
+                // Withdrawn again, and now a new message is sent: that makes it final.
+                await settingsHttp.PostAsync($"/api/session/{kept}/withdraw", content: null);
                 await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "撤回之后" });
                 var revived = false;
                 for (var attempt = 0; attempt < 200 && !revived; attempt++)
@@ -3113,6 +3133,11 @@ internal static class Program
                         i.GetProperty("body").GetString() == "撤回之后");
                     await Task.Delay(25);
                 }
+
+                Check("session: sending a new message makes the withdrawal final",
+                    !LogHolds(settingsWorkspace, keptBody)
+                    && (await settingsHttp.PostAsync("/api/session/withdrawal/cancel", content: null)).StatusCode == System.Net.HttpStatusCode.NotFound,
+                    $"inLog={LogHolds(settingsWorkspace, keptBody)}");
 
                 Check("session: events after a retraction stay visible", revived, $"revived={revived}");
 
@@ -4001,6 +4026,49 @@ internal static class Program
     }
 
     /// <summary>
+    /// The desktop sub-agent's conversation(s) as one <c>/api/session</c>-shaped document, oldest job first. The main
+    /// session holds only the delegation and the report; the tool calls and results the desktop checks look at live
+    /// in the jobs' own sessions.
+    /// </summary>
+    private static async Task<JsonElement> JobSessionAsync(HttpClient http)
+    {
+        var jobs = (await http.GetFromJsonAsync<JsonElement>("/api/agent-jobs")).GetProperty("jobs").EnumerateArray()
+            .Select(job => job.GetProperty("id").GetString()!)
+            .Reverse()
+            .ToList();
+
+        var items = new List<string>();
+        foreach (var id in jobs)
+        {
+            var session = await http.GetFromJsonAsync<JsonElement>($"/api/agent-jobs/{id}/session");
+            // The report call is how the job ends, not something the desktop did; the checks look at the desktop's.
+            items.AddRange(session.GetProperty("items").EnumerateArray()
+                .Where(item => !(item.TryGetProperty("meta", out var meta)
+                    && meta.ValueKind == JsonValueKind.Object
+                    && meta.TryGetProperty("name", out var name)
+                    && name.GetString() == "task_report"))
+                .Select(item => item.GetRawText()));
+        }
+
+        return JsonDocument.Parse($"{{\"items\":[{string.Join(",", items)}]}}").RootElement.Clone();
+    }
+
+    /// <summary>Waits until no sub-agent job is running, so the next request is not refused as busy.</summary>
+    private static async Task WaitJobsIdleAsync(HttpClient http)
+    {
+        for (var attempt = 0; attempt < 400; attempt++)
+        {
+            var jobs = (await http.GetFromJsonAsync<JsonElement>("/api/agent-jobs")).GetProperty("jobs").EnumerateArray();
+            if (!jobs.Any(job => job.GetProperty("status").GetString() == "running"))
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+    }
+
+    /// <summary>
     /// A model that observes and then acts on what it saw: the entity id of a real window is machine-specific,
     /// so a fixed script cannot name one. It picks a window that is *not* in front, which makes the keystroke a
     /// refusal the guards produce — the test never types into the user's desktop.
@@ -4784,8 +4852,10 @@ internal static class Program
         }),
         ("session.removal", "M1", new[]
         {
-            "session: deleting one event takes its text out of the log",
-            "session: retracting removes the selected event and takes its text out of the log",
+            "session: deleting the latest conversation takes its text out of the log",
+            "session: withdrawing hides the conversation but leaves its text in the log",
+            "session: a withdrawal can be cancelled before anything new is sent",
+            "session: sending a new message makes the withdrawal final",
             "session: events after a retraction stay visible",
         }),
         ("ui.composer", "M13", new[]

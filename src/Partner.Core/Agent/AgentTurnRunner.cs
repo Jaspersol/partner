@@ -24,7 +24,7 @@ public sealed record AgentTurnOptions
     /// </para>
     /// </summary>
     public IReadOnlyDictionary<string, int> ToolStepBudgets { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal) { ["desktop"] = 32, ["mcp_"] = 32 };
+        new Dictionary<string, int>(StringComparer.Ordinal) { ["desktop"] = 32, ["mcp_"] = 32, ["file_"] = 24 };
 
     /// <summary>
     /// The budget this turn runs under: the largest family budget among the tools <b>registered</b>, or
@@ -97,6 +97,19 @@ public sealed record AgentTurnOptions
     public TimeSpan TurnTimeout { get; init; } = TimeSpan.FromMinutes(10);
 
     public string? BaseSystemPrompt { get; init; }
+
+    /// <summary>
+    /// The system prompt, read at the start of every turn. When set it wins over <see cref="BaseSystemPrompt"/>:
+    /// an edit to the prompt then reaches the next turn without restarting the consumer (a restart resets the
+    /// turn counters and stops the MCP child processes, which is far too much for a wording change).
+    /// </summary>
+    public Func<string?>? PromptSource { get; init; }
+
+    /// <summary>
+    /// Which session this runner's turns belong to, as hooks see it. The main agent is <c>main</c>; a sub-agent
+    /// job names its own so a hook can tell the two apart.
+    /// </summary>
+    public string SessionId { get; init; } = "main";
 }
 
 public sealed record TurnResult(
@@ -156,7 +169,11 @@ public sealed class AgentTurnRunner
         _options = options ?? new AgentTurnOptions();
         _stream = stream;
         _assembler = assembler ?? new SessionWindowContextAssembler(
-            session, _options.ContextWindowTokens, _options.MaxTokens, baseSystemPrompt: _options.BaseSystemPrompt);
+            session,
+            _options.ContextWindowTokens,
+            _options.MaxTokens,
+            baseSystemPrompt: _options.BaseSystemPrompt,
+            promptSource: _options.PromptSource);
 
         // Optional: a caller that wants the summary supplies a log, and one that does not pays nothing for it.
         // The clock is here for the same reason — "last seen" has to be a real instant, not a guess.
@@ -214,7 +231,7 @@ public sealed class AgentTurnRunner
 
         var ctx = new HookContext
         {
-            SessionId = "main",
+            SessionId = _options.SessionId,
             Source = item.Source,
             InputPayload = item.Payload,
             WorkspaceDirectory = Environment.CurrentDirectory,

@@ -30,6 +30,7 @@ public sealed class ApiContext : IAsyncDisposable
         InMemoryTelemetrySink telemetry,
         TimeProvider clock)
     {
+        Withdrawals = new WithdrawalService(session, memory);
         Clock = clock;
         Workspace = workspace;
         Session = session;
@@ -44,6 +45,9 @@ public sealed class ApiContext : IAsyncDisposable
     }
 
     public string Workspace { get; }
+
+    /// <summary>Deleting the latest conversation and withdrawing from a point, with the undo the latter allows.</summary>
+    public WithdrawalService Withdrawals { get; }
 
     public ISessionStore Session { get; }
 

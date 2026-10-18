@@ -33,6 +33,30 @@ public sealed record RuntimeSettings
 
     public MemorySettings Memory { get; init; } = new();
 
+    private readonly AgentsSettings? _agents;
+
+    /// <summary>
+    /// The main agent's prompt and the sub-agents it can delegate to. See <see cref="AgentsSettings"/>.
+    /// <para>
+    /// Unlike the other sections, an <b>absent</b> agents section means "leave it as it is", not "reset it": it has
+    /// its own page and its own endpoint, and a client that PUTs the settings document without it (the settings
+    /// page, a script, an older build) must not wipe the prompts and sub-agents somebody wrote there.
+    /// <see cref="AgentsSpecified"/> is what lets the store tell the two apart.
+    /// </para>
+    /// </summary>
+    public AgentsSettings Agents
+    {
+        get => _agents ?? new AgentsSettings();
+        init => _agents = value;
+    }
+
+    /// <summary>Whether the document carried an agents section at all.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AgentsSpecified => _agents is not null;
+
+    /// <summary>Whether the file tools exist, and where they may read.</summary>
+    public FilesSettings Files { get; init; } = new();
+
     public static RuntimeSettings Default { get; } = new();
 }
 
@@ -476,6 +500,11 @@ public sealed record SettingsView
 
     public MemorySettings Memory { get; init; } = new();
 
+    /// <summary>Sub-agent API keys are masked here: the response says whether one is stored, never what it is.</summary>
+    public AgentsSettings Agents { get; init; } = new();
+
+    public FilesSettings Files { get; init; } = new();
+
     public static SettingsView From(RuntimeSettings settings) => new()
     {
         Input = settings.Input,
@@ -510,5 +539,20 @@ public sealed record SettingsView
         Skills = settings.Skills,
 
         Memory = settings.Memory,
+
+        // Without these the settings response drops the sections, and the UI — which refills its form from the
+        // response — would write the defaults back on its next save and erase the agents and the file whitelist.
+        Agents = settings.Agents with
+        {
+            SubAgents = settings.Agents.SubAgents
+                .Select(agent => agent with
+                {
+                    Model = agent.Model is null
+                        ? null
+                        : agent.Model with { ApiKey = null, ApiKeySet = !string.IsNullOrEmpty(agent.Model.ApiKey) },
+                })
+                .ToList(),
+        },
+        Files = settings.Files,
     };
 }

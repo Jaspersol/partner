@@ -9,7 +9,12 @@ namespace Partner.Api.Settings;
 /// </summary>
 public static class SettingsValidation
 {
-    public static IReadOnlyList<string> Validate(RuntimeSettings settings)
+    /// <param name="settings">The settings about to be stored.</param>
+    /// <param name="stored">
+    /// What is stored now. A rule that depends on the machine (a directory that must exist) is held against what is
+    /// <i>new</i>: otherwise an unplugged drive would make every unrelated save fail until the path was edited out.
+    /// </param>
+    public static IReadOnlyList<string> Validate(RuntimeSettings settings, RuntimeSettings? stored = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -122,6 +127,7 @@ public static class SettingsValidation
             errors.Add("model.maxTokens 必须小于 model.contextTokens");
         }
 
+        errors.AddRange(AgentsValidation.Validate(settings, stored));
 
         return errors;
     }
