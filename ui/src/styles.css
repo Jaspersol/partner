@@ -27,10 +27,9 @@
      Three steps, each with a job. --surface-0 is the window behind everything, --surface-1 is any panel or
      card, --surface-2 is a thing resting *on* a surface (a hovered row, an inset block).
 
-     There is deliberately no fourth step. Two things genuinely leave the page today: the narrow-window
-     inspector overlay, and the session row's `⋯` menu — both are separated by --shadow-3, which is how a
-     floating panel is normally drawn. A token nobody reads is not sitting here waiting for a popover that
-     does not exist, and the popover does exist now. */
+     There is deliberately no fourth step. One thing genuinely leaves the page today: the narrow-window
+     inspector overlay — separated by --shadow-3, which is how a floating panel is normally drawn. A token
+     nobody reads is not sitting here waiting for a popover that does not exist. */
   --surface-0: #f8fafc; /* window, per the modernization token sheet */
   --surface-1: #ffffff; /* card */
   --surface-2: #f1f5f9; /* 1.09:1 against --surface-1. Measured, not guessed: a value closer than
@@ -77,8 +76,8 @@
   /* ---- shadows ----------------------------------------------------------------------------------
      Only for things that leave the page. A card sitting on a surface is told apart by --surface, not by a
      shadow — putting one on every card is what makes an interface look like a stack of sticky notes. Two
-     steps, because there are two things that leave the page: the narrow-window inspector, and the menus and
-     popovers. --shadow-1 is the modernization sheet's one soft lift; --shadow-3 is reserved for genuinely
+     steps, because there are two things that leave the page: the narrow-window inspector, and the window's
+     own popovers. --shadow-1 is the modernization sheet's one soft lift; --shadow-3 is reserved for genuinely
      floating panels and stays soft — heavy shadow is what makes an interface look like a 2014 dashboard. */
   --shadow-1: 0 1px 3px rgb(0 0 0 / 8%);
   --shadow-3: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 6px rgb(0 0 0 / 6%);
@@ -586,12 +585,6 @@ h3 {
 
 .error {
   color: var(--error);
-}
-
-.edited {
-  color: var(--warn);
-  font-size: var(--fs-meta);
-  line-height: var(--lh-meta);
 }
 
 .validity {

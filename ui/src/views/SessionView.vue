@@ -7,15 +7,14 @@ import type {
   PendingApproval,
   QueueItem,
   QueueSummary,
-  SessionRevision,
+  SessionItem,
   SessionView,
 } from '../api'
-import { useOverlayMode } from '../narrow'
+import { sourceLabel } from '../sessionKind'
 import ApprovalBanner from '../components/ApprovalBanner.vue'
 import Icon from '../components/Icon.vue'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
-import Inspector from '../components/Inspector.vue'
 
 const props = defineProps<{
   api: PartnerApiSurface
@@ -58,39 +57,12 @@ const view = ref<SessionView | null>(null)
  */
 const loaded = ref(false)
 const selectedSeq = ref<number | null>(null)
-const draft = ref('')
-const revisions = ref<SessionRevision[]>([])
 const query = ref('')
 const sourceFilter = ref('all')
-const error = ref('')
-const notice = ref('')
 const composer = ref<InstanceType<typeof Composer> | null>(null)
-/**
- * Closed on arrival.
- *
- * <para>
- * The inspector is the narrow column, and it competes with the log for the width that the log's prose needs.
- * Open by default, a 1400px window gives the conversation roughly 1000px and the panel 380 — and a reader
- * opening a session is reading the conversation. The panel is two clicks away and its own state is announced
- * in the toolbar button, so nothing is hidden that cannot be reached.
- * </para>
- *
- * <para>
- * This also matches the old plan's intent ("switching views starts with the inspector open") without its
- * letter: a fresh instance starts with the *state it should show a reader first*, which for a log is the log.
- * </para>
- */
-const inspectorCollapsed = ref(true)
 
-/**
- * Results only. A view preference, not a filter on the data: the events are still fetched and still selectable
- * by search, so turning it off restores every row without a re-read.
- */
-const resultsOnly = ref(false)
-
-
-
-const selected = computed(() => view.value?.items.find((item) => item.seq === selectedSeq.value) ?? null)
+const conversation = computed(() => view.value?.conversation ?? null)
+const withdrawn = computed(() => conversation.value?.withdrawn ?? null)
 
 const sources = computed(() => {
   const seen = new Set((view.value?.items ?? []).map((item) => item.source))
@@ -132,17 +104,7 @@ function format(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens)
 }
 
-const revisionNote = computed(() => {
-  const item = selected.value
-  if (!item || item.revisionCount === 0) {
-    return ''
-  }
-
-  return `已编辑 ${item.revisionCount} 次 · 原文：${item.originalBody ?? ''}`
-})
-
 async function refresh() {
-  error.value = ''
   try {
     view.value = await props.api.session()
     loaded.value = true
@@ -150,11 +112,11 @@ async function refresh() {
       emit('context', contextFor(selectedSeq.value))
     }
 
-
     // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
     await followIfFollowing()
-  } catch (failure) {
-    error.value = String(failure)
+  } catch {
+    // A failed read says nothing on screen any more. The last good list stays where it is and the poll tries
+    // again a few hundred milliseconds later, which is the same thing the reader would do by hand.
   }
 }
 
@@ -163,112 +125,106 @@ function contextFor(seq: number): string {
   return item ? `会话 #${item.seq} · ${item.kind}` : '会话'
 }
 
-async function select(seq: number) {
+/**
+ * Selecting a row marks it and names it in the top bar. There is no editor behind the selection any more: what
+ * a row can do to a row — 复用, 删除, 撤回 — is on the row itself, one hover away.
+ */
+function select(seq: number) {
   selectedSeq.value = seq
-  draft.value = view.value?.items.find((item) => item.seq === seq)?.body ?? ''
   emit('context', contextFor(seq))
-
-  try {
-    revisions.value = await props.api.sessionRevisions(seq)
-  } catch (failure) {
-    error.value = String(failure)
-  }
-}
-
-async function save(body: string) {
-  const seq = selectedSeq.value
-  if (seq === null) {
-    error.value = '先选中一条事件'
-    return
-  }
-  if (body === '') {
-    error.value = '正文不能为空'
-    return
-  }
-
-  error.value = ''
-  notice.value = ''
-  try {
-    await props.api.editSession(seq, body)
-    // No optimistic update: re-read, then re-select so the editor shows what the server kept.
-    await refresh()
-    await select(seq)
-    emit('changed')
-  } catch (failure) {
-    error.value = String(failure)
-  }
 }
 
 /**
- * Removes one event, or one event and everything after it, and says so plainly.
+ * Deletes the latest conversation as a whole.
  *
  * <para>
- * Both are physical: the lines leave the log and only a content-free `purge #a..#b` marker stays (see
- * README §历史). That is why the view reports the range it removed rather than a generic "done" — a reader
- * who pressed "delete from here" needs to know how much went with it.
+ * Deleting is physical: the lines leave the log and only a content-free `purge #a..#b` marker stays (see
+ * README §历史). Nothing on the page announces it — the rows are simply gone, which is what was asked for.
  * </para>
  */
-async function removeFrom(seq: number, through: boolean) {
-  error.value = ''
-  notice.value = ''
-
-  // The reader's own message goes back in the box. Its text is about to leave the log for good, and the only
-  // copy left is the one the composer is holding.
-  const body = through ? undefined : view.value?.items.find((item) => item.seq === seq)?.body
+async function deleteLatest(seq: number) {
+  // The reader's own message goes back in the box. The deleted conversation starts at its first message, so
+  // that is the text worth keeping — the row pressed may be a later reply. Its text is about to leave the log
+  // for good, and the only copy left is the one the composer is holding.
+  const startSeq = conversation.value?.latestFromSeq ?? seq
+  const first = view.value?.items.find((item) => item.seq === startSeq)
+  const body = first !== undefined && restorableItem(first) ? first.body : undefined
 
   try {
-    if (through) {
-      await props.api.retractFrom(seq)
-      notice.value = `已撤回 #${seq} 及之后的事件（已从日志移除）`
-    } else {
-      await props.api.deleteEvent(seq)
-      notice.value = `已删除 #${seq}（已从日志移除）`
-      if (body !== undefined && restorableBody(view.value, seq)) {
-        composer.value?.restore(body)
-      }
+    await props.api.deleteLatest(seq)
+    if (body !== undefined) {
+      composer.value?.restore(body)
     }
 
-    // The selection is gone from the view, so the panel must not keep pointing at it.
-    selectedSeq.value = null
-    draft.value = ''
-    revisions.value = []
+    clearSelection()
     await refresh()
     emit('changed')
-  } catch (failure) {
-    error.value = String(failure)
+  } catch {
+    // Nothing to report and no place to report it: the list is re-read below either way, so a refusal means
+    // the rows are still there.
+    await refresh()
   }
-}
-
-async function removeEvent() {
-  if (selectedSeq.value === null) {
-    error.value = '先选中一条事件'
-    return
-  }
-
-  await removeFrom(selectedSeq.value, false)
-}
-
-async function retractFromSelected() {
-  if (selectedSeq.value === null) {
-    error.value = '先选中一条事件'
-    return
-  }
-
-  await removeFrom(selectedSeq.value, true)
 }
 
 /**
- * Whether a removed event's text belongs back in the composer's box.
+ * Withdraws the selected conversation and everything after it.
+ *
+ * <para>
+ * Nothing is deleted: the range is hidden behind a retraction that stands until the reader sends a new
+ * message. That is why this takes one click and needs no confirmation.
+ * </para>
+ */
+async function withdrawFrom(seq: number) {
+  try {
+    await props.api.withdrawFrom(seq)
+  } catch {
+    // As above: a refused withdrawal leaves the list as it was, which the re-read shows.
+  }
+
+  // The withdrawn rows are no longer in the view, so nothing may stay selected.
+  clearSelection()
+  await refresh()
+  emit('changed')
+}
+
+/**
+ * Takes a pending withdrawal back, so the rows it hid come back.
+ *
+ * <para>
+ * A withdrawal is the one history change with a way back, and it only holds until the next message is sent — so
+ * the way back is offered, and it is offered where the missing rows were: directly under the newest message,
+ * which is where the log now stops. Nothing else says a withdrawal happened; the button is both the report and
+ * the remedy.
+ * </para>
+ */
+async function cancelWithdrawal() {
+  try {
+    await props.api.cancelWithdrawal()
+  } catch {
+    // A refused cancel leaves the withdrawal standing. The re-read below is what shows that, either way.
+  }
+
+  clearSelection()
+  await refresh()
+  emit('changed')
+}
+
+/** The selection is a pointer into the list: a row that left the view must not stay selected. */
+function clearSelection() {
+  selectedSeq.value = null
+}
+
+/**
+ * Whether a removed conversation's first message belongs back in the composer's box.
  *
  * Only the reader's own typed messages do. An assistant reply put back there would be sent as the human's
  * words on the next turn, and a scheduled task's text is not theirs to resend.
  */
-function restorableBody(current: SessionView | null, seq: number): boolean {
-  const item = current?.items.find((candidate) => candidate.seq === seq)
-  return item !== undefined && item.kind === 'User' && item.source.toLowerCase() === 'text'
+function restorableItem(item: SessionItem): boolean {
+  return item.kind === 'User' && item.source.toLowerCase() === 'text'
 }
 
-/** The row's own 撤回 button: fill the box, change nothing on the server. */
+/** The row's own 复用 button: fill the box, change nothing on the server. */
 function restoreIntoComposer(seq: number) {
   const body = view.value?.items.find((item) => item.seq === seq)?.body
   if (body === undefined) {
@@ -276,7 +232,6 @@ function restoreIntoComposer(seq: number) {
   }
 
   composer.value?.restore(body)
-  notice.value = `已把 #${seq} 的原文放回输入框（可修改后重发）`
 }
 
 /** The composer stopped the running turn; the queue behind the badge is stale until someone re-reads it. */
@@ -285,14 +240,9 @@ function onCancel() {
   void refresh()
 }
 
-async function onSent(result: { itemId: string; deduplicated: boolean }) {
-  // The queue is strictly FIFO, so a message always waits its turn. Saying otherwise here would be a promise
-  // the runtime does not make: the interject option below is a preference about *this keystroke*, and the
-  // wording here must keep describing what actually happened.
-  notice.value = result.deduplicated
-    ? `已入队 ${result.itemId}（重复提交，未新增）`
-    : `已入队 ${result.itemId} · 等待执行`
-  // The delivery lands in the queue, so the session is unchanged until a consumer runs.
+async function onSent() {
+  // The delivery lands in the queue, so the session is unchanged until a consumer runs — and the queue above
+  // the composer is where the reader sees it.
   await refresh()
 
   // Sending is an explicit "show me what happens", so the view starts following the reply even if the reader
@@ -356,16 +306,6 @@ async function poll() {
  */
 const scroller = ref<HTMLElement | null>(null)
 const following = ref(false)
-
-/**
- * Whether the inspector is a floating overlay rather than a column.
- *
- * <para>
- * A panel covering the list has nothing beside it to take width from, so the resize handle is removed rather
- * than left there doing nothing. The threshold itself lives in `narrow.ts`, next to the only copy of it.
- * </para>
- */
-const { isOverlay } = useOverlayMode()
 
 /** How close to the bottom still counts as the bottom — sub-pixel layout and the caret flip it otherwise. */
 const FOLLOW_SLACK_PX = 32
@@ -453,18 +393,12 @@ function focusSearch() {
   searchInput.value?.focus()
 }
 
-/** For Escape. Closes a panel the reader may not have meant to open. */
-function collapseInspector() {
-  inspectorCollapsed.value = true
-}
-
-defineExpose({ refresh, focusSearch, collapseInspector })
+defineExpose({ refresh, focusSearch })
 </script>
 
 <template>
   <div class="view">
     <div class="toolbar">
-      <button data-test="session-refresh" @click="refresh">刷新</button>
       <label class="search-field">
         <Icon name="search" :size="14" class="search-glyph" />
         <input
@@ -478,31 +412,9 @@ defineExpose({ refresh, focusSearch, collapseInspector })
       </label>
       <select v-model="sourceFilter" data-test="session-source-filter" aria-label="来源">
         <option v-for="option in sources" :key="option" :value="option">
-          {{ option === 'all' ? '来源：全部' : option }}
+          {{ option === 'all' ? '全部' : sourceLabel(option) }}
         </option>
       </select>
-      <!-- `aria-controls` names what this toggles, and `aria-expanded` says which way it currently is — the
-           label alone ("› 收起检视") is the state, so a screen reader reading it out of context gets a command
-           instead of a fact. -->
-      <button
-        class="ghost"
-        data-test="session-inspector-toggle"
-        aria-controls="session-inspector"
-        :aria-expanded="!inspectorCollapsed"
-        @click="inspectorCollapsed = !inspectorCollapsed"
-      >
-        {{ inspectorCollapsed ? "‹ 展开检视" : "› 收起检视" }}
-      </button>
-      <button
-        class="ghost"
-        :aria-pressed="resultsOnly"
-        data-test="session-results-only"
-        title="只保留用户消息与最终回复，工具调用行全部隐藏"
-        @click="resultsOnly = !resultsOnly"
-      >
-        <Icon :name="resultsOnly ? 'check' : 'square'" :size="14" />
-        只看结果
-      </button>
       <span class="spacer" />
       <span
         v-if="contextLabel"
@@ -513,64 +425,42 @@ defineExpose({ refresh, focusSearch, collapseInspector })
       >
         {{ contextLabel }}
       </span>
-      <span class="muted" data-test="session-summary">
-        {{ visible.length }} / {{ view?.items.length ?? 0 }} 条事件 · 最后 seq={{ view?.lastSeq ?? 0 }}
-      </span>
     </div>
 
-    <!--
-      The outcome line sits directly under the toolbar, not at the foot of the column.
-
-      <para>
-      It used to come after the composer, which put it at the very bottom of the window — so a delete that
-      reported what it had just removed, or an error from a failed save, was only on screen if you happened to
-      be looking at the composer. In a session a few hundred events long, the one line saying what just happened
-      was the one line that scrolled out of sight first.
-      </para>
-
-      <para>
-      Here the toolbar does not scroll and neither does this, so both are always visible: the toolbar carries
-      the counts, this carries the consequence. `.notice`'s top border is what separates them, which is why the
-      rule still draws it even though this is no longer the last thing in the column.
-      </para>
-    -->
-    <p v-if="notice" class="muted notice" data-test="session-notice">{{ notice }}</p>
-    <p v-if="error" class="error notice" data-test="error">{{ error }}</p>
-
-    <div class="split" :class="{ 'is-inspector-collapsed': inspectorCollapsed }">
-      <div v-if="!inspectorCollapsed" class="inspector-scrim" @click="inspectorCollapsed = true" />
+    <div class="split">
       <div ref="scroller" class="scroll" @scroll="measureFollow">
         <EventList
           :items="visible"
           :selected-seq="selectedSeq"
-          :results-only="resultsOnly"
+          :latest-from-seq="conversation?.latestFromSeq ?? null"
+          :withdrawn="withdrawn !== null"
+          :busy="view?.busy === true"
           @select="select"
-          @remove="removeFrom($event, false)"
-          @retract="removeFrom($event, true)"
+          @remove="deleteLatest"
+          @withdraw="withdrawFrom"
           @restore="restoreIntoComposer"
         />
+        <!--
+          Where the log stops. A pending withdrawal hid a range of rows, so the one thing to say about it sits
+          exactly where they were — under the newest message — rather than in a banner far from the gap it
+          describes. Shown only while a withdrawal is actually pending.
+        -->
+        <button
+          v-if="withdrawn !== null"
+          class="ghost withdrawn-undo"
+          data-test="session-withdrawn-cancel"
+          title="把撤回隐藏的对话放回来（发送新消息后就无法恢复了）"
+          @click="cancelWithdrawal"
+        >
+          取消撤回
+        </button>
+
         <div v-if="!loaded" class="skeleton-stack" aria-hidden="true">
           <div class="skeleton-line" />
           <div class="skeleton-line" />
           <div class="skeleton-line" />
         </div>
-        <p v-if="!loaded" class="pending" data-test="session-pending">正在读取会话…</p>
-        <p v-else-if="visible.length === 0" class="empty">（无匹配事件）</p>
       </div>
-
-      <Inspector
-        id="session-inspector"
-        test-prefix="session"
-        title="编辑选中事件（追加修订，原文保留）"
-        :target="selected ? `#${selected.seq} · ${selected.kind} · ${selected.source} · 修订 ${selected.revisionCount} 次` : '未选中'"
-        :draft="draft"
-        :revisions="revisions"
-        :note="revisionNote"
-        :resizable="!isOverlay"
-        @save="save"
-        @delete="removeEvent"
-        @retract="retractFromSelected"
-      />
     </div>
 
     <ApprovalBanner
@@ -590,16 +480,26 @@ defineExpose({ refresh, focusSearch, collapseInspector })
       :queue-items="queueItems"
       @sent="onSent"
       @approval="emit('approval', $event)"
-      @failed="error = $event"
       @cancel="onCancel"
     />
   </div>
 </template>
 
 <style scoped>
+/* One column, explicitly. `.split` is a two-track grid globally because the memory view puts a panel in the
+   second one; this view has no panel any more, and inheriting that rule left an empty track on the right — a
+   band of nothing as wide as the panel used to be. */
 .split {
   flex: 1;
   min-block-size: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* The way back from a withdrawal. It stands where the hidden rows stood — just under the newest message — at the
+   same left gutter the rows are padded to, so it reads as the end of the log rather than as a control bolted
+   under it. Quiet by default: it is an offer, not another event. */
+.withdrawn-undo {
+  margin: var(--space-2) var(--space-4) var(--space-4);
 }
 
 /* The meter turns loud only when the window is nearly full — that is when it matters. */

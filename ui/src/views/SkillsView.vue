@@ -12,7 +12,7 @@ import type { PartnerApiSurface, RuntimeSettings, SkillView } from '../api'
  * </para>
  */
 const props = defineProps<{ api: PartnerApiSurface }>()
-const emit = defineEmits<{ context: [value: string]; changed: [] }>()
+const emit = defineEmits<{ changed: [] }>()
 
 const skills = ref<SkillView[]>([])
 const warnings = ref<string[]>([])
@@ -41,8 +41,6 @@ async function refresh() {
     warnings.value = loaded.warnings
     baseline.value = settings
     disabled.value = settings.skills.disabled
-
-    emit('context', `技能 · ${skills.value.length - disabled.value.length}/${skills.value.length} 启用`)
   } catch (failure) {
     error.value = String(failure)
   }

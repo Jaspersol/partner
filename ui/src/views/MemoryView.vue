@@ -5,10 +5,11 @@ import { memoryRowFromHit, memoryRowFromItem, MEMORY_SCOPES, MEMORY_TIERS, scope
 import { useOverlayMode } from '../narrow'
 import Inspector from '../components/Inspector.vue'
 import Icon from '../components/Icon.vue'
+import HintTip from '../components/HintTip.vue'
 import MemoryList from '../components/MemoryList.vue'
 
 const props = defineProps<{ api: PartnerApiSurface }>()
-const emit = defineEmits<{ context: [value: string]; changed: [] }>()
+const emit = defineEmits<{ changed: [] }>()
 
 const rows = ref<MemoryRow[]>([])
 
@@ -109,8 +110,6 @@ async function refresh() {
     loaded.value = true
     recalling.value = false
     recalled.value = ''
-
-    emit('context', `记忆 · ${rows.value.length} 条`)
   } catch (failure) {
     error.value = String(failure)
   }
@@ -198,7 +197,6 @@ async function recall() {
 async function select(row: MemoryRow) {
   selected.value = row
   draft.value = row.body
-  emit('context', `记忆 ${row.recordId}`)
 
   try {
     revisions.value = await props.api.memoryRevisions(row.recordId)
@@ -416,8 +414,8 @@ defineExpose({ refresh, focusSearch, collapseInspector })
             @change="setScope(($event.target as HTMLInputElement).checked ? 'Retain' : 'Recall')"
           />
           保留
+          <HintTip data-test="memory-retain-hint">保留只挡遗忘，不挡纠正 —— 同层的新记录仍会覆盖它</HintTip>
         </label>
-        <span class="hint" data-test="memory-retain-hint">保留只挡遗忘，不挡纠正 —— 同层的新记录仍会覆盖它</span>
       </div>
       <Inspector
         id="memory-inspector"
@@ -457,15 +455,15 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           <select v-model="newScope" data-test="memory-new-scope">
             <option v-for="option in MEMORY_SCOPES" :key="option" :value="option">{{ scopeLabel(option) }}</option>
           </select>
+          <HintTip align="end">默认是「确定 · 可以当事实用」—— 手写的不是待印证的东西</HintTip>
         </label>
-        <span class="hint">默认是「确定 · 可以当事实用」—— 手写的不是待印证的东西</span>
         <!--
           The one thing this form does not do, said while the reader is here rather than when they are
-          surprised: 「删除之后」 takes the memories distilled from a turn with it, and this one is not one of
+          surprised: deleting a conversation (or sending a message after a withdrawal) takes the memories distilled from it with it, and this one is not one of
           those. It belongs to the person, so deleting the conversation it was written next to leaves it
           standing.
         -->
-        <span class="hint" data-test="memory-new-cascade-hint">它不属于任何一轮对话 —— 删掉对话不会删掉它</span>
+        <HintTip align="end" data-test="memory-new-cascade-hint">它不属于任何一轮对话 —— 删掉对话不会删掉它</HintTip>
         <span class="spacer" />
         <button class="ghost" data-test="memory-new-cancel" @click="composing = false">取消</button>
         <button data-test="memory-new-submit" @click="create">保存</button>
@@ -505,11 +503,6 @@ defineExpose({ refresh, focusSearch, collapseInspector })
   align-items: center;
   gap: var(--space-1);
   color: var(--text-2);
-}
-
-.hint {
-  color: var(--text-3);
-  font-size: var(--fs-meta);
 }
 
 .composer {

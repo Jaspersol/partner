@@ -10,6 +10,7 @@ import {
   type QueueSummary,
   type DesktopState,
   type PendingApproval,
+  type AgentJobView,
 } from './api'
 import { resolveConnection } from './config'
 import { useRailOnlyMode } from './narrow'
@@ -21,6 +22,7 @@ import MemoryView from './views/MemoryView.vue'
 import SessionView from './views/SessionView.vue'
 import McpView from './views/McpView.vue'
 import SkillsView from './views/SkillsView.vue'
+import PromptsView from './views/PromptsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { version } from '../package.json'
 
@@ -39,6 +41,10 @@ const NAV: NavItem[] = [
   // does not give it.
   { key: 'mcp', label: 'MCP', icon: 'mcp' },
   { key: 'skills', label: '技能', icon: 'skill' },
+
+  // What the agents are told, and who they may hand work to. Between the capability pages and settings
+  // because it edits the thing the capabilities are offered to, not the installation itself.
+  { key: 'prompts', label: '提示词', icon: 'prompt' },
   { key: 'settings', label: '设置', icon: 'settings' },
 ]
 
@@ -54,6 +60,16 @@ const APPROVAL_POLL_MS = 500
 
 const approvals = ref<PendingApproval[]>([])
 const desktop = ref<DesktopState | null>(null)
+/**
+ * The delegated job on screen, if any.
+ *
+ * <para>
+ * Polled with the queue because it is the same question — "is something working, and can I stop it" — and a
+ * job that a reader cannot see is a job they cannot cancel. Kept as the first running one rather than a list:
+ * the status bar has room for one line, and the prompts page is where the full list lives.
+ * </para>
+ */
+const runningJob = ref<AgentJobView | null>(null)
 
 
 /**
@@ -90,6 +106,17 @@ const summary = ref<QueueSummary | null>(null)
  */
 const queueItems = ref<QueueItem[]>([])
 const consumer = ref<ConsumerState | null>(null)
+
+/**
+ * The line the top bar shows in the middle.
+ *
+ * <para>
+ * Only the session view sets it, and only to name the row the reader has selected. Every other view used to
+ * contribute a sentence here too — 「设置 · 运行时」, 「记忆 · 12 条」 — restating what the sidebar already said
+ * about where they were and what the page under it already showed in full. That is text with nothing in it, so
+ * those views say nothing now and the middle of the bar stays empty until there is a selection to name.
+ * </para>
+ */
 const context = ref('')
 const connectionError = ref('')
 const endpoint = ref('')
@@ -186,6 +213,45 @@ async function refreshSummary() {
 
     stale.value = summary.value !== null
   }
+
+  // A separate read, deliberately: an older API answers 404 here, and that must not mark the queue stale or
+  // clear the badge. A failed job read keeps the last known job, for the same reason a failed queue read keeps
+  // the stop button.
+  await refreshJobs()
+}
+
+/**
+ * The delegated job, on the same five-second cadence as the queue.
+ *
+ * Kept apart from `refreshSummary` because it is a different surface with a different failure: the jobs
+ * endpoint is new, and a build without it should leave the status bar quiet rather than flag the whole
+ * connection as stale.
+ */
+async function refreshJobs() {
+  if (!api.value) {
+    return
+  }
+
+  try {
+    runningJob.value = (await api.value.agentJobs()).find((job) => job.status === 'running') ?? null
+  } catch {
+    // Keep what we last knew: the stop button is derived from it.
+  }
+}
+
+/** Stops the running job. A 404 means it finished between two polls — nothing to stop, not an error. */
+async function cancelJob(jobId: string) {
+  if (!api.value) {
+    return
+  }
+
+  try {
+    await api.value.cancelAgentJob(jobId)
+  } catch (failure) {
+    connectionError.value = String(failure)
+  }
+
+  await refreshJobs()
 }
 
 /** Answers a parked tool call. A failed answer is left on screen rather than swallowed: it is still waiting. */
@@ -433,24 +499,34 @@ onUnmounted(() => {
             v-else-if="active === 'memory'"
             ref="activeView"
             :api="api"
-            @context="context = $event"
             @changed="refreshSummary"
           />
           <McpView
             v-else-if="active === 'mcp'"
             ref="activeView"
             :api="api"
-            @context="context = $event"
             @changed="refreshSummary"
           />
           <SkillsView
             v-else-if="active === 'skills'"
             ref="activeView"
             :api="api"
-            @context="context = $event"
             @changed="refreshSummary"
           />
-          <SettingsView v-else ref="activeView" :api="api" @context="context = $event" @saved="refreshGears" />
+          <PromptsView
+            v-else-if="active === 'prompts'"
+            ref="activeView"
+            :api="api"
+            @changed="refreshSummary"
+            @navigate="select"
+          />
+          <SettingsView
+            v-else
+            ref="activeView"
+            :api="api"
+            @saved="refreshGears"
+            @navigate="select"
+          />
         </template>
 
         <p v-else class="error empty" data-test="connection-error">{{ connectionError }}</p>
@@ -464,6 +540,8 @@ onUnmounted(() => {
       :consumer="consumer"
       :stale="stale"
       :version="`v${version}`"
+      :job="runningJob"
+      @cancel-job="cancelJob"
     />
   </div>
 </template>

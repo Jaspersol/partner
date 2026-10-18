@@ -36,6 +36,42 @@ const KIND_LABEL: Record<string, string> = {
 }
 
 /**
+ * What a session event's `source` says to a reader.
+ *
+ * <para>
+ * The wire value is the C# enum name (`Voice`, `Text`, `Schedule`, `Agent`). The first three are familiar
+ * enough to read as words. `Agent` gets no label at all: a sub-agent's own report is filtered out of the view
+ * by the server, and the only `Agent` rows left are the main agent's ordinary replies to such a report — so
+ * calling them 「子 agent」 would name the wrong speaker. Unknown values fall through verbatim, for the same
+ * reason the kind labels do.
+ * </para>
+ */
+const SOURCE_LABEL: Record<string, string> = {
+  Voice: '语音',
+  Text: '文本',
+  Schedule: '调度',
+  Agent: '',
+}
+
+/** The source's word, or the source itself when it is not one this list knows. */
+export function sourceLabel(source: string): string {
+  return SOURCE_LABEL[source] ?? source
+}
+
+/**
+ * Whether a row should carry a source chip at all.
+ *
+ * <para>
+ * `Agent` is deliberately absent: the server keeps sub-agent reports out of the view, so what remains is the
+ * main agent answering one — an ordinary assistant row, not a second kind of speaker. A chip saying otherwise
+ * is a label the reader cannot act on and can only misread.
+ * </para>
+ */
+export function sourceHasChip(source: string): boolean {
+  return source !== '' && SOURCE_LABEL[source] !== ''
+}
+
+/**
  * The kind's word, or the kind itself when it is not one this list knows.
  *
  * @param kind the wire value, exactly as the log carries it

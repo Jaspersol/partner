@@ -2,6 +2,8 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import type {
+  AgentsSettings,
+  AgentsView,
   MemoryItem,
   MemoryRevision,
   PartnerApiSurface,
@@ -18,6 +20,8 @@ import Composer from '../src/components/Composer.vue'
 import SettingsViewComponent from '../src/views/SettingsView.vue'
 import McpView from '../src/views/McpView.vue'
 import SkillsView from '../src/views/SkillsView.vue'
+import PromptsView from '../src/views/PromptsView.vue'
+import { ApiError } from '../src/api'
 
 /**
  * View behaviour with a stub API. The stub implements the same interface the real client does, so the
@@ -33,10 +37,12 @@ interface Calls {
   recalls: string[]
   submits: { payload: string; source: string }[]
   removals: { seq: number; kind: string }[]
+  withdrawalCancels: number
   tierChanges: { recordId: string; tier: string }[]
   scopeChanges: { recordId: string; scope: string }[]
   creates: { body: string; tier?: string; scope?: string }[]
   probes: string[]
+  agentSaves: AgentsSettings[]
 }
 
 /**
@@ -73,13 +79,66 @@ const SETTINGS_FIXTURE: SettingsView = {
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
   mcp: { enabled: false, servers: [], allowedTools: [] },
   skills: { disabled: [] },
+  agents: { main: { prompt: null }, subAgents: [] },
+  files: { enabled: false, roots: [] },
 };
 
+/**
+ * The agents document a stubbed API reports. Two scenarios, the built-in desktop agent, and one file-read
+ * agent — the state the page exists to edit. `ownerId` is what the add button reads to decide what is free.
+ */
+const AGENTS_FIXTURE: AgentsView = {
+  main: {
+    prompt: null,
+    defaultPrompt: '你是主 agent。',
+    effectivePrompt: '你是主 agent。\n\n可委派：桌面操控、读取文件',
+    promptTokens: 18,
+  },
+  subAgents: [
+    {
+      id: 'desktop',
+      name: '桌面操控',
+      enabled: true,
+      scenario: 'desktop',
+      builtin: true,
+      prompt: null,
+      defaultPrompt: '你负责桌面。',
+      effectivePrompt: '你负责桌面。\n\n汇报格式…',
+      promptTokens: 12,
+      maxRounds: 5,
+      model: null,
+    },
+    {
+      id: 'reader',
+      name: '读文件的',
+      enabled: true,
+      scenario: 'file-read',
+      builtin: false,
+      prompt: '只读，不要猜。',
+      defaultPrompt: '你负责读文件。',
+      effectivePrompt: '只读，不要猜。\n\n汇报格式…',
+      promptTokens: 14,
+      maxRounds: 3,
+      model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' },
+    },
+  ],
+  scenarios: [
+    { key: 'desktop', name: '桌面操控', when: '需要操作界面时', ownerId: 'desktop', capabilityEnabled: true, available: true },
+    { key: 'file-read', name: '读取文件', when: '需要读文件时', ownerId: 'reader', capabilityEnabled: true, available: true },
+  ],
+  problems: [],
+  limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
+  files: { enabled: true, roots: ['D:/资料'] },
+  desktopEnabled: true,
+}
+
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
-  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [], tierChanges: [], scopeChanges: [], creates: [], probes: [] }
+  const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [], withdrawalCancels: 0, tierChanges: [], scopeChanges: [], creates: [], probes: [], agentSaves: [] }
 
   const session: SessionViewData = {
     lastSeq: 3,
+    // One conversation, starting at the reader's own message in seq 1: delete is offered for both rows.
+    conversation: { latestFromSeq: 1, withdrawn: null },
     context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
     items: [
       { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'first', originalBody: 'first', revisionCount: 1 },
@@ -109,8 +168,17 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
 
   const stub: PartnerApiSurface = {
     session: vi.fn(async () => session),
-    deleteEvent: vi.fn(async (seq: number) => { calls.removals.push({ seq, kind: 'delete' }) }),
-    retractFrom: vi.fn(async (seq: number) => { calls.removals.push({ seq, kind: 'retract' }) }),
+    deleteLatest: vi.fn(async (seq: number) => {
+      calls.removals.push({ seq, kind: 'delete' })
+      return { removedFrom: 1, removedTo: 3, purgedEvents: 2, purgedRevisions: 1, purgedMemories: 0, eventSeq: 4 }
+    }),
+    withdrawFrom: vi.fn(async (seq: number) => {
+      calls.removals.push({ seq, kind: 'withdraw' })
+      return { withdrawnFrom: 1, withdrawnTo: 3, conversations: 1, events: 2 }
+    }),
+    cancelWithdrawal: vi.fn(async () => {
+      calls.withdrawalCancels++
+    }),
     editSession: vi.fn(async (seq: number, body: string) => {
       calls.edits.push({ seq, body })
     }),
@@ -164,6 +232,34 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     memoryRevisions: vi.fn(async (): Promise<MemoryRevision[]> => [{ at: '2026-09-26T10:00:09+00:00', before: 'likes tea', after: 'likes jasmine tea', actor: 'Human' }]),
     settings: vi.fn(async () => SETTINGS_FIXTURE),
+    agents: vi.fn(async () => AGENTS_FIXTURE),
+    saveAgents: vi.fn(async (agents: AgentsSettings) => {
+      calls.agentSaves.push(agents)
+      return {
+        agents: {
+          ...AGENTS_FIXTURE,
+          main: { ...AGENTS_FIXTURE.main, prompt: agents.main.prompt },
+          subAgents: agents.subAgents.map((agent) => {
+            const known = AGENTS_FIXTURE.subAgents.find((item) => item.id === agent.id)
+            return {
+              ...(known ?? {
+                name: agent.name,
+                scenario: agent.scenario,
+                builtin: false,
+                defaultPrompt: '',
+                effectivePrompt: '',
+                promptTokens: 0,
+              }),
+              ...agent,
+              model: agent.model === null ? null : { ...agent.model, apiKeySet: Boolean(agent.model.apiKey) },
+            }
+          }),
+        },
+        consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
+      }
+    }),
+    agentJobs: vi.fn(async () => []),
+    cancelAgentJob: vi.fn(async () => true),
     testVoice: vi.fn(async (kind: 'asr' | 'tts' | 'kws' | 'model') => {
       calls.probes.push(kind)
       return kind === 'model'
@@ -196,7 +292,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
 }
 
 describe('session view', () => {
-  it('renders the log and shows the original body of an edited event', async () => {
+  it('renders the log', async () => {
     const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -204,42 +300,22 @@ describe('session view', () => {
     const rows = wrapper.findAll('[data-test="session-list"] li')
     expect(rows).toHaveLength(2)
     expect(rows[0]?.text()).toContain('first')
-    expect(rows[0]?.text()).toContain('已编辑 1 次 · 原文：first')
+    expect(rows[1]?.text()).toContain('second')
   })
 
-  it('fills the editor from the selection and appends the edit on save', async () => {
-    const { stub, calls } = createStub()
+  it('marks the selected row rather than opening an editor for it', async () => {
+    const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
+
+    expect(wrapper.find('[aria-current="true"]').exists()).toBe(false)
 
     await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
     await flushPromises()
 
-    const draft = wrapper.find<HTMLTextAreaElement>('[data-test="session-draft"]')
-    expect(draft.element.value).toBe('second')
-
-    await draft.setValue('second, revised')
-    await wrapper.find('[data-test="session-save"]').trigger('click')
-    await flushPromises()
-
-    expect(calls.edits).toEqual([{ seq: 3, body: 'second, revised' }])
-    // The view re-reads after a write instead of trusting local state.
-    expect(stub.session).toHaveBeenCalledTimes(2)
-  })
-
-  it('refuses an empty body without calling the API', async () => {
-    const { stub, calls } = createStub()
-    const wrapper = mount(SessionView, { props: { api: stub } })
-    await flushPromises()
-
-    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
-    await flushPromises()
-    await wrapper.find<HTMLTextAreaElement>('[data-test="session-draft"]').setValue('   ')
-    await wrapper.find('[data-test="session-save"]').trigger('click')
-    await flushPromises()
-
-    expect(calls.edits).toEqual([])
-    expect(wrapper.find('[data-test="error"]').text()).toContain('正文不能为空')
+    // What a row can do to a row — 复用, 删除, 撤回 — is on the row itself, one hover away, so the selection is
+    // only a marker now.
+    expect(wrapper.findAll('[data-test="session-list"] li')[1]?.attributes('aria-current')).toBe('true')
   })
 })
 
@@ -248,6 +324,7 @@ describe('context meter', () => {
     const { stub } = createStub({
       session: vi.fn(async () => ({
         lastSeq: 3,
+        conversation: { latestFromSeq: 1, withdrawn: null },
         items: [],
         context: { usedTokens: 1240, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 6, foldedItems: 2, fraction: 0.043 },
       })),
@@ -267,6 +344,7 @@ describe('context meter', () => {
     const { stub } = createStub({
       session: vi.fn(async () => ({
         lastSeq: 1,
+        conversation: { latestFromSeq: 1, withdrawn: null },
         items: [],
         context: { usedTokens: 28000, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 40, foldedItems: 0, fraction: 0.97 },
       })),
@@ -295,7 +373,7 @@ describe('a view that has not read yet', () => {
   // So the first thing a reader saw was a confident wrong answer — 「（无匹配事件）」 on a session that had not
   // been asked about yet — said before the request that would have contradicted it even went out.
 
-  it('says it is still reading, rather than that there is nothing', async () => {
+  it('holds a placeholder while the first read is in flight, and claims nothing when it lands empty', async () => {
     // Assigned inside the executor, which TypeScript cannot see — so the definite-assignment form rather
     // than a nullable that would be narrowed to `null` and then called.
     let release!: () => void
@@ -312,21 +390,23 @@ describe('a view that has not read yet', () => {
 
     const wrapper = mount(SessionView, { props: { api: stub } })
 
-    // Before the answer arrives.
-    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(true)
+    // Before the answer arrives: the skeleton, and no sentence about what is in a log nobody has read yet.
+    expect(wrapper.find('.skeleton-stack').exists()).toBe(true)
     expect(wrapper.find('.empty').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('无匹配事件')
 
     release()
     await flushPromises()
 
-    // After it, the same empty list is a real answer and says so.
-    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(false)
-    expect(wrapper.find('.empty').text()).toContain('无匹配事件')
+    // After it: the placeholder goes, and an empty log still says nothing — there is no empty-state line.
+    expect(wrapper.find('.skeleton-stack').exists()).toBe(false)
+    expect(wrapper.find('.empty').exists()).toBe(false)
   })
 
-  it('does not fall back to "still reading" when a poll fails after a good one', async () => {
-    // A failed refresh must leave the last good list on screen with an error beside it. Replacing a
-    // conversation with a spinner would be a worse answer than the stale one.
+  it('keeps the last good list on screen when a poll fails, and says nothing about it', async () => {
+    // A failed refresh must leave the last good list where it is. Replacing a conversation with a spinner
+    // would be a worse answer than the stale one — and the failure is not announced either, so the row that
+    // was there simply stays.
     let call = 0
     const { stub } = createStub({
       session: vi.fn(async () => {
@@ -338,19 +418,19 @@ describe('a view that has not read yet', () => {
 
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
-    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(false)
+    expect(wrapper.find('.skeleton-stack').exists()).toBe(false)
 
     await wrapper.vm.$.exposed?.refresh?.()
     await flushPromises()
 
-    expect(wrapper.find('[data-test=error]').text()).toContain('boom')
-    expect(wrapper.find('[data-test="session-pending"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test=error]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('boom')
     expect(wrapper.findAll('[data-test="session-list"] li').length).toBe(1)
   })
 })
 
 describe('session removal', () => {
-  it('deletes the selected event and clears the selection', async () => {
+  it('deletes the selected conversation, arming first, and clears the selection', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -358,20 +438,23 @@ describe('session removal', () => {
     await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
     await flushPromises()
 
-    // Physical and irreversible, so the panel arms first; a single click must not reach the server.
-    await wrapper.find('[data-test="session-delete"]').trigger('click')
+    // Permanent, and it takes the whole conversation, so the row arms first; a single click must not reach the
+    // server.
+    const button = wrapper.findAll('[data-test="session-list"] li')[1]?.find('[data-test="session-row-delete-inline"]')
+    await button?.trigger('click')
     await flushPromises()
     expect(calls.removals).toEqual([])
+    expect(button?.text()).toContain('确认删除')
 
-    await wrapper.find('[data-test="session-delete-confirm"]').trigger('click')
+    await button?.trigger('click')
     await flushPromises()
 
+    // The rows are gone from the re-read list; that is the whole report.
     expect(calls.removals).toEqual([{ seq: 3, kind: 'delete' }])
-    expect(wrapper.find('[data-test="session-target"]').text()).toBe('未选中')
-    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已删除 #3')
+    expect(wrapper.find('[aria-current="true"]').exists()).toBe(false)
   })
 
-  it('asks twice before retracting, and does nothing until confirmed', async () => {
+  it('withdraws on a single click, without a confirmation step', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -379,36 +462,66 @@ describe('session removal', () => {
     await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
     await flushPromises()
 
-    // The first click only arms it: retraction removes everything after the selection too.
-    await wrapper.find('[data-test="session-retract"]').trigger('click')
+    // Reversible until the next message, so there is nothing to confirm — and no second button appears.
+    await wrapper
+      .findAll('[data-test="session-list"] li')[1]
+      ?.find('[data-test="session-row-withdraw-inline"]')
+      .trigger('click')
     await flushPromises()
 
-    expect(calls.removals).toEqual([])
-    expect(wrapper.find('[data-test="session-retract-confirm"]').exists()).toBe(true)
-
-    await wrapper.find('[data-test="session-retract-confirm"]').trigger('click')
-    await flushPromises()
-
-    expect(calls.removals).toEqual([{ seq: 3, kind: 'retract' }])
-    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已撤回 #3')
+    expect(calls.removals).toEqual([{ seq: 3, kind: 'withdraw' }])
+    expect(wrapper.find('[aria-current="true"]').exists()).toBe(false)
   })
 
-  it('can be backed out of', async () => {
-
-    const { stub, calls } = createStub()
+  it('offers delete only on rows of the latest conversation', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: 5,
+        busy: false,
+        // The latest conversation starts at seq 3; seq 1 belongs to an earlier one.
+        conversation: { latestFromSeq: 3, withdrawn: null },
+        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
+        items: [
+          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'older', originalBody: null, revisionCount: 0 },
+          { seq: 3, at: '2026-09-26T10:00:02+00:00', kind: 'User', source: 'Text', body: 'latest', originalBody: null, revisionCount: 0 },
+          { seq: 5, at: '2026-09-26T10:00:04+00:00', kind: 'Assistant', source: 'Text', body: 'reply', originalBody: null, revisionCount: 0 },
+        ],
+      })),
+    })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-test="session-retract"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-test="session-retract-cancel"]').trigger('click')
+    const rows = wrapper.findAll('[data-test="session-list"] li')
+    expect(rows[0]?.find('[data-test="session-row-delete-inline"]').exists()).toBe(false)
+    expect(rows[1]?.find('[data-test="session-row-delete-inline"]').exists()).toBe(true)
+    expect(rows[2]?.find('[data-test="session-row-delete-inline"]').exists()).toBe(true)
+
+    // …and the earlier conversation still offers withdrawing, which is what going back further is for.
+    expect(rows[0]?.find('[data-test="session-row-withdraw-inline"]').exists()).toBe(true)
+  })
+
+  it('offers no delete at all while a withdrawal is pending', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: 3,
+        busy: false,
+        conversation: { latestFromSeq: 1, withdrawn: { fromSeq: 1, toSeq: 3, conversations: 1, events: 2 } },
+        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
+        items: [
+          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'first', originalBody: null, revisionCount: 0 },
+        ],
+      })),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    expect(calls.removals).toEqual([])
-    expect(wrapper.find('[data-test="session-retract"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="session-retract-confirm"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="session-row-delete-inline"]').exists()).toBe(false)
+    await wrapper.findAll('[data-test="session-list"] li')[0]?.trigger('click')
+    await flushPromises()
+
+    // Selecting the row must not offer it either — there is no second place delete is offered from.
+    expect(wrapper.find('[data-test="session-row-delete-inline"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-current="true"]').exists()).toBe(true)
   })
 
   it('deletes from a row without selecting it first', async () => {
@@ -417,98 +530,143 @@ describe('session removal', () => {
     await flushPromises()
 
     const rows = wrapper.findAll('[data-test="session-list"] li')
-    await rows[1]?.find('[data-test="session-row-menu"]').trigger('click')
-    await rows[1]?.find('[data-test="session-row-delete"]').trigger('click')
-    await rows[1]?.find('[data-test="session-row-delete"]').trigger('click')
+    await rows[1]?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await rows[1]?.find('[data-test="session-row-delete-inline"]').trigger('click')
     await flushPromises()
 
     expect(calls.removals).toEqual([{ seq: 3, kind: 'delete' }])
-    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已删除 #3')
   })
 
-  it('puts the outcome line where it can be seen, not below the composer', async () => {
-    // It used to come after the composer, at the very bottom of the window: in a session a few hundred events
-    // long, the one line saying what just happened was the first thing to scroll out of sight. The toolbar does
-    // not scroll, so anything directly under it stays on screen for as long as the view is open.
-    const { stub } = createStub()
+  it('withdraws from a row on one press of the row button', async () => {
+    const { stub, calls } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-test="session-delete"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-test="session-delete-confirm"]').trigger('click')
-    await flushPromises()
-
-    const order = [...wrapper.element.querySelectorAll('[data-test]')].map((node) =>
-      node.getAttribute('data-test'),
-    )
-    expect(order.indexOf('session-notice')).toBeGreaterThan(-1)
-    expect(order.indexOf('session-notice')).toBeLessThan(order.indexOf('session-list'))
-    expect(order.indexOf('session-notice')).toBeLessThan(order.indexOf('composer'))
-  })
-
-  it('puts the reader\'s own removed message back in the box', async () => {
-    const { stub } = createStub()
-    const wrapper = mount(SessionView, { props: { api: stub } })
-    await flushPromises()
-
-    // A retraction is physical: the text leaves the log for good, and the only copy left is the one the
-    // composer is holding. seq 1 is the reader's own message; the assistant's reply must not be resendable.
     const rows = wrapper.findAll('[data-test="session-list"] li')
-    // The row's actions sit behind one affordance (S4), so the menu is opened the way a reader opens it.
-    await rows[0]?.find('[data-test="session-row-menu"]').trigger('click')
-    await rows[0]?.find('[data-test="session-restore"]').trigger('click')
+    await rows[1]?.find('[data-test="session-row-withdraw-inline"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.removals).toEqual([{ seq: 3, kind: 'withdraw' }])
+  })
+
+  it('reports a removal through the list itself, with nothing said about it anywhere else', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    // The row's own two-press delete: arm, then confirm. There is no panel behind the list to do it from.
+    const row = wrapper.findAll('[data-test="session-list"] li')[1]
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await flushPromises()
+
+    // The rows are gone on the re-read, which is the report. No line under the toolbar repeats it.
+    expect(wrapper.find('[data-test="session-notice"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test=error]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('已删除')
+  })
+
+  it('puts the deleted conversation\'s first message back in the box', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    // Deleting takes the whole latest conversation, so the text worth keeping is its first message — even
+    // when the reader pressed delete on a later reply. The assistant's reply must not be resendable.
+    const row = wrapper.findAll('[data-test="session-list"] li')[1]
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('first')
-    // Closing the menu is what proves the assistant's reply is not resendable: the row is no longer open.
-    expect(rows[1]?.find('[data-test="session-restore"]').exists()).toBe(false)
   })
 
-  it('hides the tool cards in results-only mode and shows them again', async () => {
-    const { stub } = createStub({
-      session: vi.fn(async () => ({
-        lastSeq: 4,
-        busy: false,
-        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
-        items: [
-          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'ask', originalBody: null, revisionCount: 0 },
-          { seq: 2, at: '2026-09-26T10:00:01+00:00', kind: 'ToolCall', source: 'Text', body: 'bash', originalBody: null, revisionCount: 0, meta: { id: 'c1', name: 'bash', args: '{}' } },
-          { seq: 4, at: '2026-09-26T10:00:03+00:00', kind: 'Assistant', source: 'Text', body: 'done', originalBody: null, revisionCount: 0 },
-        ],
-      })),
-    })
+  it('keeps the 复用 button putting the reader\'s own message back in the box', async () => {
+    const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
-    await wrapper.find('[data-test="session-results-only"]').trigger('click')
-    expect(wrapper.findAll('[data-tool]')).toHaveLength(0)
-    expect(wrapper.text()).toContain('ask')
-    expect(wrapper.text()).toContain('done')
+    const rows = wrapper.findAll('[data-test="session-list"] li')
+    expect(rows[0]?.find('[data-test="session-row-restore"]').text()).toContain('复用')
+    await rows[0]?.find('[data-test="session-row-restore"]').trigger('click')
+    await flushPromises()
 
-    await wrapper.find('[data-test="session-results-only"]').trigger('click')
-    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
+    expect(wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('first')
+    // The assistant's reply carries no 复用 at all: putting it back in the box would send it as the reader's
+    // own words on the next turn.
+    expect(rows[1]?.find('[data-test="session-row-restore"]').exists()).toBe(false)
   })
 
-  it('surfaces a refusal instead of pretending it worked', async () => {
-    const { stub } = createStub({
-      deleteEvent: vi.fn(async () => {
-        throw new Error('404: #3 不在当前视图里')
+  it('offers the way back from a withdrawal under the newest message, and never anywhere else', async () => {
+    let pending: { fromSeq: number; toSeq: number; conversations: number; events: number } | null = {
+      fromSeq: 5,
+      toSeq: 9,
+      conversations: 2,
+      events: 4,
+    }
+    const { stub, calls } = createStub({
+      session: vi.fn(async () => ({
+        lastSeq: pending === null ? 4 : 9,
+        busy: false,
+        conversation: { latestFromSeq: 1, withdrawn: pending },
+        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
+        items: [
+          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: 'kept', originalBody: null, revisionCount: 0 },
+        ],
+      })),
+      cancelWithdrawal: vi.fn(async () => {
+        calls.withdrawalCancels++
+        pending = null
       }),
     })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-test="session-delete"]').trigger('click')
-    await wrapper.find('[data-test="session-delete-confirm"]').trigger('click')
+    const undo = wrapper.find('[data-test="session-withdrawn-cancel"]')
+    expect(undo.exists()).toBe(true)
+    expect(undo.text()).toBe('取消撤回')
+
+    // It is drawn under the newest message: inside the scroller, after the list, not in a banner elsewhere.
+    expect(undo.element.closest('[data-test="session-list"]')).toBeNull()
+    const scroller = wrapper.find('.scroll')
+    expect(scroller.element.contains(undo.element)).toBe(true)
+    expect(wrapper.find('[data-test="session-withdrawn-banner"]').exists()).toBe(false)
+
+    await undo.trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-test="error"]').text()).toContain('404')
+    expect(calls.withdrawalCancels).toBe(1)
+    // Gone with the withdrawal it was offering to take back — the re-read is what makes it go away.
+    expect(wrapper.find('[data-test="session-withdrawn-cancel"]').exists()).toBe(false)
+  })
+
+  it('offers no way back when nothing is pending', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="session-withdrawn-cancel"]').exists()).toBe(false)
+    expect(calls.withdrawalCancels).toBe(0)
+  })
+
+  it('lets the list stand when the server refuses a delete, and says nothing about the refusal', async () => {
+    const { stub } = createStub({
+      deleteLatest: vi.fn(async () => {
+        throw new Error('409: 正在回复：等它结束（或先停止）再删除或撤回')
+      }),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const row = wrapper.findAll('[data-test="session-list"] li')[1]
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await flushPromises()
+
+    // The rows are still here, which is what a refusal looks like when nothing narrates it.
+    expect(wrapper.findAll('[data-test="session-list"] li')).toHaveLength(2)
+    expect(wrapper.find('[data-test="error"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('409')
   })
 
   it('lets an armed delete be backed out of', async () => {
@@ -516,39 +674,27 @@ describe('session removal', () => {
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
-    await flushPromises()
-
-    await wrapper.find('[data-test="session-delete"]').trigger('click')
-    await wrapper.find('[data-test="session-delete-cancel"]').trigger('click')
+    const row = wrapper.findAll('[data-test="session-list"] li')[1]
+    await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
+    await row?.find('[data-test="session-row-cancel"]').trigger('click')
     await flushPromises()
 
     expect(calls.removals).toEqual([])
-    expect(wrapper.find('[data-test="session-delete"]').exists()).toBe(true)
+    // The button is still there and no longer armed, which is what "backed out of" means here.
+    expect(row?.find('[data-test="session-row-delete-inline"]').text()).toBe('删除')
+    expect(row?.find('[data-test="session-row-cancel"]').exists()).toBe(false)
   })
 
-  it('shows a thinking row folded once the answer has landed', async () => {
-    const { stub } = createStub({
-      session: vi.fn(async () => ({
-        lastSeq: 5,
-        busy: false,
-        context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 },
-        items: [
-          { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'User', source: 'Text', body: '几点了', originalBody: null, revisionCount: 0 },
-          { seq: 2, at: '2026-09-26T10:00:04+00:00', kind: 'Thinking', source: 'Text', body: '先确认时区', originalBody: null, revisionCount: 0 },
-          { seq: 5, at: '2026-09-26T10:00:05+00:00', kind: 'Assistant', source: 'Text', body: '下午三点', originalBody: null, revisionCount: 0 },
-        ],
-      })),
-    })
+  it('no longer mentions 删除之后 anywhere', async () => {
+    // The label moved to 撤回 and changed meaning; leaving the old wording on screen would name an action that
+    // no longer exists.
+    const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    // Folded: the reasoning is there to be consulted, not to be re-read on every scrollback. The answer is
-    // what the reader came for, and the reasoning sits next to it.
-    const row = wrapper.find('[data-test="session-thinking"]')
-    expect(row.exists()).toBe(true)
-    expect(row.attributes('open')).toBeUndefined()
-    expect(wrapper.text()).toContain('下午三点')
+    expect(wrapper.text()).not.toContain('删除之后')
+    expect(wrapper.find('[data-test="session-row-retract"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="session-retract"]').exists()).toBe(false)
   })
 })
 
@@ -565,7 +711,7 @@ describe('approval placement', () => {
       expiresAt: '2026-09-27T11:54:01+00:00',
     }
     const { stub } = createStub({
-      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage })),
+      session: vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, conversation: { latestFromSeq: null, withdrawn: null }, context: usage })),
     })
 
     const wrapper = mount(SessionView, {
@@ -621,7 +767,7 @@ describe('session scroll position', () => {
 
     try {
       const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-      const session = vi.fn(async () => ({ lastSeq: 9, items: [], busy: false, context: usage }))
+      const session = vi.fn(async () => ({ lastSeq: 9, items: [], busy: false, conversation: { latestFromSeq: null, withdrawn: null }, context: usage }))
       const { stub } = createStub({ session })
       const wrapper = mount(SessionView, { props: { api: stub } })
       await flushPromises()
@@ -637,7 +783,7 @@ describe('session scroll position', () => {
 
   it('follows the reply when the reader is already at the bottom', async () => {
     const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, conversation: { latestFromSeq: null, withdrawn: null }, context: usage }))
     const { stub } = createStub({ session })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -654,7 +800,7 @@ describe('session scroll position', () => {
 
   it('does not mistake its own pin for the reader scrolling away', async () => {
     const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, conversation: { latestFromSeq: null, withdrawn: null }, context: usage }))
     const { stub } = createStub({ session })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -675,7 +821,7 @@ describe('session scroll position', () => {
 
   it('stays put when the reader has scrolled back', async () => {
     const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, context: usage }))
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: true, conversation: { latestFromSeq: null, withdrawn: null }, context: usage }))
     const { stub } = createStub({ session })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -693,7 +839,7 @@ describe('session scroll position', () => {
 
   it('starts following when the reader sends something themselves', async () => {
     const usage = { usedTokens: 0, budgetTokens: 1, contextTokens: 2, maxTokens: 1, keptItems: 0, foldedItems: 0, fraction: 0 }
-    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: false, context: usage }))
+    const session = vi.fn(async () => ({ lastSeq: 1, items: [], busy: false, conversation: { latestFromSeq: null, withdrawn: null }, context: usage }))
     const { stub } = createStub({ session })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -715,7 +861,7 @@ describe('session refresh cadence', () => {
     try {
       const usage = { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 }
       let busy = true
-      const session = vi.fn(async () => ({ lastSeq: 0, items: [], busy, context: usage }))
+      const session = vi.fn(async () => ({ lastSeq: 0, items: [], busy, conversation: { latestFromSeq: null, withdrawn: null }, context: usage }))
       const { stub } = createStub({ session })
 
       const wrapper = mount(SessionView, { props: { api: stub } })
@@ -1220,13 +1366,23 @@ describe('mcp view', () => {
 })
 
 describe('settings view', () => {
+  it('says nothing for the top bar to repeat', async () => {
+    // The bar's middle line named the view and the fact that it had been read — 「设置 · 运行时」 — which is what
+    // the sidebar and the page below it already say, in full. Only the session view has something to put there.
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.emitted('context')).toBeUndefined()
+  })
+
   it('renders a card per configurable subsystem', async () => {
     const { stub } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
     const headings = wrapper.findAll('section.card h2 button.group-toggle').map((node) => node.text())
-    expect(headings).toEqual(['语音输入', '语音输出', '语音识别（ASR）', '语音合成（TTS）', '本地引擎进程', '桌面（M9）', '模型（对话）'])
+    expect(headings).toEqual(['语音输入', '语音输出', '语音识别（ASR）', '语音合成（TTS）', '本地引擎进程', '桌面（M9）', '读文件', '模型（对话）'])
 
     expect(wrapper.find('[data-test="asr-base-url"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tts-base-url"]').exists()).toBe(true)
@@ -1349,6 +1505,8 @@ describe('settings view', () => {
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
+      agents: { main: { prompt: null }, subAgents: [] },
+      files: { enabled: false, roots: [] },
       })),
     })
 
@@ -1373,6 +1531,8 @@ describe('settings view', () => {
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
+      agents: { main: { prompt: null }, subAgents: [] },
+      files: { enabled: false, roots: [] },
       })),
     })
 
@@ -1516,6 +1676,8 @@ describe('settings view', () => {
         desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
         mcp: { enabled: false, servers: [], allowedTools: [] },
         skills: { disabled: [] },
+        agents: { main: { prompt: null }, subAgents: [] },
+        files: { enabled: false, roots: [] },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -1593,6 +1755,8 @@ describe('settings view', () => {
             desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
             mcp: { enabled: false, servers: [], allowedTools: [] },
             skills: { disabled: [] },
+            agents: { main: { prompt: null }, subAgents: [] },
+            files: { enabled: false, roots: [] },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
@@ -1703,7 +1867,8 @@ describe('settings view', () => {
     // The label says what the button will do, not what just happened.
     expect(wrapper.find('[data-test="settings-fold-all"]').text()).toContain('展开全部')
     await wrapper.find('[data-test="settings-fold-all"]').trigger('click')
-    expect(expanded()).toBe(7)
+    // Eight groups now: 读文件 joined the form between 桌面 and 模型.
+    expect(expanded()).toBe(8)
   })
 
   it('loads the stored values and shows what the API kept', async () => {
@@ -1750,5 +1915,319 @@ describe('settings view', () => {
     expect(calls.saves[0]?.mcp.servers.map((server) => server.name)).toEqual(['files'])
     expect(calls.saves[0]?.mcp.allowedTools).toEqual(['read_file'])
     expect(calls.saves[0]?.skills.disabled).toEqual(['greet'])
+  })
+
+  it('saves a voice change without erasing the agents and the file whitelist', async () => {
+    // Same hazard as the servers and skills above: the prompts page writes the agents section and this page
+    // carries it. A save made here that dropped it would reset every prompt and delete the file whitelist.
+    const { stub, calls } = createStub({
+      settings: vi.fn(async () => ({
+        ...SETTINGS_FIXTURE,
+        agents: {
+          main: { prompt: '你是我的人。' },
+          subAgents: [
+            { id: 'desktop', name: '桌面操控', enabled: false, scenario: 'desktop', prompt: null, maxRounds: 5, model: null },
+            { id: 'agent-a1', name: '读文件的', enabled: true, scenario: 'file-read', prompt: '只读。', maxRounds: 2, model: { baseUrl: 'http://x/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' } },
+          ],
+        },
+        files: { enabled: true, roots: ['D:/资料', 'E:/扫描'] },
+      })),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLInputElement>('[data-test="utterance-gap"]').setValue('900')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves).toHaveLength(1)
+    expect(calls.saves[0]?.agents.main.prompt).toBe('你是我的人。')
+    expect(calls.saves[0]?.agents.subAgents.map((agent) => agent.id)).toEqual(['desktop', 'agent-a1'])
+    expect(calls.saves[0]?.agents.subAgents[1]?.prompt).toBe('只读。')
+    expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料', 'E:/扫描'] })
+  })
+
+  it('offers the file whitelist, and saves the directories it was given', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // Off by default, and the note says what the list means rather than leaving it to be guessed. It lives in
+    // the card heading's hover mark now, so it is asked for rather than printed over the form.
+    expect(wrapper.find<HTMLInputElement>('[data-test="files-enabled"]').element.checked).toBe(false)
+    expect(wrapper.find('[data-test="files-whitelist-hint"]').text()).toContain('白名单')
+
+    await wrapper.find('[data-test="files-enabled"]').setValue(true)
+    await wrapper.find('[data-test="files-root-add"]').trigger('click')
+    await wrapper.findAll<HTMLInputElement>('[data-test="files-root"]')[0].setValue('D:/资料')
+    await wrapper.find('[data-test="files-root-add"]').trigger('click')
+    await wrapper.findAll<HTMLInputElement>('[data-test="files-root"]')[1].setValue('  ')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    // The blank row is dropped rather than sent: the server would reject the whole save over an empty path.
+    expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料'] })
+  })
+
+  it('puts a field explanation behind a mark instead of a second line under the field', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // The sentence is still in the document and still reachable — what changed is that it no longer stands as
+    // a line of its own, so the control above it and the control below it are one row closer.
+    const field = wrapper.findAll('label.field').find((label) => label.text().includes('静音阈值'))
+    expect(field).toBeDefined()
+    expect(field!.find('[data-icon="info"]').exists()).toBe(true)
+    expect(field!.find('.hint-pop').text()).toContain('低于此电平视为静音')
+    expect(field!.findAll('span.source')).toHaveLength(0)
+
+    // The card's own explanation moved up to its heading, and only the heading carries it.
+    const heading = wrapper.find('[data-test="settings-group-input"]').element.parentElement
+    expect(heading?.textContent).toContain('关闭会立即释放麦克风设备')
+  })
+
+  it('leaves the live status lines where they were, visible', async () => {
+    // The mark is for sentences that explain; a line that reports what is happening right now is not one of
+    // those, and hiding it behind a hover would mean a microphone that is silently running.
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="input-effect"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="output-effect"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="model-effect"]').exists()).toBe(true)
+  })
+
+  it('warns when desktop is switched on while its sub-agent is disabled, and offers the way there', async () => {
+    const { stub } = createStub({
+      settings: vi.fn(async () => ({
+        ...SETTINGS_FIXTURE,
+        agents: {
+          main: { prompt: null },
+          subAgents: [
+            { id: 'desktop', name: '桌面操控', enabled: false, scenario: 'desktop', prompt: null, maxRounds: 5, model: null },
+          ],
+        },
+      })),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    // Off to begin with: nothing to warn about.
+    expect(wrapper.find('[data-test="desktop-agent-warning"]').exists()).toBe(false)
+
+    await wrapper.find('[data-test="desktop-enabled"]').setValue(true)
+    const warning = wrapper.find('[data-test="desktop-agent-warning"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('桌面操控已开启，必须有一个启用的桌面操控子 agent')
+
+    await wrapper.find('[data-test="desktop-agent-fix"]').trigger('click')
+    expect(wrapper.emitted('navigate')?.[0]).toEqual(['prompts'])
+  })
+})
+
+describe('prompts view', () => {
+  /** One scenario free, so the add form has something to offer. */
+  function agents(overrides: Partial<AgentsView> = {}): AgentsView {
+    return {
+      ...AGENTS_FIXTURE,
+      scenarios: [
+        { key: 'desktop', name: '桌面操控', when: '需要操作界面时', ownerId: 'desktop', capabilityEnabled: true, available: true },
+        { key: 'file-read', name: '读取文件', when: '需要读文件时', ownerId: null, capabilityEnabled: true, available: true },
+      ],
+      subAgents: AGENTS_FIXTURE.subAgents.filter((agent) => agent.id === 'desktop'),
+      ...overrides,
+    }
+  }
+
+  it('pins the main agent on top and lists the sub-agents under it', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-test="prompts-agent"]')
+    expect(wrapper.find('[data-test="prompts-main"]').text()).toContain('主 Agent')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.text()).toContain('桌面操控')
+    expect(rows[0]?.find('[data-test="prompts-agent-builtin"]').exists()).toBe(true)
+    expect(rows[1]?.text()).toContain('读文件的')
+
+    // The detail pane starts on the main agent, with the default as the placeholder rather than as content.
+    const textarea = wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]')
+    expect(textarea.element.value).toBe('')
+    expect(textarea.attributes('placeholder')).toBe('你是主 agent。')
+    expect(wrapper.find('[data-test="prompts-main-modified"]').exists()).toBe(false)
+  })
+
+  it('disables the add button when both scenarios have an owner', async () => {
+    const { stub } = createStub({ agents: vi.fn(async () => AGENTS_FIXTURE) })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    const add = wrapper.find<HTMLButtonElement>('[data-test="prompts-add"]')
+    expect(add.element.disabled).toBe(true)
+    expect(add.attributes('title')).toBe('两个场景都已有子 agent')
+  })
+
+  it('shows the desktop option disabled, because the built-in agent holds it', async () => {
+    const { stub } = createStub({ agents: vi.fn(async () => agents()) })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="prompts-add"]').trigger('click')
+    const options = wrapper.findAll<HTMLOptionElement>('[data-test="prompts-add-scenario"] option')
+
+    expect(options[0]?.element.disabled).toBe(true)
+    expect(options[0]?.text()).toContain('已被内置的桌面操控占用')
+    expect(options[1]?.element.disabled).toBe(false)
+  })
+
+  it('sends null when 恢复默认 is pressed, rather than a copy of the default text', async () => {
+    // A stored custom prompt, so 「恢复默认」 is a real change: from an untouched page it would make the form
+    // identical to the server's copy, and Save — correctly — would have nothing to send.
+    const { stub, calls } = createStub({
+      agents: vi.fn(async () => ({ ...AGENTS_FIXTURE, main: { ...AGENTS_FIXTURE.main, prompt: '你只听我的。' } })),
+    })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').element.value).toBe('你只听我的。')
+    expect(wrapper.find('[data-test="prompts-main-modified"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="prompts-main-reset"]').trigger('click')
+    expect(wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').element.value).toBe('')
+    expect(wrapper.find('[data-test="prompts-main-modified"]').exists()).toBe(false)
+    await wrapper.find('[data-test="prompts-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.agentSaves[0]?.main.prompt).toBeNull()
+  })
+
+  it('sends a whitespace-only prompt as null', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('   \n  ')
+    await wrapper.find('[data-test="prompts-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.agentSaves[0]?.main.prompt).toBeNull()
+  })
+
+  it('sends a new sub-agent with an empty id, so the server names it', async () => {
+    const { stub, calls } = createStub({ agents: vi.fn(async () => agents()) })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="prompts-add"]').trigger('click')
+    await wrapper.find('[data-test="prompts-add-name"]').setValue('新来的')
+    await wrapper.find('[data-test="prompts-add-commit"]').trigger('click')
+    await wrapper.find('[data-test="prompts-save"]').trigger('click')
+    await flushPromises()
+
+    const added = calls.agentSaves[0]?.subAgents.find((agent) => agent.name === '新来的')
+    expect(added?.id).toBe('')
+    expect(added?.scenario).toBe('file-read')
+  })
+
+  it('does not send an untouched API key', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.findAll('[data-test="prompts-agent"]')[1]?.trigger('click')
+    // The stored key is never prefilled; the field says one exists and stays empty.
+    const key = wrapper.find<HTMLInputElement>('[data-test="prompts-agent-api-key"]')
+    expect(key.element.value).toBe('')
+    expect(wrapper.find('[data-test="prompts-agent-api-key-state"]').text()).toBe('已设置')
+
+    await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-agent-textarea"]').setValue('只读。')
+    await wrapper.find('[data-test="prompts-save"]').trigger('click')
+    await flushPromises()
+
+    const reader = calls.agentSaves[0]?.subAgents.find((agent) => agent.id === 'reader')
+    expect(reader?.model).not.toHaveProperty('apiKey')
+  })
+
+  it('disables Save when the server measured the prompt over the limit', async () => {
+    const over = { ...agents(), limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 10 } }
+    const { stub } = createStub({ agents: vi.fn(async () => over) })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="prompts-main-tokens"]').text()).toContain('上限 10')
+    expect(wrapper.find('[data-test="prompts-main-tokens"]').classes()).toContain('error')
+    expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(true)
+    expect(wrapper.find('[data-test="prompts-over-limit"]').exists()).toBe(true)
+  })
+
+  it('disables Save the moment a draft is typed past the limit', async () => {
+    // The server would refuse it, but the page should not offer a button whose only outcome is a 400.
+    const tight = { ...agents(), limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 40 } }
+    const { stub } = createStub({ agents: vi.fn(async () => tight) })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(true)
+
+    // 41 CJK characters are 41 tokens, plus the 13-token generated block the fixture's effective prompt carries.
+    await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('字'.repeat(41))
+    expect(wrapper.find('[data-test="prompts-main-tokens"]').text()).toContain('约 54 token')
+    expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(true)
+
+    await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('字'.repeat(10))
+    expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(false)
+  })
+
+  it('shows every rule a rejected save broke', async () => {
+    const { stub } = createStub({
+      saveAgents: vi.fn(async () => {
+        throw new ApiError(400, '设置无效', ['「读文件的」的最大轮数必须在 1–10 之间', '子 agent 的 id 重复'])
+      }),
+    })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('改一下')
+    await wrapper.find('[data-test="prompts-save"]').trigger('click')
+    await flushPromises()
+
+    const listed = wrapper.findAll('[data-test="prompts-errors"] li').map((node) => node.text())
+    expect(listed).toEqual(['「读文件的」的最大轮数必须在 1–10 之间', '子 agent 的 id 重复'])
+  })
+
+  it('says when the selected scenario has no capability behind it, with a way to settings', async () => {
+    const { stub } = createStub({
+      agents: vi.fn(async () => ({
+        ...AGENTS_FIXTURE,
+        files: { enabled: false, roots: [] },
+        scenarios: AGENTS_FIXTURE.scenarios.map((scenario) =>
+          scenario.key === 'file-read' ? { ...scenario, available: false } : scenario,
+        ),
+      })),
+    })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    // The list says it before the detail does: a disabled capability makes the agent look fine in a list.
+    expect(wrapper.findAll('[data-test="prompts-agent-unavailable"]')).toHaveLength(1)
+
+    await wrapper.findAll('[data-test="prompts-agent"]')[1]?.trigger('click')
+    expect(wrapper.find('[data-test="prompts-agent-capability"]').text()).toContain('对应能力没有开启')
+
+    await wrapper.find('[data-test="prompts-agent-goto-settings"]').trigger('click')
+    expect(wrapper.emitted('navigate')?.[0]).toEqual(['settings'])
+  })
+
+  it('shows the server problems as a banner at the top', async () => {
+    const { stub } = createStub({
+      agents: vi.fn(async () => ({ ...AGENTS_FIXTURE, problems: ['「读文件的」暂不可用：读取文件的能力没有开启'] })),
+    })
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="prompts-problems"]').text()).toContain('暂不可用')
   })
 })

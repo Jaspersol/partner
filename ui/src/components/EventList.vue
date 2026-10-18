@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { SessionItem } from '../api'
 import { clampIndex, isActivationKey, normalizeKey, rovingTarget } from '../rovingFocus'
-import { sessionKindLabel, sessionRole } from '../sessionKind'
-import Icon from './Icon.vue'
+import { sessionKindLabel, sessionRole, sourceHasChip, sourceLabel } from '../sessionKind'
 import MarkdownBody from './MarkdownBody.vue'
 import ToolCard from './ToolCard.vue'
 import ThinkingRow from './ThinkingRow.vue'
@@ -12,22 +11,22 @@ const props = defineProps<{
   items: SessionItem[]
   selectedSeq: number | null
   /**
-   * Results only: keep the conversation, fold everything the reader did not ask for.
-   *
-   * <para>
-   * Tool cards are already collapsed, but "collapsed" still leaves one line per call, and a turn that ran ten
-   * of them is ten lines between two sentences. This drops them entirely — the conversation is what the
-   * person came to read, and the calls are still in the log and in the queue view.
-   * </para>
+   * The first seq of the latest conversation, from `conversation.latestFromSeq`. Delete is offered only for
+   * rows at or after it: deleting anything earlier would leave newer history answering a question that no
+   * longer exists, which is what withdrawing is for.
    */
-  resultsOnly?: boolean | undefined
+  latestFromSeq?: number | null | undefined
+  /** True while a withdrawal is pending. Nothing may be deleted until it is cancelled or made final. */
+  withdrawn?: boolean | undefined
+  /** True while a turn is running: the server refuses history changes then, so the buttons are not offered. */
+  busy?: boolean | undefined
 }>()
 const emit = defineEmits<{
   select: [seq: number]
-  /** Removes this event only. The view decides what that means for the session. */
+  /** Deletes the latest conversation as a whole — permanent, so the view asks twice. */
   remove: [seq: number]
-  /** Removes this event and everything after it — destructive, so the view asks twice. */
-  retract: [seq: number]
+  /** Hides this conversation and everything after it. Reversible, so one press is enough. */
+  withdraw: [seq: number]
   /** Puts a removed message back in the composer. Only fired for the reader's own messages. */
   restore: [seq: number]
 }>()
@@ -143,20 +142,6 @@ const rows = computed<Row[]>(() => {
   return out
 })
 
-// Results only keeps the conversation: the reader came for what was said, and the calls and the thinking are
-// both still in the log behind the switch.
-const visible = computed(() =>
-  props.resultsOnly === true ? rows.value.filter((row) => row.kind === 'event') : rows.value,
-)
-
-/**
- * A failure is a `System` event whose body starts with "error: " — that prefix is written by the turn runner
- * (AgentTurnRunner.cs), so it is a contract rather than a phrase to match loosely.
- */
-function isError(item: SessionItem): boolean {
-  return item.kind === 'System' && item.body.startsWith('error: ')
-}
-
 /**
  * Only the reader's own typed messages can be put back in the box. An assistant reply restored there would be
  * sent as the human's words, and a scheduled task's text is not theirs to resend either.
@@ -165,66 +150,23 @@ function restorable(item: SessionItem): boolean {
   return item.kind === 'User' && item.source.toLowerCase() === 'text' && item.streaming !== true
 }
 
+/**
+ * Whether this row may be deleted.
+ *
+ * <para>
+ * Delete takes the whole latest conversation, so it is offered only for rows inside it. It is refused by the
+ * server while a withdrawal is pending (the hidden lines would have to be purged first) and while a turn is
+ * running (the turn would keep writing into the range being removed), so the button is not offered then either.
+ * </para>
+ */
+function deletable(item: SessionItem): boolean {
+  if (item.streaming === true || props.busy === true || props.withdrawn === true) return false
+  const latest = props.latestFromSeq
+  return latest !== null && latest !== undefined && item.seq >= latest
+}
+
 /** Inline two-step confirmation: a native dialog would block the webview and cannot be driven in tests. */
-const armed = ref<{ seq: number; action: 'delete' | 'retract' } | null>(null)
-
-/**
- * What is said when an action arms.
- *
- * <para>
- * Arming is invisible to a screen reader: the button that was 「删除此条」 becomes 「确认删除此条」, and a control
- * whose accessible name changed under the cursor is not announced. Without this, the confirmation reads as a
- * button that simply stopped responding the second time.
- * </para>
- *
- * <para>
- * It says what will happen <b>and</b> that a second press is needed, because the whole point of arming is that
- * the destructive thing has not happened yet.
- * </para>
- */
-const armAnnouncement = computed(() => {
-  const state = armed.value
-  if (state === null) return ''
-  return state.action === 'delete'
-    ? '已准备删除此条。再次按 Enter 确认，这不会撤销。'
-    : '已准备删除此条及之后的所有事件。再次按 Enter 确认，这不会撤销。'
-})
-
-/**
- * Which row has its menu open, by seq.
- *
- * <para>
- * One at a time. A screen of twenty open menus is a screen of noise, and the rows below the open one would all
- * show the same three actions floating over different bodies of text.
- * </para>
- */
-const menuFor = ref<number | null>(null)
-
-function closeMenu() {
-  menuFor.value = null
-  armed.value = null
-}
-
-function toggleMenu(seq: number) {
-  // Re-opening the same row starts clean rather than from whatever was armed last time — otherwise a reader
-  // who closed a menu over "delete this and everything after it" and reopened it a minute later would be
-  // one press from a retraction they had stopped intending.
-  if (menuFor.value === seq) {
-    closeMenu()
-    return
-  }
-
-  menuFor.value = seq
-  armed.value = null
-}
-
-/** Escape closes the menu, which is what a keyboard reader will try first. */
-function onListEscape(event: KeyboardEvent) {
-  if (normalizeKey(event.key) === 'escape' && menuFor.value !== null) {
-    event.stopPropagation()
-    closeMenu()
-  }
-}
+const armed = ref<{ seq: number } | null>(null)
 
 /**
  * Selecting a row does two things, and they are not the same thing.
@@ -240,59 +182,41 @@ function onSelect(seq: number, index: number): void {
   emit('select', seq)
 }
 
-/**
- * Clicking away closes the menu.
- *
- * Bound only while a menu is open. A permanent document listener would run on every click in the app to serve
- * a menu that is almost never open, and a list of a few hundred rows makes that a cost nobody notices until
- * it is there.
- */
-const onDocumentClick = (event: MouseEvent) => {
-  if (menuFor.value === null) return
-  const target = event.target
-  if (target instanceof Element && target.closest('.row-actions') !== null) return
-  closeMenu()
-}
-
-watch(menuFor, (open) => {
-  if (open === null) {
-    document.removeEventListener('click', onDocumentClick)
-    return
-  }
-
-  document.addEventListener('click', onDocumentClick)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', onDocumentClick)
-})
-
-function act(row: Row, action: 'delete' | 'retract') {
+/** Deletes the row's conversation: arming on the first press, the emit on the second. */
+function act(row: Row) {
   // Nothing to remove by sequence from a card or a stretch of thinking: those are folded views over events,
-  // and a reader who wants one gone removes the event behind it from its own row.
-  if (row.kind !== 'event') {
+  // and a reader who wants one gone removes the conversation behind it from its own row.
+  if (row.kind !== 'event' || !deletable(row.item)) {
     return
   }
 
   const seq = row.item.seq
 
-  // Arming is per row and per action: a second press on the *same* item is the confirmation, and a press on
-  // the other item is not — otherwise "删除" would arm "删除此处及之后" by accident, and those two remove very
-  // different amounts of history.
-  if (armed.value === null || armed.value.seq !== seq || armed.value.action !== action) {
-    armed.value = { seq, action }
+  // Arming is per row: a second press on the *same* item is the confirmation, and a press on another item is
+  // not — otherwise the arm would move and the reader would confirm a row they had not armed.
+  if (armed.value?.seq !== seq) {
+    armed.value = { seq }
     return
   }
 
   armed.value = null
-  closeMenu()
-  if (action === 'delete') {
-    emit('remove', seq)
-  } else {
-    emit('retract', seq)
-  }
+  emit('remove', seq)
 }
 
+/**
+ * Withdraws from this row's conversation. One press: it hides the range and can be taken back until the next
+ * message is sent, so a confirmation step would only slow down an action the reader can undo.
+ */
+function withdraw(row: Row) {
+  if (row.kind !== 'event') {
+    return
+  }
+
+  armed.value = null
+  emit('withdraw', row.item.seq)
+}
+
+/** Backs out of an armed delete without doing it. */
 function cancelArm() {
   armed.value = null
 }
@@ -309,20 +233,20 @@ function cancelArm() {
 const focusIndex = ref(0)
 
 /** Follow the list as it grows: one new event must not drop the reader back at the top of the history. */
-watch(visible, (rows) => {
-  focusIndex.value = clampIndex(focusIndex.value, rows.length)
+watch(rows, (list) => {
+  focusIndex.value = clampIndex(focusIndex.value, list.length)
 })
 
 function onListKeydown(event: KeyboardEvent, index: number) {
-  // Escape first: it is the key a keyboard reader reaches for when a menu is open, and it must not be eaten
+  // Escape first: it is the key a keyboard reader reaches for when a delete is armed, and it must not be eaten
   // by the arrow handling below — or by the row's own activation keys.
-  if (normalizeKey(event.key) === 'escape' && menuFor.value !== null) {
+  if (normalizeKey(event.key) === 'escape' && armed.value !== null) {
     event.stopPropagation()
-    closeMenu()
+    cancelArm()
     return
   }
 
-  const target = rovingTarget(index, visible.value.length, event.key)
+  const target = rovingTarget(index, rows.value.length, event.key)
   if (target === null) {
     // Enter and Space activate the row. They are handled here rather than as two more template bindings so
     // that every key this row answers lives in one readable place — and so that `Space` does not also scroll
@@ -350,7 +274,7 @@ const listElement = ref<HTMLElement | null>(null)
 
 /** The log sequence number a rendered row stands for, or null for a row that is not a selectable event. */
 function rowSeq(index: number): number | null {
-  const row = visible.value[index]
+  const row = rows.value[index]
   return row?.kind === 'event' && row.selectable ? row.item.seq : null
 }
 </script>
@@ -385,21 +309,13 @@ function rowSeq(index: number): number | null {
     role="list"
     aria-label="会话事件"
     data-test="session-list"
-    @keydown="onListEscape"
   >
-    <!--
-      The armed-state announcement. A separate node rather than `aria-live` on the menu, because the menu is
-      itself being opened and closed by these very actions — a live region that appears at the moment its
-      content changes is announced unreliably, so it has to already be on the page when the change happens.
-    -->
-    <span class="sr-only" role="status" aria-live="polite" data-test="session-arm-announcer">{{ armAnnouncement }}</span>
     <li
-      v-for="(row, index) in visible"
+      v-for="(row, index) in rows"
       :key="row.kind === 'tool' ? `tool-${row.seq}` : row.kind === 'thinking' ? row.key : row.item.streaming ? 'streaming' : row.item.seq"
       :class="{
         selected: row.kind === 'event' && row.item.seq === selectedSeq,
         streaming: row.kind === 'event' && row.item.streaming === true,
-        'is-error': row.kind === 'event' && isError(row.item),
         // The row keeps its actions on screen while a confirmation is armed. They appear on hover, and a
         // confirmation that vanishes the moment the pointer wanders off is worse than no confirmation at all:
         // the reader has to go hunting for the button again to finish what they started.
@@ -434,126 +350,62 @@ function rowSeq(index: number): number | null {
           <!-- The dot is a second channel, never the only one: the word beside it says the same thing in
                text, so a reader who cannot separate the tints loses nothing (ui.md §5.2). -->
           <span class="role-dot" :data-role="sessionRole(row.item.kind) ?? 'other'" aria-hidden="true" />
-          <template v-if="row.item.streaming">
-            <span class="role" data-test="session-streaming" aria-live="polite">正在回复…</span>
-          </template>
-          <template v-else>
-            <span v-if="isError(row.item)" class="error-mark" data-test="session-error-mark">错误</span>
-            <!-- The row says what the event *is*; `data-kind` on the <li> keeps the wire value for tests and
-                 for anyone reading the markup. Both are deliberate — the word is for the reader, the enum for us. -->
-            <span class="role">{{ sessionKindLabel(row.item.kind) }}</span>
-            <span class="seq">#{{ row.item.seq }}</span>
-            <span v-if="row.item.source" class="source">{{ row.item.source }}</span>
-            <span v-if="row.item.revisionCount > 0" class="edited">已编辑 {{ row.item.revisionCount }}</span>
+          <!-- The row says what the event *is*; `data-kind` on the <li> keeps the wire value for tests and
+               for anyone reading the markup. Both are deliberate — the word is for the reader, the enum for us. -->
+          <span class="role">{{ sessionKindLabel(row.item.kind) }}</span>
+          <span class="seq">#{{ row.item.seq }}</span>
+          <span v-if="row.item.source && sourceHasChip(row.item.source)" class="source">{{
+            sourceLabel(row.item.source)
+          }}</span>
 
-            <!-- Pushed to the far end with `margin-inline-start: auto`, and tabular so a column of them lines
-                 up: the clock is read by comparison far more often than by reading. -->
-            <time class="at" :datetime="row.item.at">{{ row.item.at.slice(11, 19) }}</time>
+          <!-- Pushed to the far end with `margin-inline-start: auto`, and tabular so a column of them lines
+               up: the clock is read by comparison far more often than by reading. -->
+          <time class="at" :datetime="row.item.at">{{ row.item.at.slice(11, 19) }}</time>
 
-            <!-- The actions, back on the row itself. They went behind the `⋯` below for one reason: the long
-                 labels used to float over the row and cover its own text. Short labels remove that reason —
-                 「删除」 is two characters where 「删除此处及之后」 was seven — so the common case costs no extra
-                 click again. What each action actually *does* is still written out one hover away, on the `⋯`. -->
-            <span class="row-actions" data-test="session-row-actions">
-              <button
-                v-if="restorable(row.item)"
-                class="ghost row-action"
-                data-test="session-row-restore"
-                title="把这轮输入放回输入框"
-                @click.stop="emit('restore', row.item.seq); closeMenu()"
-              >
-                撤回
-              </button>
-              <button
-                class="ghost row-action"
-                data-test="session-row-delete-inline"
-                title="删除此条"
-                @click.stop="act(row, 'delete')"
-              >
-                {{ armed?.seq === row.item.seq && armed.action === 'delete' ? '确认删除' : '删除' }}
-              </button>
-              <button
-                class="ghost row-action"
-                :class="{ danger: armed?.seq === row.item.seq && armed.action === 'retract' }"
-                data-test="session-row-retract-inline"
-                title="删除此条及之后的全部事件"
-                @click.stop="act(row, 'retract')"
-              >
-                {{ armed?.seq === row.item.seq && armed.action === 'retract' ? '确认删除之后' : '删除之后' }}
-              </button>
-              <button
-                class="ghost menu-toggle"
-                data-test="session-row-menu"
-                :aria-expanded="menuFor === row.item.seq"
-                aria-haspopup="menu"
-                :aria-label="`#${row.item.seq} 的操作`"
-                @click.stop="toggleMenu(row.item.seq)"
-              >
-                <Icon name="more" :size="14" />
-              </button>
-
-              <div
-                v-if="menuFor === row.item.seq"
-                class="row-menu"
-                role="menu"
-                :aria-label="`#${row.item.seq} 的操作`"
-                @click.stop
-              >
-                <button
-                  v-if="restorable(row.item)"
-                  class="menu-item"
-                  role="menuitem"
-                  data-test="session-restore"
-                  @click="emit('restore', row.item.seq); closeMenu()"
-                >
-                  撤回
-                  <span class="hint">放回输入框</span>
-                </button>
-                <button
-                  class="menu-item"
-                  role="menuitem"
-                  data-test="session-row-delete"
-                  @click="act(row, 'delete')"
-                >
-                  <template v-if="armed?.seq === row.item.seq && armed.action === 'delete'">确认删除此条</template>
-                  <template v-else>删除此条</template>
-                  <span v-if="armed?.seq !== row.item.seq || armed.action !== 'delete'" class="hint">不可撤销</span>
-                </button>
-                <button
-                  class="menu-item is-danger"
-                  role="menuitem"
-                  data-test="session-row-retract"
-                  @click="act(row, 'retract')"
-                >
-                  <template v-if="armed?.seq === row.item.seq && armed.action === 'retract'">
-                    确认删除此处及之后
-                  </template>
-                  <template v-else>删除此处及之后</template>
-                  <span
-                    v-if="armed?.seq !== row.item.seq || armed.action !== 'retract'"
-                    class="hint"
-                    >含本条之后全部</span
-                  >
-                </button>
-                <button
-                  v-if="armed?.seq === row.item.seq"
-                  class="menu-item is-quiet"
-                  role="menuitem"
-                  data-test="session-row-cancel"
-                  @click="cancelArm"
-                >
-                  取消
-                </button>
-              </div>
-            </span>
-          </template>
+          <!-- The actions, on the row itself and nothing else. There is no `⋯` any more: every one of them fits
+               on the row at these label lengths, so a second place to reach them was a second place to look. -->
+          <span class="row-actions" data-test="session-row-actions">
+            <button
+              v-if="restorable(row.item)"
+              class="ghost row-action"
+              data-test="session-row-restore"
+              title="把这轮输入放回输入框"
+              @click.stop="emit('restore', row.item.seq)"
+            >
+              复用
+            </button>
+            <button
+              v-if="deletable(row.item)"
+              class="ghost row-action"
+              data-test="session-row-delete-inline"
+              title="删除最新一次对话（不可恢复）"
+              @click.stop="act(row)"
+            >
+              {{ armed?.seq === row.item.seq ? '确认删除' : '删除' }}
+            </button>
+            <!-- Armed: the way out sits next to the button that armed it. Without it, the only way back from a
+                 mis-press would be Escape. -->
+            <button
+              v-if="armed?.seq === row.item.seq"
+              class="ghost row-action is-quiet"
+              data-test="session-row-cancel"
+              title="取消删除"
+              @click.stop="cancelArm"
+            >
+              取消
+            </button>
+            <button
+              class="ghost row-action"
+              data-test="session-row-withdraw-inline"
+              title="撤回此处及之后的全部对话（发送新消息前可取消）"
+              @click.stop="withdraw(row)"
+            >
+              撤回
+            </button>
+          </span>
         </div>
 
         <MarkdownBody :body="row.item.body" />
-        <!-- Always visible, never only in the inspector: an edit must be obvious from the list itself. -->
-        <div v-if="row.item.revisionCount > 0" class="edited revision-note" data-test="session-revision-note">
-          已编辑 {{ row.item.revisionCount }} 次 · 原文：{{ row.item.originalBody }}
-        </div>
       </template>
     </li>
   </ul>
@@ -652,22 +504,6 @@ li > .markdown {
   background: var(--ok);
 }
 
-.event-list > li.is-error .role-dot {
-  background: var(--error);
-}
-
-.event-list > li.is-error {
-  border-inline-start: 2px solid var(--error);
-  padding-inline-start: calc(var(--space-4) - 2px);
-}
-
-.error-mark {
-  color: var(--error);
-  border: 1px solid var(--error);
-  border-radius: var(--radius-sm);
-  padding: 0 var(--space-1);
-}
-
 /* ---- row actions ------------------------------------------------------------------------------- */
 .row-actions {
   position: relative;
@@ -686,7 +522,7 @@ li.is-armed > .meta > .row-actions {
 }
 
 /* Short labels, so the buttons can live on the row without covering it. `--fs-meta` puts them at the size of
-   the rest of the meta line — they are about one row, not the main event — and `nowrap` keeps 「确认删除之后」
+   the rest of the meta line — they are about one row, not the main event — and `nowrap` keeps 「确认删除」
    from breaking mid-phrase when it arms. */
 .row-action {
   padding: 0 var(--space-2);
@@ -694,66 +530,10 @@ li.is-armed > .meta > .row-actions {
   white-space: nowrap;
 }
 
-.menu-toggle {
-  padding: 0 var(--space-1);
-  line-height: 1;
-}
-
-.row-menu {
-  position: absolute;
-  inset-block-start: calc(100% + var(--space-1));
-  inset-inline-end: 0;
-  z-index: 2;
-  display: grid;
-  min-inline-size: 13rem;
-  padding: var(--space-1);
-  gap: 1px;
-  /* The one thing in this app that genuinely leaves the page, so it gets a real shadow rather than a
-     border — and its own surface step so it does not read as part of the row underneath. */
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  box-shadow: var(--shadow-3);
-}
-
-.menu-item {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-2);
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
-  font-size: var(--fs-ui);
-  text-align: start;
-  cursor: pointer;
-}
-
-.menu-item:hover {
-  background: var(--surface-1);
-}
-
-/* The second, fuller label — "确认删除此处及之后" against "删除此处及之后" — is what makes the arming
-   readable. Losing the "确认" would turn the confirmation into a trap. */
-.menu-item.is-danger {
-  color: var(--error);
-}
-
-.menu-item.is-danger:hover {
-  background: color-mix(in srgb, var(--error) 12%, transparent);
-}
-
-.menu-item.is-quiet {
+/* The way out of a confirmation is quieter than the confirmation itself: 取消 must be findable, not inviting. */
+.row-action.is-quiet {
   color: var(--text-3);
   font-weight: 400;
-}
-
-.hint {
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-  white-space: nowrap;
 }
 
 /* ---- state ------------------------------------------------------------------------------------- */

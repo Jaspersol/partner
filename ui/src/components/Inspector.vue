@@ -30,19 +30,25 @@ const props = defineProps<{
    * nothing beside it to take width from, and a handle that cannot do anything is worse than no handle.
    */
   resizable?: boolean
+  /**
+   * Whether the selected event is in the latest conversation. Delete removes the whole latest conversation,
+   * so it is only meaningful there — and it is refused while a withdrawal is pending or a turn is running.
+   * Vue reads an absent boolean prop as false, so a caller that wants the button has to say so; the session
+   * view always passes it.
+   */
+  canDeleteLatest?: boolean
 }>()
 
 const emit = defineEmits<{
   save: [body: string]
   remove: []
-  /** Removes this event only. */
+  /** Deletes the latest conversation as a whole — permanent, so it needs a second click. */
   delete: []
-  /** Removes this event and everything after it — destructive, so it needs a second click. */
-  retract: []
+  /** Hides this conversation and everything after it. Reversible, so one click is enough. */
+  withdraw: []
 }>()
 
 /** Inline two-step confirmation: a native dialog would block the webview and cannot be driven in tests. */
-const confirmingRetract = ref(false)
 const confirmingDelete = ref(false)
 
 /**
@@ -50,14 +56,12 @@ const confirmingDelete = ref(false)
  *
  * <para>
  * Arming replaces one set of buttons with another, and a screen reader is not told: the button that said
- * 「删除此条」 is gone and a different one appeared. Silence there makes the second press look broken.
+ * 「删除最新一次对话」 is gone and a different one appeared. Silence there makes the second press look broken.
  * </para>
  */
-const armAnnouncement = computed(() => {
-  if (confirmingDelete.value) return '已准备删除此条。再次按下确认，这不会撤销。'
-  if (confirmingRetract.value) return '已准备删除此条及之后的所有事件。再次按下确认，这不会撤销。'
-  return ''
-})
+const armAnnouncement = computed(() =>
+  confirmingDelete.value ? '已准备删除最新一次对话。再次按下确认，这不会撤销。' : '',
+)
 
 const draft = ref(props.draft)
 
@@ -272,23 +276,25 @@ watch(
       </div>
 
       <h3>历史</h3>
-      <!-- Both removals are destructive and neither is reversible: the text leaves the log, and the tombstone
-           left behind records the range, not the words. Two clicks each, and each confirms only itself. -->
+      <!-- Deleting is permanent and takes the whole latest conversation, so it arms first. Withdrawing only
+           hides the range and can be cancelled until the next message is sent, so it acts on one click — a
+           confirmation step there would slow down an action the reader can undo. -->
       <div v-if="testPrefix === 'session'" class="inspector-actions">
         <template v-if="confirmingDelete">
-          <button class="danger" data-test="session-delete-confirm" @click="emit('delete')">确认删除此条</button>
+          <button class="danger" data-test="session-delete-confirm" @click="emit('delete')">确认删除最新一次对话</button>
           <button class="ghost" data-test="session-delete-cancel" @click="confirmingDelete = false">取消</button>
         </template>
-        <template v-else-if="confirmingRetract">
-          <button class="danger" data-test="session-retract-confirm" @click="emit('retract')">
-            确认撤回（含此条之后全部）
-          </button>
-          <button class="ghost" data-test="session-retract-cancel" @click="confirmingRetract = false">取消</button>
-        </template>
         <template v-else>
-          <button class="ghost" data-test="session-delete" @click="confirmingDelete = true">删除此条</button>
-          <button class="ghost danger" data-test="session-retract" @click="confirmingRetract = true">
-            撤回此条及之后
+          <button
+            v-if="canDeleteLatest"
+            class="ghost"
+            data-test="session-delete"
+            @click="confirmingDelete = true"
+          >
+            删除最新一次对话
+          </button>
+          <button class="ghost danger" data-test="session-withdraw" @click="emit('withdraw')">
+            撤回此处及之后
           </button>
         </template>
       </div>

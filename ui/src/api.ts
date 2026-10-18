@@ -35,12 +35,55 @@ export interface ContextUsage {
   fraction: number
 }
 
+/**
+ * What the view may offer at the history's tail.
+ *
+ * <para>
+ * A conversation starts at a message somebody sent (typed, spoken or scheduled) and runs to the next one.
+ * Deleting is only ever the latest conversation, as a whole; withdrawing from an earlier point is the
+ * reversible alternative. `withdrawn` is non-null while a withdrawal is still pending — until the person
+ * sends a new message, which makes it final on the server.
+ * </para>
+ */
+export interface ConversationView {
+  /** Seq of the first message of the latest conversation, or null when there is none. */
+  latestFromSeq: number | null
+  /** The range hidden by a pending withdrawal, or null when nothing is withdrawn. */
+  withdrawn: WithdrawalState | null
+}
+
+export interface WithdrawalState {
+  fromSeq: number
+  toSeq: number
+  conversations: number
+  events: number
+}
+
 export interface SessionView {
   lastSeq: number
   items: SessionItem[]
   /** True while a turn is running: the view re-reads itself quickly so the turn is visible as it happens. */
   busy?: boolean
+  conversation: ConversationView
   context: ContextUsage
+}
+
+/** What deleting the latest conversation removed: a range, not one row. */
+export interface DeleteResult {
+  removedFrom: number
+  removedTo: number
+  purgedEvents: number
+  purgedRevisions: number
+  purgedMemories: number
+  eventSeq: number
+}
+
+/** What a withdrawal took, before it is made final by the next message. */
+export interface WithdrawResult {
+  withdrawnFrom: number
+  withdrawnTo: number
+  conversations: number
+  events: number
 }
 
 export interface SessionRevision {
@@ -273,6 +316,153 @@ export interface ModelSettingsView {
   reasoningGears: string[]
 }
 
+/** The main agent's editable part. Null means the built-in prompt. */
+export interface MainAgentSettings {
+  prompt: string | null
+}
+
+/** A sub-agent's own endpoint, in the shape the settings file stores it (the key is write-only). */
+export interface SubAgentModelSettings {
+  baseUrl: string | null
+  model: string | null
+  /** Absent keeps the stored key, empty clears it, a value replaces it. Never read back. */
+  apiKey?: string | null
+  timeoutSeconds: number
+  contextTokens: number
+  maxTokens: number
+  supportsImages: boolean
+  reasoningEffort: string
+}
+
+/** One sub-agent as the settings page carries it. `id: ""` asks the server to name a new one. */
+export interface SubAgentSettings {
+  id: string
+  name: string
+  enabled: boolean
+  scenario: string
+  prompt: string | null
+  maxRounds: number
+  /** Null = follow the main model. */
+  model: SubAgentModelSettings | null
+}
+
+export interface AgentsSettings {
+  main: MainAgentSettings
+  subAgents: SubAgentSettings[]
+}
+
+/** The file-reading capability: off by default, and a whitelist rather than a blacklist. */
+export interface FilesSettings {
+  enabled: boolean
+  roots: string[]
+}
+
+/** A sub-agent's endpoint as the read endpoints report it: whether a key is stored, never the key. */
+export interface SubAgentModelView {
+  baseUrl: string | null
+  model: string | null
+  apiKeySet: boolean
+  timeoutSeconds: number
+  contextTokens: number
+  maxTokens: number
+  supportsImages: boolean
+  reasoningEffort: string
+}
+
+/** A sub-agent as the settings response carries it. Same as the stored shape except for the masked key. */
+export interface SubAgentSettingsView {
+  id: string
+  name: string
+  enabled: boolean
+  scenario: string
+  prompt: string | null
+  maxRounds: number
+  model: SubAgentModelView | null
+}
+
+export interface AgentsSettingsView {
+  main: MainAgentSettings
+  subAgents: SubAgentSettingsView[]
+}
+
+export interface MainAgentView {
+  prompt: string | null
+  defaultPrompt: string
+  /** What the model really sees: the person's prompt (or default) plus the generated blocks. */
+  effectivePrompt: string
+  promptTokens: number
+}
+
+/** One sub-agent as the prompts page reads it: stored values plus the defaults and the effective prompt. */
+export interface SubAgentView {
+  id: string
+  name: string
+  enabled: boolean
+  scenario: string
+  /** The built-in desktop agent: always present, no delete, scenario locked. */
+  builtin: boolean
+  prompt: string | null
+  defaultPrompt: string
+  effectivePrompt: string
+  promptTokens: number
+  maxRounds: number
+  model: SubAgentModelView | null
+}
+
+/** One thing the main agent may hand to a sub-agent. The list is closed: desktop and file-read. */
+export interface AgentScenarioView {
+  key: string
+  name: string
+  /** Which requests belong here, written for the main agent. */
+  when: string
+  ownerId: string | null
+  capabilityEnabled: boolean
+  available: boolean
+}
+
+export interface AgentLimits {
+  maxRounds: number
+  defaultMaxRounds: number
+  /** The most tokens one prompt may use. */
+  promptTokens: number
+}
+
+/** Everything the prompts page needs in one read. */
+export interface AgentsView {
+  main: MainAgentView
+  subAgents: SubAgentView[]
+  scenarios: AgentScenarioView[]
+  /** Human-readable warnings: configured but will not work. */
+  problems: string[]
+  limits: AgentLimits
+  files: FilesSettings
+  desktopEnabled: boolean
+}
+
+export interface AgentsSaved {
+  agents: AgentsView
+  consumer: ConsumerState
+}
+
+/** One delegated job, as the status bar and the jobs list report it. */
+export interface AgentJobView {
+  id: string
+  agentId: string
+  agentName: string
+  scenario: string
+  goal: string
+  /** 'running' | 'completed' | 'cannot_execute' — running is the only one that is not final. */
+  status: string
+  round: number
+  maxRounds: number
+  startedAt: string
+  finishedAt: string | null
+  category: string | null
+  summary: string | null
+  error: string | null
+  rounds: string[]
+}
+
 export interface RuntimeSettings {
   input: InputSettings
   output: OutputSettings
@@ -283,6 +473,9 @@ export interface RuntimeSettings {
   desktop: DesktopSettings
   mcp: McpSettings
   skills: SkillSettings
+  /** Carried through by the settings page untouched: the prompts page owns it. */
+  agents: AgentsSettings
+  files: FilesSettings
 }
 
 export interface SettingsView {
@@ -295,6 +488,9 @@ export interface SettingsView {
   desktop: DesktopSettings
   mcp: McpSettings
   skills: SkillSettings
+  /** The stored agents section, with sub-agent API keys replaced by `apiKeySet`. */
+  agents: AgentsSettingsView
+  files: FilesSettings
 }
 
 /**
@@ -349,6 +545,8 @@ export interface PendingApproval {
   arguments: string
   requestedAt: string
   expiresAt: string
+  /** Who is asking, when it is not the main agent: e.g. 子 agent「桌面操控」：打开网易云放歌. */
+  origin?: string | null
 }
 
 export interface ApprovalQueue {
@@ -474,6 +672,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     detail: string,
+    /** Every rule a rejected save broke, when the endpoint reports them one by one. */
+    readonly errors: readonly string[] = [],
   ) {
     super(`${status}: ${detail}`)
     this.name = 'ApiError'
@@ -515,8 +715,12 @@ const FILE_NAME_HEADER = 'X-File-Name'
 export interface PartnerApiSurface {
   session(from?: number, take?: number): Promise<SessionView>
   editSession(seq: number, body: string, actor?: string): Promise<void>
-  deleteEvent(seq: number): Promise<void>
-  retractFrom(seq: number): Promise<void>
+  /** Deletes the latest conversation as a whole; `seq` may be any row inside it. */
+  deleteLatest(seq: number): Promise<DeleteResult>
+  /** Hides `seq`'s conversation and everything after it. Reversible until the next message is sent. */
+  withdrawFrom(seq: number): Promise<WithdrawResult>
+  /** Brings back everything a pending withdrawal hid. */
+  cancelWithdrawal(): Promise<void>
   sessionRevisions(seq: number): Promise<SessionRevision[]>
   queue(): Promise<QueueView>
   cancel(itemId: string): Promise<boolean>
@@ -547,6 +751,14 @@ export interface PartnerApiSurface {
   deleteMemory(recordId: string): Promise<void>
   memoryRevisions(recordId: string): Promise<MemoryRevision[]>
   settings(): Promise<SettingsView>
+  /** The agents section as the prompts page reads it: stored values, defaults, effective prompts, problems. */
+  agents(): Promise<AgentsView>
+  /** Writes the stored shape. A new sub-agent goes in with `id: ""`; the server names it. */
+  saveAgents(agents: AgentsSettings): Promise<AgentsSaved>
+  /** Every delegated job, newest first. */
+  agentJobs(): Promise<AgentJobView[]>
+  /** Stops a running job. False when it already finished — nothing to cancel, not an error. */
+  cancelAgentJob(jobId: string): Promise<boolean>
   testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult>
   approvals(): Promise<ApprovalQueue>
   answerApproval(approvalId: string, approved: boolean): Promise<void>
@@ -577,14 +789,25 @@ export class PartnerApi implements PartnerApiSurface {
     await this.request('POST', `/api/session/${seq}/edit`, { body, actor })
   }
 
-  /** Removes one event from the view and from the log; seqs are never reused. */
-  async deleteEvent(seq: number): Promise<void> {
-    await this.request('POST', `/api/session/${seq}/delete`)
+  /**
+   * Deletes the whole latest conversation, physically. `seq` may be any row inside it; the server refuses
+   * (409) an earlier conversation, a pending withdrawal, or a running turn.
+   */
+  deleteLatest(seq: number): Promise<DeleteResult> {
+    return this.request<DeleteResult>('POST', `/api/session/${seq}/delete`)
   }
 
-  /** Removes the selected event and everything after it, as of now. */
-  async retractFrom(seq: number): Promise<void> {
-    await this.request('POST', `/api/session/${seq}/retract`)
+  /**
+   * Hides `seq`'s conversation and everything after it. Nothing is deleted: the range comes back with
+   * `cancelWithdrawal`, and the next message sent makes it final.
+   */
+  withdrawFrom(seq: number): Promise<WithdrawResult> {
+    return this.request<WithdrawResult>('POST', `/api/session/${seq}/withdraw`)
+  }
+
+  /** Takes back the pending withdrawal. 404 when there is none — the server's message says why. */
+  async cancelWithdrawal(): Promise<void> {
+    await this.request('POST', '/api/session/withdrawal/cancel')
   }
 
   sessionRevisions(seq: number): Promise<SessionRevision[]> {
@@ -790,6 +1013,34 @@ export class PartnerApi implements PartnerApiSurface {
     return this.request<SettingsSaved>('PUT', '/api/settings', settings)
   }
 
+  // ---- agents ----------------------------------------------------------------------------------
+
+  agents(): Promise<AgentsView> {
+    return this.request<AgentsView>('GET', '/api/agents')
+  }
+
+  saveAgents(agents: AgentsSettings): Promise<AgentsSaved> {
+    return this.request<AgentsSaved>('PUT', '/api/agents', agents)
+  }
+
+  async agentJobs(): Promise<AgentJobView[]> {
+    const answer = await this.request<{ jobs?: AgentJobView[] }>('GET', '/api/agent-jobs')
+    // An older build answers `{}`; treating that as "no jobs" keeps the status bar quiet rather than crashing it.
+    return Array.isArray(answer.jobs) ? answer.jobs : []
+  }
+
+  /** 404 means the job is already over: the same rule the queue's cancel follows. */
+  async cancelAgentJob(jobId: string): Promise<boolean> {
+    const response = await this.send('POST', `/api/agent-jobs/${encodeURIComponent(jobId)}/cancel`)
+
+    if (response.status === 404) {
+      return false
+    }
+
+    await this.assertOk(response)
+    return true
+  }
+
   /** Settings-page connectivity probe against /api/voice/test/{kind}. */
   testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult> {
     return this.request('POST', `/api/voice/test/${kind}`)
@@ -843,8 +1094,31 @@ export class PartnerApi implements PartnerApiSurface {
       return
     }
 
+    // A save can be refused for several rules at once, and the prompts page shows every one of them. The body
+    // is read once and then interpreted: JSON when the endpoint answered JSON, the raw text otherwise.
+    const body = await response.text()
+    const reported = readErrors(body)
+    const detail = reported.error ?? (body === '' ? response.statusText : body)
+
     // 401 is worth naming: it means the token is wrong or stale, not that the request was malformed.
-    const detail = await response.text()
-    throw new ApiError(response.status, detail === '' ? response.statusText : detail)
+    throw new ApiError(response.status, detail, reported.errors)
+  }
+}
+
+/** The two error shapes the API sends: a plain message, or a message plus every broken rule. */
+function readErrors(body: string): { error: string | null; errors: string[] } {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (typeof parsed !== 'object' || parsed === null) {
+      return { error: null, errors: [] }
+    }
+
+    const record = parsed as { error?: unknown; errors?: unknown }
+    return {
+      error: typeof record.error === 'string' ? record.error : null,
+      errors: Array.isArray(record.errors) ? record.errors.filter((entry): entry is string => typeof entry === 'string') : [],
+    }
+  } catch {
+    return { error: null, errors: [] }
   }
 }

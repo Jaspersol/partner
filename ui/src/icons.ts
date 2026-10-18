@@ -34,6 +34,7 @@ export type IconName =
   | 'mcp'
   | 'skill'
   | 'settings'
+  | 'prompt'
   // chrome
   | 'panel-left'
   | 'moon'
@@ -61,8 +62,8 @@ export type IconName =
   | 'check'
   | 'square'
   | 'sparkle'
-  | 'more'
   | 'plus'
+  | 'info'
 
 /**
  * Name → path data, in a 24×24 viewBox.
@@ -95,6 +96,10 @@ export const ICONS: Record<IconName, readonly string[]> = {
     'M8 12a2 2 0 1 1 4 0 2 2 0 0 1-4 0z',
     'M14 17a2 2 0 1 1 4 0 2 2 0 0 1-4 0z',
   ],
+
+  // A page with a few written lines: a prompt is text a person wrote for the model to read. Deliberately not
+  // the terminal glyph — that is a program being run, and these are instructions being handed over.
+  prompt: ['M5 4h14v16H5z', 'M8 8h8M8 12h8M8 16h5'],
 
   // ---- chrome -----------------------------------------------------------------------------------
   // A window with a divider: the sidebar is a region, not an arrow.
@@ -168,13 +173,14 @@ export const ICONS: Record<IconName, readonly string[]> = {
   // A four-point sparkle for the reasoning row: quiet, and nothing like the agent family's swap arrows.
   sparkle: ['M12 4l1.6 4.4L18 10l-4.4 1.6L12 16l-1.6-4.4L6 10l4.4-1.6L12 4z'],
 
-  // Horizontal dots: "there is more here", and deliberately not a kebab. A kebab means settings; this means
-  // the row's own actions, which are destructive, and they should not look like preferences.
-  more: ['M6 12h.01M12 12h.01M18 12h.01'],
-
   // Two strokes rather than the ＋ character: at rail size the glyph's arms do not meet the vertical cleanly
   // at every weight, and this has to look the same as the other thirty.
   plus: ['M12 5v14M5 12h14'],
+
+  // A ring with an exclamation in it: the mark that means "there is a sentence about this, ask for it". Drawn
+  // as an outline rather than a filled disc so it stays quiet at 13px beside a field label — it is a footnote,
+  // not a warning, and the app already has one loud red for things that are actually wrong.
+  info: ['M12 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16z', 'M12 8.2v4.6', 'M12 15.9h.01'],
 }
 
 /** The paths for one icon. Exported so a caller can assert a name actually has geometry. */

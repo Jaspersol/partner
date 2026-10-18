@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import type { McpSettings, McpServerSettings, PartnerApiSurface, RuntimeSettings } from '../api'
+import HintTip from '../components/HintTip.vue'
 
 /**
  * The MCP servers this installation starts, and how the model is allowed to call them.
@@ -12,7 +13,7 @@ import type { McpSettings, McpServerSettings, PartnerApiSurface, RuntimeSettings
  * </para>
  */
 const props = defineProps<{ api: PartnerApiSurface }>()
-const emit = defineEmits<{ context: [value: string]; changed: [] }>()
+const emit = defineEmits<{ changed: [] }>()
 
 const form = ref<McpSettings>({ enabled: false, servers: [], allowedTools: [] })
 const baseline = ref<RuntimeSettings | null>(null)
@@ -62,7 +63,6 @@ async function refresh() {
     const settings = await props.api.settings()
     baseline.value = settings
     form.value = settings.mcp
-    emit('context', `MCP · ${settings.mcp.enabled ? '已启用' : '未启用'}`)
   } catch (failure) {
     error.value = String(failure)
   }
@@ -89,7 +89,6 @@ async function save() {
     baseline.value = saved.settings
     form.value = saved.settings.mcp
     notice.value = '已保存 · 消费者已重启'
-    emit('context', `MCP · ${form.value.enabled ? '已启用' : '未启用'}`)
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -126,17 +125,15 @@ defineExpose({ refresh })
           />
           <span>
             启用 MCP
-            <small class="muted">
-              启用即在消费者启动时拉起下面配置的子进程，并把它们的工具交给模型。默认关闭。
-            </small>
+            <HintTip>启用即在消费者启动时拉起下面配置的子进程，并把它们的工具交给模型。默认关闭。</HintTip>
           </span>
         </label>
 
         <div class="mcp-field">
-          <span>直接执行、不必人工批准的工具</span>
-          <small class="muted">
-            留空表示全部工具都要批准。启用只决定「提供哪些工具」，不决定「哪些可以直接动」。
-          </small>
+          <span>
+            直接执行、不必人工批准的工具
+            <HintTip>留空表示全部工具都要批准。启用只决定「提供哪些工具」，不决定「哪些可以直接动」。</HintTip>
+          </span>
           <div v-if="form.servers.length > 0" class="tools">
             <label v-for="server in form.servers" :key="server.name" class="tool">
               <input
@@ -268,11 +265,6 @@ h2 {
 
 label.mcp-field > span {
   grid-column: 2;
-}
-
-/* The hint is its own line under its label, not the rest of the sentence. */
-label.mcp-field small {
-  display: block;
 }
 
 .mcp-field:not(label) > * {

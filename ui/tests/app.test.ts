@@ -59,6 +59,9 @@ const SETTINGS = {
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
   mcp: { enabled: false, servers: [], allowedTools: [] },
   skills: { disabled: [] },
+  // Carried by the settings page untouched; the prompts page owns them.
+  agents: { main: { prompt: null }, subAgents: [] },
+  files: { enabled: false, roots: [] },
 }
 
 const CONSUMER = {
@@ -71,6 +74,7 @@ const CONSUMER = {
 
 const SESSION = {
   lastSeq: 0,
+  conversation: { latestFromSeq: null, withdrawn: null },
   context: {
     usedTokens: 0,
     budgetTokens: 28672,
@@ -81,6 +85,34 @@ const SESSION = {
     fraction: 0,
   },
   items: [],
+}
+
+/** The prompts page's document: one built-in agent, both scenarios owned, nothing wrong. */
+const AGENTS = {
+  main: { prompt: null, defaultPrompt: '你是主 agent。', effectivePrompt: '你是主 agent。', promptTokens: 5 },
+  subAgents: [
+    {
+      id: 'desktop',
+      name: '桌面操控',
+      enabled: true,
+      scenario: 'desktop',
+      builtin: true,
+      prompt: null,
+      defaultPrompt: '你负责桌面。',
+      effectivePrompt: '你负责桌面。',
+      promptTokens: 6,
+      maxRounds: 5,
+      model: null,
+    },
+  ],
+  scenarios: [
+    { key: 'desktop', name: '桌面操控', when: '需要操作界面时', ownerId: 'desktop', capabilityEnabled: true, available: true },
+    { key: 'file-read', name: '读取文件', when: '需要读文件时', ownerId: null, capabilityEnabled: true, available: true },
+  ],
+  problems: [],
+  limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
+  files: { enabled: false, roots: [] },
+  desktopEnabled: true,
 }
 
 // A queue with a turn in flight, so the composer's interrupt button exists in the shell tests.
@@ -107,6 +139,8 @@ const QUEUE_RUNNING = {
 const QUEUE = { headSeq: 0, runningItemId: null, depth: 0, items: [] }
 
 function respond(path: string): unknown {
+  if (path.includes('/api/agent-jobs')) return { jobs: [] }
+  if (path.includes('/api/agents')) return AGENTS
   if (path.includes('/api/settings')) return SETTINGS
   if (path.includes('/api/consumer')) return CONSUMER
   if (path.includes('/api/session')) return SESSION
@@ -163,9 +197,9 @@ describe('app shell', () => {
     await flushPromises()
 
     const tabs = wrapper.findAll('[data-test^=tab-]')
-    // Five, not six: the queue is the composer's list now, not a page of its own. The rail is shorter
-    // because there is one less place to be.
-    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '记忆', 'MCP', '技能', '设置'])
+    // Six: the queue is the composer's list now, not a page of its own, and 提示词 joined the capability
+    // pages — it edits what the agents are told, not the installation.
+    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '记忆', 'MCP', '技能', '提示词', '设置'])
 
     for (const tab of tabs) {
       await tab.trigger('click')
@@ -328,6 +362,57 @@ describe('app shell', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('says a delegated job is running, and stops it from the status bar', async () => {
+    // The job indicator is the only place a delegated job is visible outside the prompts page, and a job a
+    // reader cannot see is a job they cannot cancel.
+    const job = {
+      id: 'job-1',
+      agentId: 'desktop',
+      agentName: '桌面操控',
+      scenario: 'desktop',
+      goal: '放歌',
+      status: 'running',
+      round: 1,
+      maxRounds: 5,
+      startedAt: '2026-10-18T10:00:00+00:00',
+      finishedAt: null,
+      category: null,
+      summary: null,
+      error: null,
+      rounds: [],
+    }
+
+    const cancelled: string[] = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (path.includes('/api/agent-jobs/')) {
+        cancelled.push(path)
+        return new Response(JSON.stringify({ cancelled: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      const body = path.includes('/api/agent-jobs') ? { jobs: [job] } : respond(path)
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as unknown as typeof fetch
+
+    const wrapper = mount(App)
+    await flushPromises()
+
+    const indicator = wrapper.find('[data-test="status-job"]')
+    expect(indicator.text()).toContain('子任务进行中 · 桌面操控 · 第 1/5 轮')
+
+    await wrapper.find('[data-test="status-job-cancel"]').trigger('click')
+    await flushPromises()
+
+    expect(cancelled).toHaveLength(1)
+    expect(cancelled[0]).toContain('/api/agent-jobs/job-1/cancel')
+  })
+
+  it('renders no job indicator when nothing is delegated', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="status-job"]').exists()).toBe(false)
   })
 
   it('never offers the sidebar toggle when the window is too narrow for it to act', async () => {

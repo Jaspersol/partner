@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ConsumerState } from '../api'
+import type { AgentJobView, ConsumerState } from '../api'
 
 const props = defineProps<{
   connected: boolean
@@ -10,7 +10,11 @@ const props = defineProps<{
   version: string
   /** A refresh failed and nothing has succeeded since: what is on screen is the last good read. */
   stale?: boolean | undefined
+  /** The delegated job in flight, or null when nothing is delegated. */
+  job?: AgentJobView | null | undefined
 }>()
+
+const emit = defineEmits<{ 'cancel-job': [jobId: string] }>()
 
 /**
  * What the screen reader is told about the connection, and nothing else.
@@ -38,6 +42,16 @@ const announcement = computed(() => (props.connected ? '' : `连接已断开：$
     <span class="consumer" data-test="status-consumer">
       <template v-if="consumer?.running">消费中 · {{ consumer.model ?? "模型" }}</template>
       <template v-else-if="consumer">未执行 · {{ consumer.reason }}</template>
+    </span>
+
+    <!--
+      A delegated job is work happening that the main turn may be waiting on. It is not the queue, so it does
+      not live in the badge, and it is not the consumer, so it does not replace the model line. One line, and
+      a stop button: a job a reader cannot see is a job they cannot cancel. Nothing renders when idle.
+    -->
+    <span v-if="job" class="job" data-test="status-job">
+      子任务进行中 · {{ job.agentName }} · 第 {{ job.round }}/{{ job.maxRounds }} 轮
+      <button class="ghost" data-test="status-job-cancel" @click="emit('cancel-job', job.id)">停止</button>
     </span>
 
     <!--
@@ -74,5 +88,19 @@ const announcement = computed(() => (props.connected ? '' : `连接已断开：$
 .stale {
   color: var(--warn);
   white-space: nowrap;
+}
+
+/* The job line is live work, so it is not muted: it has to be findable at the foot of the window. */
+.job {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--accent-pressed);
+  white-space: nowrap;
+}
+
+.job button {
+  font-size: var(--fs-meta);
+  padding: 0 var(--space-1);
 }
 </style>

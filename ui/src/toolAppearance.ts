@@ -53,8 +53,19 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
 
   ['skill', { icon: 'swap', family: 'agent', label: '技能' }],
   ['mcp', { icon: 'swap', family: 'agent', label: 'MCP' }],
+  // The delegation family: handing work to a sub-agent, asking how it is going, and stopping it. Named before
+  // the generic `agent` prefix so the specific verbs win.
+  ['agent_delegate', { icon: 'swap', family: 'agent', label: '委派' }],
+  ['agent_job_status', { icon: 'swap', family: 'agent', label: '任务进度' }],
+  ['agent_job_cancel', { icon: 'swap', family: 'agent', label: '取消任务' }],
   ['agent', { icon: 'swap', family: 'agent', label: 'Agent' }],
+  ['task_report', { icon: 'swap', family: 'agent', label: '汇报' }],
   ['task', { icon: 'swap', family: 'agent', label: '子任务' }],
+
+  // Reading files, which is the file-read sub-agent's whole job. Named before the generic read/list rules so
+  // the two tool names a person actually sees here get their own word.
+  ['file_list', { icon: 'file', family: 'read', label: '列目录' }],
+  ['file_read', { icon: 'file', family: 'read', label: '读文件' }],
 
   ['schedule', { icon: 'flag', family: 'schedule', label: '调度' }],
   ['cron', { icon: 'flag', family: 'schedule', label: '调度' }],

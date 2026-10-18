@@ -37,7 +37,14 @@ const box = ref<HTMLTextAreaElement | null>(null)
 const draft = ref('')
 const stripOpen = ref(true)
 const uploading = ref(false)
-const queueOpen = ref(false)
+/**
+ * Whether the waiting items are folded away.
+ *
+ * Open by default: the queue is short and what is in it is the answer to "did my message get through".
+ * Folding is for the case it is worth folding — two or more entries, when the list has grown into a block
+ * between the status line and the box.
+ */
+const queueCollapsed = ref(false)
 const dragging = ref(false)
 
 /**
@@ -74,58 +81,24 @@ const gearOptions = computed(() =>
   gear.value !== '' && !(props.gears ?? []).includes(gear.value) ? [...(props.gears ?? []), gear.value] : props.gears ?? [],
 )
 
-const queueStatus = computed(() => {
-  const summary = props.summary
-  if (!summary) {
-    return ''
-  }
-
-  // No failure count. The queue holds only what is still in play, so this number is always zero — and a
-  // standing 「失败 0」 next to a badge that wisely says nothing is worse than silence: it claims the question
-  // was asked and answered, when it is not being tracked here at all. A failed turn is read in the
-  // conversation, where it wrote its error event.
-  const parts = [`队列 ${summary.pending}`]
-
-  if (summary.runningItemId) {
-    parts.push(`执行中 ${summary.runningItemId}`)
-  }
-
-  return parts.join(' · ')
-})
+/**
+ * The items still waiting their turn, oldest first — the order the queue will run them in.
+ *
+ * Only what has not started. A running turn is not waiting, and it is already visible in the conversation
+ * itself: the reply being written is on screen while it happens. A count of the whole queue is worse than the
+ * list, so it is not said as well; the top bar's badge is where the number lives.
+ */
+const waiting = computed(() =>
+  [...(props.queueItems ?? [])]
+    .filter((item) => item.status === 'Queued')
+    .sort((left, right) => left.seq - right.seq),
+)
 
 /**
- * The rows behind the summary, ordered the way the queue runs: what is in flight, then what is waiting
- * behind it, then what failed. A failed item is listed with its reason rather than only counted — "失败 1"
- * tells a reader that something is wrong and nothing about what.
+ * Whether the entries are on screen. One entry is never folded — the toggle only exists for two or more, and
+ * folding the only line that says what is waiting would hide the one thing this area is for.
  */
-const listed = computed(() => {
-  const rank = (status: string) => (status === 'Running' ? 0 : status === 'Queued' ? 1 : status === 'Failed' ? 2 : 3)
-  return [...(props.queueItems ?? [])].sort((left, right) => rank(left.status) - rank(right.status) || right.seq - left.seq)
-})
-
-const STATUS_TEXT: Record<string, string> = {
-  Queued: '待处理',
-  Running: '执行中',
-  Done: '已完成',
-  Failed: '失败',
-  Canceled: '已取消',
-}
-
-/**
- * Which tools the model actually has. It cannot be inferred: with the desktop off the model never sees those
- * tools, so a request to control the desktop just gets a text answer — which reads as a broken capability
- * rather than a switched-off one.
- */
-const tools = computed(() => props.consumer?.tools ?? [])
-
-const toolsNote = computed(() => {
-  if (tools.value.length === 0) {
-    return '工具：无 · 桌面未启用（设置 → 桌面）'
-  }
-
-  const names = tools.value.map((tool) => (tool.decision === 'ask' ? `${tool.name}（需批准）` : tool.name))
-  return `工具：${names.join('、')}`
-})
+const queueShown = computed(() => waiting.value.length === 1 || !queueCollapsed.value)
 
 /**
  * Why nothing will move. Rendered independently of the queue summary: when the summary is unavailable the
@@ -312,7 +285,7 @@ function tryCommand(): boolean {
 
   if (command.kind === 'status') {
     draft.value = ''
-    queueOpen.value = !queueOpen.value
+    queueCollapsed.value = !queueCollapsed.value
   }
 
   return true
@@ -344,7 +317,6 @@ function focus() {
  */
 function restore(body: string) {
   draft.value = body
-  queueOpen.value = false
   focus()
 }
 
@@ -365,41 +337,21 @@ defineExpose({ focus, restore })
     @drop="onDrop"
     @paste="onPaste"
   >
+    <!--
+      The status line says why nothing will move, and says nothing when something will: with the queue and the
+      tool list no longer rendered here, an empty strip was a row of padding with a chevron on it.
+    -->
     <div
-      v-if="stripOpen"
+      v-if="stripOpen && consumerNote"
       class="composer-strip"
       data-test="composer-strip"
     >
-      <span v-if="queueStatus">{{ queueStatus }}</span>
-      <span v-if="consumerNote" class="muted" data-test="composer-consumer">{{ consumerNote }}</span>
-      <span class="muted" data-test="composer-tools">{{ toolsNote }}</span>
+      <span class="muted" data-test="composer-consumer">{{ consumerNote }}</span>
       <span class="spacer" />
-      <button
-        v-if="listed.length > 0"
-        class="ghost"
-        data-test="composer-queue-toggle"
-        :aria-expanded="queueOpen"
-        :aria-label="queueOpen ? '收起队列清单' : '展开队列清单'"
-        @click="queueOpen = !queueOpen"
-      >
-        <Icon :name="queueOpen ? 'chevron-down' : 'chevron-up'" :size="14" />
-        队列清单
-      </button>
       <button class="ghost" data-test="composer-strip-toggle" aria-label="收起状态条" @click="stripOpen = false">
         <Icon name="chevron-up" :size="14" />
       </button>
     </div>
-
-    <!-- The list behind the badge, from the same answer the badge was computed from. -->
-    <ol v-if="queueOpen" class="queue-items" data-test="composer-queue-list">
-      <li v-for="item in listed" :key="item.itemId" :data-status="item.status" data-test="composer-queue-item">
-        <span class="queue-state">{{ STATUS_TEXT[item.status] ?? item.status }}</span>
-        <span class="queue-id">{{ item.itemId }}</span>
-        <span class="queue-payload">{{ item.payload }}</span>
-        <span v-if="item.error" class="queue-error">{{ item.error }}</span>
-      </li>
-      <li v-if="listed.length === 0" class="queue-empty">（队列为空）</li>
-    </ol>
 
     <div v-if="attachments.length > 0" class="attachments" data-test="composer-attachments">
       <span
@@ -422,6 +374,34 @@ defineExpose({ focus, restore })
           ×
         </button>
       </span>
+    </div>
+
+    <!--
+      The queue, fixed directly above the input box: what is waiting to run, in the order it will run.
+
+      <para>
+      Only waiting entries, and only while there are any. A standing 「队列 0」 is a line about nothing, and a
+      count of the queue is not what a reader wants to know — what is in it is. The arrow folds the list when
+      there is more than one entry to fold, and folds nothing when there is only one.
+      </para>
+    -->
+    <div v-if="waiting.length > 0" class="queue" data-test="composer-queue">
+      <ol v-if="queueShown" class="queue-items" data-test="composer-queue-list">
+        <li v-for="item in waiting" :key="item.itemId" data-test="composer-queue-item">
+          <span class="queue-payload">{{ item.payload }}</span>
+          <span class="queue-id">{{ item.itemId }}</span>
+        </li>
+      </ol>
+      <button
+        v-if="waiting.length > 1"
+        class="ghost queue-toggle"
+        data-test="composer-queue-toggle"
+        :aria-expanded="queueShown"
+        :aria-label="queueShown ? '收起队列' : '展开队列'"
+        @click="queueCollapsed = !queueCollapsed"
+      >
+        <Icon :name="queueShown ? 'chevron-up' : 'chevron-down'" :size="14" />
+      </button>
     </div>
 
     <div class="composer-input">
@@ -447,9 +427,9 @@ defineExpose({ focus, restore })
         />
       </label>
       <span class="spacer" />
-      <span v-if="!stripOpen && queueStatus" class="meta">{{ queueStatus }}</span>
+      <span v-if="!stripOpen && consumerNote" class="meta" data-test="composer-consumer-folded">{{ consumerNote }}</span>
       <button
-        v-if="!stripOpen"
+        v-if="!stripOpen && consumerNote"
         class="ghost"
         data-test="composer-strip-toggle"
         aria-label="展开状态条"
@@ -562,19 +542,24 @@ defineExpose({ focus, restore })
   max-inline-size: 16rem;
 }
 
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-block-start: var(--space-1);
+}
+
 .queue-items {
   list-style: none;
   margin: 0;
-  padding: var(--space-1) var(--space-3);
+  padding: 0 var(--space-3);
   display: grid;
   gap: 2px;
-  border-block-end: 1px solid var(--line);
-  /* A scroll container, which ui.md §2 otherwise forbids — and deliberately so. This one is opt-in: it appears
-     only when someone asks for it (/status, or the ⌃ button), it is capped so a fifty-deep queue cannot push
-     the input box off the window, and it goes away when dismissed. The rule targets the page layout — the
-     top bar, the sidebar and the composer itself must never scroll — and a bounded list the reader opened on
-     purpose is none of those. */
-  max-block-size: 12rem;
+  /* A scroll container, which ui.md §2 otherwise forbids — and deliberately so. It is capped so a fifty-deep
+     queue cannot push the input box off the window, and it is bounded on purpose: the rule targets the page
+     layout — the top bar, the sidebar and the composer itself must never scroll — and this list is none of
+     those. */
+  max-block-size: 8rem;
   overflow-y: auto;
 }
 
@@ -586,46 +571,32 @@ defineExpose({ focus, restore })
   min-inline-size: 0;
 }
 
-.queue-state {
-  flex: none;
-  min-inline-size: 3.5em;
-  color: var(--text-3);
-}
-
-.queue-items > li[data-status='Running'] .queue-state {
-  color: var(--accent);
-}
-
-.queue-items > li[data-status='Failed'] .queue-state,
-.queue-error {
-  color: var(--error);
-}
-
 .queue-id {
   flex: none;
   font-family: var(--font-mono);
   font-size: var(--fs-code);
   line-height: var(--lh-code);
+  color: var(--text-3);
 }
 
+/* What is waiting, which is the payload — the whole reason the line is there. It gets the room; the id
+   follows it and is the first thing to go when there is not enough. */
 .queue-payload {
   flex: 1;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-2);
 }
 
-.queue-error {
-  flex: none;
-  max-inline-size: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.queue-empty {
-  color: var(--text-3);
+/* The fold, at the end of the list it folds. It is the only control here, so it is placed where the eye
+   already is after reading the last entry. */
+.queue-toggle {
+  align-self: flex-end;
+  margin-inline-end: var(--space-3);
+  padding: 0 var(--space-1);
+  line-height: 1;
 }
 
 /* The drop target has to announce itself: a paste that silently fails is worse than one that is refused. */

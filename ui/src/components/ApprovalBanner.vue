@@ -39,6 +39,11 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 <template>
   <div v-if="current" class="approval" data-test="approval-banner">
     <span class="title">模型请求执行动作</span>
+    <!--
+      Whose question this is. A sub-agent's approval arrives while the person may be looking at something
+      else entirely; without the origin it reads as the main agent acting, which is a different thing to allow.
+    -->
+    <span v-if="current.origin" class="origin" data-test="approval-origin">来自 {{ current.origin }}</span>
     <strong data-test="approval-tool">{{ current.toolName }}</strong>
     <span v-if="kind" class="kind">{{ kind }}</span>
     <span v-if="target" class="target" data-test="approval-target">目标 {{ target }}</span>
@@ -69,6 +74,12 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 .title {
   color: var(--warn);
   font-weight: 600;
+}
+
+/* The asker, named before the tool: "who is asking" changes the answer more than "which tool" does. */
+.origin {
+  font-weight: 600;
+  color: var(--text);
 }
 
 .kind {

@@ -11,6 +11,7 @@ import StatusBar from '../src/components/StatusBar.vue'
 import TopBar from '../src/components/TopBar.vue'
 import EventList from '../src/components/EventList.vue'
 import Icon from '../src/components/Icon.vue'
+import HintTip from '../src/components/HintTip.vue'
 import { ICONS } from '../src/icons'
 import { toolAppearance } from '../src/toolAppearance'
 import SessionView from '../src/views/SessionView.vue'
@@ -25,17 +26,6 @@ const baseItem = {
   body: 'hi',
   originalBody: null,
   revisionCount: 0,
-}
-
-/**
- * Opens one row's action menu, the way a reader does.
- *
- * The row's three actions went behind a single affordance in S4, so anything that operates them has to reach
- * through it first. Doing that from a helper rather than repeating the two clicks keeps each test reading as
- * what it is about — arming, retracting, recall — instead of about how to get at the button.
- */
-async function openRowMenu(wrapper: ReturnType<typeof mount>, index: number): Promise<void> {
-  await wrapper.findAll('li')[index]?.find('[data-test=session-row-menu]').trigger('click')
 }
 
 describe('approval banner', () => {
@@ -90,6 +80,61 @@ describe('approval banner', () => {
     const wrapper = mount(ApprovalBanner, { props: { pending: [], desktop: null } })
 
     expect(wrapper.find('[data-test="approval-banner"]').exists()).toBe(false)
+  })
+
+  it('says whose question it is when a sub-agent is asking', async () => {
+    // A sub-agent's approval arrives while the person may be looking at something else. Without the origin it
+    // reads as the main agent acting, which is a different thing to allow.
+    const wrapper = mount(ApprovalBanner, {
+      props: { pending: [{ ...pending, origin: '子 agent「桌面操控」：打开网易云放歌' }], desktop },
+    })
+
+    const origin = wrapper.find('[data-test="approval-origin"]')
+    expect(origin.exists()).toBe(true)
+    expect(origin.text()).toContain('来自 子 agent「桌面操控」：打开网易云放歌')
+  })
+
+  it('says nothing about an origin when the main agent is asking', async () => {
+    const wrapper = mount(ApprovalBanner, { props: { pending: [{ ...pending, origin: null }], desktop } })
+
+    expect(wrapper.find('[data-test="approval-origin"]').exists()).toBe(false)
+  })
+})
+
+describe('status bar job indicator', () => {
+  const job = {
+    id: 'job-1',
+    agentId: 'desktop',
+    agentName: '桌面操控',
+    scenario: 'desktop',
+    goal: '打开网易云放歌',
+    status: 'running',
+    round: 2,
+    maxRounds: 5,
+    startedAt: '2026-10-18T10:00:00+00:00',
+    finishedAt: null,
+    category: null,
+    summary: null,
+    error: null,
+    rounds: [],
+  }
+
+  it('names the running job and offers to stop it', async () => {
+    const wrapper = mount(StatusBar, {
+      props: { connected: true, connectionError: '', endpoint: 'http://127.0.0.1:5280', consumer: null, version: 'v0.1.0', job },
+    })
+
+    expect(wrapper.find('[data-test="status-job"]').text()).toContain('子任务进行中 · 桌面操控 · 第 2/5 轮')
+    await wrapper.find('[data-test="status-job-cancel"]').trigger('click')
+    expect(wrapper.emitted('cancel-job')?.[0]).toEqual(['job-1'])
+  })
+
+  it('renders nothing when nothing is delegated', () => {
+    const wrapper = mount(StatusBar, {
+      props: { connected: true, connectionError: '', endpoint: 'http://127.0.0.1:5280', consumer: null, version: 'v0.1.0', job: null },
+    })
+
+    expect(wrapper.find('[data-test="status-job"]').exists()).toBe(false)
   })
 })
 
@@ -200,7 +245,7 @@ describe('event list', () => {
     expect(wrapper.text()).toContain('orphan')
   })
 
-  it('marks the reply that is still being written and keeps it out of the inspector', async () => {
+  it('marks the reply that is still being written, and keeps it out of the inspector', async () => {
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
@@ -208,7 +253,8 @@ describe('event list', () => {
       },
     })
 
-    expect(wrapper.find('[data-test=session-streaming]').exists()).toBe(true)
+    // The row says a reply is arriving by its own appearance — the class the scoped CSS hangs the blinking caret
+    // off. There is no label beside it announcing it, on purpose.
     expect(wrapper.find('li').classes()).toContain('streaming')
 
     // Clicking it must not try to select seq 0: there is nothing to edit yet.
@@ -358,7 +404,7 @@ describe('event list', () => {
     expect(card.attributes('data-tool-family')).toBe('shell')
   })
 
-  it('drops tool cards entirely in results-only mode, and puts them back', async () => {
+  it('keeps a tool card in the list, one line per call, paired with its result', () => {
     const items = [
       { ...baseItem, seq: 1, body: 'ask' },
       { ...baseItem, seq: 2, kind: 'ToolCall', body: 'bash', meta: { id: 'a', name: 'bash', args: '{}' } },
@@ -367,18 +413,13 @@ describe('event list', () => {
     ]
 
     const wrapper = mount(EventList, { props: { selectedSeq: null, items } })
-    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
 
-    await wrapper.setProps({ resultsOnly: true })
-    expect(wrapper.findAll('[data-tool]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
     expect(wrapper.text()).toContain('ask')
     expect(wrapper.text()).toContain('done')
-
-    await wrapper.setProps({ resultsOnly: false })
-    expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
   })
 
-  it('marks a failed turn as an error row rather than ordinary system text', () => {
+  it('renders a failed turn as ordinary system text, indistinguishable from any other system line', () => {
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
@@ -390,69 +431,86 @@ describe('event list', () => {
     })
 
     const rows = wrapper.findAll('li')
-    expect(rows[0]?.classes()).toContain('is-error')
-    expect(rows[0]?.find('[data-test=session-error-mark]').exists()).toBe(true)
+    expect(rows[0]?.text()).toContain('error: 端点返回 400')
+    expect(rows[1]?.text()).toContain('consumer started')
 
-    // A system line that is not a failure must not borrow the error styling: the marker has to mean something.
+    // Nothing marks the failure out from the line under it: the row carries no error class and no error mark.
+    expect(rows[0]?.classes()).not.toContain('is-error')
+    expect(rows[0]?.find('[data-test=session-error-mark]').exists()).toBe(false)
     expect(rows[1]?.classes()).not.toContain('is-error')
   })
 
-  it('says out loud that an action is armed, because a renamed button is not an announcement', async () => {
-    // Arming swaps 「删除此条」 for 「确认删除此条」 under the reader's hands. A control whose accessible name
-    // changed is not announced, so without this the second press looks like a button that stopped working.
-    const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 5 }] } })
+  it('asks twice before deleting, and withdrawing needs no arming', async () => {
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, latestFromSeq: 1, items: [{ ...baseItem, seq: 5 }] },
+    })
 
-    const announcer = () => wrapper.find('[data-test="session-arm-announcer"]')
-    expect(announcer().attributes('aria-live')).toBe('polite')
-    expect(announcer().text()).toBe('')
-
-    await openRowMenu(wrapper, 0)
-    await wrapper.find('[data-test="session-row-delete"]').trigger('click')
-    expect(announcer().text()).toContain('再次按 Enter 确认')
-    // It says what will happen *and* that it has not happened yet — the second half is the whole point of
-    // arming, and a reader who missed the first half would otherwise assume the row is already gone.
-    expect(announcer().text()).toContain('不会撤销')
-
-    await wrapper.find('[data-test="session-row-retract"]').trigger('click')
-    expect(announcer().text()).toContain('此条及之后')
-    // Not a duplicate: the retract arming replaces the delete one rather than both being pending.
-    expect(announcer().text().match(/已准备/g)).toHaveLength(1)
-
-    // Disarming goes quiet again.
-    await wrapper.find('[data-test="session-row-cancel"]').trigger('click')
-    expect(announcer().text()).toBe('')
-  })
-
-  it('asks twice before deleting, and arms each action separately', async () => {
-    const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 5 }] } })
-
-    // The row's actions live behind one affordance now (S4), so the test opens the menu the way a reader
-    // does. What it still asserts is unchanged: arming reaches nothing, a second press on the *same* action
-    // confirms, and arming one action does not arm the other.
-    await openRowMenu(wrapper, 0)
-
-    await wrapper.find('[data-test=session-row-delete]').trigger('click')
+    // Arming reaches nothing, and says so where it happens: the button under the reader's finger renames itself
+    // and 取消 appears beside it. That pairing is the whole announcement.
+    await wrapper.find('[data-test="session-row-delete-inline"]').trigger('click')
     expect(wrapper.emitted('remove')).toBeUndefined()
-    expect(wrapper.find('[data-test=session-row-delete]').text()).toContain('确认删除')
+    expect(wrapper.find('[data-test="session-row-delete-inline"]').text()).toContain('确认删除')
+    expect(wrapper.find('[data-test="session-row-cancel"]').exists()).toBe(true)
 
-    // Arming "删除此条" must not confirm "删除此处及之后": two different amounts of history.
-    expect(wrapper.find('[data-test=session-row-retract]').text()).toContain('删除此处及之后')
-    expect(wrapper.find('[data-test=session-row-retract]').text()).not.toContain('确认')
-
-    await wrapper.find('[data-test=session-row-delete]').trigger('click')
+    await wrapper.find('[data-test="session-row-delete-inline"]').trigger('click')
     expect(wrapper.emitted('remove')?.[0]).toEqual([5])
   })
 
-  it('truncates from a row without touching the rows before it', async () => {
-    const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 5 }] } })
+  it('withdraws on one press, and keeps 取消 for the delete only', async () => {
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, latestFromSeq: 1, items: [{ ...baseItem, seq: 5 }] },
+    })
 
-    await openRowMenu(wrapper, 0)
-    await wrapper.find('[data-test=session-row-retract]').trigger('click')
-    expect(wrapper.emitted('retract')).toBeUndefined()
-
-    await wrapper.find('[data-test=session-row-retract]').trigger('click')
-    expect(wrapper.emitted('retract')?.[0]).toEqual([5])
+    await wrapper.find('[data-test=session-row-withdraw-inline]').trigger('click')
+    expect(wrapper.emitted('withdraw')?.[0]).toEqual([5])
     expect(wrapper.emitted('remove')).toBeUndefined()
+    // Nothing is armed, so there is nothing to take back: no row offers 取消. The withdrawal stands until the
+    // reader sends a new message, which is the server's rule and not a button here.
+    expect(wrapper.find('[data-test=session-row-cancel]').exists()).toBe(false)
+  })
+
+  it('offers delete only for rows of the latest conversation', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        latestFromSeq: 3,
+        items: [
+          { ...baseItem, seq: 1, kind: 'Assistant', body: 'older' },
+          { ...baseItem, seq: 3, body: 'latest' },
+          { ...baseItem, seq: 5, kind: 'Assistant', body: 'reply' },
+        ],
+      },
+    })
+
+    const rows = wrapper.findAll('li')
+    expect(rows[0]?.find('[data-test=session-row-delete-inline]').exists()).toBe(false)
+    expect(rows[1]?.find('[data-test=session-row-delete-inline]').exists()).toBe(true)
+    expect(rows[2]?.find('[data-test=session-row-delete-inline]').exists()).toBe(true)
+
+    // And there is no second place it could hide: the row's actions are the only place they live.
+    expect(wrapper.findAll('.row-menu')).toHaveLength(0)
+  })
+
+  it('has one 撤回 per row, and no duplicate of it anywhere', () => {
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, latestFromSeq: 1, items: [{ ...baseItem, seq: 5 }] },
+    })
+
+    expect(wrapper.findAll('[data-test=session-row-withdraw-inline]')).toHaveLength(1)
+    expect(wrapper.find('[data-test=session-row-withdraw]').exists()).toBe(false)
+    expect(wrapper.find('.row-menu').exists()).toBe(false)
+  })
+
+  it('offers no delete while a withdrawal is pending or a turn is running', async () => {
+    const pending = mount(EventList, {
+      props: { selectedSeq: null, latestFromSeq: 1, withdrawn: true, items: [{ ...baseItem, seq: 5 }] },
+    })
+    expect(pending.find('[data-test=session-row-delete-inline]').exists()).toBe(false)
+
+    const busy = mount(EventList, {
+      props: { selectedSeq: null, latestFromSeq: 1, busy: true, items: [{ ...baseItem, seq: 5 }] },
+    })
+    expect(busy.find('[data-test=session-row-delete-inline]').exists()).toBe(false)
   })
 
   it('offers recall only for the reader\'s own typed messages', async () => {
@@ -469,12 +527,10 @@ describe('event list', () => {
     })
 
     // Restoring an assistant reply would send it as the human's words on the next turn, and a scheduled or
-    // spoken message is not something they can resend by hand. Each row is opened in turn, because "absent
-    // from the menu" is now the claim being made rather than "absent from the row".
+    // spoken message is not something they can resend by hand.
     const rows = wrapper.findAll('li')
     for (const [index, expected] of [true, false, false, false].entries()) {
-      await openRowMenu(wrapper, index)
-      expect(rows[index]?.find('[data-test=session-restore]').exists()).toBe(expected)
+      expect(rows[index]?.find('[data-test=session-row-restore]').exists()).toBe(expected)
     }
   })
 
@@ -483,19 +539,18 @@ describe('event list', () => {
       props: { selectedSeq: null, items: [{ ...baseItem, seq: 5, kind: 'User', source: 'Text', body: '打错了' }] },
     })
 
-    await openRowMenu(wrapper, 0)
-    await wrapper.find('[data-test=session-restore]').trigger('click')
+    expect(wrapper.find('[data-test=session-row-restore]').text()).toContain('复用')
+    await wrapper.find('[data-test=session-row-restore]').trigger('click')
     expect(wrapper.emitted('restore')?.[0]).toEqual([5])
     expect(wrapper.emitted('remove')).toBeUndefined()
-    expect(wrapper.emitted('retract')).toBeUndefined()
+    expect(wrapper.emitted('withdraw')).toBeUndefined()
   })
 
-  it('shows one open menu at a time, and closes the open one when it is re-pressed', async () => {
-    // A screen of twenty open menus is a screen of noise: every row would show the same three actions
-    // floating over a different body of text.
+  it('arms one row at a time, so a second row cannot inherit the first one\'s confirmation', async () => {
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
+        latestFromSeq: 1,
         items: [
           { ...baseItem, seq: 1, kind: 'User', source: 'Text', body: 'one' },
           { ...baseItem, seq: 2, kind: 'Assistant', source: 'Text', body: 'two' },
@@ -503,34 +558,52 @@ describe('event list', () => {
       },
     })
 
-    await openRowMenu(wrapper, 0)
-    expect(wrapper.findAll('.row-menu')).toHaveLength(1)
+    const rows = wrapper.findAll('li')
+    await rows[0]?.find('[data-test=session-row-delete-inline]').trigger('click')
+    expect(rows[0]?.find('[data-test=session-row-delete-inline]').text()).toContain('确认删除')
 
-    await openRowMenu(wrapper, 1)
-    expect(wrapper.findAll('.row-menu')).toHaveLength(1)
-    expect(wrapper.findAll('li')[1]?.find('.row-menu').exists()).toBe(true)
-
-    // Re-pressing the same row closes it, and drops any arming rather than leaving a half-armed retraction
-    // waiting for the next click.
-    await wrapper.findAll('li')[1]?.find('[data-test=session-row-menu]').trigger('click')
-    expect(wrapper.findAll('.row-menu')).toHaveLength(0)
+    // Arming the second row moves the confirmation rather than leaving two armed at once.
+    await rows[1]?.find('[data-test=session-row-delete-inline]').trigger('click')
+    expect(rows[0]?.find('[data-test=session-row-delete-inline]').text()).toBe('删除')
+    expect(rows[1]?.find('[data-test=session-row-delete-inline]').text()).toContain('确认删除')
+    expect(wrapper.emitted('remove')).toBeUndefined()
   })
 
-  it('does not confirm an action the reader only looked at', async () => {
-    // Opening the menu and closing it must leave nothing armed: the next click on 删除此条 has to arm first,
-    // or a reader who dismissed a menu by accident would then have to press twice for no stated reason.
-    const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 5 }] } })
+  it('lets Escape back out of an armed delete, because cancel is not only a button', async () => {
+    // Armed and then abandoned is the state a reader most needs out of, and the pointer may already be
+    // nowhere near the row: the keyboard path has to reach it too.
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, latestFromSeq: 1, items: [{ ...baseItem, seq: 5 }] },
+    })
 
-    await openRowMenu(wrapper, 0)
-    await wrapper.find('[data-test=session-row-delete]').trigger('click')
-    expect(wrapper.find('[data-test=session-row-delete]').text()).toContain('确认删除')
+    await wrapper.find('[data-test=session-row-delete-inline]').trigger('click')
+    await wrapper.find('li').trigger('keydown', { key: 'Escape' })
 
-    await wrapper.find('[data-test=session-row-menu]').trigger('click')
-    expect(wrapper.findAll('.row-menu')).toHaveLength(0)
-
-    await openRowMenu(wrapper, 0)
-    expect(wrapper.find('[data-test=session-row-delete]').text()).not.toContain('确认')
+    expect(wrapper.find('[data-test=session-row-delete-inline]').text()).toBe('删除')
     expect(wrapper.emitted('remove')).toBeUndefined()
+    // And the next press arms again rather than confirming what Escape just cancelled.
+    await wrapper.find('[data-test=session-row-delete-inline]').trigger('click')
+    expect(wrapper.emitted('remove')).toBeUndefined()
+  })
+
+  it('shows no source chip on an Agent row, because that is the main agent replying', () => {
+    // Sub-agent reports are filtered out by the server; an Agent-source row left in the view is the main
+    // agent's answer to one, and labelling it 「子 agent」 would name the wrong speaker.
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 1, kind: 'Assistant', source: 'Agent', body: '收到汇报' },
+          { ...baseItem, seq: 2, kind: 'User', source: 'Text', body: 'mine' },
+        ],
+      },
+    })
+
+    const rows = wrapper.findAll('li')
+    expect(rows[0]?.find('.source').exists()).toBe(false)
+    expect(rows[0]?.text()).not.toContain('子 agent')
+    // A known source still gets its word.
+    expect(rows[1]?.find('.source').text()).toBe('文本')
   })
 
   it('shows recorded reasoning folded, and live reasoning open with a clock', () => {
@@ -595,11 +668,10 @@ describe('event list', () => {
     expect(elapsed).toMatch(/已思考 01:1[45]/)
   })
 
-  it('keeps a thinking row out of the way in results-only mode', () => {
+  it('keeps a thinking row as its own row rather than folding it into the answer', () => {
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
-        resultsOnly: true,
         items: [
           { ...baseItem, seq: 1, body: '问' },
           { ...baseItem, seq: 2, kind: 'Thinking', body: '想' },
@@ -608,7 +680,7 @@ describe('event list', () => {
       },
     })
 
-    expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('问')
     expect(wrapper.text()).toContain('答')
   })
@@ -621,10 +693,11 @@ describe('event list', () => {
 
 function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface {
   return {
-    session: vi.fn(async () => ({ lastSeq: 0, items: [], context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 } })),
+    session: vi.fn(async () => ({ lastSeq: 0, conversation: { latestFromSeq: null, withdrawn: null }, items: [], context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 } })),
     editSession: vi.fn(async () => {}),
-    deleteEvent: vi.fn(async () => {}),
-    retractFrom: vi.fn(async () => {}),
+    deleteLatest: vi.fn(async () => ({ removedFrom: 1, removedTo: 1, purgedEvents: 1, purgedRevisions: 0, purgedMemories: 0, eventSeq: 2 })),
+    withdrawFrom: vi.fn(async () => ({ withdrawnFrom: 1, withdrawnTo: 1, conversations: 1, events: 1 })),
+    cancelWithdrawal: vi.fn(async () => {}),
     sessionRevisions: vi.fn(async () => []),
     queue: vi.fn(async () => ({ headSeq: 0, runningItemId: null, depth: 0, items: [] })),
     cancel: vi.fn(async () => true),
@@ -663,14 +736,55 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
+      agents: { main: { prompt: null }, subAgents: [] },
+      files: { enabled: false, roots: [] },
     })),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
-    saveSettings: vi.fn(async (patch: RuntimeSettings) => ({
-      settings: { ...(await stubApi().settings()), ...patch, model: { ...patch.model, apiKeySet: false } },
-      consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
-      voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
-      compaction: null,
+    agents: vi.fn(async () => ({
+      main: { prompt: null, defaultPrompt: '', effectivePrompt: '', promptTokens: 0 },
+      subAgents: [],
+      scenarios: [],
+      problems: [],
+      limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
+      files: { enabled: false, roots: [] },
+      desktopEnabled: false,
     })),
+    saveAgents: vi.fn(async (agents) => ({
+      agents: {
+        main: { ...agents.main, defaultPrompt: '', effectivePrompt: '', promptTokens: 0 },
+        subAgents: [],
+        scenarios: [],
+        problems: [],
+        limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
+        files: { enabled: false, roots: [] },
+        desktopEnabled: false,
+      },
+      consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
+    })),
+    agentJobs: vi.fn(async () => []),
+    cancelAgentJob: vi.fn(async () => true),
+    saveSettings: vi.fn(async (patch: RuntimeSettings) => {
+      // The settings response carries the agents section with sub-agent keys masked, so the stub mirrors the
+      // server's shape rather than handing the stored one back verbatim.
+      const stored = await stubApi().settings()
+      return {
+        settings: {
+          ...stored,
+          ...patch,
+          agents: {
+            main: patch.agents.main,
+            subAgents: patch.agents.subAgents.map((agent) => ({
+              ...agent,
+              model: agent.model === null ? null : { ...agent.model, apiKeySet: Boolean(agent.model.apiKey) },
+            })),
+          },
+          model: { ...patch.model, apiKeySet: false },
+        },
+        consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
+        voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
+        compaction: null,
+      }
+    }),
     ...overrides,
   }
 }
@@ -1085,38 +1199,15 @@ describe('composer', () => {
     expect(on.emitted('approval')?.[0]).toEqual(['dangerous'])
   })
 
-  it('says which tools the model has, because off is not inferable', async () => {
-    const api = stubApi()
+  it('says nothing in the status line while the queue is moving', () => {
     const stats = { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }
-
-    // Nothing registered: the model cannot ask, and a desktop request just gets text back.
-    const none = mount(Composer, {
-      props: { api, consumer: { running: true, reason: '运行中', model: 'm', stats, tools: [] } },
+    const wrapper = mount(Composer, {
+      props: { api: stubApi(), consumer: { running: true, reason: '运行中', model: 'm', stats, tools: [] } },
     })
-    await flushPromises()
-    expect(none.find('[data-test=composer-tools]').text()).toContain('桌面未启用')
 
-    // With the capability on, the line names the tools and says which one needs approval.
-    const some = mount(Composer, {
-      props: {
-        api,
-        consumer: {
-          running: true,
-          reason: '运行中',
-          model: 'm',
-          stats,
-          tools: [
-            { name: 'desktop_observe', decision: 'allow' },
-            { name: 'desktop_act', decision: 'ask' },
-          ],
-        },
-      },
-    })
-    await flushPromises()
-
-    const line = some.find('[data-test="composer-tools"]').text()
-    expect(line).toContain('desktop_observe')
-    expect(line).toContain('desktop_act（需批准）')
+    // The tool list and the queue count used to be printed here. Neither is a reason for the reader to act,
+    // and a strip that says 「队列 0」 is a line about nothing — so with nothing wrong there is no strip.
+    expect(wrapper.find('[data-test="composer-strip"]').exists()).toBe(false)
   })
 
   it('refuses to send an empty box', async () => {
@@ -1130,13 +1221,13 @@ describe('composer', () => {
     expect(api.submitInput).not.toHaveBeenCalled()
   })
 
-  it('shows the same queue numbers the top bar badge shows', () => {
-    const summary: QueueSummary = { depth: 1, pending: 1, failed: 1, runningItemId: 'q-0184' }
-    const wrapper = mount(Composer, { props: { api: stubApi(), summary } })
+  it('says nothing about the queue when nothing is waiting', () => {
+    const summary: QueueSummary = { depth: 1, pending: 0, failed: 1, runningItemId: 'q-0184' }
+    const wrapper = mount(Composer, { props: { api: stubApi(), summary, queueItems: [] } })
 
-    const strip = wrapper.find('[data-test="composer-strip"]').text()
-    expect(strip).toContain('队列 1')
-    expect(strip).toContain('执行中 q-0184')
+    // No 「队列 0」, no running id, no empty list: the whole area is absent until something waits in it.
+    expect(wrapper.find('[data-test="composer-queue"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('队列')
   })
 
   it('explains why a delivered message will not move', () => {
@@ -1166,37 +1257,55 @@ describe('composer', () => {
     expect(wrapper.emitted('failed')?.[0]).toEqual(['Error: 401'])
   })
 
-  it('unfolds the queue behind the badge, in the order the queue runs', async () => {
+  it('shows what is waiting, oldest first, and folds it away on one press', async () => {
     const items: QueueItem[] = [
       { itemId: 'q3', seq: 3, source: 'Text', status: 'Failed', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 1, error: '端点拒绝', payload: 'third' },
       { itemId: 'q2', seq: 2, source: 'Text', status: 'Queued', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'second' },
-      { itemId: 'q1', seq: 1, source: 'Text', status: 'Running', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'first' },
+      { itemId: 'q1', seq: 1, source: 'Text', status: 'Queued', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'first' },
     ]
-    const summary = summarizeQueue({ headSeq: 3, runningItemId: 'q1', depth: 2, items })
+    const summary = summarizeQueue({ headSeq: 3, runningItemId: null, depth: 3, items })
     const wrapper = mount(Composer, { props: { api: stubApi(), summary, queueItems: items } })
 
-    expect(wrapper.find('[data-test="composer-queue-list"]').exists()).toBe(false)
-    await wrapper.find('[data-test="composer-queue-toggle"]').trigger('click')
-
+    // Waiting only, in the order the queue runs them: what failed is read where it wrote its error, and a
+    // finished entry is the conversation it produced.
     const rows = wrapper.findAll('[data-test="composer-queue-item"]')
-    expect(rows.map((row) => row.attributes('data-status'))).toEqual(['Running', 'Queued', 'Failed'])
-    // "失败 1" says something is wrong and nothing about what; the row has to carry the reason.
-    expect(rows[2]?.text()).toContain('端点拒绝')
+    expect(rows.map((row) => row.text())).toEqual(['firstq1', 'secondq2'])
+
+    await wrapper.find('[data-test="composer-queue-toggle"]').trigger('click')
+    expect(wrapper.find('[data-test="composer-queue-list"]').exists()).toBe(false)
+
+    await wrapper.find('[data-test="composer-queue-toggle"]').trigger('click')
+    expect(wrapper.findAll('[data-test="composer-queue-item"]')).toHaveLength(2)
   })
 
-  it('answers /status with the list and never delivers it as a message', async () => {
+  it('shows a lone waiting entry without a fold button, because there is nothing to fold', () => {
     const items: QueueItem[] = [
-      { itemId: 'q1', seq: 1, source: 'Text', status: 'Running', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'working' },
+      { itemId: 'q1', seq: 1, source: 'Voice', status: 'Queued', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'heard something' },
+    ]
+    const wrapper = mount(Composer, {
+      props: { api: stubApi(), summary: summarizeQueue({ headSeq: 1, runningItemId: null, depth: 1, items }), queueItems: items },
+    })
+
+    expect(wrapper.find('[data-test="composer-queue-item"]').text()).toContain('heard something')
+    expect(wrapper.find('[data-test="composer-queue-toggle"]').exists()).toBe(false)
+  })
+
+  it('answers /status by folding the list, and never delivers it as a message', async () => {
+    const items: QueueItem[] = [
+      { itemId: 'q1', seq: 1, source: 'Text', status: 'Queued', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'working' },
+      { itemId: 'q2', seq: 2, source: 'Text', status: 'Queued', enqueuedAt: '', startedAt: null, finishedAt: null, attempt: 0, error: null, payload: 'waiting' },
     ]
     const api = stubApi()
-    const wrapper = mount(Composer, { props: { api, summary: summarizeQueue({ headSeq: 1, runningItemId: 'q1', depth: 1, items }), queueItems: items } })
+    const wrapper = mount(Composer, { props: { api, summary: summarizeQueue({ headSeq: 2, runningItemId: null, depth: 2, items }), queueItems: items } })
+
+    expect(wrapper.find('[data-test="composer-queue-list"]').exists()).toBe(true)
 
     await wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').setValue('/status')
     await wrapper.find('[data-test="composer-input"]').trigger('keydown.enter')
     await flushPromises()
 
     expect(api.submitInput).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-test="composer-queue-list"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="composer-queue-list"]').exists()).toBe(false)
     expect(wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('')
   })
 
@@ -1315,7 +1424,7 @@ describe('inspector', () => {
 
   it('announces its own two-step confirmation', async () => {
     const wrapper = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [] },
+      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [], canDeleteLatest: true },
     })
 
     const announcer = () => wrapper.find('[data-test="inspector-arm-announcer"]')
@@ -1323,9 +1432,38 @@ describe('inspector', () => {
 
     await wrapper.find('[data-test="session-delete"]').trigger('click')
     expect(announcer().text()).toContain('再次按下确认')
+    expect(announcer().text()).toContain('最新一次对话')
 
     await wrapper.find('[data-test="session-delete-cancel"]').trigger('click')
     expect(announcer().text()).toBe('')
+  })
+
+  it('withdraws on one click, with no confirmation step to announce', async () => {
+    const wrapper = mount(Inspector, {
+      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [] },
+    })
+
+    await wrapper.find('[data-test="session-withdraw"]').trigger('click')
+
+    expect(wrapper.emitted('withdraw')).toHaveLength(1)
+    // Nothing armed, so there is nothing to announce and no confirm button to press.
+    expect(wrapper.find('[data-test="inspector-arm-announcer"]').text()).toBe('')
+    expect(wrapper.find('[data-test="session-withdraw-confirm"]').exists()).toBe(false)
+  })
+
+  it('offers delete only when the selection is in the latest conversation', () => {
+    const allowed = mount(Inspector, {
+      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [], canDeleteLatest: true },
+    })
+    expect(allowed.find('[data-test="session-delete"]').exists()).toBe(true)
+
+    // An earlier conversation, a pending withdrawal, or a running turn all mean "no delete": the server
+    // refuses it then, and the panel must not offer what it cannot do.
+    const refused = mount(Inspector, {
+      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [], canDeleteLatest: false },
+    })
+    expect(refused.find('[data-test="session-delete"]').exists()).toBe(false)
+    expect(refused.find('[data-test="session-withdraw"]').exists()).toBe(true)
   })
 
   it('offers a resize handle only where resizing would mean something', () => {
@@ -1628,7 +1766,7 @@ describe('markdown body', () => {
 })
 
 describe('session view composer wiring', () => {
-  it('reports a delivery as queued rather than as a new session row', async () => {
+  it('delivers a message without announcing it, because the queue is where it shows up', async () => {
     const api = stubApi()
     const wrapper = mount(SessionView, { props: { api } })
     await flushPromises()
@@ -1639,10 +1777,9 @@ describe('session view composer wiring', () => {
 
     expect(api.submitInput).toHaveBeenCalledWith('hello', 'text', { media: [], reasoningEffort: '' })
 
-    // "已入队 · 等待执行" is the whole truth here. The queue is strict FIFO, so every message waits its turn;
-    // wording that claimed a message jumped ahead would be promising something the runtime does not do.
-    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('已入队')
-    expect(wrapper.find('[data-test="session-notice"]').text()).toContain('等待执行')
+    // A line naming the item id was said on every single send and told the reader nothing they could act on:
+    // the entry is visible in the queue above the box, which is the same answer said where it matters.
+    expect(wrapper.find('[data-test="session-notice"]').exists()).toBe(false)
     expect(wrapper.emitted('changed')).toHaveLength(1)
   })
 })
@@ -1713,5 +1850,72 @@ describe('icon set', () => {
     expect(named.attributes('aria-hidden')).toBeUndefined()
     expect(named.attributes('role')).toBe('img')
     expect(named.attributes('aria-label')).toBe('搜索')
+  })
+})
+
+describe('hint tip', () => {
+  it('marks the sentence instead of printing it, and keeps the sentence in the document', () => {
+    // The whole point of the change: a settings page with twenty-seven explanations under its fields is a page
+    // a reader scrolls past twice. The sentence is hidden, not deleted — which is what lets the tests that
+    // already assert on this text keep working.
+    const wrapper = mount(HintTip, { slots: { default: '留空表示不配置' } })
+
+    expect(wrapper.find('[data-icon="info"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('留空表示不配置')
+    expect(wrapper.find('.hint-dot').attributes('title')).toBeUndefined()
+  })
+
+  it('describes the button with the one sentence it opens', () => {
+    // `aria-describedby` is why the pop is hidden with opacity rather than visibility: a visibility-hidden
+    // element leaves the accessibility tree, and the description would then point at nothing.
+    const wrapper = mount(HintTip, { slots: { default: '关闭会立即释放麦克风设备' } })
+    const id = wrapper.find('.hint-dot').attributes('aria-describedby')
+
+    expect(id).toBeTruthy()
+    const pop = wrapper.find(`[id="${id}"]`)
+    expect(pop.exists()).toBe(true)
+    expect(pop.attributes('role')).toBe('tooltip')
+    expect(pop.text()).toBe('关闭会立即释放麦克风设备')
+  })
+
+  it('keeps the markup a sentence came with', () => {
+    // Several of these sentences carry <code> and <strong>. A `title` attribute could not, which is the other
+    // reason this is an element.
+    const wrapper = mount(HintTip, { slots: { default: '<code>PARTNER_LLM_MODEL</code>' } })
+    expect(wrapper.find('.hint-pop code').exists()).toBe(true)
+  })
+
+  it('gives every instance its own id, so a page of them cannot cross-describe', () => {
+    const wrapper = mount(
+      { components: { HintTip }, template: '<div><HintTip>甲</HintTip><HintTip>乙</HintTip></div>' },
+      {},
+    )
+    const ids = wrapper.findAll('.hint-dot').map((button) => button.attributes('aria-describedby'))
+
+    expect(new Set(ids).size).toBe(2)
+  })
+
+  it('anchors the pop to the end when it is asked to', () => {
+    // A mark at the right-hand end of a row opens leftward, or the pop runs off the panel it is in.
+    const wrapper = mount(HintTip, { props: { align: 'end' }, slots: { default: '说明' } })
+    expect(wrapper.find('.hint-pop').classes()).toContain('is-end')
+  })
+
+  it('does not let a click on the mark reach the field it stands beside', () => {
+    // It sits inside a <label>, where an unstopped click would move the caret into the input beside it.
+    const wrapper = mount(
+      { components: { HintTip }, template: '<label><input /><HintTip>说明</HintTip></label>' },
+      {},
+    )
+    let reached = false
+    wrapper.find('label').element.addEventListener('click', () => {
+      reached = true
+    })
+
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+    wrapper.find('.hint-dot').element.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(reached).toBe(false)
   })
 })

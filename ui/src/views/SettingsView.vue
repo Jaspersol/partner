@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import HintTip from '../components/HintTip.vue'
 import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState, VoiceTestResult } from '../api'
 
 
@@ -10,7 +11,7 @@ import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, Voi
  */
 const DEFAULT_REASONING_GEARS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
 const props = defineProps<{ api: PartnerApiSurface }>()
-const emit = defineEmits<{ context: [value: string]; saved: [] }>()
+const emit = defineEmits<{ saved: []; navigate: [key: string] }>()
 
 /** The form is a projection of the stored settings; nothing here is authoritative until it is saved. */
 const form = reactive<RuntimeSettings>({
@@ -49,6 +50,11 @@ const form = reactive<RuntimeSettings>({
   // this page: a server row and a skill row need more room than a card in a settings form gives them.
   mcp: { enabled: false, servers: [], allowedTools: [] },
   skills: { disabled: [] },
+
+  // Also carried, not edited: the prompts page owns the agents section. Dropping it here would reset every
+  // prompt and sub-agent the next time anyone saved a voice setting.
+  agents: { main: { prompt: null }, subAgents: [] },
+  files: { enabled: false, roots: [] },
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
@@ -84,6 +90,7 @@ function fingerprint(): string {
     local: form.local,
     model: form.model,
     desktop: form.desktop,
+    files: form.files,
     // The key is write-only: it is either the draft or nothing, and it is the one field a fingerprint would
     // otherwise get wrong in both directions.
     apiKey: apiKeyEdited.value ? apiKeyDraft.value : null,
@@ -281,6 +288,14 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   form.mcp = { ...settings.mcp, servers: [...(settings.mcp?.servers ?? [])], allowedTools: [...(settings.mcp?.allowedTools ?? [])] }
   form.skills = { disabled: [...(settings.skills?.disabled ?? [])] }
 
+  // Carried, never edited here. Replaced rather than merged for the same reason: the prompts page is the one
+  // place that writes this section, and this page's only job is to hand it back unchanged.
+  form.agents = {
+    main: { prompt: settings.agents?.main?.prompt ?? null },
+    subAgents: (settings.agents?.subAgents ?? []).map((agent) => ({ ...agent })),
+  }
+  form.files = { enabled: settings.files?.enabled ?? false, roots: [...(settings.files?.roots ?? [])] }
+
   apiKeySet.value = 'apiKeySet' in settings.model ? Boolean(settings.model.apiKeySet) : false
   apiKeyDraft.value = ''
   apiKeyEdited.value = false
@@ -295,7 +310,6 @@ async function refresh() {
     apply(await props.api.settings())
     voice.value = await props.api.voice()
     devices.value = await props.api.devices()
-    emit('context', '设置 · 运行时')
   } catch (failure) {
     error.value = String(failure)
   }
@@ -319,6 +333,10 @@ async function persist() {
     // was decided there the next time anybody saved a voice setting.
     mcp: form.mcp,
     skills: form.skills,
+    agents: form.agents,
+    // A row left blank is not a directory. Sending it would have the server reject the whole save over an
+    // empty string the person never meant to add.
+    files: { enabled: form.files.enabled, roots: form.files.roots.map((root) => root.trim()).filter((root) => root !== '') },
     model: {
       baseUrl: form.model.baseUrl === '' ? null : form.model.baseUrl,
       model: form.model.model === '' ? null : form.model.model,
@@ -427,7 +445,20 @@ function useAsDefault(index: number) {
  * from someone who came to change one thing — and the reader is the only one who knows which thing.
  * </para>
  */
-const GROUPS = ['input', 'output', 'asr', 'tts', 'local', 'desktop', 'model'] as const
+/**
+ * The desktop switch and the built-in desktop sub-agent have to agree.
+ *
+ * <para>
+ * The server refuses this pair and returns a 400, which the generic error line shows. But the settings page is
+ * where the switch was flipped, so it is where the reason belongs: the prompts page holds the agent, and a link
+ * there is the whole fix.
+ * </para>
+ */
+const desktopAgentOff = computed(
+  () => form.desktop.enabled && form.agents.subAgents.some((agent) => agent.id === 'desktop' && !agent.enabled),
+)
+
+const GROUPS = ['input', 'output', 'asr', 'tts', 'local', 'desktop', 'files', 'model'] as const
 const FOLDED_KEY = 'partner.settings.folded'
 
 const folded = ref<Record<string, boolean>>({})
@@ -514,44 +545,42 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               语音输入
             </button>
+            <HintTip>关闭会立即释放麦克风设备（不保留占用）。</HintTip>
           </h2>
           <div v-show="folded.input !== true" :id="'settings-body-input'" class="card-body">
-          <p class="card-note">关闭会立即释放麦克风设备（不保留占用）。</p>
           <label class="field">
             <span>启用麦克风输入</span>
             <input type="checkbox" v-model="form.input.enabled" data-test="input-enabled" />
           </label>
           <label class="field">
-            <span>静音阈值 (0-1)</span>
+            <span>静音阈值 (0-1) <HintTip>低于此电平视为静音；实测默认 0.03</HintTip></span>
             <input type="number" step="0.01" min="0" v-model.number="form.input.silenceThreshold" />
-            <span class="source">低于此电平视为静音；实测默认 0.03</span>
           </label>
           <label class="field" data-test="wake-tone">
-            <span>唤醒提示音</span>
+            <span>唤醒提示音 <HintTip>唤醒词命中时「叮」一声（需语音输出开启）</HintTip></span>
             <input type="checkbox" v-model="form.input.wakeTone" />
-            <span class="source">唤醒词命中时「叮」一声（需语音输出开启）</span>
           </label>
           <label class="field">
-            <span>整句间隔 (ms)</span>
+            <span>整句间隔 (ms) <HintTip>停顿超过此值切句；实测默认 1200</HintTip></span>
             <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
-            <span class="source">停顿超过此值切句；实测默认 1200</span>
           </label>
           <label class="field" data-test="wake-timeout">
-            <span>唤醒后等待开口 (ms)</span>
-            <input type="number" v-model.number="form.input.wakeTimeoutMs" />
-            <span class="source">
-              提示音到开口之间的沉默是「在想说什么」，不是「说完了」——这段最多等这么久；
-              一开口就回到整句间隔
+            <span>
+              唤醒后等待开口 (ms)
+              <HintTip>
+                提示音到开口之间的沉默是「在想说什么」，不是「说完了」——这段最多等这么久；
+                一开口就回到整句间隔
+              </HintTip>
             </span>
+            <input type="number" v-model.number="form.input.wakeTimeoutMs" />
           </label>
           <label class="field">
             <span>句间间隔 (ms)</span>
             <input type="number" v-model.number="form.input.sentenceGapMs" />
           </label>
           <label class="field">
-            <span>分析窗口 (s)</span>
+            <span>分析窗口 (s) <HintTip>环形缓冲长度；实测默认 8</HintTip></span>
             <input type="number" v-model.number="form.input.windowSeconds" />
-            <span class="source">环形缓冲长度；实测默认 8</span>
           </label>
           <label class="field">
             <span>无标点强切长度（字）</span>
@@ -562,13 +591,12 @@ defineExpose({ refresh, hasUnsavedChanges })
             <input type="checkbox" v-model="form.input.asrStream" data-test="input-asr-stream" />
           </label>
           <label class="field">
-            <span>输入设备</span>
+            <span>输入设备 <HintTip>按名称模糊匹配；枚举不到设备时可手填</HintTip></span>
             <select v-if="inputOptions.length > 0" v-model="form.input.deviceId" data-test="input-device">
               <option :value="null">（默认设备）</option>
               <option v-for="name in inputOptions" :key="name" :value="name">{{ name }}</option>
             </select>
             <input v-else type="text" v-model="form.input.deviceId" placeholder="（默认设备）" data-test="input-device" />
-            <span class="source">按名称模糊匹配；枚举不到设备时可手填</span>
           </label>
 
           <p class="card-note" data-test="input-effect">
@@ -618,9 +646,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               语音输出
             </button>
+            <HintTip>播放期间停听麦克风，避免把自身语音当成输入。</HintTip>
           </h2>
           <div v-show="folded.output !== true" :id="'settings-body-output'" class="card-body">
-          <p class="card-note">播放期间停听麦克风，避免把自身语音当成输入。</p>
           <label class="field">
             <span>启用语音输出</span>
             <input type="checkbox" v-model="form.output.enabled" data-test="output-enabled" />
@@ -638,14 +666,12 @@ defineExpose({ refresh, hasUnsavedChanges })
             <input type="number" v-model.number="form.output.gapMs" />
           </label>
           <label class="field">
-            <span>播放期停听 (drain, ms)</span>
+            <span>播放期停听 (drain, ms) <HintTip>播放结束后继续停听的时长；实测默认 400</HintTip></span>
             <input type="number" v-model.number="form.output.drainMs" />
-            <span class="source">播放结束后继续停听的时长；实测默认 400</span>
           </label>
           <label class="field">
-            <span>采样率</span>
+            <span>采样率 <HintTip>必须与 TTS 服务输出一致</HintTip></span>
             <input type="number" v-model.number="form.output.sampleRate" />
-            <span class="source">必须与 TTS 服务输出一致</span>
           </label>
           <label class="field">
             <span>播放时停听麦克风</span>
@@ -680,9 +706,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               语音识别（ASR）
             </button>
+            <HintTip>识别端点。留空表示不配置——此时麦克风输入不会转写。</HintTip>
           </h2>
           <div v-show="folded.asr !== true" :id="'settings-body-asr'" class="card-body">
-          <p class="card-note">识别端点。留空表示不配置——此时麦克风输入不会转写。</p>
           <label class="field">
             <span>协议</span>
             <select v-model="form.asr.protocol" data-test="asr-protocol">
@@ -700,18 +726,16 @@ defineExpose({ refresh, hasUnsavedChanges })
             <input type="text" v-model="form.asr.model" data-test="asr-model" />
           </label>
           <label class="field">
-            <span>语言</span>
+            <span>语言 <HintTip>预填为助手回合，让模型不吐 language 前缀</HintTip></span>
             <input type="text" v-model="form.asr.language" placeholder="Chinese" />
-            <span class="source">预填为助手回合，让模型不吐 language 前缀</span>
           </label>
           <label class="field">
             <span>连接超时 (ms)</span>
             <input type="number" v-model.number="form.asr.connectTimeoutMs" />
           </label>
           <label class="field">
-            <span>读取超时 (ms)</span>
+            <span>读取超时 (ms) <HintTip>故意短：卡住的块要整块重试，长停顿会冲垮环形缓冲</HintTip></span>
             <input type="number" v-model.number="form.asr.readTimeoutMs" />
-            <span class="source">故意短：卡住的块要整块重试，长停顿会冲垮环形缓冲</span>
           </label>
           <label class="field">
             <span>采样率</span>
@@ -740,9 +764,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               语音合成（TTS）
             </button>
+            <HintTip>合成端点。留空表示不配置——此时助手回复不会朗读。</HintTip>
           </h2>
           <div v-show="folded.tts !== true" :id="'settings-body-tts'" class="card-body">
-          <p class="card-note">合成端点。留空表示不配置——此时助手回复不会朗读。</p>
           <label class="field">
             <span>协议</span>
             <select v-model="form.tts.protocol" data-test="tts-protocol">
@@ -755,34 +779,28 @@ defineExpose({ refresh, hasUnsavedChanges })
             <input type="text" v-model="form.tts.baseUrl" placeholder="http://127.0.0.1:45102" data-test="tts-base-url" />
           </label>
           <label class="field">
-            <span>语言</span>
+            <span>语言 <HintTip>native 协议的 lang 字段；openai 协议不用</HintTip></span>
             <input type="text" v-model="form.tts.lang" />
-            <span class="source">native 协议的 lang 字段；openai 协议不用</span>
           </label>
           <label class="field">
-            <span>模型</span>
+            <span>模型 <HintTip>openai 协议的模型名；native 协议不用</HintTip></span>
             <input type="text" v-model="form.tts.model" placeholder="tts-1" />
-            <span class="source">openai 协议的模型名；native 协议不用</span>
           </label>
           <label class="field">
-            <span>音色 (voice)</span>
+            <span>音色 (voice) <HintTip>openai 协议的音色名；native 协议用克隆参考音频</HintTip></span>
             <input type="text" v-model="form.tts.voice" placeholder="alloy" />
-            <span class="source">openai 协议的音色名；native 协议用克隆参考音频</span>
           </label>
           <label class="field">
-            <span>语速 (speed)</span>
+            <span>语速 (speed) <HintTip>openai 协议的语速；native 协议不用</HintTip></span>
             <input type="number" step="0.05" v-model.number="form.tts.speed" />
-            <span class="source">openai 协议的语速；native 协议不用</span>
           </label>
           <label class="field">
-            <span>采样率</span>
+            <span>采样率 <HintTip>必须与输出段一致，否则播放速度会错</HintTip></span>
             <input type="number" v-model.number="form.tts.sampleRate" />
-            <span class="source">必须与输出段一致，否则播放速度会错</span>
           </label>
           <label class="field">
-            <span>音色克隆参考音频</span>
+            <span>音色克隆参考音频 <HintTip>本地路径；构建客户端时读取一次</HintTip></span>
             <input type="text" v-model="form.tts.speakerRefPath" placeholder="（不使用克隆）" />
-            <span class="source">本地路径；构建客户端时读取一次</span>
           </label>
           <label class="field">
             <span>请求超时 (s)</span>
@@ -816,14 +834,14 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               本地引擎进程
             </button>
+            <HintTip>
+              由运行时拉起并停掉的本地语音服务进程。关闭 = 终止进程 = 真正释放显存/内存——
+              只是不发请求不会释放占用。服务地址照常填在 ASR/TTS 卡里指向这组端口。
+              KWS 引擎开启后，语音输入进入<b>唤醒门控</b>：平时只听不转写，
+              唤醒词命中后一段话内走 ASR，说完自动回监听。
+            </HintTip>
           </h2>
           <div v-show="folded.local !== true" :id="'settings-body-local'" class="card-body">
-          <p class="card-note">
-            由运行时拉起并停掉的本地语音服务进程。关闭 = 终止进程 = 真正释放显存/内存——
-            只是不发请求不会释放占用。服务地址照常填在 ASR/TTS 卡里指向这组端口。
-            KWS 引擎开启后，语音输入进入<b>唤醒门控</b>：平时只听不转写，
-            唤醒词命中后一段话内走 ASR，说完自动回监听。
-          </p>
           <template v-for="engine in ['tts', 'kws'] as const" :key="engine">
             <div class="field-group" :data-test="`local-engine-${engine}`">
               <p class="field-head">
@@ -838,11 +856,10 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <input type="text" v-model="form.local[engine].command" :data-test="`local-${engine}-command`" />
               </label>
               <label class="field">
-                <span>参数（一行分隔）</span>
+                <span>参数（一行分隔） <HintTip>端口占位符写作 {port}</HintTip></span>
                 <input type="text" :value="form.local[engine].arguments.join(' ')"
                   :data-test="`local-${engine}-arguments`"
                   @input="onEngineArgumentsInput(engine, $event)" />
-                <span class="source">端口占位符写作 {port}</span>
               </label>
               <label class="field">
                 <span>工作目录</span>
@@ -857,12 +874,11 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
               </label>
               <label class="field" v-if="engine === 'kws'">
-                <span>唤醒词（逗号分隔）</span>
+                <span>唤醒词（逗号分隔） <HintTip>留空 = 保留引擎当前词表；保存后下发，引擎转拼音并立即生效</HintTip></span>
                 <input type="text" v-model="keywordDrafts[engine]"
                   :data-test="`local-${engine}-keywords`"
                   placeholder="你好军哥，蛋哥蛋哥"
                   @input="onEngineKeywordsInput(engine, $event)" />
-                <span class="source">留空 = 保留引擎当前词表；保存后下发，引擎转拼音并立即生效</span>
               </label>
             </div>
           </template>
@@ -889,17 +905,23 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               桌面（M9）
             </button>
+            <HintTip>
+              本仓库里唯一<strong>不可逆</strong>的能力：打开后模型可以观察窗口，并请求移动指针或发按键。即使打开，
+              <strong>每个动作都要人工批准</strong>（会话里弹出「允许 / 拒绝」，无人应答即拒绝），所以打开只是让模型
+              能问，不是让它能做。关闭时工具根本不注册给模型。
+            </HintTip>
           </h2>
           <div v-show="folded.desktop !== true" :id="'settings-body-desktop'" class="card-body">
-          <p class="card-note">
-            本仓库里唯一<strong>不可逆</strong>的能力：打开后模型可以观察窗口，并请求移动指针或发按键。即使打开，
-            <strong>每个动作都要人工批准</strong>（会话里弹出「允许 / 拒绝」，无人应答即拒绝），所以打开只是让模型
-            能问，不是让它能做。关闭时工具根本不注册给模型。
-          </p>
           <label class="field">
             <span>启用桌面能力</span>
             <input type="checkbox" v-model="form.desktop.enabled" data-test="desktop-enabled" />
           </label>
+          <p v-if="desktopAgentOff" class="card-note error" data-test="desktop-agent-warning">
+            桌面操控已开启，必须有一个启用的桌面操控子 agent
+            <button class="ghost" data-test="desktop-agent-fix" @click="emit('navigate', 'prompts')">
+              去提示词页启用
+            </button>
+          </p>
           <label class="field">
             <span>租约有效期（毫秒）</span>
             <input
@@ -910,7 +932,10 @@ defineExpose({ refresh, hasUnsavedChanges })
             />
           </label>
           <label class="field">
-            <span>允许的窗口标题（逗号分隔，空=不限）</span>
+            <span>
+              允许的窗口标题（逗号分隔，空=不限）
+              <HintTip>窗口标题子串、不区分大小写。真正拦住动作的是批准；这个列表只是把安装范围收窄。</HintTip>
+            </span>
             <input
               type="text"
               :value="form.desktop.allowedWindowTitles.join('、')"
@@ -919,7 +944,58 @@ defineExpose({ refresh, hasUnsavedChanges })
               @input="onTitlesInput"
             />
           </label>
-          <p class="muted">窗口标题子串、不区分大小写。真正拦住动作的是批准；这个列表只是把安装范围收窄。</p>
+          </div>
+        </section>
+
+        <section class="card" :class="{ 'is-folded': folded.files === true }">
+          <h2>
+            <button
+              class="group-toggle"
+              :data-test="'settings-group-files'"
+              :aria-expanded="folded.files !== true"
+              aria-controls="settings-body-files"
+              @click="toggleGroup('files')"
+            >
+              <Icon name="chevron-down" :size="14" class="group-chevron" />
+              读文件
+            </button>
+            <HintTip data-test="files-whitelist-hint">
+              只读能力，默认关闭。下面是一份<strong>白名单</strong>：模型只能读这些目录<strong>及其下所有内容</strong>，
+              目录之外一概不可见。每行一个绝对路径。
+            </HintTip>
+          </h2>
+          <div v-show="folded.files !== true" :id="'settings-body-files'" class="card-body">
+          <label class="field">
+            <span>启用读文件</span>
+            <input type="checkbox" v-model="form.files.enabled" data-test="files-enabled" />
+          </label>
+          <div class="field-group" data-test="files-roots">
+            <p class="field-head"><strong>允许读取的目录</strong></p>
+            <p v-if="form.files.roots.length === 0" class="muted" data-test="files-roots-empty">
+              （还没有目录。开启后至少要有一条，否则保存会被拒绝。）
+            </p>
+            <div v-for="(root, index) in form.files.roots" :key="index" class="row">
+              <input
+                type="text"
+                :value="root"
+                :aria-label="`第 ${index + 1} 个允许读取的目录`"
+                placeholder="D:/资料"
+                data-test="files-root"
+                @input="form.files.roots[index] = ($event.target as HTMLInputElement).value"
+              />
+              <button
+                class="ghost danger"
+                :aria-label="`移除第 ${index + 1} 个目录`"
+                data-test="files-root-remove"
+                @click="form.files.roots = form.files.roots.filter((_, at) => at !== index)"
+              >
+                移除
+              </button>
+            </div>
+            <button class="ghost" data-test="files-root-add" @click="form.files.roots = [...form.files.roots, '']">
+              ＋ 添加目录
+            </button>
+          </div>
           </div>
         </section>
 
@@ -935,12 +1011,12 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="chevron-down" :size="14" class="group-chevron" />
               模型（对话）
             </button>
+            <HintTip>
+              这里是执行队列的那个模型。保存后会<strong>立即重启消费者</strong>；留空则退回环境变量
+              <code>PARTNER_LLM_BASE_URL</code> / <code>PARTNER_LLM_MODEL</code>。
+            </HintTip>
           </h2>
           <div v-show="folded.model !== true" :id="'settings-body-model'" class="card-body">
-          <p class="card-note">
-            这里是执行队列的那个模型。保存后会<strong>立即重启消费者</strong>；留空则退回环境变量
-            <code>PARTNER_LLM_BASE_URL</code> / <code>PARTNER_LLM_MODEL</code>。
-          </p>
           <label class="field">
             <span>服务地址</span>
             <input type="text" v-model="form.model.baseUrl" placeholder="http://127.0.0.1:11434/v1" data-test="model-base-url" />
@@ -960,7 +1036,10 @@ defineExpose({ refresh, hasUnsavedChanges })
             <span v-if="modelProbeError" class="error break" data-test="model-probe-error">{{ modelProbeError }}</span>
           </div>
           <label class="field">
-            <span>API Key</span>
+            <span>
+              API Key
+              <HintTip data-test="model-api-key-hint">{{ keyHint }}</HintTip>
+            </span>
             <input
               type="password"
               v-model="apiKeyDraft"
@@ -968,7 +1047,6 @@ defineExpose({ refresh, hasUnsavedChanges })
               data-test="model-api-key"
               @input="apiKeyEdited = true"
             />
-            <span class="source" data-test="model-api-key-hint">{{ keyHint }}</span>
           </label>
           <div class="row">
             <button class="ghost" data-test="model-api-key-clear" @click="clearKey">清除密钥</button>
@@ -981,27 +1059,34 @@ defineExpose({ refresh, hasUnsavedChanges })
             <input type="number" v-model.number="form.model.timeoutSeconds" />
           </label>
           <label class="field">
-            <span>上下文大小（token）</span>
+            <span>上下文大小（token） <HintTip>模型的上下文窗口；提示预算 = 它减去输出长度，改小后保存会立即压缩一次历史</HintTip></span>
             <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
-            <span class="source">模型的上下文窗口；提示预算 = 它减去输出长度，改小后保存会立即压缩一次历史</span>
           </label>
           <label class=field>
-            <span>支持图片（视觉）</span>
+            <span>
+              支持图片（视觉）
+              <HintTip>
+                打开后，UIA 看不见的应用（Electron、游戏、画布）走<strong>截图给模型看</strong>这条路，不再需要 OCR——
+                模型自己读图比本地识别准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败。
+              </HintTip>
+            </span>
             <input type=checkbox v-model=form.model.supportsImages data-test=model-supports-images />
           </label>
-          <p class=muted>
-            打开后，UIA 看不见的应用（Electron、游戏、画布）走<strong>截图给模型看</strong>这条路，不再需要 OCR——
-            模型自己读图比本地识别准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败。
-          </p>
 
           <label class="field">
-            <span>输出长度（token）</span>
+            <span>输出长度（token） <HintTip>单次补全的上限，必须小于上下文大小</HintTip></span>
             <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
-            <span class="source">单次补全的上限，必须小于上下文大小</span>
           </label>
 
           <div class="field">
-            <span>思考挡位</span>
+            <span>
+              思考挡位
+              <HintTip>
+                随每次请求发 <code>reasoning_effort</code>；随消息发的那一档覆盖这里。清单是菜单不是限制——
+                服务端认的别的词（minimal、none…）加进来即可，<code>off</code> 表示<strong>不发这个字段</strong>。
+                会话里的下拉按这个顺序显示。保存后立即重启消费者。
+              </HintTip>
+            </span>
 
             <!--
               The default and the menu are shown together because they are one setting seen from two sides:
@@ -1070,12 +1155,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </ul>
 
             <button class="ghost" data-test="model-gear-add" @click="addGear">＋ 加一档</button>
-
-            <span class="source">
-              随每次请求发 <code>reasoning_effort</code>；随消息发的那一档覆盖这里。清单是菜单不是限制——
-              服务端认的别的词（minimal、none…）加进来即可，<code>off</code> 表示<strong>不发这个字段</strong>。
-              会话里的下拉按这个顺序显示。保存后立即重启消费者。
-            </span>
           </div>
 
           <p class="card-note" data-test="model-effect">
@@ -1115,6 +1194,14 @@ defineExpose({ refresh, hasUnsavedChanges })
   border-radius: var(--radius-sm);
   background: var(--surface-0);
   font-size: 0.92em;
+}
+
+/* A card heading now carries two children: the toggle that folds the card, and the mark that explains it. They
+   sit on one line with the toggle keeping its full width, so a click anywhere along the row still folds. */
+.card > h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 /* 输入电平：条 + 阈值刻度 + 读数，一行放下。 */
