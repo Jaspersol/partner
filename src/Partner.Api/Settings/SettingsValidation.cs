@@ -127,9 +127,44 @@ public static class SettingsValidation
             errors.Add("model.maxTokens 必须小于 model.contextTokens");
         }
 
+        ValidateWeb(settings.Web, errors);
+
         errors.AddRange(AgentsValidation.Validate(settings, stored));
 
         return errors;
+    }
+
+    /// <summary>
+    /// The web section's bounds. The engine ids are deliberately <b>not</b> validated against the built-in list:
+    /// an id that no longer exists is a leftover from an older build, not a broken configuration, and refusing
+    /// the save would leave the user with a settings file they cannot fix from the UI.
+    /// </summary>
+    private static void ValidateWeb(WebSettings web, List<string> errors)
+    {
+        ArgumentNullException.ThrowIfNull(web);
+
+        if (!string.IsNullOrWhiteSpace(web.Proxy))
+        {
+            if (!Uri.TryCreate(web.Proxy, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                errors.Add("web.proxy 必须是绝对的 http(s) 地址");
+            }
+        }
+
+        if (web.TimeBudgetSeconds < Partner.Core.Agent.Web.WebOptions.MinBudgetSeconds
+            || web.TimeBudgetSeconds > Partner.Core.Agent.Web.WebOptions.MaxBudgetSeconds)
+        {
+            errors.Add($"web.timeBudgetSeconds 必须在 {Partner.Core.Agent.Web.WebOptions.MinBudgetSeconds}–"
+                + $"{Partner.Core.Agent.Web.WebOptions.MaxBudgetSeconds} 秒之间");
+        }
+
+        if (web.MaxResults < Partner.Core.Agent.Web.WebOptions.MinResults
+            || web.MaxResults > Partner.Core.Agent.Web.WebOptions.MaxResultsCeiling)
+        {
+            errors.Add($"web.maxResults 必须在 {Partner.Core.Agent.Web.WebOptions.MinResults}–"
+                + $"{Partner.Core.Agent.Web.WebOptions.MaxResultsCeiling} 之间");
+        }
     }
 
     /// <summary>An endpoint is optional; once present it must be usable, and some need a companion name.</summary>

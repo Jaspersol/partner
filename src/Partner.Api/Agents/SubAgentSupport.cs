@@ -1,6 +1,7 @@
 using Partner.Api.Settings;
 using Partner.Core.Agent.Files;
 using Partner.Core.Agent.Llm;
+using Partner.Core.Agent.Web;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Memory;
 using Partner.Desktop.Tools;
@@ -68,5 +69,18 @@ internal static class FileToolSet
         var policy = new FileAccessPolicy(settings.Files.Roots, deniedDirectories: [workspace]);
         tools.Register(new FileListTool(policy));
         tools.Register(new FileReadTool(policy));
+    }
+}
+
+/// <summary>
+/// The web tools. Both or neither: the reader and the searcher are one capability, and <c>web_fetch</c> without
+/// <c>web_search</c> would leave the model guessing at addresses.
+/// </summary>
+internal static class WebToolSet
+{
+    public static void Register(InMemoryToolRegistry tools, ApiContext context)
+    {
+        tools.Register(new WebSearchTool(context.Web));
+        tools.Register(new WebFetchTool(new WebPageReader(context.Web.Transport)));
     }
 }

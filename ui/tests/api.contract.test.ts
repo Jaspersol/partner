@@ -244,6 +244,46 @@ describe('the API contract the UI binds to', () => {
     expect(typeof settings.desktop.leaseTtlMs).toBe('number')
   })
 
+  it('reports the web section and the engines the settings page draws one row per', async () => {
+    // The page renders /api/web directly and the component tests stub it, so this round trip is the only place
+    // the real payload meets the WebView type. It is also the one section that ships enabled, which is the
+    // default the page has to state out loud beside the switch.
+    const view = await api.web()
+
+    expect(view.enabled).toBe(true)
+    expect(typeof view.timeBudgetSeconds).toBe('number')
+    expect(typeof view.maxResults).toBe('number')
+    expect(view.proxy === null || typeof view.proxy === 'string').toBe(true)
+    expect(typeof view.healthPath).toBe('string')
+    expect(view.engines.length).toBeGreaterThan(0)
+
+    for (const engine of view.engines) {
+      expect(typeof engine.id).toBe('string')
+      expect(typeof engine.name).toBe('string')
+      expect(Array.isArray(engine.kinds)).toBe(true)
+      expect(['ranked', 'record']).toContain(engine.nature)
+      expect(typeof engine.singleSite).toBe('boolean')
+      // Health is reported per engine rather than as a list of problems, so every field the row reads has to
+      // be present on every engine that has never failed.
+      expect(typeof engine.disabled).toBe('boolean')
+      expect(typeof engine.cooling).toBe('boolean')
+      expect(typeof engine.strikes).toBe('number')
+      expect(engine.until === null || typeof engine.until === 'string').toBe(true)
+      expect(engine.lastReason === null || typeof engine.lastReason === 'string').toBe(true)
+    }
+
+    // Turning one engine off is the only edit this endpoint's rows offer, and it is stored in the settings
+    // document the page writes back — so what has to round-trip is that document, not the view.
+    const current = await api.settings()
+    const switchedOff = view.engines[0].id
+    await api.saveSettings({ ...current, web: { ...current.web, disabledEngines: [switchedOff] } })
+
+    const after = await api.web()
+    expect(after.engines.filter((engine) => engine.disabled).map((engine) => engine.id)).toEqual([switchedOff])
+
+    await api.saveSettings({ ...current, web: { ...current.web, disabledEngines: [] } })
+  })
+
   it('lists the devices the runtime can see', async () => {
     const devices = await api.devices()
 

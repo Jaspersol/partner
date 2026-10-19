@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<!--
+  The challenge page. No result anchors at all, and the body carries the markers the block detector looks for —
+  here the captcha container plus the "unusual traffic" wording. Distinguishing this from a redesign is the whole
+  point of the detector: this one must put the engine in cooldown, a redesign must not.
+-->
+<html lang="en">
+<head><title>DuckDuckGo</title></head>
+<body>
+  <div class="anomaly-modal__mask"></div>
+  <div class="anomaly-modal__content">
+    <div id="ddg-captcha" class="anomaly-modal__captcha">
+      <p>Unfortunately, bots use DuckDuckGo too.</p>
+      <p>Please complete the following challenge to confirm this search was made by a human.</p>
+      <form id="challenge-form" action="//duckduckgo.com/anomaly.js" method="post">
+        <input type="hidden" name="anomaly" value="1" />
+      </form>
+    </div>
+  </div>
+</body>
+</html>

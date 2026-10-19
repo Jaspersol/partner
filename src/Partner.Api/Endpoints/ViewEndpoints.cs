@@ -28,6 +28,7 @@ public static class ViewEndpoints
         MapQueue(app);
         MapMemory(app);
         MapSettings(app);
+        WebEndpoints.Map(app);
         AgentEndpoints.Map(app);
         MapSkills(app, ctx, workspace);
         MapProjections(app);

@@ -1,0 +1,38 @@
+{
+  "_comment": "api.open-meteo.com/v1/forecast with exactly the parameters the engine asks for. Written from the documented shape rather than captured. Deliberately a mixed bag of numbers: a fractional temperature and wind, a humidity and precipitation that are whole, and a weather code (3) that maps.",
+  "latitude": 39.875,
+  "longitude": 116.375,
+  "generationtime_ms": 0.052,
+  "utc_offset_seconds": 28800,
+  "timezone": "Asia/Shanghai",
+  "timezone_abbreviation": "GMT+8",
+  "elevation": 43.0,
+  "current_units": {
+    "time": "iso8601",
+    "interval": "seconds",
+    "temperature_2m": "°C",
+    "relative_humidity_2m": "%",
+    "weather_code": "wmo code",
+    "wind_speed_10m": "km/h"
+  },
+  "current": {
+    "time": "2026-10-19T14:15",
+    "interval": 900,
+    "temperature_2m": 17.4,
+    "relative_humidity_2m": 46,
+    "weather_code": 3,
+    "wind_speed_10m": 11.5
+  },
+  "daily_units": {
+    "time": "iso8601",
+    "temperature_2m_max": "°C",
+    "temperature_2m_min": "°C",
+    "precipitation_probability_max": "%"
+  },
+  "daily": {
+    "time": ["2026-10-19"],
+    "temperature_2m_max": [21.3],
+    "temperature_2m_min": [9.8],
+    "precipitation_probability_max": [10]
+  }
+}

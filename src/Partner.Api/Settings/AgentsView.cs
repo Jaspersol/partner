@@ -55,7 +55,8 @@ public sealed record AgentsView(
     IReadOnlyList<string> Problems,
     AgentLimits Limits,
     FilesSettings Files,
-    bool DesktopEnabled)
+    bool DesktopEnabled,
+    bool WebEnabled)
 {
     public static AgentsView From(RuntimeSettings settings)
     {
@@ -79,7 +80,11 @@ public sealed record AgentsView(
             AgentRouting.Problems(settings),
             new AgentLimits(AgentsSettings.MaxRoundsCeiling, AgentsSettings.DefaultMaxRounds, PromptSize.Limit(settings.Model)),
             settings.Files,
-            settings.Desktop.Enabled);
+            settings.Desktop.Enabled,
+
+            // The prompts page says "this capability is off, switch it on in settings" instead of leaving a
+            // scenario that looks configured and does nothing.
+            settings.Web.Enabled);
     }
 
     private static SubAgentView SubAgent(SubAgentSettings agent)

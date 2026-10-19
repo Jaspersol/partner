@@ -42,6 +42,14 @@ public sealed class ApiContext : IAsyncDisposable
         Approvals = approvals;
         TaskLeases = taskLeases;
         Telemetry = telemetry;
+
+        // Options are read through a delegate, so an edit to the proxy, the budget or the engine list takes
+        // effect on the next search rather than at the next restart. The health state lives under the workspace,
+        // beside the settings it answers to.
+        Web = new Partner.Core.Agent.Web.WebSearchService(
+            () => Settings.Load().Web.ToOptions(),
+            workspace,
+            () => Clock.GetUtcNow());
     }
 
     public string Workspace { get; }
@@ -83,6 +91,14 @@ public sealed class ApiContext : IAsyncDisposable
     /// restart, because a tuning question spans turns.
     /// </summary>
     public InMemoryTelemetrySink Telemetry { get; }
+
+    /// <summary>
+    /// The one web capability in this process. Shared on purpose: two instances would hold two rate limiters
+    /// (so the same engine could be asked twice as often as its limit allows), two answer caches, and two
+    /// views of the circuit-breaker health file — and the host ledger that decides whether <c>web_fetch</c>
+    /// asks the user would be split in half.
+    /// </summary>
+    public Partner.Core.Agent.Web.WebSearchService Web { get; }
 
     /// <summary>The clock the host was opened with. The telemetry endpoint reads it so its window can be stated
     /// in the same time base the sink stamped its events in — a window measured against a different clock would
@@ -152,6 +168,7 @@ public sealed class ApiContext : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        Web.Dispose();
         await Queue.DisposeAsync().ConfigureAwait(false);
         await Session.DisposeAsync().ConfigureAwait(false);
         await Memory.DisposeAsync().ConfigureAwait(false);

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!--
+  lite.duckduckgo.com/lite/ with a query it answered. The shape this parser was written for: a table, one row per
+  result carrying `a.result-link`, and the snippet in a following row under `.result-snippet`. Destinations are
+  wrapped in the same `/l/?uddg=` click tracker as the full page.
+
+  Written from the documented markup rather than captured, because the endpoint could not be reached from the
+  build machine (see the plan's §11). What it pins is the parser, not the endpoint's current behaviour: if the
+  page is redesigned, this file stops matching and the parser has to be rewritten deliberately.
+-->
+<html lang="en">
+<head><title>rust book at DuckDuckGo</title></head>
+<body>
+  <table class="links">
+    <tr>
+      <td class="result-link">
+        <a rel="nofollow" class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&amp;rut=2f1c9a">The Rust Programming <b>Language</b></a>
+      </td>
+    </tr>
+    <tr>
+      <td class="result-snippet">The official <b>book</b> &mdash; read it cover to cover.</td>
+    </tr>
+    <tr>
+      <td class="result-link">
+        <a rel="nofollow" class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FRust_%28programming_language%29&amp;rut=71bb03">Rust (programming language) - Wikipedia</a>
+      </td>
+    </tr>
+    <tr>
+      <td class="result-snippet">Rust is a general-purpose programming language.</td>
+    </tr>
+    <tr>
+      <td class="result-link">
+        <a rel="nofollow" class="result-link" href="/settings">Settings</a>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

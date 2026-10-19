@@ -304,14 +304,17 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
             return (main, sub);
         }
 
-        // Nothing on: the main agent has nothing.
-        var (off, _) = await ToolsAsync();
-        Assert.Empty(off);
+        // Nothing but the web capability, which ships enabled and which no sub-agent has claimed: the main agent
+        // holds its two tools and nothing else.
+        var (fresh, _) = await ToolsAsync();
+        Assert.Equal(new[] { "web_fetch", "web_search" }, fresh.OrderBy(name => name, StringComparer.Ordinal));
 
-        // Files on, no file-read agent: "no scenario configured" means the main agent reads.
+        // Files on, no file-read agent: "no scenario configured" means the main agent reads. The web tools are
+        // untouched, because each scenario has its own holder rather than one shared pool.
         await EnableReaderAsync(withReader: false);
         var (mainOnly, noSub) = await ToolsAsync();
         Assert.Contains("file_read", mainOnly);
+        Assert.Contains("web_search", mainOnly);
         Assert.DoesNotContain("agent_delegate", mainOnly);
         Assert.Empty(noSub);
 
@@ -329,8 +332,31 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         var (mainDelegating, sub) = await ToolsAsync();
         Assert.DoesNotContain("file_read", mainDelegating);
         Assert.Contains("agent_delegate", mainDelegating);
+        Assert.Contains("web_search", mainDelegating);
         Assert.Contains("file_read", sub);
         Assert.Contains("file_list", sub);
+
+        // The same rule for the web scenario, and the other half of it: the moment an enabled sub-agent owns it,
+        // the main agent stops searching. "Enabled" is the whole condition — a disabled one holds nothing.
+        settings = _context.Settings.Load();
+        _context.Settings.Save(settings with
+        {
+            Agents = settings.Agents with
+            {
+                SubAgents = [.. settings.Agents.SubAgents, new SubAgentSettings { Id = "searcher", Name = "网络搜索", Scenario = AgentScenarios.WebSearch }],
+            },
+        });
+        await _consumer.ReconfigureAsync(config: null, "test", _llm);
+
+        var (mainAfter, withSearcher) = await ToolsAsync();
+        Assert.DoesNotContain("web_search", mainAfter);
+        Assert.DoesNotContain("web_fetch", mainAfter);
+        Assert.Contains("agent_delegate", mainAfter);
+
+        // And the searcher is reported with the tools of its own scenario, not with the file ones.
+        Assert.Equal(
+            new[] { "web_fetch", "web_search" },
+            withSearcher.Except(sub).OrderBy(name => name, StringComparer.Ordinal));
     }
 
     [Fact]

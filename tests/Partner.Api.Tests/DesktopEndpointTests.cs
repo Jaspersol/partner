@@ -131,8 +131,15 @@ public sealed partial class ViewEndpointsTests
             desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
 
+        // Switching it off takes the desktop tools away and leaves exactly the other capability this build ships
+        // enabled — web access, which no sub-agent has claimed. The switch is read live, so this is the desktop
+        // family leaving the table rather than the table emptying.
         var offAgain = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
-        Assert.Empty(offAgain.GetProperty("tools").EnumerateArray());
+        var left = offAgain.GetProperty("tools").EnumerateArray()
+            .Select(tool => tool.GetProperty("name").GetString()!)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(new[] { "web_fetch", "web_search" }, left);
         Assert.Empty(await DesktopToolsAsync());
     }
 

@@ -75,6 +75,11 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
   ['grep', { icon: 'search', family: 'search', label: '搜索' }],
   ['find', { icon: 'search', family: 'search', label: '查找' }],
 
+  // The two web tools, named before the generic `web` and `fetch` rules so they do not both read as 抓取:
+  // one returns leads, the other opens the page, and only the second one can settle a question.
+  ['web_search', { icon: 'search', family: 'web', label: '联网搜索' }],
+  ['web_fetch', { icon: 'download', family: 'web', label: '读网页' }],
+
   ['fetch', { icon: 'download', family: 'web', label: '抓取' }],
   ['web', { icon: 'download', family: 'web', label: '网页' }],
   ['http', { icon: 'download', family: 'web', label: '网络请求' }],

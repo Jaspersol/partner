@@ -1,0 +1,21 @@
+{
+  "_comment": "geocoding-api.open-meteo.com/v1/search?count=1&name=北京&language=zh. Written from the documented shape rather than captured. The coordinates are Beijing's and are what the forecast request is built from, so they are also what the follow-up URL assertion pins.",
+  "results": [
+    {
+      "id": 1816670,
+      "name": "北京",
+      "latitude": 39.9042,
+      "longitude": 116.4074,
+      "elevation": 49.0,
+      "feature_code": "PPLC",
+      "country_code": "CN",
+      "admin1_id": 2038349,
+      "timezone": "Asia/Shanghai",
+      "population": 11716620,
+      "country_id": 1814991,
+      "country": "中国",
+      "admin1": "北京市"
+    }
+  ],
+  "generationtime_ms": 1.089
+}

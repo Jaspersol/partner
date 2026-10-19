@@ -476,6 +476,9 @@ const capabilityOff = computed(() => {
   if (current.scenario === 'file-read' && !view.value.files.enabled) {
     return '对应能力没有开启：读文件'
   }
+  if (current.scenario === 'web-search' && !view.value.webEnabled) {
+    return '对应能力没有开启：联网搜索'
+  }
   return ''
 })
 

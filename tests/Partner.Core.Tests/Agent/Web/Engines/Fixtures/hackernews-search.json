@@ -1,0 +1,51 @@
+{
+  "_comment": "hn.algolia.com/api/v1/search?tags=story. Written from the documented shape rather than captured. Three hits, two of them usable: the second is a text post with url null (the discussion itself is then the destination), and the third is a comment, which carries no title.",
+  "exhaustive": { "nbHits": false, "typo": false },
+  "exhaustiveNbHits": false,
+  "exhaustiveTypo": false,
+  "query": "local voice assistant",
+  "params": "tags=story&query=local+voice+assistant&hitsPerPage=8",
+  "hits": [
+    {
+      "created_at": "2026-09-28T14:33:12Z",
+      "created_at_i": 1759069992,
+      "title": "Show HN: I built a local voice assistant that never leaves the LAN",
+      "url": "https://example.com/local-voice",
+      "author": "someone",
+      "points": 342,
+      "num_comments": 118,
+      "objectID": "43189912",
+      "_tags": ["story", "author_someone", "story_43189912"]
+    },
+    {
+      "created_at": "2026-09-21T07:02:55Z",
+      "created_at_i": 1758440575,
+      "title": "Ask HN: What do you use for local speech-to-text?",
+      "url": null,
+      "author": "another",
+      "points": 88,
+      "num_comments": 64,
+      "story_text": "I would rather not send audio to a hosted service.",
+      "objectID": "43112207",
+      "_tags": ["story", "ask_hn", "author_another", "story_43112207"]
+    },
+    {
+      "created_at": "2026-09-21T07:10:41Z",
+      "created_at_i": 1758441041,
+      "title": null,
+      "url": null,
+      "author": "third",
+      "points": null,
+      "num_comments": null,
+      "comment_text": "I use whisper.cpp on a 2019 laptop and it keeps up.",
+      "objectID": "43112244",
+      "story_id": 43112207,
+      "_tags": ["comment", "author_third", "story_43112207", "comment_43112244"]
+    }
+  ],
+  "nbHits": 3,
+  "page": 0,
+  "nbPages": 1,
+  "hitsPerPage": 8,
+  "processingTimeMS": 8
+}

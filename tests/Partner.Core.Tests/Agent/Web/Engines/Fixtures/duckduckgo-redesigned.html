@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  A page that answers fine and no longer carries `a.result__a`: the scenario that must NOT be mistaken for "no
+  results" or for a challenge. There is no block marker and no `#links`/`.results`/`.no-results` container, so the
+  parser has to say "structure not recognised" and leave the engine in the pool.
+-->
+<html lang="en">
+<head><title>rust book at DuckDuckGo</title></head>
+<body>
+  <div class="serp__layout">
+    <div class="web__list">
+      <article class="web__result">
+        <a class="web__title" href="https://doc.rust-lang.org/book/">The Rust Programming Language</a>
+        <div class="web__snippet">The official book.</div>
+      </article>
+      <article class="web__result">
+        <a class="web__title" href="https://www.rust-lang.org/">Rust Programming Language</a>
+        <div class="web__snippet">The language homepage.</div>
+      </article>
+    </div>
+  </div>
+</body>
+</html>

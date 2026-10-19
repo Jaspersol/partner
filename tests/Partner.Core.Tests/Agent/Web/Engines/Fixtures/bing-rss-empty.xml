@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Bing's RSS view of a search it answered with nothing. The channel is still there and still has its own title
+  and link; there is simply no item inside it. That is the shape an empty answer takes, and it must read as an
+  answer rather than as a page the parser failed to understand.
+-->
+<rss version="2.0">
+  <channel>
+    <title>asdfqwerzxcv - Bing</title>
+    <link>https://www.bing.com/search?q=asdfqwerzxcv</link>
+    <description>Search results for asdfqwerzxcv</description>
+  </channel>
+</rss>

@@ -55,6 +55,7 @@ public sealed class SettingsStore
     {
         Agents = (loaded.Agents ?? new AgentsSettings()).WithBuiltins(),
         Files = loaded.Files ?? new FilesSettings(),
+        Web = loaded.Web ?? new WebSettings(),
     };
 
     /// <summary>

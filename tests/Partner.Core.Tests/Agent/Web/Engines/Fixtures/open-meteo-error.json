@@ -1,0 +1,5 @@
+{
+  "_comment": "The shape the provider returns when it refuses the request: an error document with no results array. This must NOT read as \"no such place\" — that would answer a person's question with silence instead of with a failure.",
+  "error": true,
+  "reason": "Parameter 'name' is required"
+}

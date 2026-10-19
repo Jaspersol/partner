@@ -13,6 +13,7 @@ import type {
   SessionView as SessionViewData,
   SettingsView,
   RuntimeSettings,
+  WebView,
 } from '../src/api'
 import MemoryView from '../src/views/MemoryView.vue'
 import SessionView from '../src/views/SessionView.vue'
@@ -81,6 +82,7 @@ const SETTINGS_FIXTURE: SettingsView = {
   skills: { disabled: [] },
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
+  web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
 };
 
 /**
@@ -130,6 +132,7 @@ const AGENTS_FIXTURE: AgentsView = {
   limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
   files: { enabled: true, roots: ['D:/资料'] },
   desktopEnabled: true,
+  webEnabled: false,
 }
 
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
@@ -198,6 +201,19 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     memory: vi.fn(async () => memory),
     memoryAll: vi.fn(async () => memory),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
+    // Two engines, one of them in the breaker's cooldown: the settings page has to show a paused engine as
+    // paused, because "搜不到" and "这家停了" look identical in the answer and are not the same thing.
+    web: vi.fn(async (): Promise<WebView> => ({
+      enabled: true,
+      proxy: null,
+      timeBudgetSeconds: 12,
+      maxResults: 8,
+      engines: [
+        { id: 'duckduckgo', name: 'DuckDuckGo', nature: 'ranked', kinds: ['general'], singleSite: false, disabled: false, cooling: false, until: null, strikes: 0, lastReason: null },
+        { id: 'wikipedia', name: 'Wikipedia', nature: 'ranked', kinds: ['encyclopedia'], singleSite: true, disabled: false, cooling: true, until: '2026-10-19T12:00:00+00:00', strikes: 3, lastReason: 'timeout after 8s' },
+      ],
+      healthPath: 'D:/workspace/web/health.json',
+    })),
     setMemoryTier: vi.fn(async (recordId: string, tier: string) => {
       calls.tierChanges.push({ recordId, tier })
     }),
@@ -1471,7 +1487,7 @@ describe('settings view', () => {
     await flushPromises()
 
     const nav = wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())
-    expect(nav).toEqual(['对话模型', '语音输入', '语音输出', '电脑操控', '文件访问', '本地引擎', '外观'])
+    expect(nav).toEqual(['对话模型', '语音输入', '语音输出', '电脑操控', '文件访问', '联网搜索', '本地引擎', '外观'])
 
     // Every field is in the document whichever category is showing (the others are only hidden), so a change on
     // one category is never lost by looking at another.
@@ -1634,6 +1650,7 @@ describe('settings view', () => {
       skills: { disabled: [] },
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
+      web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       })),
     })
 
@@ -1660,6 +1677,7 @@ describe('settings view', () => {
       skills: { disabled: [] },
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
+      web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       })),
     })
 
@@ -1807,6 +1825,7 @@ describe('settings view', () => {
         skills: { disabled: [] },
         agents: { main: { prompt: null }, subAgents: [] },
         files: { enabled: false, roots: [] },
+        web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -1886,6 +1905,7 @@ describe('settings view', () => {
             skills: { disabled: [] },
             agents: { main: { prompt: null }, subAgents: [] },
             files: { enabled: false, roots: [] },
+            web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
@@ -2020,6 +2040,7 @@ describe('settings view', () => {
           ],
         },
         files: { enabled: true, roots: ['D:/资料', 'E:/扫描'] },
+        web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       })),
     })
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
@@ -2056,6 +2077,41 @@ describe('settings view', () => {
 
     // The blank row is dropped rather than sent: the server would reject the whole save over an empty path.
     expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料'] })
+  })
+
+  it('says where a query goes before it says anything else about web search', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="settings-section-web"]').exists()).toBe(true)
+
+    // The one capability on this page that starts on, and the one that sends what was typed off the machine.
+    // Both facts are in the section — the second as a sentence of its own, not behind a hover.
+    expect(wrapper.find<HTMLInputElement>('[data-test="web-enabled"]').element.checked).toBe(true)
+    expect(wrapper.find('[data-test="web-callout"]').text()).toContain('会离开这台电脑')
+    expect(wrapper.find('[data-test="web-effect"]').text()).toContain('已开启')
+
+    // A paused engine says so where the switch that would switch it off lives. In an answer "没搜到" and
+    // "这家停了" are the same sentence and they are not the same fact.
+    const paused = wrapper.find('[data-test="web-engine-wikipedia"] [data-test="web-engine-state"]')
+    expect(paused.text()).toContain('连续失败 3 次')
+    expect(paused.text()).toContain('暂停中')
+
+    // Switching one off stores "who was switched off", not a list of everyone who is on: an engine added by a
+    // later build is then on by default rather than silently missing.
+    await wrapper.find('[data-test="web-engine-duckduckgo-enabled"]').setValue(false)
+    await wrapper.find('[data-test="web-proxy"]').setValue('  http://127.0.0.1:7890  ')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[0]?.web).toEqual({
+      enabled: true,
+      timeBudgetSeconds: 12,
+      maxResults: 8,
+      proxy: 'http://127.0.0.1:7890',
+      disabledEngines: ['duckduckgo'],
+    })
   })
 
   it('puts a field explanation behind a mark instead of a second line under the field', async () => {
@@ -2297,6 +2353,7 @@ describe('prompts view', () => {
       agents: vi.fn(async () => ({
         ...AGENTS_FIXTURE,
         files: { enabled: false, roots: [] },
+        webEnabled: true,
         scenarios: AGENTS_FIXTURE.scenarios.map((scenario) =>
           scenario.key === 'file-read' ? { ...scenario, available: false } : scenario,
         ),

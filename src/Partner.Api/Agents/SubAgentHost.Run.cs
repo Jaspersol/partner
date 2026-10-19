@@ -30,13 +30,20 @@ public sealed partial class SubAgentHost
             var report = new TaskReportTool();
             var tools = new InMemoryToolRegistry();
             tools.Register(report);
-            if (agent.Scenario == AgentScenarios.Desktop)
+
+            // One branch per scenario, and the tool set is the scenario's whole definition: a job runs under the
+            // wording and the tools it started with, so this switch and AgentScenarios.All have to move together.
+            switch (agent.Scenario)
             {
-                DesktopToolSet.Register(tools, _context, settings, binding.SupportsImages);
-            }
-            else
-            {
-                FileToolSet.Register(tools, settings, _workspace);
+                case AgentScenarios.Desktop:
+                    DesktopToolSet.Register(tools, _context, settings, binding.SupportsImages);
+                    break;
+                case AgentScenarios.WebSearch:
+                    WebToolSet.Register(tools, _context);
+                    break;
+                default:
+                    FileToolSet.Register(tools, settings, _workspace);
+                    break;
             }
 
             // The prompt is read once, here: a job runs under the wording it started with, and an edit made

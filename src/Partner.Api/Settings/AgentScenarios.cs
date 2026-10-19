@@ -12,7 +12,7 @@ namespace Partner.Api.Settings;
 public sealed record AgentScenario(string Key, string Name, string When, string DefaultPrompt);
 
 /// <summary>
-/// The closed list of scenarios. There are exactly two, and that is a decision rather than a placeholder:
+/// The closed list of scenarios. There are exactly three, and that is a decision rather than a placeholder:
 /// each one names a capability with its own switch, its own tools and its own safety story, so a free-form
 /// scenario would be a promise of a tool set nobody has built.
 /// <para>
@@ -25,6 +25,7 @@ public static class AgentScenarios
 {
     public const string Desktop = "desktop";
     public const string FileRead = "file-read";
+    public const string WebSearch = "web-search";
 
     public static IReadOnlyList<AgentScenario> All { get; } =
     [
@@ -38,6 +39,11 @@ public static class AgentScenarios
             "读取文件",
             "需要在电脑上查找、阅读文件或目录内容，并把要点整理出来时（只读）",
             AgentPrompts.FileReadDefault),
+        new(
+            WebSearch,
+            "联网搜索",
+            "需要这台电脑上没有的、必须联网查证的信息时：最新版本、时事新闻、别人的做法、某个说法是否属实",
+            AgentPrompts.WebSearchDefault),
     ];
 
     public static AgentScenario? Find(string? key) =>

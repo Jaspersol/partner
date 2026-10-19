@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<!--
+  html.duckduckgo.com/html/ with a query it answered. This is the endpoint the engine used to ask, kept because
+  the parser still reads it: results are `a.result__a` inside a `.result` container, every destination is wrapped
+  in a `/l/?uddg=` click tracker, and the sponsored result is marked with `result--ad` on the container. The
+  engine now asks `lite.duckduckgo.com/lite/` instead (see `duckduckgo-lite.html`), and both endpoints are the
+  same service, so losing one must not lose the engine.
+
+  Written from the documented markup rather than captured, because the endpoint could not be reached from the
+  build machine (see the plan's §11). What it pins is the parser, not the endpoint's current behaviour: if the
+  page is redesigned, this file stops matching and the parser has to be rewritten deliberately.
+-->
+<html lang="en">
+<head><title>rust book at DuckDuckGo</title></head>
+<body>
+  <div id="links" class="results">
+    <div class="result results_links results_links_deep web-result">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&amp;rut=2f1c9a">The Rust Programming <b>Language</b></a>
+        </h2>
+        <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F">The official <b>book</b> &mdash; read it cover to cover.</a>
+        <div class="result__extras">
+          <div class="result__extras__url"><span class="result__icon__img"></span>https://doc.rust-lang.org/book/</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sponsored. The container carries the marker; the anchor looks exactly like an organic one. -->
+    <div class="result result--ad result--ad--small results_links_deep">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fads.example.com%2Flearn-rust&amp;rut=77aa">Learn Rust Fast</a>
+        </h2>
+        <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fads.example.com%2Flearn-rust">A sponsored course.</a>
+      </div>
+    </div>
+
+    <div class="result results_links results_links_deep web-result">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title">
+          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FRust_%28programming_language%29&amp;rut=b31">Rust (programming language) - Wikipedia</a>
+        </h2>
+        <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FRust_%28programming_language%29">Rust is a multi-paradigm, general-purpose programming language.</a>
+      </div>
+    </div>
+
+    <!-- Ranked but without a destination: nothing to open, so it is not a result. -->
+    <div class="result results_links results_links_deep web-result">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title"><a rel="nofollow" class="result__a" href="/settings">Settings</a></h2>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

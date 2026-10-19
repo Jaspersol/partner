@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  www.bing.com/search?format=rss with a query it answered. The feed is the same search as the HTML page: the
+  channel carries the results, each item has a title, a link and a description, and pubDate appears on the items
+  Bing knows a date for.
+
+  Written from the documented RSS shape rather than captured, because the endpoint could not be reached from the
+  build machine (see the plan's §11). What it pins is the parser, not the endpoint's current behaviour.
+-->
+<rss version="2.0">
+  <channel>
+    <title>rust book - Bing</title>
+    <link>https://www.bing.com/search?q=rust+book</link>
+    <description>Search results for rust book</description>
+    <item>
+      <title>The Rust Programming Language</title>
+      <link>https://doc.rust-lang.org/book/</link>
+      <description>The official &lt;b&gt;book&lt;/b&gt; about Rust &amp;mdash; read it cover to cover.</description>
+      <pubDate>Sun, 18 Oct 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Rust Programming Language</title>
+      <link>https://www.rust-lang.org/</link>
+      <description>Rust is a language empowering everyone to build reliable software.</description>
+    </item>
+    <item>
+      <title>Rust &amp;mdash; Wikipedia</title>
+      <link>https://en.wikipedia.org/wiki/Rust_(programming_language)</link>
+      <description>Rust is a general-purpose programming language.</description>
+      <pubDate>Fri, 02 Oct 2026 21:04:05 GMT</pubDate>
+    </item>
+    <item>
+      <title>An entry Bing listed without a destination</title>
+      <description>The feed sometimes carries an item whose link is empty.</description>
+    </item>
+    <item>
+      <title></title>
+      <link>https://example.com/untitled</link>
+      <description>An item with nothing to call it.</description>
+    </item>
+  </channel>
+</rss>

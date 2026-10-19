@@ -3,8 +3,13 @@
     <RootNamespace>Partner.Core</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Memory layer (M5): SQLite + FTS5. The only third-party runtime dependency so far. -->
+    <!-- Memory layer (M5): SQLite + FTS5. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+
+    <!-- Web layer: HTML parsing for the search-engine responses and the page reader. Pinned at 1.8.5 because the
+         older versions carry NU1902 (GHSA-pgww-w46g-26qg), which TreatWarningsAsErrors turns into a build
+         failure — so if this is ever moved back, the audit warning has to be dealt with rather than ignored. -->
+    <PackageReference Include="AngleSharp" Version="1.8.5" />
   </ItemGroup>
   <ItemGroup>
     <!-- The schema's migration steps are internal, and "an old store still opens" is exactly the kind of claim

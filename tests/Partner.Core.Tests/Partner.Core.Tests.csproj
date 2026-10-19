@@ -11,4 +11,12 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Partner.Core/Partner.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!--
+      The archived responses the engine parsers are tested against. Copied into a flat folder in the output, so a
+      test names one file and nothing else, and so they travel with the assembly rather than with an assumption
+      about where the test runs from.
+    -->
+    <None Update="Agent\Web\Engines\Fixtures\**\*" Link="web-fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

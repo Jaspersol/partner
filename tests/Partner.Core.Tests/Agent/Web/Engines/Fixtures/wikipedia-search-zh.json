@@ -1,0 +1,28 @@
+{
+  "_comment": "zh.wikipedia.org action API, list=search, srprop=snippet|timestamp. Written from the documented response shape rather than captured: the endpoint could not be reached from the build machine. The snippet arrives as HTML with the matched terms wrapped, and the timestamp is the field that makes every Wikipedia hit filterable by recency.",
+  "batchcomplete": "",
+  "continue": { "sroffset": 2, "continue": "-||" },
+  "query": {
+    "searchinfo": { "totalhits": 214, "suggestion": "人工智能", "suggestionsnippet": "人工智能" },
+    "search": [
+      {
+        "ns": 0,
+        "title": "人工智能",
+        "pageid": 1439,
+        "size": 128904,
+        "wordcount": 4120,
+        "snippet": "<span class=\"searchmatch\">人工智能</span>（英語：Artificial Intelligence，縮寫為 AI）是指由人製造出來的機器所表現出來的<span class=\"searchmatch\">智能</span>，通常指通過普通電腦程式來呈現人類智能的技術。&quot;智能&quot;一詞源自希臘語。",
+        "timestamp": "2026-08-14T09:12:33Z"
+      },
+      {
+        "ns": 0,
+        "title": "人工神经网络",
+        "pageid": 21909,
+        "size": 88120,
+        "wordcount": 3010,
+        "snippet": "<span class=\"searchmatch\">人工</span>神经网络（英語：Artificial Neural Network，縮寫 ANN）簡稱神经网络，在<span class=\"searchmatch\">机器学习</span>和认知科学领域是一种模仿生物神经网络的结构和功能的数学模型或计算模型。",
+        "timestamp": "2026-07-02T21:04:05Z"
+      }
+    ]
+  }
+}

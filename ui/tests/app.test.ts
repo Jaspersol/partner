@@ -62,6 +62,19 @@ const SETTINGS = {
   // Carried by the settings page untouched; the prompts page owns them.
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
+  web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+}
+
+// The settings page reads this alongside its own form: which engines are there, and which are paused.
+const WEB = {
+  enabled: true,
+  proxy: null,
+  timeBudgetSeconds: 12,
+  maxResults: 8,
+  engines: [
+    { id: 'duckduckgo', name: 'DuckDuckGo', nature: 'ranked', kinds: ['general'], singleSite: false, disabled: false, cooling: false, until: null, strikes: 0, lastReason: null },
+  ],
+  healthPath: 'D:/workspace/web/health.json',
 }
 
 const CONSUMER = {
@@ -113,6 +126,7 @@ const AGENTS = {
   limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
   files: { enabled: false, roots: [] },
   desktopEnabled: true,
+  webEnabled: true,
 }
 
 // A queue with a turn in flight, so the composer's interrupt button exists in the shell tests.
@@ -142,6 +156,7 @@ function respond(path: string): unknown {
   if (path.includes('/api/agent-jobs')) return { jobs: [] }
   if (path.includes('/api/agents')) return AGENTS
   if (path.includes('/api/settings')) return SETTINGS
+  if (path.includes('/api/web')) return WEB
   if (path.includes('/api/consumer')) return CONSUMER
   if (path.includes('/api/session')) return SESSION
   if (path.includes('/api/approvals')) return { timeoutSeconds: 120, pending: [] }

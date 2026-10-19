@@ -386,6 +386,50 @@ export interface FilesSettings {
   roots: string[]
 }
 
+/**
+ * 联网搜索（web）。默认**打开**——这是本仓库唯一默认开启的联网能力，也是唯一会把本机上的字句
+ * 发给第三方搜索服务的开关，所以设置页必须在它旁边把这件事写清楚。
+ */
+export interface WebSettings {
+  enabled: boolean
+  /** 整次检索的时间预算（秒），从第一个引擎返回结果开始计时。 */
+  timeBudgetSeconds: number
+  /** 答案里列出的结果条数上限。 */
+  maxResults: number
+  /** http(s) 代理；空 = 直连。 */
+  proxy: string | null
+  /** 被手动关掉的引擎 id。 */
+  disabledEngines: string[]
+}
+
+/** 一个引擎，连它当前的运行状态：熔断中还是正常。 */
+export interface WebEngineView {
+  id: string
+  name: string
+  /** 'ranked'（按相关度排序的文档）或 'record'（发布方自己的记录，直接就是答案）。 */
+  nature: string
+  /** 它索引的内容类型，名字小写：general / news / academic / code / encyclopedia / weather / qa。 */
+  kinds: string[]
+  /** 该站点自己的目录（维基、arXiv），结果不会复述查询词。 */
+  singleSite: boolean
+  disabled: boolean
+  cooling: boolean
+  until: string | null
+  strikes: number
+  lastReason: string | null
+}
+
+/** GET /api/web 的回答：设置 + 每个引擎的状态。 */
+export interface WebView {
+  enabled: boolean
+  proxy: string | null
+  timeBudgetSeconds: number
+  maxResults: number
+  engines: WebEngineView[]
+  /** 熔断状态文件的位置，出问题时要看的就是它。 */
+  healthPath: string
+}
+
 /** A sub-agent's endpoint as the read endpoints report it: whether a key is stored, never the key. */
 export interface SubAgentModelView {
   baseUrl: string | null
@@ -466,6 +510,7 @@ export interface AgentsView {
   limits: AgentLimits
   files: FilesSettings
   desktopEnabled: boolean
+  webEnabled: boolean
 }
 
 export interface AgentsSaved {
@@ -505,6 +550,7 @@ export interface RuntimeSettings {
   /** Carried through by the settings page untouched: the prompts page owns it. */
   agents: AgentsSettings
   files: FilesSettings
+  web: WebSettings
 }
 
 export interface SettingsView {
@@ -520,6 +566,7 @@ export interface SettingsView {
   /** The stored agents section, with sub-agent API keys replaced by `apiKeySet`. */
   agents: AgentsSettingsView
   files: FilesSettings
+  web: WebSettings
 }
 
 /**
@@ -782,6 +829,8 @@ export interface PartnerApiSurface {
   settings(): Promise<SettingsView>
   /** The agents section as the prompts page reads it: stored values, defaults, effective prompts, problems. */
   agents(): Promise<AgentsView>
+  /** 每个搜索引擎的当前状态（已在设置里关掉的、被熔断的都会标出来）。 */
+  web(): Promise<WebView>
   /** Writes the stored shape. A new sub-agent goes in with `id: ""`; the server names it. */
   saveAgents(agents: AgentsSettings): Promise<AgentsSaved>
   /** Every delegated job, newest first. */
@@ -1048,6 +1097,12 @@ export class PartnerApi implements PartnerApiSurface {
 
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved> {
     return this.request<SettingsSaved>('PUT', '/api/settings', settings)
+  }
+
+  // ---- web -------------------------------------------------------------------------------------
+
+  web(): Promise<WebView> {
+    return this.request<WebView>('GET', '/api/web')
   }
 
   // ---- agents ----------------------------------------------------------------------------------

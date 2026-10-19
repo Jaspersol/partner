@@ -10,7 +10,16 @@ import TestButton from '../components/TestButton.vue'
 import { normalizeGear } from '../gears'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
 import type { IconName } from '../icons'
-import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState, VoiceTestResult } from '../api'
+import type {
+  ConsumerState,
+  DeviceList,
+  PartnerApiSurface,
+  RuntimeSettings,
+  VoiceState,
+  VoiceTestResult,
+  WebEngineView,
+  WebView,
+} from '../api'
 
 
 /**
@@ -63,6 +72,11 @@ const form = reactive<RuntimeSettings>({
   // prompt and sub-agent the next time anyone saved a voice setting.
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
+
+  // The one section here that defaults to ON, and the one that sends what you typed off this machine. The
+  // default is deliberate (not an oversight): the search is useless if nobody ever finds the switch, and the
+  // section says in as many words where the queries go.
+  web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] as string[] },
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
@@ -99,6 +113,7 @@ function fingerprint(): string {
     model: form.model,
     desktop: form.desktop,
     files: form.files,
+    web: form.web,
     // The key is write-only: it is either the draft or nothing, and it is the one field a fingerprint would
     // otherwise get wrong in both directions.
     apiKey: apiKeyEdited.value ? apiKeyDraft.value : null,
@@ -310,6 +325,17 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   }
   form.files = { enabled: settings.files?.enabled ?? false, roots: [...(settings.files?.roots ?? [])] }
 
+  // A response from an older build carries no `web` at all; the fallback is the same default the section
+  // starts from, so saving from a stale page writes back what the switch is showing rather than turning the
+  // capability off behind the user's back.
+  form.web = {
+    enabled: settings.web?.enabled ?? true,
+    timeBudgetSeconds: settings.web?.timeBudgetSeconds ?? 12,
+    maxResults: settings.web?.maxResults ?? 8,
+    proxy: settings.web?.proxy ?? null,
+    disabledEngines: [...(settings.web?.disabledEngines ?? [])],
+  }
+
   apiKeySet.value = 'apiKeySet' in settings.model ? Boolean(settings.model.apiKeySet) : false
   apiKeyDraft.value = ''
   apiKeyEdited.value = false
@@ -327,6 +353,79 @@ async function refresh() {
   } catch (failure) {
     error.value = String(failure)
   }
+
+  await refreshWeb()
+}
+
+/**
+ * The engine list, as the server last reported it.
+ *
+ * <para>
+ * Read-only status, not part of the form: which engine is cooling off is the breaker's business, not
+ * something a person edits here — the one thing editable about an engine is whether they have switched it
+ * off, and that is a settings field (`form.web.disabledEngines`) rather than something derived from this.
+ * </para>
+ */
+const webView = ref<WebView | null>(null)
+
+async function refreshWeb() {
+  try {
+    webView.value = await props.api.web()
+  } catch {
+    // Its own try, not the caller's: a status list that cannot be read must not take down the form above it.
+    webView.value = null
+  }
+}
+
+/** 开关一个引擎。存的是「关掉了谁」，所以新加进列表的引擎默认是开的。 */
+function toggleEngine(id: string) {
+  const off = form.web.disabledEngines
+  form.web.disabledEngines = off.includes(id) ? off.filter((each) => each !== id) : [...off, id]
+}
+
+/** 引擎索引的内容类型，说人话；认不出来的原样显示，而不是编一个词。 */
+const KIND_LABELS: Record<string, string> = {
+  general: '网页',
+  news: '新闻',
+  academic: '论文',
+  code: '代码',
+  encyclopedia: '百科',
+  weather: '天气',
+  qa: '问答',
+  none: '不限',
+}
+
+function kindLabel(kind: string): string {
+  return KIND_LABELS[kind] ?? kind
+}
+
+/**
+ * 一个引擎现在是什么状态，一句话。
+ *
+ * <para>
+ * 暂停和失败都要写出来。否则「这次没搜到」会被读成「网上没有」，而真实原因是这家引擎被自己的熔断器
+ * 停着——那是两件完全不同的事，只有页面说清楚，人才知道该等还是该换一家。
+ * </para>
+ */
+function engineState(engine: WebEngineView): string {
+  if (form.web.disabledEngines.includes(engine.id)) {
+    return '已关闭'
+  }
+  if (engine.cooling) {
+    const until = engine.until === null ? '' : `，${new Date(engine.until).toLocaleTimeString()} 后再试`
+    return `连续失败 ${engine.strikes} 次，暂停中${until}`
+  }
+  if (engine.strikes > 0 && engine.lastReason !== null) {
+    return `上次失败：${engine.lastReason}`
+  }
+  return '正常'
+}
+
+function engineStateClass(engine: WebEngineView): string {
+  if (form.web.disabledEngines.includes(engine.id)) {
+    return 'is-off'
+  }
+  return engine.cooling || engine.strikes > 0 ? 'is-warn' : 'is-ok'
 }
 
 async function persist() {
@@ -351,6 +450,14 @@ async function persist() {
     // A row left blank is not a directory. Sending it would have the server reject the whole save over an
     // empty string the person never meant to add.
     files: { enabled: form.files.enabled, roots: form.files.roots.map((root) => root.trim()).filter((root) => root !== '') },
+    // 空串是「没填」，不是「一个叫空字符串的代理」，否则整页保存都会被这个字段挡下来。
+    web: {
+      enabled: form.web.enabled,
+      timeBudgetSeconds: form.web.timeBudgetSeconds,
+      maxResults: form.web.maxResults,
+      proxy: form.web.proxy === null || form.web.proxy.trim() === '' ? null : form.web.proxy.trim(),
+      disabledEngines: [...form.web.disabledEngines],
+    },
     model: {
       baseUrl: form.model.baseUrl === '' ? null : form.model.baseUrl,
       model: form.model.model === '' ? null : form.model.model,
@@ -377,6 +484,8 @@ async function persist() {
     apply(saved.settings as RuntimeSettings & { model: { apiKeySet: boolean } })
     consumer.value = saved.consumer
     voice.value = saved.voice
+    // The disabled list is stored now, so the engine rows have to be re-read to show it as it was saved.
+    await refreshWeb()
 
     const at = new Date().toLocaleTimeString()
     status.value = saved.compaction
@@ -426,6 +535,7 @@ const SECTIONS: Section[] = [
   { key: 'output', label: '语音输出', icon: 'speaker' },
   { key: 'desktop', label: '电脑操控', icon: 'crosshair' },
   { key: 'files', label: '文件访问', icon: 'folder' },
+  { key: 'web', label: '联网搜索', icon: 'search' },
   { key: 'engines', label: '本地引擎', icon: 'terminal' },
   { key: 'appearance', label: '外观', icon: 'contrast' },
 ]
@@ -1011,6 +1121,114 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
+          <!-- ================= 联网搜索 ================= -->
+          <section v-show="section === 'web'" class="panel" data-test="settings-section-web">
+            <header class="panel-head">
+              <h2>联网搜索</h2>
+              <span class="g-chip" :class="form.web.enabled ? 'is-ok' : ''" data-test="web-effect">
+                {{ form.web.enabled ? '已开启' : '已关闭' }}
+              </span>
+            </header>
+
+            <!-- The only section here that is on by default, and the only one that sends what was typed off
+                 this machine. That goes in a sentence rather than behind an ⓘ, for the same reason the
+                 desktop callout is not behind one. -->
+            <p class="callout" data-test="web-callout">
+              默认开启。开启后，助手要把某句话拿去搜的时候，那句话会发给第三方搜索引擎，因此会离开这台电脑。
+              搜索结果的地址会先做一次安全检查，指向本机、内网或云服务商元数据地址的一律拒绝；从网上读回来的
+              内容只当资料，写在里面的任何指令都不会被执行。
+            </p>
+
+            <div class="g-card">
+              <SettingRow label="允许助手联网搜索">
+                <template #hint>
+                  关闭后助手完全拿不到联网工具，连打开已知网页也一起停用。查不到就说查不到，不会绕过去。
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.web.enabled" data-test="web-enabled" />
+              </SettingRow>
+              <SettingRow label="每次查询最多等多久" unit="秒">
+                <template #hint>
+                  从第一个引擎返回结果开始计时，到点就用手上已有的结果作答，不再等慢的那几家。可填 3–60 秒。
+                </template>
+                <input type="number" min="3" max="60" v-model.number="form.web.timeBudgetSeconds" data-test="web-budget" />
+              </SettingRow>
+              <SettingRow label="答案里最多列几条" unit="条">
+                <template #hint>
+                  列出来的是一组线索，不是答案。助手要据此下结论，还得逐条打开原文核对。可填 1–20。
+                </template>
+                <input type="number" min="1" max="20" v-model.number="form.web.maxResults" data-test="web-max-results" />
+              </SettingRow>
+            </div>
+
+            <div class="g-card">
+              <div class="g-card-head">
+                <h3>
+                  搜索引擎
+                  <HintTip>
+                    某一家连续失败会被自动停用一段时间，其间由其余引擎顶上；这里关掉的引擎则是长期不再使用。
+                  </HintTip>
+                </h3>
+                <button class="ghost icon-only" title="刷新状态" aria-label="刷新引擎状态" data-test="web-refresh" @click="refreshWeb()">
+                  <Icon name="refresh" :size="14" /><span class="sr-only">刷新状态</span>
+                </button>
+              </div>
+
+              <p v-if="webView === null" class="muted" data-test="web-engines-unknown">
+                读不到引擎状态。开关照常保存，状态等后端可用后再刷新。
+              </p>
+              <p v-else-if="webView.engines.length === 0" class="muted" data-test="web-engines-empty">
+                这一版没有内置任何搜索引擎。
+              </p>
+              <div
+                v-for="engine in webView?.engines ?? []"
+                :key="engine.id"
+                class="engine-row"
+                :data-test="`web-engine-${engine.id}`"
+              >
+                <span class="engine-name" :title="engine.name">
+                  {{ engine.name }}
+                  <span v-if="engine.singleSite" class="engine-tag" title="只索引自己这一个站点">单一站点</span>
+                </span>
+                <span class="engine-kinds">{{ engine.kinds.map(kindLabel).join('、') }}</span>
+                <span class="engine-state" :class="engineStateClass(engine)" data-test="web-engine-state">{{ engineState(engine) }}</span>
+                <input
+                  type="checkbox"
+                  class="g-switch"
+                  role="switch"
+                  :aria-label="`使用 ${engine.name}`"
+                  :checked="!form.web.disabledEngines.includes(engine.id)"
+                  :data-test="`web-engine-${engine.id}-enabled`"
+                  @change="toggleEngine(engine.id)"
+                />
+              </div>
+            </div>
+
+            <button
+              class="ghost more"
+              :aria-expanded="advanced.web === true"
+              data-test="settings-more-web"
+              @click="toggleAdvanced('web')"
+            >
+              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.web === true }" />
+              更多选项
+            </button>
+            <div v-show="advanced.web === true" class="g-card">
+              <SettingRow label="代理">
+                <template #hint>
+                  形如 <code>http://127.0.0.1:7890</code>；留空表示直连。只支持 http 和 https 代理。
+                </template>
+                <input
+                  type="text"
+                  :value="form.web.proxy ?? ''"
+                  placeholder="留空 = 直连"
+                  data-test="web-proxy"
+                  @input="form.web.proxy = ($event.target as HTMLInputElement).value"
+                />
+              </SettingRow>
+              <p class="row-note" data-test="web-health-path">熔断状态文件：{{ webView?.healthPath ?? '—' }}</p>
+            </div>
+          </section>
+
           <!-- ================= 本地引擎 ================= -->
           <section v-show="section === 'engines'" class="panel" data-test="settings-section-engines">
             <header class="panel-head">
@@ -1359,6 +1577,70 @@ defineExpose({ refresh, hasUnsavedChanges })
 
 .add {
   justify-self: start;
+}
+
+/* ---- web engines ---------------------------------------------------------------------------------- */
+/* One line per engine: who it is, what it indexes, how it is doing, and the switch. The state is the part
+   that matters — an engine that is quietly paused is why a search came back thin. */
+.engine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding-block: var(--space-1);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.engine-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  max-inline-size: 12rem;
+  font-size: var(--fs-ui);
+  color: var(--text);
+}
+
+.engine-tag {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 0.6875rem;
+}
+
+.engine-kinds {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.engine-state {
+  flex: none;
+  max-inline-size: 14rem;
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+
+.engine-state.is-ok {
+  color: var(--text-3);
+}
+
+.engine-state.is-warn {
+  color: var(--warn);
+}
+
+.engine-state.is-off {
+  color: var(--text-3);
+  opacity: 0.7;
 }
 
 /* ---- narrow: categories become a row of chips ------------------------------------------------- */

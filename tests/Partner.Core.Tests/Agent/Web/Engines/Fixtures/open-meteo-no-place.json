@@ -1,0 +1,4 @@
+{
+  "_comment": "The geocoder answering with no results at all: the array is present and empty. This is a legitimate \"there is no such place\", and must be reported as having found nothing rather than as a parse failure.",
+  "generationtime_ms": 0.312
+}

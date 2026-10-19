@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings } from '../src/api'
+import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings, WebView } from '../src/api'
 import ApprovalBanner from '../src/components/ApprovalBanner.vue'
 import Composer from '../src/components/Composer.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
@@ -739,8 +739,17 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       skills: { disabled: [] },
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
+      web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
     })),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
+    web: vi.fn(async (): Promise<WebView> => ({
+      enabled: true,
+      proxy: null,
+      timeBudgetSeconds: 12,
+      maxResults: 8,
+      engines: [],
+      healthPath: 'D:/workspace/web/health.json',
+    })),
     agents: vi.fn(async () => ({
       main: { prompt: null, defaultPrompt: '', effectivePrompt: '', promptTokens: 0 },
       subAgents: [],
@@ -749,6 +758,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
       files: { enabled: false, roots: [] },
       desktopEnabled: false,
+      webEnabled: false,
     })),
     saveAgents: vi.fn(async (agents) => ({
       agents: {
@@ -759,6 +769,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
         limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
         files: { enabled: false, roots: [] },
         desktopEnabled: false,
+      webEnabled: false,
       },
       consumer: { running: false, reason: '未配置模型', model: null, stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
     })),

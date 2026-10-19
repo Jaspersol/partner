@@ -1,0 +1,27 @@
+{
+  "_comment": "The same endpoint for a Latin query, and the case the URL builder exists for: a title with a space in it. The parser turns the space into an underscore and escapes the rest, so the link it hands back is a page a person can open rather than a snippet phrase.",
+  "batchcomplete": "",
+  "query": {
+    "searchinfo": { "totalhits": 41 },
+    "search": [
+      {
+        "ns": 0,
+        "title": "Rust (programming language)",
+        "pageid": 35537643,
+        "size": 210334,
+        "wordcount": 15800,
+        "snippet": "<span class=\"searchmatch\">Rust</span> is a multi-paradigm, general-purpose programming language that emphasizes performance, type safety, and concurrency.",
+        "timestamp": "2026-09-30T18:22:41Z"
+      },
+      {
+        "ns": 0,
+        "title": "Cargo (software)",
+        "pageid": 48256135,
+        "size": 22110,
+        "wordcount": 1400,
+        "snippet": "<span class=\"searchmatch\">Cargo</span> is Rust&apos;s package manager and build system.",
+        "timestamp": "2026-06-11T03:47:09Z"
+      }
+    ]
+  }
+}

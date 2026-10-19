@@ -57,7 +57,71 @@ public sealed record RuntimeSettings
     /// <summary>Whether the file tools exist, and where they may read.</summary>
     public FilesSettings Files { get; init; } = new();
 
+    /// <summary>Whether the web tools exist, how long they may take, and which engines are switched off.</summary>
+    public WebSettings Web { get; init; } = new();
+
     public static RuntimeSettings Default { get; } = new();
+}
+
+/// <summary>
+/// 联网搜索的开关与边界。
+/// <para>
+/// 默认**打开**：这是本仓库里唯一默认开启的联网能力，也是唯一会让本机地址离开这台电脑的能力——
+/// 每次检索都把查询词发给第三方搜索服务。这个取舍是本项目的所有者明确要求的，与设计文档里
+/// 「默认关闭、由用户显式打开」相反（见 <c>WebOptions.Default</c> 的注释）。设置页必须把这一点写在开关旁边，
+/// 而不是只给一个滑块。
+/// </para>
+/// <para>
+/// 读取不受此开关影响：<c>web_fetch</c> 与检索同属一个能力，关掉开关，两个工具都不存在。
+/// 「只取不搜」不是一种状态——没有检索结果，模型就只剩下自己猜地址这一条路。
+/// </para>
+/// </summary>
+public sealed record WebSettings
+{
+    /// <summary>是否把联网能力暴露给模型。默认打开。</summary>
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>
+    /// 整次检索的时间预算（秒），从**第一个引擎返回结果**开始计时，而不是从发请求开始：
+    /// 一个慢引擎不该把预算吃掉，导致先答上来的结果反而来不及用。
+    /// </summary>
+    public int TimeBudgetSeconds { get; init; } = 12;
+
+    /// <summary>答案里列出的结果条数上限。与向引擎索取的条数（<c>limit</c> 参数）是两回事。</summary>
+    public int MaxResults { get; init; } = 8;
+
+    /// <summary>
+    /// http(s) 代理地址；空 = 直连。只在需要穿代理的环境里才有用，因此没有默认值。
+    /// 非空时必须是绝对的 http/https 地址，保存时校验。
+    /// </summary>
+    public string? Proxy { get; init; }
+
+    /// <summary>被用户手动关掉的引擎 id。不存在的 id 会被忽略（引擎可能在新版本里被移除）。</summary>
+    public IReadOnlyList<string> DisabledEngines { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Value equality that actually compares the list. Same reason as <see cref="DesktopSettings.Equals"/>:
+    /// a record holding a list compares it by reference, so two defaults would look different and every save
+    /// would restart the consumer.
+    /// </summary>
+    public bool Equals(WebSettings? other) =>
+        other is not null
+        && Enabled == other.Enabled
+        && TimeBudgetSeconds == other.TimeBudgetSeconds
+        && MaxResults == other.MaxResults
+        && string.Equals(Proxy, other.Proxy, StringComparison.Ordinal)
+        && DisabledEngines.SequenceEqual(other.DisabledEngines, StringComparer.Ordinal);
+
+    public override int GetHashCode() =>
+        HashCode.Combine(Enabled, TimeBudgetSeconds, MaxResults, Proxy, DisabledEngines.Count);
+
+    /// <summary>The plain record the web layer reads. The dependency runs one way, so it cannot see this type.</summary>
+    public Partner.Core.Agent.Web.WebOptions ToOptions() => new(
+        Enabled,
+        TimeBudgetSeconds,
+        MaxResults,
+        string.IsNullOrWhiteSpace(Proxy) ? null : Proxy,
+        new HashSet<string>(DisabledEngines, StringComparer.Ordinal));
 }
 
 /// <summary>
@@ -517,6 +581,8 @@ public sealed record SettingsView
 
     public FilesSettings Files { get; init; } = new();
 
+    public WebSettings Web { get; init; } = new();
+
     public static SettingsView From(RuntimeSettings settings) => new()
     {
         Input = settings.Input,
@@ -567,5 +633,9 @@ public sealed record SettingsView
                 .ToList(),
         },
         Files = settings.Files,
+
+        // Same reason as the two above: absent from the response means the UI writes the default back on its
+        // next save, which would silently re-enable an engine somebody switched off and drop the proxy.
+        Web = settings.Web,
     };
 }

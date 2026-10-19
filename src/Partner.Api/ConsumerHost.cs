@@ -6,6 +6,7 @@ using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Skills;
 using Partner.Core.Agent.Mcp;
 using Partner.Core.Agent.Tools;
+using Partner.Core.Agent.Web;
 using Partner.Desktop.Tools;
 using Partner.Core.Hosting;
 using Partner.Core.Memory;
@@ -174,11 +175,16 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         return AgentRouting.Effective(settings)
             .Select(route =>
             {
-                var names = route.Scenario.Key == AgentScenarios.Desktop
-                    ? DesktopToolCatalog.All
+                // One branch per scenario, mirroring the tool set the job runner registers for it: reporting the
+                // web-search agent's tools through the default branch would tell a person it can read files.
+                var names = route.Scenario.Key switch
+                {
+                    AgentScenarios.Desktop => DesktopToolCatalog.All
                         .Where(name => name != "desktop_screenshot" || (route.Agent.Model?.SupportsImages ?? settings.Model.SupportsImages))
-                        .ToList()
-                    : new List<string> { "file_list", "file_read" };
+                        .ToList(),
+                    AgentScenarios.WebSearch => new List<string> { WebSearchTool.Name, WebFetchTool.Name },
+                    _ => new List<string> { "file_list", "file_read" },
+                };
 
                 return new AgentToolExposure(
                     route.Scenario.Key,
@@ -393,6 +399,13 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             FileToolSet.Register(tools, settings, _workspace);
         }
 
+        // On by default: web search is the capability this build ships enabled, so out of the box these two
+        // tools are the main agent's. They move to a web-search sub-agent the moment one is created and enabled.
+        if (AgentRouting.MainOwnsWeb(settings))
+        {
+            WebToolSet.Register(tools, _context);
+        }
+
         RegisterMcpTools(tools, settings.Mcp);
 
         var routes = AgentRouting.Effective(settings);
@@ -448,6 +461,11 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
 
         hooks.Register(new MemoryRecallHook(_context.Memory));
         hooks.Register(new MemoryDistilHook(_context.Memory, _context.Session, _clock));
+
+        // A link the person pasted is a link they meant to open, so it goes into the ledger that web_fetch's
+        // governance reads: fetching it then needs no approval banner. Registered unconditionally — the hook
+        // only remembers hosts, and the ledger is the same object whether or not the tools exist this run.
+        hooks.Register(new Partner.Core.Agent.Web.WebHostLedgerHook(_context.Web.Ledger));
 
         var disabled = _context.Settings.Load().Skills.Disabled.ToHashSet(StringComparer.Ordinal);
         var loaded = new SkillLoader().Load(workspace);

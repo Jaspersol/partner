@@ -44,7 +44,7 @@ public sealed class AgentsEndpointTests : ApiFixture
             .EnumerateArray().Select(error => error.GetString()!).ToList();
 
     [Fact]
-    public async Task A_fresh_install_has_the_builtin_desktop_agent_and_two_scenarios()
+    public async Task A_fresh_install_has_the_builtin_desktop_agent_and_the_whole_scenario_catalogue()
     {
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/agents");
 
@@ -54,10 +54,15 @@ public sealed class AgentsEndpointTests : ApiFixture
         Assert.Equal(5, agent.GetProperty("maxRounds").GetInt32());
         Assert.Equal(JsonValueKind.Null, agent.GetProperty("model").ValueKind);
 
+        // Every scenario is offered whether or not an agent holds it: an unclaimed one belongs to the main agent.
         var scenarios = view.GetProperty("scenarios").EnumerateArray().ToList();
-        Assert.Equal(new[] { "desktop", "file-read" }, scenarios.Select(s => s.GetProperty("key").GetString()));
+        Assert.Equal(
+            new[] { "desktop", "file-read", "web-search" },
+            scenarios.Select(s => s.GetProperty("key").GetString()));
+
         Assert.Equal("desktop", scenarios[0].GetProperty("ownerId").GetString());
         Assert.Equal(JsonValueKind.Null, scenarios[1].GetProperty("ownerId").ValueKind);
+        Assert.Equal(JsonValueKind.Null, scenarios[2].GetProperty("ownerId").ValueKind);
     }
 
     [Fact]
@@ -103,10 +108,10 @@ public sealed class AgentsEndpointTests : ApiFixture
     [Fact]
     public async Task A_scenario_outside_the_closed_list_is_refused()
     {
-        var response = await PutAgentsAsync(null, Desktop(), Reader(scenario: "web-search"));
+        var response = await PutAgentsAsync(null, Desktop(), Reader(scenario: "weather"));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains(await ErrorsAsync(response), error => error.Contains("web-search", StringComparison.Ordinal));
+        Assert.Contains(await ErrorsAsync(response), error => error.Contains("weather", StringComparison.Ordinal));
     }
 
     [Fact]

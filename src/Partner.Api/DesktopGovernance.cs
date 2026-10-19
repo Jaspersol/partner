@@ -60,6 +60,14 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
                 : new GovernanceDecision(ToolDecision.Deny, "读文件未启用");
         }
 
+        // Web access: read-only on other people's servers, so it never asks on its own — but a search sends the
+        // query, and therefore the user's own words, to a third party, while a fetch is the model choosing a
+        // destination. The switch covers both, and both read it live so turning it off takes effect at once.
+        if (toolName is Partner.Core.Agent.Web.WebSearchTool.Name or Partner.Core.Agent.Web.WebFetchTool.Name)
+        {
+            return WebDecision(toolName, argumentsJson);
+        }
+
         if (!DesktopToolCatalog.All.Contains(toolName, StringComparer.Ordinal))
         {
             return new GovernanceDecision(ToolDecision.Deny, $"'{toolName}' 不是桌面工具（fail-closed）");
@@ -90,6 +98,62 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
         return needsApproval
             ? new GovernanceDecision(ToolDecision.Ask, $"'{toolName}' 需要人工批准（挡位：{gear}）")
             : new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 在当前挡位下可直接执行（{gear}）");
+    }
+
+    /// <summary>
+    /// Search is allowed whenever the capability is on; fetching is allowed only for a host this session has
+    /// already seen. The distinction is who chose the address: a host that came out of the person's own question
+    /// or out of a search it started is a lead being followed, while any other host is the model picking a
+    /// destination and sending a request to it — which is the user's decision the first time, not the model's.
+    /// </summary>
+    private GovernanceDecision WebDecision(string toolName, string argumentsJson)
+    {
+        var web = _context.Web;
+        if (!_context.Settings.Load().Web.Enabled)
+        {
+            return new GovernanceDecision(ToolDecision.Deny, "联网搜索未启用");
+        }
+
+        if (toolName == Partner.Core.Agent.Web.WebSearchTool.Name)
+        {
+            return new GovernanceDecision(ToolDecision.Allow, "'web_search' 已启用（结果只是线索，需自行核对）");
+        }
+
+        var host = HostOf(argumentsJson);
+        if (host is null)
+        {
+            // The tool refuses the call itself with a precise reason; letting it do so keeps one wording for
+            // "this address is unusable" instead of two that drift apart.
+            return new GovernanceDecision(ToolDecision.Allow, "'web_fetch' 的地址由工具自行校验");
+        }
+
+        return web.Ledger.Saw(host)
+            ? new GovernanceDecision(ToolDecision.Allow, $"'{host}' 出现在本次会话的搜索结果或用户消息中")
+            : new GovernanceDecision(ToolDecision.Ask, $"要打开 '{host}'：这个地址不在本次会话的搜索结果里，需要你确认");
+    }
+
+    /// <summary>The host of the URL argument, or null when there is nothing to judge.</summary>
+    private static string? HostOf(string argumentsJson)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(
+                string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson);
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("url", out var value)
+                || value.ValueKind != System.Text.Json.JsonValueKind.String)
+            {
+                return null;
+            }
+
+            var raw = value.GetString();
+            return Uri.TryCreate(raw, UriKind.Absolute, out var uri) ? uri.Host : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
