@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Partner.Core.Agent;
+using Partner.Core.Agent.Delegation;
 using Partner.Core.Agent.Tools;
 
 namespace Partner.Api.Agents;
@@ -15,7 +16,7 @@ namespace Partner.Api.Agents;
 /// </summary>
 public sealed class AgentDelegateTool : ITool
 {
-    public const string ToolName = "agent_delegate";
+    public const string ToolName = DelegationTools.Delegate;
 
     private readonly SubAgentHost _host;
 

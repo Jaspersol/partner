@@ -1,3 +1,4 @@
+using Partner.Core.Agent.Delegation;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
 using Partner.Core.Media;
@@ -201,7 +202,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         // A summary stands in for history that was folded away, so it is context rather than a turn.
         var summaries = view.Items.Where(entry => entry.Kind == SessionEventKind.Summary).ToList();
         var conversation = view.Items
-            .Where(entry => entry.Kind != SessionEventKind.Summary && entry.Kind.IsContent())
+            .Where(entry => entry.Kind != SessionEventKind.Summary && (entry.Kind.IsContent() || IsHandoffTrace(entry)))
             .ToList();
 
         ValueTask<int> Cost(string? text, CancellationToken token) => fromMemory
@@ -236,27 +237,24 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
         var kept = await ContextBudget.FitNewestFirstAsync(
             conversation,
-            (entry, token) => Cost(entry.Body, token),
+            (entry, token) => Cost(CostText(entry), token),
             Math.Max(0, budget),
             ct).ConfigureAwait(false);
 
         // Entries that are not conversational are still shown to the model, just inside the system block.
-        foreach (var entry in kept.Where(entry => entry.Kind is not (SessionEventKind.User or SessionEventKind.Assistant or SessionEventKind.Schedule)))
+        foreach (var entry in kept.Where(entry =>
+            entry.Kind is not (SessionEventKind.User or SessionEventKind.Assistant or SessionEventKind.Schedule)
+            && !IsHandoffTrace(entry)))
         {
             context.Add($"#{entry.Seq} [{entry.Kind}] {entry.Body}");
         }
 
-        var turns = kept
-            .Where(entry => entry.Kind is SessionEventKind.User or SessionEventKind.Assistant or SessionEventKind.Schedule)
-            .Select(entry => entry.Kind == SessionEventKind.Assistant
-                ? new LlmMessage("assistant", entry.Body)
-                : new LlmMessage("user", entry.Body))
-            .ToList();
+        var turns = BuildTurns(kept);
 
         var turnTokens = 0;
         foreach (var entry in kept)
         {
-            turnTokens += await Cost(entry.Body, ct).ConfigureAwait(false);
+            turnTokens += await Cost(CostText(entry), ct).ConfigureAwait(false);
         }
 
         return new Plan(
@@ -266,6 +264,103 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             systemTokens,
             turnTokens,
             conversation.Count - kept.Count);
+    }
+
+    /// <summary>The most of a hand-off's arguments or result that is replayed. The detail is in the log; the model needs the fact.</summary>
+    private const int TraceChars = 400;
+
+    /// <summary>
+    /// A hand-off to a sub-agent, as the log recorded it: the call and its result.
+    ///
+    /// <para>
+    /// History is conversational on purpose, so tool calls are not replayed — with this one exception. Handing
+    /// work over is the one call whose only trace in the conversation is the assistant's own sentence about it
+    /// (「已经交给桌面操控子 agent 了」). Replayed without the call, those sentences teach the model that saying it
+    /// is doing it, and from the next turn on it says so without calling anything: nothing runs, and the person is
+    /// told it is under way.
+    /// </para>
+    /// </summary>
+    private static bool IsHandoffTrace(SessionViewItem entry) =>
+        entry.Kind is SessionEventKind.ToolCall or SessionEventKind.ToolResult
+        && entry.Meta is { } meta
+        && meta.TryGetValue("name", out var name)
+        && name == DelegationTools.Delegate
+        && meta.ContainsKey("id");
+
+    private static string Trim(string? text) =>
+        text is null ? string.Empty : text.Length <= TraceChars ? text : text[..TraceChars] + "…";
+
+    /// <summary>What an entry costs in the window: its text, and for a hand-off call its arguments too.</summary>
+    private static string CostText(SessionViewItem entry) =>
+        entry.Kind == SessionEventKind.ToolCall && entry.Meta is { } meta
+            ? entry.Body + Trim(meta.GetValueOrDefault("args"))
+            : IsHandoffTrace(entry) ? Trim(entry.Body) : entry.Body;
+
+    /// <summary>
+    /// The window as messages. A hand-off is replayed in the shape the model produced it — the assistant message
+    /// carries the call, a tool message carries the result — and only when both survived the budget: a call with
+    /// no result, or a result with no call, is rejected by the provider.
+    /// </summary>
+    private static List<LlmMessage> BuildTurns(IReadOnlyList<SessionViewItem> kept)
+    {
+        var called = kept.Where(e => e.Kind == SessionEventKind.ToolCall && IsHandoffTrace(e)).Select(e => e.Meta!["id"]).ToHashSet();
+        var answered = kept.Where(e => e.Kind == SessionEventKind.ToolResult && IsHandoffTrace(e)).Select(e => e.Meta!["id"]).ToHashSet();
+        var complete = called.Intersect(answered).ToHashSet();
+
+        var turns = new List<LlmMessage>();
+        var openCalls = false;
+
+        foreach (var entry in kept)
+        {
+            if (IsHandoffTrace(entry))
+            {
+                var id = entry.Meta!["id"];
+                if (!complete.Contains(id))
+                {
+                    continue;
+                }
+
+                if (entry.Kind == SessionEventKind.ToolCall)
+                {
+                    var call = new LlmToolCall(id, DelegationTools.Delegate, Trim(entry.Meta!.GetValueOrDefault("args") ?? "{}"));
+                    var last = turns.Count > 0 ? turns[^1] : null;
+
+                    if (openCalls && last is { Role: "assistant", ToolCalls: { } calls })
+                    {
+                        turns[^1] = last with { ToolCalls = [.. calls, call] };
+                    }
+                    else if (last is { Role: "assistant", ToolCalls: null })
+                    {
+                        turns[^1] = last with { ToolCalls = [call] };
+                    }
+                    else
+                    {
+                        turns.Add(new LlmMessage("assistant", null, [call]));
+                    }
+
+                    openCalls = true;
+                }
+                else
+                {
+                    turns.Add(new LlmMessage("tool", Trim(entry.Body), ToolCallId: id, Name: DelegationTools.Delegate));
+                    openCalls = false;
+                }
+
+                continue;
+            }
+
+            if (entry.Kind is not (SessionEventKind.User or SessionEventKind.Assistant or SessionEventKind.Schedule))
+            {
+                continue;
+            }
+
+            openCalls = false;
+            turns.Add(entry.Kind == SessionEventKind.Assistant
+                ? new LlmMessage("assistant", entry.Body)
+                : new LlmMessage("user", entry.Body));
+        }
+
+        return turns;
     }
 
     private static string BuildSystem(string basePrompt, IReadOnlyList<string> injectedPrompts, IReadOnlyList<string> context)

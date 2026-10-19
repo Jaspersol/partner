@@ -97,6 +97,82 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.DoesNotContain(messages, m => m.Content == "clock" || m.Content == "it is noon");
     }
 
+    private async Task<ISessionStore> SessionWithMetaAsync(params (SessionEventKind Kind, string Body, Dictionary<string, string>? Meta)[] events)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        _opened = store;
+
+        foreach (var (kind, body, meta) in events)
+        {
+            await store.AppendAsync(new SessionEvent { Kind = kind, Source = InputSource.Text, Body = body, Meta = meta });
+        }
+
+        return store;
+    }
+
+    private static Dictionary<string, string> Call(string id, string name, string args = "{}") =>
+        new() { ["id"] = id, ["name"] = name, ["args"] = args };
+
+    private static Dictionary<string, string> Result(string id, string name) =>
+        new() { ["id"] = id, ["name"] = name, ["ok"] = "true" };
+
+    [Fact]
+    public async Task A_hand_off_to_a_sub_agent_is_replayed_as_the_call_it_was()
+    {
+        // Replayed only as text, 「已经交给桌面操控子 agent 了」 is all the model ever sees of a hand-off, so it
+        // learns that saying it is doing it — and on the next request says it without calling anything.
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.User, "open the music app", null),
+            (SessionEventKind.Assistant, "handing that to the desktop agent", null),
+            (SessionEventKind.ToolCall, "agent_delegate", Call("c1", "agent_delegate", "{\"scenario\":\"desktop\"}")),
+            (SessionEventKind.ToolResult, "handed over as job-1", Result("c1", "agent_delegate")),
+            (SessionEventKind.Assistant, "it is with the desktop agent now", null));
+
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        // system, user, assistant(text + call), tool, assistant, current input
+        Assert.Equal(new[] { "system", "user", "assistant", "tool", "assistant", "user" }, messages.Select(m => m.Role));
+
+        var call = Assert.Single(messages[2].ToolCalls!);
+        Assert.Equal("handing that to the desktop agent", messages[2].Content);
+        Assert.Equal("agent_delegate", call.Name);
+        Assert.Equal("c1", call.Id);
+        Assert.Contains("desktop", call.ArgumentsJson, StringComparison.Ordinal);
+        Assert.Equal("c1", messages[3].ToolCallId);
+        Assert.Equal("handed over as job-1", messages[3].Content);
+    }
+
+    [Fact]
+    public async Task Only_hand_offs_are_replayed_other_tool_calls_stay_out_of_the_window()
+    {
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.User, "weather?", null),
+            (SessionEventKind.ToolCall, "web_search", Call("w1", "web_search")),
+            (SessionEventKind.ToolResult, "sunny", Result("w1", "web_search")),
+            (SessionEventKind.Assistant, "sunny", null));
+
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        Assert.DoesNotContain(messages, m => m.Role == "tool" || m.ToolCalls is not null);
+    }
+
+    [Fact]
+    public async Task A_hand_off_whose_other_half_did_not_fit_is_left_out_rather_than_sent_unpaired()
+    {
+        // A tool message with no call before it (or a call with no answer) is a request the provider rejects.
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.ToolCall, "agent_delegate", Call("c1", "agent_delegate")),
+            (SessionEventKind.User, "and then?", null),
+            (SessionEventKind.ToolResult, "handed over", Result("c2", "agent_delegate")));
+
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        Assert.DoesNotContain(messages, m => m.Role == "tool" || m.ToolCalls is not null);
+    }
+
     [Fact]
     public async Task Measuring_occupancy_never_reaches_the_model()
     {
