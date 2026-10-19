@@ -16,6 +16,7 @@ __pycache__/
 # IDE / editor
 .vs/
 .idea/
+.claude/
 *.user
 
 # Generated at build time: the committed baseline is capabilities/manifest.baseline.json
