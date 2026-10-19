@@ -347,17 +347,57 @@ describe('day picker', () => {
     items: [{ seq, at: `${day}T10:00:00+00:00`, kind: 'User', source: 'Text', body: `on ${day}`, originalBody: null, revisionCount: 0 }],
   })
 
-  it('offers only days that exist, newest first, and nothing when the server sends none', async () => {
+  /** Opens the cascader and reads one column's entries. */
+  async function column(wrapper: ReturnType<typeof mount>, name: 'years' | 'months' | 'dates') {
+    if (!wrapper.find('[data-test="session-day-panel"]').exists()) {
+      await wrapper.find('[data-test="session-day"]').trigger('click')
+    }
+
+    return wrapper.findAll(`[data-test="session-day-${name}"] button`)
+  }
+
+  const dayValues = async (wrapper: ReturnType<typeof mount>) =>
+    (await column(wrapper, 'dates')).map((option) => option.attributes('data-day'))
+
+  it('offers only days that exist, and nothing when the server sends none', async () => {
     const plain = mount(SessionView, { props: { api: createStub().stub } })
     await flushPromises()
     expect(plain.find('[data-test="session-day"]').exists()).toBe(false)
 
-    const { stub } = createStub({ session: vi.fn(async () => reply('2026-09-27', ['2026-09-25', '2026-09-27'])) })
+    const { stub } = createStub({
+      session: vi.fn(async () => reply('2027-01-03', ['2025-12-30', '2026-09-25', '2026-09-27', '2027-01-03'])),
+    })
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    const values = wrapper.findAll('[data-test="session-day"] option').map((option) => option.attributes('value'))
-    expect(values).toEqual(['2026-09-27', '2026-09-25'])
+    // The button names the day on screen.
+    expect(wrapper.find('[data-test="session-day"]').text()).toContain('2027年1月3日')
+
+    // Years, newest first — only the three that have a conversation.
+    expect((await column(wrapper, 'years')).map((option) => option.text())).toEqual(['2027年', '2026年', '2025年'])
+    // The columns open on the day on screen: its month, and the days of that month.
+    expect((await column(wrapper, 'months')).map((option) => option.text())).toEqual(['1月'])
+    expect(await dayValues(wrapper)).toEqual(['2027-01-03'])
+  })
+
+  it('narrows the month and day columns to what exists under the year and month chosen', async () => {
+    const { stub } = createStub({
+      session: vi.fn(async () => reply('2026-09-27', ['2025-12-30', '2026-03-02', '2026-09-25', '2026-09-27'])),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    expect((await column(wrapper, 'months')).map((option) => option.text())).toEqual(['9月', '3月'])
+    expect(await dayValues(wrapper)).toEqual(['2026-09-27', '2026-09-25'])
+
+    await wrapper.find('[data-test="session-day-month-3"]').trigger('click')
+    expect(await dayValues(wrapper)).toEqual(['2026-03-02'])
+
+    // Changing the year only changes what is listed; the view has not moved.
+    await wrapper.find('[data-test="session-day-year-2025"]').trigger('click')
+    expect((await column(wrapper, 'months')).map((option) => option.text())).toEqual(['12月'])
+    expect(await dayValues(wrapper)).toEqual(['2025-12-30'])
+    expect(wrapper.find('[data-test="session-day"]').text()).toContain('2026年9月27日')
   })
 
   it('reads one closed day when an older day is chosen, and follows the newest again when it is chosen back', async () => {
@@ -368,14 +408,32 @@ describe('day picker', () => {
     await flushPromises()
     expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: 'latest', open: true })
 
-    await wrapper.find('[data-test="session-day"]').setValue('2026-09-25')
+    await column(wrapper, 'dates')
+    await wrapper.find('[data-test="session-day-date-2026-09-25"]').trigger('click')
     await flushPromises()
     expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: '2026-09-25', open: false })
     expect(wrapper.text()).toContain('on 2026-09-25')
+    // Choosing a day closes the panel.
+    expect(wrapper.find('[data-test="session-day-panel"]').exists()).toBe(false)
 
-    await wrapper.find('[data-test="session-day"]').setValue('2026-09-27')
+    await column(wrapper, 'dates')
+    await wrapper.find('[data-test="session-day-date-2026-09-27"]').trigger('click')
     await flushPromises()
     expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ open: true })
+  })
+
+  it('closes on Escape without choosing anything', async () => {
+    const session = vi.fn(async () => reply('2026-09-27', ['2026-09-25', '2026-09-27']))
+    const wrapper = mount(SessionView, { props: { api: createStub({ session }).stub } })
+    await flushPromises()
+    const calls = session.mock.calls.length
+
+    await column(wrapper, 'dates')
+    expect(wrapper.find('[data-test="session-day-panel"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="session-day-panel"]').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[data-test="session-day-panel"]').exists()).toBe(false)
+    expect(session.mock.calls.length).toBe(calls)
   })
 
   it('keeps showing the previous day across midnight while work is running, and moves on once idle', async () => {
@@ -396,7 +454,7 @@ describe('day picker', () => {
     await flushPromises()
 
     expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: '2026-09-26', open: true })
-    expect(wrapper.findAll('[data-test="session-day"] option').map((option) => option.attributes('value'))).toEqual(['2026-09-26'])
+    expect(await dayValues(wrapper)).toEqual(['2026-09-26'])
 
     session.mockImplementation(async (_from, _take, window) => reply(window?.day === 'latest' ? '2026-09-27' : '2026-09-26', ['2026-09-26', '2026-09-27']))
     await wrapper.setProps({ summary: { depth: 0, pending: 0, failed: 0, runningItemId: null } })
@@ -408,7 +466,161 @@ describe('day picker', () => {
     await flushPromises()
 
     expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: 'latest' })
-    expect(wrapper.findAll('[data-test="session-day"] option').map((option) => option.attributes('value'))).toEqual(['2026-09-27', '2026-09-26'])
+    expect(await dayValues(wrapper)).toEqual(['2026-09-27', '2026-09-26'])
+  })
+})
+
+describe('sub-agent progress', () => {
+  const job = (id: string, name: string, round: number, status = 'running') => ({
+    id,
+    agentId: name,
+    agentName: name,
+    scenario: 'file-read',
+    goal: `goal of ${id}`,
+    status,
+    round,
+    maxRounds: 5,
+    startedAt: `2026-09-26T10:00:0${id.slice(-1)}+00:00`,
+    finishedAt: null,
+    category: null,
+    summary: null,
+    error: null,
+    rounds: [],
+  })
+
+  it('draws no cards when nothing is delegated', async () => {
+    const wrapper = mount(SessionView, { props: { api: createStub().stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="subagent-cards"]').exists()).toBe(false)
+  })
+
+  it('draws a card per running job with its name and progress, oldest first, and none for finished ones', async () => {
+    const agentJobs = vi.fn(async () => [job('j3', '读文件的', 1), job('j2', '桌面操控', 3), job('j1', '已完成的', 5, 'completed')])
+    const wrapper = mount(SessionView, { props: { api: createStub({ agentJobs }).stub } })
+    await flushPromises()
+
+    const cards = wrapper.findAll('[data-test="subagent-card"]')
+    expect(cards.map((card) => card.find('.sa-name').text())).toEqual(['桌面操控', '读文件的'])
+    expect(cards.map((card) => card.find('[data-test="subagent-progress"]').text())).toEqual(['3/5', '1/5'])
+    expect(cards[0]?.attributes('title')).toBe('goal of j2')
+  })
+
+  it('closes a card when its job finishes and lets the ones behind it take its place', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let jobs = [job('j1', '甲', 1), job('j2', '乙', 2), job('j3', '丙', 3)]
+      const agentJobs = vi.fn(async () => jobs)
+      const wrapper = mount(SessionView, { props: { api: createStub({ agentJobs }).stub } })
+      await flushPromises()
+      const names = () => wrapper.findAll('[data-test="subagent-card"] .sa-name').map((name) => name.text())
+      expect(names()).toEqual(['甲', '乙', '丙'])
+
+      jobs = [job('j1', '甲', 5, 'completed'), job('j2', '乙', 3), job('j3', '丙', 3)]
+      await vi.advanceTimersByTimeAsync(1500)
+      await flushPromises()
+
+      expect(names()).toEqual(['乙', '丙'])
+      expect(wrapper.find('[data-test="subagent-card"] [data-test="subagent-progress"]').text()).toBe('3/5')
+
+      jobs = [job('j2', '乙', 5, 'completed'), job('j3', '丙', 5, 'completed'), job('j1', '甲', 5, 'completed')]
+      await vi.advanceTimersByTimeAsync(1500)
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="subagent-cards"]').exists()).toBe(false)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  describe('while a sub-agent works for a turn that has already answered', () => {
+    const usage = { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 }
+    const row = (seq: number, kind: string, body: string, meta: Record<string, string> | null = null) => ({
+      seq, at: '2026-09-26T10:00:00+00:00', kind, source: 'Text', body, originalBody: null, revisionCount: 0, meta,
+    })
+    const handoff = vi.fn(async () => ({
+      lastSeq: 5,
+      busy: false,
+      conversation: { latestFromSeq: 1, withdrawn: null },
+      context: usage,
+      items: [
+        row(1, 'User', '打开网易云音乐'),
+        row(2, 'Thinking', '交给桌面子 agent'),
+        row(3, 'ToolCall', 'agent_delegate', { id: 'a', name: 'agent_delegate', args: '{}' }),
+        row(4, 'ToolResult', '已交给', { id: 'a', name: 'agent_delegate', ok: 'true' }),
+        row(5, 'Assistant', '已经交给桌面操控子 agent 了'),
+      ],
+    }))
+
+    it('does not fold, and keeps the stop button, until the sub-agent is done and has been answered', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        let jobs = [job('j1', '桌面操控', 2)]
+        const agentJobs = vi.fn(async () => jobs)
+        const wrapper = mount(SessionView, { props: { api: createStub({ session: handoff, agentJobs }).stub } })
+        await flushPromises()
+
+        // The model's run is over, but the work is not.
+        expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(false)
+        expect(wrapper.find('[data-tool]').exists()).toBe(true)
+        expect(wrapper.find('[data-test="composer-interrupt"]').exists()).toBe(true)
+        expect(wrapper.find('[data-test="composer-send"]').exists()).toBe(false)
+
+        // The sub-agent finishes. Its report is still on its way to the main agent, so there is a short wait
+        // before the screen calls this finished.
+        jobs = [job('j1', '桌面操控', 5, 'completed')]
+        await vi.advanceTimersByTimeAsync(1500)
+        await flushPromises()
+        expect(wrapper.find('[data-test="subagent-cards"]').exists()).toBe(false)
+        expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(false)
+        expect(wrapper.find('[data-test="composer-interrupt"]').exists()).toBe(true)
+
+        await vi.advanceTimersByTimeAsync(3000)
+        await flushPromises()
+        expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(true)
+        expect(wrapper.find('[data-test="composer-interrupt"]').exists()).toBe(false)
+        expect(wrapper.find('[data-test="composer-send"]').exists()).toBe(true)
+        wrapper.unmount()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('stops the sub-agents when the stop button is pressed', async () => {
+      const cancelAgentJob = vi.fn(async () => true)
+      const agentJobs = vi.fn(async () => [job('j1', '甲', 1), job('j2', '乙', 2)])
+      const wrapper = mount(SessionView, { props: { api: createStub({ session: handoff, agentJobs, cancelAgentJob }).stub } })
+      await flushPromises()
+
+      await wrapper.find('[data-test="composer-interrupt"]').trigger('click')
+      await flushPromises()
+
+      expect(cancelAgentJob.mock.calls.map((call) => (call as unknown as string[])[0]).sort()).toEqual(['j1', 'j2'])
+    })
+  })
+
+  it('keeps the cards it has when a read fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      let fail = false
+      const agentJobs = vi.fn(async () => {
+        if (fail) throw new TypeError('network down')
+        return [job('j1', '甲', 1)]
+      })
+      const wrapper = mount(SessionView, { props: { api: createStub({ agentJobs }).stub } })
+      await flushPromises()
+      expect(wrapper.findAll('[data-test="subagent-card"]')).toHaveLength(1)
+
+      fail = true
+      await vi.advanceTimersByTimeAsync(1500)
+      await flushPromises()
+
+      expect(wrapper.findAll('[data-test="subagent-card"]')).toHaveLength(1)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

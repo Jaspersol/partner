@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { APPROVAL_GEARS } from '../api'
-import type { ConsumerState, PartnerApiSurface, QueueItem, QueueSummary, SubmitResult, UploadedMedia } from '../api'
+import type { AgentJobView, ConsumerState, PartnerApiSurface, QueueItem, QueueSummary, SubmitResult, UploadedMedia } from '../api'
 import { parseComposerCommand } from '../composerCommand'
 import { gearName } from '../gears'
 import HintTip from './HintTip.vue'
@@ -31,6 +31,13 @@ const props = defineProps<{
    * sentences behind its ⓘ; `fraction` is 0–1. Absent until the session has been read once.
    */
   context?: { fraction: number; label: string; hint: string } | undefined
+  /**
+   * A sub-agent is working (or only just stopped) and the main agent has yet to answer it. Nothing is running in
+   * the queue then, but the work is not over, so the button stays the stop button.
+   */
+  delegating?: boolean | undefined
+  /** The sub-agent jobs that can be stopped. */
+  jobs?: readonly AgentJobView[] | undefined
 }>()
 const emit = defineEmits<{
   sent: [result: SubmitResult]
@@ -186,7 +193,10 @@ const hasContent = computed(() => draft.value.trim() !== '' || attachments.value
  */
 const action = computed<{ kind: 'send' | 'queue' | 'interrupt'; label: string }>(() => {
   if (runningId.value === null) {
-    return { kind: 'send', label: '发送' }
+    // Delegated work is not a queue item, so a typed message is not waiting behind anything: it is simply sent.
+    return props.delegating === true && !hasContent.value
+      ? { kind: 'interrupt', label: '中断子任务' }
+      : { kind: 'send', label: '发送' }
   }
   return hasContent.value ? { kind: 'queue', label: '加入队列' } : { kind: 'interrupt', label: '中断运行' }
 })
@@ -209,7 +219,12 @@ const action = computed<{ kind: 'send' | 'queue' | 'interrupt'; label: string }>
  */
 async function interrupt() {
   const itemId = runningId.value
-  if (itemId === null || busy.value) {
+  if (busy.value) {
+    return
+  }
+
+  if (itemId === null) {
+    await interruptJobs()
     return
   }
 
@@ -221,6 +236,28 @@ async function interrupt() {
       return
     }
     emit('cancel', itemId)
+  } catch (failure) {
+    emit('failed', String(failure))
+  } finally {
+    busy.value = false
+  }
+}
+
+/** Stops the sub-agents that are working. Each one's report still comes back, saying it was cancelled. */
+async function interruptJobs() {
+  const ids = (props.jobs ?? []).map((job) => job.id)
+  if (ids.length === 0) {
+    return
+  }
+
+  busy.value = true
+  try {
+    const results = await Promise.all(ids.map((id) => props.api.cancelAgentJob(id)))
+    if (!results.some(Boolean)) {
+      emit('failed', '子任务已完成，无法取消')
+      return
+    }
+    emit('cancel', ids[0] as string)
   } catch (failure) {
     emit('failed', String(failure))
   } finally {
@@ -549,7 +586,7 @@ defineExpose({ focus, restore })
           data-test="composer-interrupt"
           :disabled="busy"
           :aria-busy="busy || undefined"
-          :title="`中断正在运行的 ${runningId}`"
+          :title="runningId === null ? '中断正在运行的子任务' : `中断正在运行的 ${runningId}`"
           @click="interrupt"
         >
           <Icon name="square" :size="14" /><span class="sr-only">{{ busy ? '中断中…' : action.label }}</span>

@@ -371,8 +371,8 @@ describe('app shell', () => {
       expect(wrapper.find('[data-test="composer-interrupt"]').exists()).toBe(true)
       // …and the status bar says why what is on screen might not be current.
       expect(wrapper.find('[data-test="status-stale"]').exists()).toBe(true)
-      // The badge keeps what it last knew rather than blanking: 阻塞可见 outranks freshness.
-      expect(wrapper.find('[data-test="blocked"]').text()).toContain('队列 1')
+      // A running item is not a failure, so the top bar has nothing to say about it: no queue depth, no item id.
+      expect(wrapper.find('[data-test="blocked"]').exists()).toBe(false)
 
       wrapper.unmount()
     } finally {

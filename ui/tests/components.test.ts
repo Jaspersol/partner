@@ -405,7 +405,7 @@ describe('event list', () => {
     expect(card.attributes('data-tool-family')).toBe('shell')
   })
 
-  it('keeps a tool card in the list, one line per call, paired with its result', () => {
+  it('keeps a tool card in the list, one line per call, paired with its result', async () => {
     const items = [
       { ...baseItem, seq: 1, body: 'ask' },
       { ...baseItem, seq: 2, kind: 'ToolCall', body: 'bash', meta: { id: 'a', name: 'bash', args: '{}' } },
@@ -414,6 +414,10 @@ describe('event list', () => {
     ]
 
     const wrapper = mount(EventList, { props: { selectedSeq: null, items } })
+
+    // The turn is finished, so the card is folded with the rest of its process.
+    expect(wrapper.findAll('[data-tool]')).toHaveLength(0)
+    await wrapper.find('[data-test="session-fold"]').trigger('click')
 
     expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
     expect(wrapper.text()).toContain('ask')
@@ -669,7 +673,7 @@ describe('event list', () => {
     expect(elapsed).toMatch(/已思考 01:1[45]/)
   })
 
-  it('keeps a thinking row as its own row rather than folding it into the answer', () => {
+  it('keeps a thinking row as its own row rather than folding it into the answer', async () => {
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
@@ -681,9 +685,158 @@ describe('event list', () => {
       },
     })
 
+    // The turn is over, so its reasoning is folded away until it is asked for — and when it is, it is its own
+    // row, not text inside the answer.
+    expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(false)
+    await wrapper.find('[data-test="session-fold"]').trigger('click')
+
     expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('问')
     expect(wrapper.text()).toContain('答')
+  })
+
+  describe('a finished turn', () => {
+    const turn = [
+      { ...baseItem, seq: 1, body: '查一下天气' },
+      { ...baseItem, seq: 2, kind: 'System', body: '- 用户在上海', meta: { label: 'recall' } },
+      { ...baseItem, seq: 3, kind: 'Thinking', body: '先看位置' },
+      { ...baseItem, seq: 4, kind: 'Assistant', body: '我先查一下', source: 'Text' },
+      { ...baseItem, seq: 5, kind: 'ToolCall', body: 'web_search', meta: { id: 'a', name: 'web_search', args: '{}' } },
+      { ...baseItem, seq: 6, kind: 'ToolResult', body: '晴', meta: { id: 'a', name: 'web_search', ok: 'true' } },
+      { ...baseItem, seq: 7, kind: 'Assistant', body: '今天晴，25 度', source: 'Text' },
+    ]
+
+    it('shows only the question and the answer, with the process folded behind one line', () => {
+      const wrapper = mount(EventList, { props: { selectedSeq: null, items: turn } })
+
+      expect(wrapper.text()).toContain('查一下天气')
+      expect(wrapper.text()).toContain('今天晴，25 度')
+      // Thinking, recall, the call and the text said on the way to it are all folded.
+      expect(wrapper.text()).not.toContain('我先查一下')
+      expect(wrapper.text()).not.toContain('先看位置')
+      expect(wrapper.find('[data-tool]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="session-recall"]').exists()).toBe(false)
+
+      const fold = wrapper.find('[data-test="session-fold"]')
+      expect(fold.attributes('aria-expanded')).toBe('false')
+      expect(fold.text()).toContain('思考')
+      expect(fold.text()).toContain('召回')
+      expect(fold.text()).toContain('工具调用 1')
+      expect(fold.text()).toContain('中间输出 1')
+    })
+
+    it('opens to the whole process on a click, and folds again on the next', async () => {
+      const wrapper = mount(EventList, { props: { selectedSeq: null, items: turn } })
+      const fold = () => wrapper.find('[data-test="session-fold"]')
+
+      await fold().trigger('click')
+      expect(fold().attributes('aria-expanded')).toBe('true')
+      expect(wrapper.text()).toContain('我先查一下')
+      expect(wrapper.find('[data-tool]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="session-recall"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('今天晴，25 度')
+
+      await fold().trigger('click')
+      expect(fold().attributes('aria-expanded')).toBe('false')
+      expect(wrapper.find('[data-tool]').exists()).toBe(false)
+    })
+
+    it('stays open for a turn that is still running, and folds once it is over', async () => {
+      const wrapper = mount(EventList, { props: { selectedSeq: null, items: turn, busy: true } })
+
+      // The answer may still be growing and its process is what the reader is watching happen.
+      expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(false)
+      expect(wrapper.find('[data-tool]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('我先查一下')
+
+      await wrapper.setProps({ busy: false })
+      expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(true)
+      expect(wrapper.find('[data-tool]').exists()).toBe(false)
+    })
+
+    it('folds the earlier turns while the latest one is still running', () => {
+      const second = [
+        { ...baseItem, seq: 8, body: '再查一次' },
+        { ...baseItem, seq: 9, kind: 'Thinking', body: '重新想' },
+        { ...baseItem, seq: 10, kind: 'ToolCall', body: 'web_search', meta: { id: 'b', name: 'web_search', args: '{}' } },
+      ]
+      const wrapper = mount(EventList, { props: { selectedSeq: null, items: [...turn, ...second], busy: true } })
+
+      expect(wrapper.findAll('[data-test="session-fold"]')).toHaveLength(1)
+      expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(true)
+      expect(wrapper.findAll('[data-tool]')).toHaveLength(1)
+    })
+
+    it('does not hide a turn that never reached an answer', () => {
+      const wrapper = mount(EventList, {
+        props: {
+          selectedSeq: null,
+          items: [
+            { ...baseItem, seq: 1, body: '查' },
+            { ...baseItem, seq: 2, kind: 'Thinking', body: '想' },
+            { ...baseItem, seq: 3, kind: 'ToolCall', body: 'web_search', meta: { id: 'a', name: 'web_search', args: '{}' } },
+            { ...baseItem, seq: 4, kind: 'System', body: 'error: 端点返回 400' },
+          ],
+        },
+      })
+
+      // Whatever happened before the failure is the evidence for it.
+      expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(false)
+      expect(wrapper.find('[data-tool]').exists()).toBe(true)
+    })
+
+    it('folds a hand-off and the reply to its report into one piece of work with one answer', () => {
+      // The sub-agent's report is hidden from the view, so the main agent's reply to it follows its earlier
+      // 「已交给 …」 directly. The reader sees one question and the last thing said; the rest is the process.
+      const wrapper = mount(EventList, {
+        props: {
+          selectedSeq: null,
+          items: [
+            { ...baseItem, seq: 1, body: '帮我读文件' },
+            { ...baseItem, seq: 2, kind: 'ToolCall', body: 'agent_delegate', meta: { id: 'a', name: 'agent_delegate', args: '{}' } },
+            { ...baseItem, seq: 3, kind: 'ToolResult', body: '已交给', meta: { id: 'a', name: 'agent_delegate', ok: 'true' } },
+            { ...baseItem, seq: 4, kind: 'Assistant', body: '已经交给子 agent 了' },
+            { ...baseItem, seq: 5, kind: 'Thinking', body: '看报告' },
+            { ...baseItem, seq: 6, kind: 'Assistant', body: '文件里写的是……' },
+          ],
+        },
+      })
+
+      expect(wrapper.findAll('[data-test="session-fold"]')).toHaveLength(1)
+      expect(wrapper.text()).toContain('帮我读文件')
+      expect(wrapper.text()).toContain('文件里写的是……')
+      expect(wrapper.text()).not.toContain('已经交给子 agent 了')
+      expect(wrapper.find('[data-test="session-thinking"]').exists()).toBe(false)
+      expect(wrapper.find('[data-tool]').exists()).toBe(false)
+    })
+
+    it('waits while work is still going on, even though the model has stopped talking', async () => {
+      // The main agent said 「已交给 …」 and its run is over, but the sub-agent is working and its report is still
+      // to be answered. That is not a finished turn, so nothing is folded yet.
+      const items = [
+        { ...baseItem, seq: 1, body: '打开网易云音乐' },
+        { ...baseItem, seq: 2, kind: 'Thinking', body: '交给桌面子 agent' },
+        { ...baseItem, seq: 3, kind: 'ToolCall', body: 'agent_delegate', meta: { id: 'a', name: 'agent_delegate', args: '{}' } },
+        { ...baseItem, seq: 4, kind: 'ToolResult', body: '已交给', meta: { id: 'a', name: 'agent_delegate', ok: 'true' } },
+        { ...baseItem, seq: 5, kind: 'Assistant', body: '已经交给桌面操控子 agent 了，稍等结果回来' },
+      ]
+      const wrapper = mount(EventList, { props: { selectedSeq: null, items, busy: false, active: true } })
+
+      expect(wrapper.find('[data-test="session-fold"]').exists()).toBe(false)
+      expect(wrapper.find('[data-tool]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('稍等结果回来')
+
+      // The report is answered and everything is over: now it folds, and only the last answer is left.
+      await wrapper.setProps({
+        items: [...items, { ...baseItem, seq: 6, kind: 'Assistant', body: '网易云音乐已经打开' }],
+        active: false,
+      })
+      expect(wrapper.findAll('[data-test="session-fold"]')).toHaveLength(1)
+      expect(wrapper.text()).toContain('网易云音乐已经打开')
+      expect(wrapper.text()).not.toContain('稍等结果回来')
+      expect(wrapper.find('[data-tool]').exists()).toBe(false)
+    })
   })
 })
 
@@ -819,10 +972,11 @@ describe('summarizeQueue', () => {
 })
 
 describe('top bar', () => {
-  it('reads the queue out without pretending it leads anywhere', async () => {
+  it('reads a failure out without pretending it leads anywhere', async () => {
     // It was a button once, pointing at a queue page. That page is gone: the queue is the composer's own list,
     // one click from where a reader already stands. A control that cannot act is worse than an absent one, so
-    // the badge is a readout — and it is the announced form that still says a failure out loud.
+    // the badge is a readout — and it is the announced form that still says a failure out loud. The depth and
+    // the running item's id are not on it: 「队列 1 · 执行中 in-…」 is an internal id nobody can act on.
     const wrapper = mount(TopBar, {
       props: {
         viewLabel: '会话',
@@ -837,17 +991,17 @@ describe('top bar', () => {
 
     const badge = wrapper.find('[data-test="blocked"]')
     expect(badge.element.tagName).toBe('SPAN')
-    expect(badge.text()).toContain('队列 1')
-    expect(badge.text()).toContain('失败 1')
-    expect(badge.text()).toContain('执行中 q-0184')
+    expect(badge.text()).toBe('失败 1')
+    expect(badge.text()).not.toContain('队列')
+    expect(badge.text()).not.toContain('q-0184')
     // The failure is still said, in the channel a screen reader hears.
     expect(wrapper.find('[data-test="blocked-announcer"]').text()).toContain('失败')
   })
 
-  it('drops the failure count once the queue no longer has one to report', async () => {
+  it('shows no badge at all while nothing has failed', async () => {
     // The queue keeps only what is still in play, so a settled failure is no longer counted here — it is read
-    // in the conversation, where the failed turn wrote an error event. The badge must not claim zero means
-    // "nothing went wrong", so it simply stops showing a number it no longer has.
+    // in the conversation, where the failed turn wrote an error event. Running or waiting work is the composer's
+    // to show, so the top bar stays quiet rather than print a depth and an id.
     const wrapper = mount(TopBar, {
       props: {
         viewLabel: '会话',
@@ -860,9 +1014,10 @@ describe('top bar', () => {
       },
     })
 
-    const badge = wrapper.find('[data-test="blocked"]')
-    expect(badge.text()).not.toContain('失败')
-    expect(badge.classes()).not.toContain('badge-error')
+    expect(wrapper.find('[data-test="blocked"]').exists()).toBe(false)
+    // An unknown queue (the read failed) is not drawn as a placeholder either.
+    await wrapper.setProps({ summary: null })
+    expect(wrapper.find('[data-test="blocked"]').exists()).toBe(false)
   })
   it('is not a button when there is nowhere to go', () => {
     // Disconnected, the shell shows a connection error instead of the views. A control that cannot act is
@@ -899,9 +1054,8 @@ describe('top bar', () => {
     })
 
     const badge = wrapper.find('[data-test="blocked"]').text()
-    expect(badge).toContain('队列 1')
     expect(badge).toContain('失败 1')
-    expect(badge).toContain('执行中 q-0184')
+    expect(badge).not.toContain('执行中')
   })
 
   it('marks a failure in the error colour and a lost connection explicitly', () => {

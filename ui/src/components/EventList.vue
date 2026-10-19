@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { SessionItem } from '../api'
 import { clampIndex, isActivationKey, normalizeKey, rovingTarget } from '../rovingFocus'
 import { sessionKindLabel, sourceHasChip, sourceLabel } from '../sessionKind'
 import { showToast } from '../toast'
 import Icon from './Icon.vue'
 import MarkdownBody from './MarkdownBody.vue'
+import RecallCard from './RecallCard.vue'
 import ToolCard from './ToolCard.vue'
 import ThinkingRow from './ThinkingRow.vue'
 
@@ -22,6 +23,11 @@ const props = defineProps<{
   withdrawn?: boolean | undefined
   /** True while a turn is running: the server refuses history changes then, so the buttons are not offered. */
   busy?: boolean | undefined
+  /**
+   * True while the newest turn is not over: a run, a queued message, a sub-agent at work. It only holds the fold
+   * back; `busy` is the narrower fact the server's history rules are about.
+   */
+  active?: boolean | undefined
 }>()
 const emit = defineEmits<{
   select: [seq: number]
@@ -33,11 +39,16 @@ const emit = defineEmits<{
   restore: [seq: number]
 }>()
 
-/** One rendered line: a conversation event, a tool call with its result folded in, or a stretch of thinking. */
+/**
+ * One rendered line: a conversation event, a tool call with its result folded in, a stretch of thinking, or
+ * the memory a turn was handed.
+ */
 type Row =
   | { kind: 'event'; item: SessionItem; selectable: boolean }
   | { kind: 'tool'; seq: number; name: string; args: string; status: 'running' | 'ok' | 'failed'; result: string | null }
   | { kind: 'thinking'; key: string; body: string; running: boolean; since: string | null }
+  | { kind: 'recall'; seq: number; body: string }
+  | { kind: 'fold'; key: string; open: boolean; label: string }
 
 /**
  * Pairs each tool call with its result.
@@ -67,7 +78,7 @@ type ToolRow = Extract<Row, { kind: 'tool' }>
  * object per paired call; nothing is written after the fact.
  * </para>
  */
-const rows = computed<Row[]>(() => {
+const allRows = computed<Row[]>(() => {
   const out: Row[] = []
   const openCallAt = new Map<string, number>()
 
@@ -137,12 +148,116 @@ const rows = computed<Row[]>(() => {
       continue
     }
 
+    // A block the hook injected and labelled is shown as the thing it is, not as system text: the label is what
+    // the writer said it was (recall, skills), and the body is that block's prompt. Unlabelled system lines —
+    // an error, "consumer started" — keep the note they always had.
+    if (item.kind === 'System' && item.meta?.label === 'recall') {
+      out.push({ kind: 'recall', seq: item.seq, body: item.body })
+      continue
+    }
+
     // The streaming placeholder is not in the log yet, so it has no seq to select and nothing to edit.
     out.push({ kind: 'event', item, selectable: item.streaming !== true })
   }
 
   return out
 })
+
+/** The fold header's words: what is inside, so a reader knows whether it is worth opening. */
+function foldLabel(group: Row[]): string {
+  const count = (test: (row: Row) => boolean) => group.filter(test).length
+  const parts = [
+    ['思考', count((row) => row.kind === 'thinking')],
+    ['召回', count((row) => row.kind === 'recall')],
+    ['工具调用', count((row) => row.kind === 'tool')],
+    ['中间输出', count((row) => row.kind === 'event')],
+  ] as const
+  const said = parts.filter(([, n]) => n > 0).map(([name, n]) => (name === '思考' || name === '召回' ? name : `${name} ${n}`))
+  return said.join(' · ')
+}
+
+/** Which fold groups the reader opened. A completed turn starts folded; opening one is remembered by its key. */
+const opened = reactive(new Set<string>())
+
+function toggleFold(key: string): void {
+  if (opened.has(key)) opened.delete(key)
+  else opened.add(key)
+}
+
+function isUserRow(row: Row | undefined): boolean {
+  return row !== undefined && row.kind === 'event' && row.item.kind === 'User'
+}
+
+function isAssistantRow(row: Row | undefined): boolean {
+  return row !== undefined && row.kind === 'event' && row.item.kind === 'Assistant'
+}
+
+/**
+ * The list as drawn: every finished turn folded to the question and the last thing said.
+ *
+ * <para>
+ * A turn is a message from the reader and everything up to the next one. That is more than one run of the model
+ * when work is handed to a sub-agent: the main agent answers 「已交给 …」, the sub-agent works, its report comes
+ * back, and the main agent answers again. To the reader that is one piece of work with one answer, so everything
+ * between the message and the *last* assistant text — thinking, recall, tool calls, the earlier replies — is one
+ * group, drawn as a header row until opened.
+ * </para>
+ *
+ * <para>
+ * The newest turn is left alone while anything is still going on (`active`: a run in progress, a queued
+ * message, a sub-agent working, or the moment after one finished while its report is on its way). Folding it
+ * earlier would hide the process under someone who is watching it, and would fold over an answer that is about
+ * to be followed by another. A turn that never reached an answer (a failure) is not folded at all: what
+ * happened before the failure is the evidence for it.
+ * </para>
+ */
+const drawn = computed(() => {
+  const source = allRows.value
+  const out: Row[] = []
+  const inside: boolean[] = []
+
+  const emit = (row: Row, folded = false) => {
+    out.push(row)
+    inside.push(folded)
+  }
+
+  // Where each turn starts: at the reader's message, or at the top for rows that come before any.
+  const starts = [0]
+  source.forEach((row, at) => {
+    if (at > 0 && isUserRow(row)) starts.push(at)
+  })
+
+  starts.forEach((start, n) => {
+    const end = starts[n + 1] ?? source.length
+    const newest = end === source.length
+    const bodyFrom = isUserRow(source[start]) ? start + 1 : start
+
+    let last = -1
+    for (let at = end - 1; at >= bodyFrom; at--) {
+      if (isAssistantRow(source[at])) {
+        last = at
+        break
+      }
+    }
+
+    const hold = newest && (props.active === true || props.busy === true)
+    const folding = last > bodyFrom && !hold && (source[last] as Extract<Row, { kind: 'event' }>).item.streaming !== true
+
+    for (let at = start; at < (folding ? bodyFrom : end); at++) emit(source[at] as Row)
+    if (!folding) return
+
+    const group = source.slice(bodyFrom, last)
+    const key = `fold-${rowKey(group[0] as Row)}`
+    const open = opened.has(key)
+    emit({ kind: 'fold', key, open, label: foldLabel(group) })
+    if (open) for (const row of group) emit(row, true)
+    for (let at = last; at < end; at++) emit(source[at] as Row)
+  })
+
+  return { rows: out, inside }
+})
+
+const rows = computed(() => drawn.value.rows)
 
 /**
  * Which side of the conversation a row sits on, and whether it opens a run.
@@ -163,7 +278,7 @@ const rows = computed<Row[]>(() => {
 type Side = 'left' | 'right' | 'center'
 
 function sideOf(row: Row): Side {
-  if (row.kind === 'tool' || row.kind === 'thinking') return 'left'
+  if (row.kind !== 'event') return 'left'
   if (row.item.kind === 'User') return 'right'
   if (row.item.kind === 'Assistant') return 'left'
   return 'center'
@@ -181,7 +296,39 @@ const layout = computed(() =>
 function roleWord(row: Row): string {
   if (row.kind === 'tool') return '工具'
   if (row.kind === 'thinking') return '思考'
+  if (row.kind === 'recall') return '记忆召回'
+  if (row.kind === 'fold') return '过程'
   return sessionKindLabel(row.item.kind)
+}
+
+/**
+ * The identity of a row, for `v-for` and for the scroll anchor.
+ *
+ * <para>
+ * Three of the four kinds are folded views over log events and carry no `item`; asking them for `item.seq` is
+ * the kind of template expression that only works until a fourth kind is added. One function instead, so the
+ * key and the anchor cannot disagree.
+ * </para>
+ */
+function rowKey(row: Row): string {
+  switch (row.kind) {
+    case 'tool':
+      return `tool-${row.seq}`
+    case 'thinking':
+      return row.key
+    case 'recall':
+      return `recall-${row.seq}`
+    case 'fold':
+      return row.key
+    default:
+      return row.item.streaming === true ? 'streaming' : String(row.item.seq)
+  }
+}
+
+/** The wire kind, or the folded view's name for rows that stand in for several events. */
+function rowKind(row: Row): string {
+  if (row.kind === 'event') return row.item.kind
+  return row.kind === 'tool' ? 'Tool' : row.kind === 'thinking' ? 'Thinking' : row.kind === 'fold' ? 'Fold' : 'System'
 }
 
 const NOTE_FOLD_CHARS = 140
@@ -367,7 +514,7 @@ function rowSeq(index: number): number | null {
   >
     <li
       v-for="(row, index) in rows"
-      :key="row.kind === 'tool' ? `tool-${row.seq}` : row.kind === 'thinking' ? row.key : row.item.streaming ? 'streaming' : row.item.seq"
+      :key="rowKey(row)"
       :class="{
         selected: row.kind === 'event' && row.item.seq === selectedSeq,
         streaming: row.kind === 'event' && row.item.streaming === true,
@@ -376,10 +523,11 @@ function rowSeq(index: number): number | null {
         // button again to finish what they started.
         'is-armed': row.kind === 'event' && armed?.seq === row.item.seq,
       }"
-      :data-kind="row.kind === 'tool' ? 'Tool' : row.kind === 'thinking' ? 'Thinking' : row.item.kind"
+      :data-kind="rowKind(row)"
       :data-side="layout[index]?.side"
       :data-first="layout[index]?.first ? 'true' : 'false'"
-      :data-chat-anchor-key="row.kind === 'tool' ? `tool-${row.seq}` : row.kind === 'thinking' ? row.key : `event-${row.item.streaming ? 'streaming' : row.item.seq}`"
+      :data-folded="drawn.inside[index] ? 'true' : undefined"
+      :data-chat-anchor-key="row.kind === 'event' ? `event-${rowKey(row)}` : rowKey(row)"
       :data-row="index"
       :tabindex="row.kind === 'event' && row.selectable && index === focusIndex ? 0 : -1"
       :aria-current="row.kind === 'event' && row.selectable && row.item.seq === selectedSeq ? 'true' : undefined"
@@ -401,6 +549,23 @@ function rowSeq(index: number): number | null {
           :running="row.running"
           :since="row.since"
         />
+
+        <RecallCard v-else-if="row.kind === 'recall'" :body="row.body" />
+
+        <!-- A finished turn's process, folded to one line. The answer is the row under it. -->
+        <button
+          v-else-if="row.kind === 'fold'"
+          type="button"
+          class="fold-toggle"
+          :class="{ 'is-open': row.open }"
+          :aria-expanded="row.open ? 'true' : 'false'"
+          data-test="session-fold"
+          @click="toggleFold(row.key)"
+        >
+          <Icon name="chevron-down" :size="14" class="fold-chevron" />
+          <span class="fold-title">{{ row.open ? '收起过程' : '已完成' }}</span>
+          <span class="fold-label">{{ row.label }}</span>
+        </button>
 
         <template v-else>
           <!-- A long note (the memory the assistant was handed, a summary) folds to its first line: it is context
@@ -525,6 +690,61 @@ li[data-side='right'] .stack {
 
 li[data-side='center'] .stack {
   align-items: center;
+}
+
+/* ---- folded process ----------------------------------------------------------------------------- */
+.fold-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-inline-size: 100%;
+  min-block-size: 1.75rem;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.fold-toggle:hover {
+  color: var(--text-2);
+}
+
+.fold-title {
+  flex: none;
+  color: var(--text-2);
+}
+
+.fold-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fold-chevron {
+  flex: none;
+  transform: rotate(-90deg);
+  transition: transform var(--motion-fast) var(--ease);
+}
+
+.fold-toggle.is-open .fold-chevron {
+  transform: none;
+}
+
+/* What a reader opened sits under its header with a rule beside it, so it reads as part of that fold rather
+   than as more of the conversation. */
+.event-list > li[data-folded='true'] {
+  margin-inline-start: var(--space-3);
+  padding-inline-start: var(--space-3);
+  border-inline-start: 2px solid var(--glass-edge);
+}
+
+.event-list > li[data-folded='true'][data-first='true'] {
+  margin-block-start: var(--space-1);
 }
 
 /* ---- bubbles ------------------------------------------------------------------------------------- */

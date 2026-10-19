@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { TOPBAR_TOOLS } from '../topbarTools'
 import type {
+  AgentJobView,
   ConsumerState,
   DesktopState,
   PartnerApiSurface,
@@ -19,6 +20,7 @@ import Segmented from '../components/Segmented.vue'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
 import DayPicker from '../components/DayPicker.vue'
+import SubAgentCards from '../components/SubAgentCards.vue'
 
 const props = defineProps<{
   api: PartnerApiSurface
@@ -179,6 +181,9 @@ function chooseDay(day: string) {
 async function refresh() {
   try {
     const next = await props.api.session(undefined, undefined, windowRequest())
+    // A turn that ends has usually just handed work to a sub-agent. Read the jobs before showing it as over, so
+    // the screen goes straight from "running" to "delegating" and never through "finished".
+    if (view.value?.busy === true && next.busy !== true) await refreshJobs()
     view.value = next
     // The chosen day no longer exists (its conversation was deleted): the server answered with the newest.
     if (selectedDay.value !== null && next.day !== selectedDay.value) selectedDay.value = null
@@ -307,6 +312,7 @@ function restoreIntoComposer(seq: number) {
 function onCancel() {
   emit('changed')
   void refresh()
+  void refreshJobs()
 }
 
 async function onSent() {
@@ -340,6 +346,83 @@ const IDLE_POLL_MS = 2000
 let poller: ReturnType<typeof setInterval> | undefined
 let lastPoll = 0
 
+// ---- sub-agents at work -------------------------------------------------------------------------------
+
+/** The delegated jobs, newest read. Only the running ones are drawn (see SubAgentCards). */
+const jobs = ref<AgentJobView[]>([])
+const runningJobs = computed(() => jobs.value.filter((job) => job.status === 'running'))
+
+/** A job's round moves at the speed of a model call, so while one runs (or a turn that may start one) it is read every second. */
+const JOBS_ACTIVE_MS = 1000
+const JOBS_IDLE_MS = 3000
+let lastJobsPoll = 0
+let jobsRequest: Promise<void> | null = null
+
+/** Shared while a read is in flight, so a caller that needs the answer waits for that one instead of skipping it. */
+function refreshJobs(): Promise<void> {
+  if (jobsRequest !== null) {
+    return jobsRequest
+  }
+
+  lastJobsPoll = Date.now()
+  jobsRequest = (async () => {
+    try {
+      jobs.value = await props.api.agentJobs()
+    } catch {
+      // An older build has no jobs endpoint, and a failed read keeps the cards that were there: a card that blinks
+      // out on a hiccup and comes back is worse than one a second out of date.
+    } finally {
+      jobsRequest = null
+    }
+  })()
+
+  return jobsRequest
+}
+
+/**
+ * How long a finished sub-agent still counts as work in progress.
+ *
+ * <para>
+ * A job is marked finished first and its report is queued a moment later, so for a beat nothing is running and
+ * nothing is queued, although the main agent is about to answer it. Without the grace the turn would fold, then
+ * unfold when the answer starts.
+ * </para>
+ */
+const JOBS_SETTLE_MS = 3000
+const settling = ref(false)
+let settleTimer: ReturnType<typeof setTimeout> | undefined
+
+watch(
+  () => runningJobs.value.length,
+  (now, before) => {
+    clearTimeout(settleTimer)
+    if (now > 0) {
+      settling.value = false
+    } else if (before > 0) {
+      settling.value = true
+      settleTimer = setTimeout(() => {
+        settling.value = false
+      }, JOBS_SETTLE_MS)
+    }
+  },
+)
+
+/** A sub-agent is working, or only just stopped. */
+const delegating = computed(() => runningJobs.value.length > 0 || settling.value)
+
+/**
+ * The newest turn is not over: the model is running, a message is queued, or a sub-agent is working and the
+ * main agent still has to answer its report. The fold and the composer's stop button both wait for this.
+ */
+const inProgress = computed(() => working.value || delegating.value)
+
+function pollJobs() {
+  const active = runningJobs.value.length > 0 || view.value?.busy === true
+  if (Date.now() - lastJobsPoll >= (active ? JOBS_ACTIVE_MS : JOBS_IDLE_MS)) {
+    void refreshJobs()
+  }
+}
+
 /**
  * True while a read is in flight.
  *
@@ -355,6 +438,8 @@ let lastPoll = 0
 let pollInFlight = false
 
 async function poll() {
+  pollJobs()
+
   if (pollInFlight) {
     return
   }
@@ -422,6 +507,7 @@ async function followIfFollowing() {
 }
 
 onMounted(async () => {
+  void refreshJobs()
   await refresh()
 
   // Open on the newest event. A session is a conversation and its interesting end is the bottom, so this is
@@ -437,6 +523,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearTimeout(settleTimer)
   if (poller !== undefined) {
     clearInterval(poller)
   }
@@ -518,6 +605,7 @@ defineExpose({ refresh, focusSearch })
           :latest-from-seq="conversation?.latestFromSeq ?? null"
           :withdrawn="withdrawn !== null"
           :busy="view?.busy === true"
+          :active="inProgress"
           @select="select"
           @remove="deleteLatest"
           @withdraw="withdrawFrom"
@@ -606,6 +694,8 @@ defineExpose({ refresh, focusSearch })
         @answer="answer"
       />
 
+      <SubAgentCards :jobs="jobs" />
+
       <Composer
         ref="composer"
         :api="api"
@@ -615,6 +705,8 @@ defineExpose({ refresh, focusSearch })
         :gears="gears"
         :default-gear="defaultGear"
         :queue-items="queueItems"
+        :delegating="delegating"
+        :jobs="runningJobs"
         :context="contextRing"
         @sent="onSent"
         @approval="emit('approval', $event)"

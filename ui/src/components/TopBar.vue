@@ -30,12 +30,6 @@ onMounted(() => {
   if (slot !== null) slot.value = tools.value
 })
 
-/** Something worth a pill: work waiting, running, or failed. Idle is not worth one. */
-const busy = computed(() => {
-  const summary = props.summary
-  return summary !== null && (summary.pending > 0 || summary.failed > 0 || (summary.runningItemId ?? '') !== '')
-})
-
 /**
  * What the screen reader is told, and when.
  *
@@ -92,15 +86,11 @@ const announcement = computed(() => {
       <span class="sr-only" role="status" aria-live="polite" data-test="blocked-announcer">{{ announcement }}</span>
 
       <!--
-        A readout, not a link: the queue is the composer's own list. And only present when there is something to
-        read — a standing 「队列 0」 is a sentence about nothing. An unknown queue (the read failed) still says so,
-        because "—" is honest and silence would not be.
+        Silent unless work is stuck. The depth and the running item's id used to sit here permanently; the queue is
+        the composer's own list, and a standing 「队列 1 · 执行中 in-…」 is an internal id nobody can act on. A
+        failure is the exception: it blocks everything behind it, and the eye is not always on the composer.
       -->
-      <span v-if="summary && busy" class="badge" :class="{ 'badge-error': summary.failed > 0 }" data-test="blocked">
-        队列 {{ summary.pending }}<template v-if="summary.failed > 0"> · 失败 {{ summary.failed }}</template
-        ><template v-if="summary.runningItemId"> · 执行中 {{ summary.runningItemId }}</template>
-      </span>
-      <span v-else-if="!summary && connected" class="badge" data-test="blocked">队列 —</span>
+      <span v-if="summary && summary.failed > 0" class="badge badge-error" data-test="blocked">失败 {{ summary.failed }}</span>
       <span v-if="!connected" class="badge badge-error" data-test="topbar-disconnected">未连接</span>
 
       <button
