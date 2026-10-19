@@ -2,6 +2,14 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import HintTip from '../components/HintTip.vue'
+import GearTable from '../components/GearTable.vue'
+import SaveBar from '../components/SaveBar.vue'
+import Segmented from '../components/Segmented.vue'
+import SettingRow from '../components/SettingRow.vue'
+import TestButton from '../components/TestButton.vue'
+import { normalizeGear } from '../gears'
+import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
+import type { IconName } from '../icons'
 import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, VoiceState, VoiceTestResult } from '../api'
 
 
@@ -10,8 +18,8 @@ import type { ConsumerState, DeviceList, PartnerApiSurface, RuntimeSettings, Voi
  * hardcoded copy used as the *saved* value would quietly re-add gears the user removed.
  */
 const DEFAULT_REASONING_GEARS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
-const props = defineProps<{ api: PartnerApiSurface }>()
-const emit = defineEmits<{ saved: []; navigate: [key: string] }>()
+const props = defineProps<{ api: PartnerApiSurface; theme?: Theme | undefined }>()
+const emit = defineEmits<{ saved: []; navigate: [key: string]; 'set-theme': [theme: Theme] }>()
 
 /** The form is a projection of the stored settings; nothing here is authoritative until it is saved. */
 const form = reactive<RuntimeSettings>({
@@ -43,7 +51,7 @@ const form = reactive<RuntimeSettings>({
     tts: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] as string[] },
     kws: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
-  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS] },
+  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
 
   // Carried through untouched so the two capability pages' state survives a save made here. Not editable on
@@ -166,6 +174,9 @@ const testTtsUrl = computed(() => {
 /** One /api/voice/test/{kind} round-trip; result text lands beside the corresponding card's button. */
 async function testConnection(kind: 'asr' | 'tts' | 'kws' | 'model') {
   voiceTesting.value = { ...voiceTesting.value, [kind]: true }
+  // What the screen said when the button was pressed: the result below is a statement about this, and editing
+  // the block afterwards makes it a statement about something else.
+  testedWith.value = { ...testedWith.value, [kind]: blockPrint(kind) }
   try {
     const result = await props.api.testVoice(kind)
     voiceTest.value = { ...voiceTest.value, [kind]: result }
@@ -229,7 +240,9 @@ const wakeGateOn = computed(() => form.local.kws.enabled === true && (form.local
 
 const modelConfigured = computed(() => (form.model.baseUrl ?? '') !== '' && (form.model.model ?? '') !== '')
 const keyHint = computed(() =>
-  apiKeySet.value ? '已设置 · 留空保持不变，输入新值即替换' : '未设置（本地服务通常不需要）',
+  apiKeySet.value
+    ? '已设置。留空表示不改，输入新内容会替换原来的。保存后不会再显示出来。'
+    : '还没设置。本地模型一般不需要。保存后不会再显示出来。',
 )
 
 /** A stored value that no longer enumerates must still be selectable, or the setting would silently change. */
@@ -281,6 +294,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     // A response from an older build carries no list; falling back keeps the editor usable rather than
     // leaving it with an empty menu that cannot be saved.
     reasoningGears: settings.model.reasoningGears ?? [...DEFAULT_REASONING_GEARS],
+    reasoningLabels: { ...(settings.model.reasoningLabels ?? {}) },
   })
 
   // Replaced, not merged: the response is the whole truth, and holding on to what arrived earlier would
@@ -348,6 +362,7 @@ async function persist() {
       // A row the user opened and left empty is not a gear. Sending it would put a blank entry in the
       // picker, which reads as a level that thinks very little — or as a silent no-op.
       reasoningGears: form.model.reasoningGears.filter((gear) => normalizeGear(gear) !== ''),
+      reasoningLabels: form.model.reasoningLabels ?? {},
     },
   }
 
@@ -382,70 +397,6 @@ function clearKey() {
 }
 
 /**
- * The menu is edited as an ordered list because that is the order the composer offers it in. Blanks and
- * repeats are dropped as each row is committed, so the row the user is looking at is the row that will be
- * stored.
- */
-function normalizeGear(value: string): string {
-  return value.trim().toLowerCase()
-}
-
-function addGear() {
-  form.model.reasoningGears = [...form.model.reasoningGears, '']
-}
-
-function removeGear(index: number) {
-  form.model.reasoningGears = form.model.reasoningGears.filter((_, at) => at !== index)
-}
-
-function commitGear(index: number, value: string) {
-  const gears = [...form.model.reasoningGears]
-  const gear = normalizeGear(value)
-
-  if (gear === '') {
-    gears.splice(index, 1)
-  } else {
-    gears[index] = gear
-  }
-
-  // A repeat is a menu entry the picker can never land on. The row being edited wins and the earlier copy
-  // goes: keeping the copy the user did not touch would silently discard the value they just typed.
-  form.model.reasoningGears = gears.filter(
-    (entry, at) => at === index || (entry !== gear && gears.indexOf(entry) === at),
-  )
-}
-
-/** Moves a row, so the menu order can be arranged without retyping the whole list. */
-function moveGear(index: number, delta: number) {
-  const target = index + delta
-  const gears = [...form.model.reasoningGears]
-  if (target < 0 || target >= gears.length) {
-    return
-  }
-
-  const [gear] = gears.splice(index, 1)
-  gears.splice(target, 0, gear)
-  form.model.reasoningGears = gears
-}
-
-function useAsDefault(index: number) {
-  form.model.reasoningEffort = normalizeGear(form.model.reasoningGears[index] ?? '')
-}
-
-/**
- * Which groups are folded away.
- *
- * <para>
- * Persisted, because the views are `v-if`: without it, folding the three cards nobody touches would have to be
- * redone on every tab switch, and a control that forgets itself is worse than no control.
- * </para>
- *
- * <para>
- * Everything is open on a first visit. Folding by default would shorten the page but hide five of six groups
- * from someone who came to change one thing — and the reader is the only one who knows which thing.
- * </para>
- */
-/**
  * The desktop switch and the built-in desktop sub-agent have to agree.
  *
  * <para>
@@ -458,50 +409,114 @@ const desktopAgentOff = computed(
   () => form.desktop.enabled && form.agents.subAgents.some((agent) => agent.id === 'desktop' && !agent.enabled),
 )
 
-const GROUPS = ['input', 'output', 'asr', 'tts', 'local', 'desktop', 'files', 'model'] as const
-const FOLDED_KEY = 'partner.settings.folded'
+/**
+ * The categories, in the order a person needs them: the model first (nothing runs without one), then what it can
+ * hear and say, then what it may touch, then the plumbing. Regrouped by what a person wants to do rather than by
+ * module — the old page asked you to know that 「语音识别」 was ASR before you could find its address.
+ */
+interface Section {
+  key: string
+  label: string
+  icon: IconName
+}
 
-const folded = ref<Record<string, boolean>>({})
+const SECTIONS: Section[] = [
+  { key: 'model', label: '对话模型', icon: 'sparkle' },
+  { key: 'input', label: '语音输入', icon: 'mic' },
+  { key: 'output', label: '语音输出', icon: 'speaker' },
+  { key: 'desktop', label: '电脑操控', icon: 'crosshair' },
+  { key: 'files', label: '文件访问', icon: 'folder' },
+  { key: 'engines', label: '本地引擎', icon: 'terminal' },
+  { key: 'appearance', label: '外观', icon: 'contrast' },
+]
 
-function readFolded(): Record<string, boolean> {
+const SECTION_KEY = 'partner.settings.section'
+const ADVANCED_KEY = 'partner.settings.advanced'
+
+function readStored<T>(key: string, fallback: T, accept: (value: unknown) => value is T): T {
   try {
-    const raw = window.localStorage.getItem(FOLDED_KEY)
-    if (raw === null) return {}
+    const raw = window.localStorage.getItem(key)
+    if (raw === null) return fallback
     const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) return {}
-    // Only known names: a stale key from a build whose groups differed must not come back as a state.
-    const known: Record<string, boolean> = {}
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if ((GROUPS as readonly string[]).includes(key) && typeof value === 'boolean') known[key] = value
-    }
-    return known
+    return accept(parsed) ? parsed : fallback
   } catch {
-    return {}
+    return fallback
   }
 }
 
-function writeFolded(): void {
+function writeStored(key: string, value: unknown): void {
   try {
-    window.localStorage.setItem(FOLDED_KEY, JSON.stringify(folded.value))
+    window.localStorage.setItem(key, JSON.stringify(value))
   } catch {
-    // A sandbox without storage still folds; it just forgets.
+    // A sandbox without storage still works; it just forgets.
   }
 }
 
-function toggleGroup(id: string): void {
-  folded.value = { ...folded.value, [id]: folded.value[id] !== true }
-  writeFolded()
+const section = ref('model')
+
+/**
+ * Which 「更多选项」 are open. Remembered, because the views are `v-if`: without it, opening the options you
+ * actually use would have to be redone on every tab switch. Closed on a first visit — the point is that most
+ * people do not need them.
+ */
+const advanced = ref<Record<string, boolean>>({})
+
+function choose(key: string): void {
+  section.value = key
+  writeStored(SECTION_KEY, key)
 }
 
-function setAll(collapsed: boolean): void {
-  folded.value = Object.fromEntries(GROUPS.map((id) => [id, collapsed]))
-  writeFolded()
+function toggleAdvanced(key: string): void {
+  advanced.value = { ...advanced.value, [key]: advanced.value[key] !== true }
+  writeStored(ADVANCED_KEY, advanced.value)
 }
 
-const allFolded = computed(() => GROUPS.every((id) => folded.value[id] === true))
+/** A category is 「运行中」 when what it controls is actually on: the dot in the nav is read from the same state. */
+const running = computed<Record<string, boolean>>(() => ({
+  model: consumer.value?.running === true,
+  input: voice.value?.input?.running === true,
+  output: voice.value?.output?.running === true,
+}))
+
+// ---- reduced transparency & theme (frontend-only, never saved with the settings) ------------------------
+const reducedTransparency = ref(readReducedTransparency())
+
+function onReducedTransparency(value: boolean): void {
+  reducedTransparency.value = value
+  applyReducedTransparency(value)
+}
+
+const THEME_OPTIONS: { value: Theme; label: string }[] = [
+  { value: 'auto', label: themeLabel('auto') },
+  { value: 'light', label: themeLabel('light') },
+  { value: 'dark', label: themeLabel('dark') },
+]
+
+// ---- tests: what each block's last result was recorded against -----------------------------------------
+/**
+ * A test result is a statement about a configuration. `testedWith` remembers which one, so editing the block
+ * afterwards turns the old green tick grey instead of leaving it to vouch for something that no longer exists.
+ */
+const testedWith = ref<Record<string, string>>({})
+
+function blockPrint(kind: string): string {
+  switch (kind) {
+    case 'asr':
+      return JSON.stringify(form.asr)
+    case 'tts':
+      return JSON.stringify([form.tts, form.output.sampleRate])
+    case 'kws':
+      return JSON.stringify(form.local.kws)
+    default:
+      return JSON.stringify({ ...form.model, reasoningGears: undefined, reasoningLabels: undefined, apiKey: apiKeyEdited.value ? apiKeyDraft.value : null })
+  }
+}
+
+const testStale = (kind: string) => testedWith.value[kind] !== undefined && testedWith.value[kind] !== blockPrint(kind)
 
 onMounted(() => {
-  folded.value = readFolded()
+  section.value = readStored(SECTION_KEY, 'model', (value): value is string => typeof value === 'string' && SECTIONS.some((item) => item.key === value))
+  advanced.value = readStored(ADVANCED_KEY, {} as Record<string, boolean>, (value): value is Record<string, boolean> => typeof value === 'object' && value !== null)
   void refresh()
 })
 
@@ -515,791 +530,858 @@ defineExpose({ refresh, hasUnsavedChanges })
 
 <template>
   <div class="view">
-    <div class="toolbar">
-      <button data-test="settings-reload" @click="refresh">重载</button>
-      <button class="ghost" data-test="settings-fold-all" @click="setAll(!allFolded)">
-        {{ allFolded ? '展开全部' : '折叠全部' }}
-      </button>
-      <span class="spacer" />
-      <!--
-        Unsaved changes are said out loud, because this page is now save-on-button and the button is at the
-        bottom of a long form. Without this the reader finds out by switching tabs — the views are `v-if`, so
-        that discards the edits silently, turning one surprise (some switches saving, some not) into another
-        (none of them saving, and no word about it).
-      -->
-      <span v-if="dirty" class="muted" data-test="settings-dirty">有未保存的修改</span>
-      <span class="muted" data-test="settings-status">{{ status }}</span>
-    </div>
-
-    <div class="scroll">
-      <div class="cards">
-        <section class="card" :class="{ 'is-folded': folded.input === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-input'"
-              :aria-expanded="folded.input !== true"
-              aria-controls="settings-body-input"
-              @click="toggleGroup('input')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              语音输入
-            </button>
-            <HintTip>关闭会立即释放麦克风设备（不保留占用）。</HintTip>
-          </h2>
-          <div v-show="folded.input !== true" :id="'settings-body-input'" class="card-body">
-          <label class="field">
-            <span>启用麦克风输入</span>
-            <input type="checkbox" v-model="form.input.enabled" data-test="input-enabled" />
-          </label>
-          <label class="field">
-            <span>静音阈值 (0-1) <HintTip>低于此电平视为静音；实测默认 0.03</HintTip></span>
-            <input type="number" step="0.01" min="0" v-model.number="form.input.silenceThreshold" />
-          </label>
-          <label class="field" data-test="wake-tone">
-            <span>唤醒提示音 <HintTip>唤醒词命中时「叮」一声（需语音输出开启）</HintTip></span>
-            <input type="checkbox" v-model="form.input.wakeTone" />
-          </label>
-          <label class="field">
-            <span>整句间隔 (ms) <HintTip>停顿超过此值切句；实测默认 1200</HintTip></span>
-            <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
-          </label>
-          <label class="field" data-test="wake-timeout">
-            <span>
-              唤醒后等待开口 (ms)
-              <HintTip>
-                提示音到开口之间的沉默是「在想说什么」，不是「说完了」——这段最多等这么久；
-                一开口就回到整句间隔
-              </HintTip>
-            </span>
-            <input type="number" v-model.number="form.input.wakeTimeoutMs" />
-          </label>
-          <label class="field">
-            <span>句间间隔 (ms)</span>
-            <input type="number" v-model.number="form.input.sentenceGapMs" />
-          </label>
-          <label class="field">
-            <span>分析窗口 (s) <HintTip>环形缓冲长度；实测默认 8</HintTip></span>
-            <input type="number" v-model.number="form.input.windowSeconds" />
-          </label>
-          <label class="field">
-            <span>无标点强切长度（字）</span>
-            <input type="number" v-model.number="form.input.maxSplitChars" />
-          </label>
-          <label class="field">
-            <span>流式识别</span>
-            <input type="checkbox" v-model="form.input.asrStream" data-test="input-asr-stream" />
-          </label>
-          <label class="field">
-            <span>输入设备 <HintTip>按名称模糊匹配；枚举不到设备时可手填</HintTip></span>
-            <select v-if="inputOptions.length > 0" v-model="form.input.deviceId" data-test="input-device">
-              <option :value="null">（默认设备）</option>
-              <option v-for="name in inputOptions" :key="name" :value="name">{{ name }}</option>
-            </select>
-            <input v-else type="text" v-model="form.input.deviceId" placeholder="（默认设备）" data-test="input-device" />
-          </label>
-
-          <p class="card-note" data-test="input-effect">
-            <template v-if="voice?.input?.running">
-              运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段<template
-                v-if="wakeGateOn"
-              > · {{ voice.input.awake ? '已唤醒' : '等唤醒词' }}</template>
-            </template>
-            <template v-else-if="voice?.input">未运行 · {{ voice.input.reason }}</template>
-            <template v-else>（保存后查看运行状态）</template>
-          </p>
-
-          <!--
-            电平条：死麦、安静房间、说话低于阈值三种情况在文字状态上长得一模一样，只有实时电平能分开。
-            阈值刻度画在同一条上，因为「电平够不够得着阈值」正是用户要判断的那件事。
-          -->
-          <div v-if="voice?.input?.running" class="level" data-test="input-level">
-            <div class="level-track">
-              <div class="level-fill" :style="{ width: levelPercent }"></div>
-              <div class="level-mark" :style="{ left: thresholdPercent }"></div>
-            </div>
-            <span class="level-readout">
-              电平 {{ (voice.input.rms ?? 0).toFixed(4) }} · 阈值 {{ form.input.silenceThreshold }}
-              <template v-if="voice.input.thresholdMisconfigured"> · 底噪 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}</template>
-            </span>
-          </div>
-          <p
-            v-if="voice?.input?.thresholdMisconfigured"
-            class="card-note error"
-            data-test="input-threshold-warning"
+    <div class="scroll settings-scroll">
+      <div class="settings">
+        <nav class="settings-nav" aria-label="设置分类">
+          <button
+            v-for="item in SECTIONS"
+            :key="item.key"
+            class="nav-item"
+            :class="{ active: section === item.key }"
+            :aria-current="section === item.key ? 'true' : undefined"
+            :data-test="`settings-nav-${item.key}`"
+            @click="choose(item.key)"
           >
-            阈值 {{ form.input.silenceThreshold }} 不高于环境底噪 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}：
-            静音永远判不出来，一段话不会结束（也就不会有转写）。
-          </p>
-          </div>
-        </section>
+            <Icon :name="item.icon" :size="16" />
+            <span>{{ item.label }}</span>
+            <span v-if="running[item.key]" class="live-dot" title="运行中" />
+          </button>
+        </nav>
 
-        <section class="card" :class="{ 'is-folded': folded.output === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-output'"
-              :aria-expanded="folded.output !== true"
-              aria-controls="settings-body-output"
-              @click="toggleGroup('output')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              语音输出
-            </button>
-            <HintTip>播放期间停听麦克风，避免把自身语音当成输入。</HintTip>
-          </h2>
-          <div v-show="folded.output !== true" :id="'settings-body-output'" class="card-body">
-          <label class="field">
-            <span>启用语音输出</span>
-            <input type="checkbox" v-model="form.output.enabled" data-test="output-enabled" />
-          </label>
-          <label class="field">
-            <span>音色</span>
-            <input type="text" v-model="form.output.voice" placeholder="（服务默认音色）" />
-          </label>
-          <label class="field">
-            <span>语速</span>
-            <input type="number" step="0.05" v-model.number="form.output.speed" />
-          </label>
-          <label class="field">
-            <span>段间静音 (ms)</span>
-            <input type="number" v-model.number="form.output.gapMs" />
-          </label>
-          <label class="field">
-            <span>播放期停听 (drain, ms) <HintTip>播放结束后继续停听的时长；实测默认 400</HintTip></span>
-            <input type="number" v-model.number="form.output.drainMs" />
-          </label>
-          <label class="field">
-            <span>采样率 <HintTip>必须与 TTS 服务输出一致</HintTip></span>
-            <input type="number" v-model.number="form.output.sampleRate" />
-          </label>
-          <label class="field">
-            <span>播放时停听麦克风</span>
-            <input type="checkbox" v-model="form.output.muteDuringTts" data-test="output-mute-during-tts" />
-          </label>
-          <label class="field">
-            <span>输出设备</span>
-            <select v-if="outputOptions.length > 0" v-model="form.output.deviceId" data-test="output-device">
-              <option :value="null">（默认设备）</option>
-              <option v-for="name in outputOptions" :key="name" :value="name">{{ name }}</option>
-            </select>
-            <input v-else type="text" v-model="form.output.deviceId" placeholder="（默认设备）" data-test="output-device" />
-          </label>
-
-          <p class="card-note" data-test="output-effect">
-            <template v-if="voice?.output.running">运行中 · {{ voice.output.device }} · 已朗读 {{ voice.output.count }} 句</template>
-            <template v-else-if="voice">未运行 · {{ voice.output.reason }}</template>
-            <template v-else>（保存后查看运行状态）</template>
-          </p>
-          </div>
-        </section>
-
-        <section class="card" :class="{ 'is-folded': folded.asr === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-asr'"
-              :aria-expanded="folded.asr !== true"
-              aria-controls="settings-body-asr"
-              @click="toggleGroup('asr')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              语音识别（ASR）
-            </button>
-            <HintTip>识别端点。留空表示不配置——此时麦克风输入不会转写。</HintTip>
-          </h2>
-          <div v-show="folded.asr !== true" :id="'settings-body-asr'" class="card-body">
-          <label class="field">
-            <span>协议</span>
-            <select v-model="form.asr.protocol" data-test="asr-protocol">
-              <option value="chat-audio">chat-audio（chat/completions 内联音频）</option>
-              <option value="openai">openai（标准 /audio/transcriptions）</option>
-              <option value="sensevoice">sensevoice（本地引擎 /recognize）</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>服务地址</span>
-            <input type="text" v-model="form.asr.baseUrl" placeholder="http://127.0.0.1:45101" data-test="asr-base-url" />
-          </label>
-          <label class="field">
-            <span>模型</span>
-            <input type="text" v-model="form.asr.model" data-test="asr-model" />
-          </label>
-          <label class="field">
-            <span>语言 <HintTip>预填为助手回合，让模型不吐 language 前缀</HintTip></span>
-            <input type="text" v-model="form.asr.language" placeholder="Chinese" />
-          </label>
-          <label class="field">
-            <span>连接超时 (ms)</span>
-            <input type="number" v-model.number="form.asr.connectTimeoutMs" />
-          </label>
-          <label class="field">
-            <span>读取超时 (ms) <HintTip>故意短：卡住的块要整块重试，长停顿会冲垮环形缓冲</HintTip></span>
-            <input type="number" v-model.number="form.asr.readTimeoutMs" />
-          </label>
-          <label class="field">
-            <span>采样率</span>
-            <input type="number" v-model.number="form.asr.sampleRate" />
-          </label>
-          <div class="row card-footer" data-test="asr-test-row">
-            <button class="ghost" :disabled="voiceTesting.asr" data-test="test-asr" @click="testConnection('asr')">
-              {{ voiceTesting.asr ? '测试中…' : '测试' }}
-            </button>
-            <span v-if="voiceTest.asr" class="break" data-test="test-asr-result" :class="voiceTest.asr.ok ? 'muted' : 'error'">
-              {{ voiceTest.asr.ok ? '✓' : '✗' }} {{ voiceTest.asr.detail }}（{{ voiceTest.asr.latencyMs }}ms）
-            </span>
-          </div>
-          </div>
-        </section>
-
-        <section class="card" :class="{ 'is-folded': folded.tts === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-tts'"
-              :aria-expanded="folded.tts !== true"
-              aria-controls="settings-body-tts"
-              @click="toggleGroup('tts')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              语音合成（TTS）
-            </button>
-            <HintTip>合成端点。留空表示不配置——此时助手回复不会朗读。</HintTip>
-          </h2>
-          <div v-show="folded.tts !== true" :id="'settings-body-tts'" class="card-body">
-          <label class="field">
-            <span>协议</span>
-            <select v-model="form.tts.protocol" data-test="tts-protocol">
-              <option value="native">native（服务端 /tts，流式 PCM）</option>
-              <option value="openai">openai（标准 /audio/speech）</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>服务地址</span>
-            <input type="text" v-model="form.tts.baseUrl" placeholder="http://127.0.0.1:45102" data-test="tts-base-url" />
-          </label>
-          <label class="field">
-            <span>语言 <HintTip>native 协议的 lang 字段；openai 协议不用</HintTip></span>
-            <input type="text" v-model="form.tts.lang" />
-          </label>
-          <label class="field">
-            <span>模型 <HintTip>openai 协议的模型名；native 协议不用</HintTip></span>
-            <input type="text" v-model="form.tts.model" placeholder="tts-1" />
-          </label>
-          <label class="field">
-            <span>音色 (voice) <HintTip>openai 协议的音色名；native 协议用克隆参考音频</HintTip></span>
-            <input type="text" v-model="form.tts.voice" placeholder="alloy" />
-          </label>
-          <label class="field">
-            <span>语速 (speed) <HintTip>openai 协议的语速；native 协议不用</HintTip></span>
-            <input type="number" step="0.05" v-model.number="form.tts.speed" />
-          </label>
-          <label class="field">
-            <span>采样率 <HintTip>必须与输出段一致，否则播放速度会错</HintTip></span>
-            <input type="number" v-model.number="form.tts.sampleRate" />
-          </label>
-          <label class="field">
-            <span>音色克隆参考音频 <HintTip>本地路径；构建客户端时读取一次</HintTip></span>
-            <input type="text" v-model="form.tts.speakerRefPath" placeholder="（不使用克隆）" />
-          </label>
-          <label class="field">
-            <span>请求超时 (s)</span>
-            <input type="number" v-model.number="form.tts.timeoutSeconds" />
-          </label>
-          <label class="field">
-            <span>播放块大小 (ms)</span>
-            <input type="number" v-model.number="form.tts.chunkMs" />
-          </label>
-          <div class="row card-footer" data-test="tts-test-row">
-            <button class="ghost" :disabled="voiceTesting.tts" data-test="test-tts" @click="testConnection('tts')">
-              {{ voiceTesting.tts ? '测试中…' : '测试' }}
-            </button>
-            <span v-if="voiceTest.tts" class="break" data-test="test-tts-result" :class="voiceTest.tts.ok ? 'muted' : 'error'">
-              {{ voiceTest.tts.ok ? '✓' : '✗' }} {{ voiceTest.tts.detail }}（{{ voiceTest.tts.latencyMs }}ms）
-            </span>
-            <audio v-if="testTtsUrl" controls :src="testTtsUrl" data-test="tts-test-audio" class="tts-test-audio" />
-          </div>
-          </div>
-        </section>
-
-        <section class="card" :class="{ 'is-folded': folded.local === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-local'"
-              :aria-expanded="folded.local !== true"
-              aria-controls="settings-body-local"
-              @click="toggleGroup('local')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              本地引擎进程
-            </button>
-            <HintTip>
-              由运行时拉起并停掉的本地语音服务进程。关闭 = 终止进程 = 真正释放显存/内存——
-              只是不发请求不会释放占用。服务地址照常填在 ASR/TTS 卡里指向这组端口。
-              KWS 引擎开启后，语音输入进入<b>唤醒门控</b>：平时只听不转写，
-              唤醒词命中后一段话内走 ASR，说完自动回监听。
-            </HintTip>
-          </h2>
-          <div v-show="folded.local !== true" :id="'settings-body-local'" class="card-body">
-          <template v-for="engine in ['tts', 'kws'] as const" :key="engine">
-            <div class="field-group" :data-test="`local-engine-${engine}`">
-              <p class="field-head">
-                <strong>{{ engine === 'tts' ? 'TTS 服务（如 qwentts.cpp server）' : 'KWS+ASR 服务（如 sherpa-onnx）' }}</strong>
-              </p>
-              <label class="field">
-                <span>启用托管</span>
-                <input type="checkbox" v-model="form.local[engine].enabled" :data-test="`local-${engine}-enabled`" />
-              </label>
-              <label class="field">
-                <span>可执行文件</span>
-                <input type="text" v-model="form.local[engine].command" :data-test="`local-${engine}-command`" />
-              </label>
-              <label class="field">
-                <span>参数（一行分隔） <HintTip>端口占位符写作 {port}</HintTip></span>
-                <input type="text" :value="form.local[engine].arguments.join(' ')"
-                  :data-test="`local-${engine}-arguments`"
-                  @input="onEngineArgumentsInput(engine, $event)" />
-              </label>
-              <label class="field">
-                <span>工作目录</span>
-                <input type="text" v-model="form.local[engine].workingDirectory" />
-              </label>
-              <label class="field">
-                <span>端口</span>
-                <input type="number" v-model.number="form.local[engine].port" :data-test="`local-${engine}-port`" />
-              </label>
-              <label class="field">
-                <span>就绪宽限 (s)</span>
-                <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
-              </label>
-              <label class="field" v-if="engine === 'kws'">
-                <span>唤醒词（逗号分隔） <HintTip>留空 = 保留引擎当前词表；保存后下发，引擎转拼音并立即生效</HintTip></span>
-                <input type="text" v-model="keywordDrafts[engine]"
-                  :data-test="`local-${engine}-keywords`"
-                  placeholder="你好军哥，蛋哥蛋哥"
-                  @input="onEngineKeywordsInput(engine, $event)" />
-              </label>
-            </div>
-          </template>
-          <div class="row card-footer" data-test="kws-test-row">
-            <button class="ghost" :disabled="voiceTesting.kws" data-test="test-kws" @click="testConnection('kws')">
-              {{ voiceTesting.kws ? '测试中…' : '测试' }}
-            </button>
-            <span v-if="voiceTest.kws" class="break" data-test="test-kws-result" :class="voiceTest.kws.ok ? 'muted' : 'error'">
-              {{ voiceTest.kws.ok ? '✓' : '✗' }} {{ voiceTest.kws.detail }}（{{ voiceTest.kws.latencyMs }}ms）
-            </span>
-          </div>
-          </div>
-        </section>
-
-        <section class="card" :class="{ 'is-folded': folded.desktop === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-desktop'"
-              :aria-expanded="folded.desktop !== true"
-              aria-controls="settings-body-desktop"
-              @click="toggleGroup('desktop')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              桌面（M9）
-            </button>
-            <HintTip>
-              本仓库里唯一<strong>不可逆</strong>的能力：打开后模型可以观察窗口，并请求移动指针或发按键。即使打开，
-              <strong>每个动作都要人工批准</strong>（会话里弹出「允许 / 拒绝」，无人应答即拒绝），所以打开只是让模型
-              能问，不是让它能做。关闭时工具根本不注册给模型。
-            </HintTip>
-          </h2>
-          <div v-show="folded.desktop !== true" :id="'settings-body-desktop'" class="card-body">
-          <label class="field">
-            <span>启用桌面能力</span>
-            <input type="checkbox" v-model="form.desktop.enabled" data-test="desktop-enabled" />
-          </label>
-          <p v-if="desktopAgentOff" class="card-note error" data-test="desktop-agent-warning">
-            桌面操控已开启，必须有一个启用的桌面操控子 agent
-            <button class="ghost" data-test="desktop-agent-fix" @click="emit('navigate', 'prompts')">
-              去提示词页启用
-            </button>
-          </p>
-          <label class="field">
-            <span>租约有效期（毫秒）</span>
-            <input
-              type="number"
-              min="1000"
-              v-model.number="form.desktop.leaseTtlMs"
-              data-test="desktop-lease-ttl"
-            />
-          </label>
-          <label class="field">
-            <span>
-              允许的窗口标题（逗号分隔，空=不限）
-              <HintTip>窗口标题子串、不区分大小写。真正拦住动作的是批准；这个列表只是把安装范围收窄。</HintTip>
-            </span>
-            <input
-              type="text"
-              :value="form.desktop.allowedWindowTitles.join('、')"
-              placeholder="记事本、计算器"
-              data-test="desktop-allowed-titles"
-              @input="onTitlesInput"
-            />
-          </label>
-          </div>
-        </section>
-
-        <section class="card" :class="{ 'is-folded': folded.files === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-files'"
-              :aria-expanded="folded.files !== true"
-              aria-controls="settings-body-files"
-              @click="toggleGroup('files')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              读文件
-            </button>
-            <HintTip data-test="files-whitelist-hint">
-              只读能力，默认关闭。下面是一份<strong>白名单</strong>：模型只能读这些目录<strong>及其下所有内容</strong>，
-              目录之外一概不可见。每行一个绝对路径。
-            </HintTip>
-          </h2>
-          <div v-show="folded.files !== true" :id="'settings-body-files'" class="card-body">
-          <label class="field">
-            <span>启用读文件</span>
-            <input type="checkbox" v-model="form.files.enabled" data-test="files-enabled" />
-          </label>
-          <div class="field-group" data-test="files-roots">
-            <p class="field-head"><strong>允许读取的目录</strong></p>
-            <p v-if="form.files.roots.length === 0" class="muted" data-test="files-roots-empty">
-              （还没有目录。开启后至少要有一条，否则保存会被拒绝。）
-            </p>
-            <div v-for="(root, index) in form.files.roots" :key="index" class="row">
-              <input
-                type="text"
-                :value="root"
-                :aria-label="`第 ${index + 1} 个允许读取的目录`"
-                placeholder="D:/资料"
-                data-test="files-root"
-                @input="form.files.roots[index] = ($event.target as HTMLInputElement).value"
-              />
-              <button
-                class="ghost danger"
-                :aria-label="`移除第 ${index + 1} 个目录`"
-                data-test="files-root-remove"
-                @click="form.files.roots = form.files.roots.filter((_, at) => at !== index)"
+        <div class="settings-body">
+          <!-- ================= 对话模型 ================= -->
+          <section v-show="section === 'model'" class="panel" data-test="settings-section-model">
+            <header class="panel-head">
+              <h2>对话模型</h2>
+              <span
+                class="g-chip"
+                :class="consumer?.running ? 'is-ok' : modelConfigured ? 'is-accent' : 'is-warn'"
+                data-test="model-effect"
               >
-                移除
-              </button>
-            </div>
-            <button class="ghost" data-test="files-root-add" @click="form.files.roots = [...form.files.roots, '']">
-              ＋ 添加目录
-            </button>
-          </div>
-          </div>
-        </section>
+                <template v-if="consumer?.running">运行中 · {{ consumer.model ?? '模型' }}</template>
+                <template v-else-if="modelConfigured">已填好，保存后生效</template>
+                <template v-else>未配置，助手暂时不会执行任务</template>
+              </span>
+            </header>
 
-        <section class="card" :class="{ 'is-folded': folded.model === true }">
-          <h2>
-            <button
-              class="group-toggle"
-              :data-test="'settings-group-model'"
-              :aria-expanded="folded.model !== true"
-              aria-controls="settings-body-model"
-              @click="toggleGroup('model')"
-            >
-              <Icon name="chevron-down" :size="14" class="group-chevron" />
-              模型（对话）
-            </button>
-            <HintTip>
-              这里是执行队列的那个模型。保存后会<strong>立即重启消费者</strong>；留空则退回环境变量
-              <code>PARTNER_LLM_BASE_URL</code> / <code>PARTNER_LLM_MODEL</code>。
-            </HintTip>
-          </h2>
-          <div v-show="folded.model !== true" :id="'settings-body-model'" class="card-body">
-          <label class="field">
-            <span>服务地址</span>
-            <input type="text" v-model="form.model.baseUrl" placeholder="http://127.0.0.1:11434/v1" data-test="model-base-url" />
-          </label>
-          <label class="field">
-            <span>模型名</span>
-            <select v-if="models.length > 0" v-model="form.model.model" data-test="model-name">
-              <option v-for="name in withStored(models, form.model.model)" :key="name" :value="name">{{ name }}</option>
-            </select>
-            <input v-else type="text" v-model="form.model.model" placeholder="qwen3" data-test="model-name" />
-          </label>
-          <div class="row">
-            <button class="ghost" :disabled="probing" data-test="model-probe" @click="probeModels">
-              {{ probing ? '拉取中…' : '拉取模型列表' }}
-            </button>
-            <span v-if="models.length > 0" class="muted" data-test="model-count">{{ models.length }} 个可选</span>
-            <span v-if="modelProbeError" class="error break" data-test="model-probe-error">{{ modelProbeError }}</span>
-          </div>
-          <label class="field">
-            <span>
-              API Key
-              <HintTip data-test="model-api-key-hint">{{ keyHint }}</HintTip>
-            </span>
-            <input
-              type="password"
-              v-model="apiKeyDraft"
-              :placeholder="apiKeySet ? '（已设置）' : '（未设置）'"
-              data-test="model-api-key"
-              @input="apiKeyEdited = true"
-            />
-          </label>
-          <div class="row">
-            <button class="ghost" data-test="model-api-key-clear" @click="clearKey">清除密钥</button>
-            <span class="muted" data-test="model-api-key-state">
-              {{ apiKeySet ? '已设置' : '未设置' }}
-            </span>
-          </div>
-          <label class="field">
-            <span>请求超时 (s)</span>
-            <input type="number" v-model.number="form.model.timeoutSeconds" />
-          </label>
-          <label class="field">
-            <span>上下文大小（token） <HintTip>模型的上下文窗口；提示预算 = 它减去输出长度，改小后保存会立即压缩一次历史</HintTip></span>
-            <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
-          </label>
-          <label class=field>
-            <span>
-              支持图片（视觉）
-              <HintTip>
-                打开后，UIA 看不见的应用（Electron、游戏、画布）走<strong>截图给模型看</strong>这条路，不再需要 OCR——
-                模型自己读图比本地识别准。关闭时截图工具根本不注册：把图发给纯文本模型只会让请求失败。
-              </HintTip>
-            </span>
-            <input type=checkbox v-model=form.model.supportsImages data-test=model-supports-images />
-          </label>
-
-          <label class="field">
-            <span>输出长度（token） <HintTip>单次补全的上限，必须小于上下文大小</HintTip></span>
-            <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
-          </label>
-
-          <div class="field">
-            <span>
-              思考挡位
-              <HintTip>
-                随每次请求发 <code>reasoning_effort</code>；随消息发的那一档覆盖这里。清单是菜单不是限制——
-                服务端认的别的词（minimal、none…）加进来即可，<code>off</code> 表示<strong>不发这个字段</strong>。
-                会话里的下拉按这个顺序显示。保存后立即重启消费者。
-              </HintTip>
-            </span>
-
-            <!--
-              The default and the menu are shown together because they are one setting seen from two sides:
-              the composer offers this list, and this value is what it preselects. Editing either without
-              the other would let the two disagree on screen.
-            -->
-            <label class="gear-default">
-              <span class="muted">默认</span>
-              <input
-                type="text"
-                v-model="form.model.reasoningEffort"
-                placeholder="medium"
-                data-test="model-reasoning-effort"
-              />
-            </label>
-
-            <ul class="gear-list" data-test="model-reasoning-gears">
-              <li v-for="(gear, index) in form.model.reasoningGears" :key="index" class="gear-row">
-                <input
-                  :value="gear"
-                  :aria-label="`第 ${index + 1} 档`"
-                  data-test="model-gear"
-                  @change="commitGear(index, ($event.target as HTMLInputElement).value)"
+            <div class="g-card">
+              <div class="g-card-head">
+                <h3>连接</h3>
+                <TestButton
+                  kind="model"
+                  label="测试连接"
+                  :testing="voiceTesting.model === true"
+                  :result="voiceTest.model"
+                  :stale="testStale('model')"
+                  :unsaved="dirty"
+                  data-test="model-test-row"
+                  @test="testConnection('model')"
                 />
-                <!-- The cell is always present so the row's four buttons stay in one column; only the
-                     default row has anything to say in it. -->
-                <span class="badge" :data-test="gear === form.model.reasoningEffort ? 'model-gear-default' : undefined">
-                  {{ gear === form.model.reasoningEffort ? '默认' : '' }}
-                </span>
-                <button
-                  class="ghost"
-                  :disabled="gear === form.model.reasoningEffort || normalizeGear(gear) === ''"
-                  :aria-label="`把第 ${index + 1} 档设为默认`"
-                  data-test="model-gear-set-default"
-                  @click="useAsDefault(index)"
-                >
-                  <Icon name="star" :size="14" />
-                </button>
-                <button
-                  class="ghost"
-                  :disabled="index === 0"
-                  :aria-label="`上移第 ${index + 1} 档`"
-                  data-test="model-gear-up"
-                  @click="moveGear(index, -1)"
-                >
-                  <Icon name="arrow-up" :size="14" />
-                </button>
-                <button
-                  class="ghost"
-                  :disabled="index === form.model.reasoningGears.length - 1"
-                  :aria-label="`下移第 ${index + 1} 档`"
-                  data-test="model-gear-down"
-                  @click="moveGear(index, 1)"
-                >
-                  <Icon name="arrow-down" :size="14" />
-                </button>
-                <button
-                  class="ghost"
-                  :aria-label="`删除第 ${index + 1} 档`"
-                  data-test="model-gear-remove"
-                  @click="removeGear(index)"
-                >
-                  ×
-                </button>
-              </li>
-            </ul>
+              </div>
 
-            <button class="ghost" data-test="model-gear-add" @click="addGear">＋ 加一档</button>
-          </div>
+              <SettingRow label="接口地址">
+                <template #hint>
+                  模型服务的网址，一般以 /v1 结尾，比如 Ollama 是 <code>http://127.0.0.1:11434/v1</code>。留空则读环境变量
+                  <code>PARTNER_LLM_BASE_URL</code>。
+                </template>
+                <input type="text" v-model="form.model.baseUrl" placeholder="http://127.0.0.1:11434/v1" data-test="model-base-url" />
+              </SettingRow>
 
-          <p class="card-note" data-test="model-effect">
-            <template v-if="consumer?.running">消费者运行中 · {{ consumer.model ?? '模型' }}（{{ consumer.reason }}）</template>
-            <template v-else-if="modelConfigured">已填好地址与模型名，保存后生效</template>
-            <template v-else>未配置模型：队列不会被执行</template>
-          </p>
-          <div class="row card-footer" data-test="model-test-row">
-            <button class="ghost" :disabled="voiceTesting.model" data-test="test-model" @click="testConnection('model')">
-              {{ voiceTesting.model ? '测试中…' : '测试' }}
+              <SettingRow label="模型">
+                <template #hint>
+                  点右边的刷新图标，可以从服务里读出可选的模型；读不到就手动填。留空则读环境变量 <code>PARTNER_LLM_MODEL</code>。
+                </template>
+                <select v-if="models.length > 0" v-model="form.model.model" data-test="model-name">
+                  <option v-for="name in withStored(models, form.model.model)" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <input v-else type="text" v-model="form.model.model" placeholder="qwen3" data-test="model-name" />
+                <button
+                  class="ghost icon-only"
+                  type="button"
+                  :disabled="probing"
+                  :aria-busy="probing || undefined"
+                  title="从服务读取可选模型"
+                  data-test="model-probe"
+                  @click.prevent="probeModels"
+                >
+                  <Icon name="refresh" :size="16" /><span class="sr-only">{{ probing ? '拉取中…' : '拉取模型列表' }}</span>
+                </button>
+              </SettingRow>
+              <p v-if="models.length > 0 || modelProbeError" class="row-note">
+                <span v-if="models.length > 0" data-test="model-count">{{ models.length }} 个可选</span>
+                <span v-if="modelProbeError" class="error break" data-test="model-probe-error">{{ modelProbeError }}</span>
+              </p>
+
+              <SettingRow label="API Key">
+                <template #hint><span data-test="model-api-key-hint">{{ keyHint }}</span></template>
+                <input
+                  type="password"
+                  v-model="apiKeyDraft"
+                  :placeholder="apiKeySet ? '（已设置）' : '（未设置）'"
+                  autocomplete="off"
+                  data-test="model-api-key"
+                  @input="apiKeyEdited = true"
+                />
+                <span class="g-chip" :class="apiKeySet ? 'is-ok' : ''" data-test="model-api-key-state">{{ apiKeySet ? '已设置' : '未设置' }}</span>
+                <button class="ghost" type="button" data-test="model-api-key-clear" @click.prevent="clearKey">清除</button>
+              </SettingRow>
+            </div>
+
+            <div class="g-card">
+              <div class="g-card-head"><h3>思考</h3></div>
+              <SettingRow label="思考强度" stack hint="回答前想多久。左边是界面上显示的字，右边是真正发给模型的词，你可以增减。选中的「默认」用于新消息，会话里可以临时改。传值为 off 表示不向模型发这个参数。">
+                <GearTable
+                  v-model="form.model.reasoningEffort"
+                  v-model:gears="form.model.reasoningGears"
+                  v-model:labels="form.model.reasoningLabels"
+                  data-test="model-reasoning-gears"
+                />
+              </SettingRow>
+              <SettingRow label="能看图片">
+                <template #hint>
+                  开启后，遇到读不出文字的软件（游戏、画布等），助手会直接截图给模型看。纯文字模型请保持关闭，否则请求会失败。
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.model.supportsImages" data-test="model-supports-images" />
+              </SettingRow>
+            </div>
+
+            <button class="ghost more" :aria-expanded="advanced.model === true" data-test="settings-more-model" @click="toggleAdvanced('model')">
+              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.model === true }" />
+              更多选项
             </button>
-            <span v-if="voiceTest.model" class="break" data-test="test-model-result" :class="voiceTest.model.ok ? 'muted' : 'error'">
-              {{ voiceTest.model.ok ? '✓' : '✗' }} {{ voiceTest.model.detail }}（{{ voiceTest.model.latencyMs }}ms）
-            </span>
-          </div>
-          </div>
-        </section>
+            <div v-show="advanced.model === true" class="g-card">
+              <SettingRow label="最长等待" unit="秒" hint="模型超过这个时间还没答完，就放弃这次请求。">
+                <input type="number" v-model.number="form.model.timeoutSeconds" />
+              </SettingRow>
+              <SettingRow label="记忆长度" unit="token">
+                <template #hint>模型一次最多能「看」多少内容，约 1 个汉字算 1 token。改小并保存后，较早的对话会立刻被压缩。</template>
+                <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
+              </SettingRow>
+              <SettingRow label="单次回复上限" unit="token" hint="一次回复最多写多长，必须小于「记忆长度」。">
+                <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
+              </SettingRow>
+            </div>
+          </section>
+
+          <!-- ================= 语音输入 ================= -->
+          <section v-show="section === 'input'" class="panel" data-test="settings-section-input">
+            <header class="panel-head">
+              <h2>语音输入</h2>
+              <span v-if="wakeGateOn" class="g-chip is-accent" data-test="wake-mode">
+                唤醒模式
+                <HintTip align="end">平时只听不转写；叫到唤醒词后的一段话才会转写，说完自动回到待命。</HintTip>
+              </span>
+            </header>
+
+            <div class="g-card">
+              <div class="g-card-head"><h3>麦克风</h3></div>
+              <SettingRow label="开启语音输入" hint="关闭后会立刻释放麦克风，其他软件可以使用。">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.enabled" data-test="input-enabled" />
+              </SettingRow>
+              <SettingRow label="麦克风" hint="选你正在用的那个，名称支持模糊匹配。列表为空时可以手动输入。">
+                <select v-if="inputOptions.length > 0" v-model="form.input.deviceId" data-test="input-device">
+                  <option :value="null">（默认设备）</option>
+                  <option v-for="name in inputOptions" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <input v-else type="text" v-model="form.input.deviceId" placeholder="（默认设备）" data-test="input-device" />
+              </SettingRow>
+
+              <p class="status-line" data-test="input-effect">
+                <template v-if="voice?.input?.running">
+                  运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段<template v-if="wakeGateOn"> · {{ voice.input.awake ? '已唤醒' : '等唤醒词' }}</template>
+                </template>
+                <template v-else-if="voice?.input">未运行 · {{ voice.input.reason }}</template>
+                <template v-else>保存后可以看到运行状态</template>
+              </p>
+
+              <!--
+                电平条：死麦、安静房间、说话低于阈值三种情况在文字状态上长得一模一样，只有实时电平能分开。
+                阈值刻度画在同一条上，因为「电平够不够得着阈值」正是用户要判断的那件事。
+              -->
+              <div v-if="voice?.input?.running" class="level" data-test="input-level">
+                <div class="level-track">
+                  <div class="level-fill" :style="{ width: levelPercent }"></div>
+                  <div class="level-mark" :style="{ left: thresholdPercent }"></div>
+                </div>
+                <span class="level-readout">
+                  音量 {{ (voice.input.rms ?? 0).toFixed(4) }}
+                  <HintTip align="end">
+                    竖线是「安静音量线」{{ form.input.silenceThreshold }}：音量够不到它，就当作你没在说话。
+                    <template v-if="voice.input.thresholdMisconfigured">环境底噪约 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}。</template>
+                  </HintTip>
+                </span>
+              </div>
+              <p v-if="voice?.input?.thresholdMisconfigured" class="warn-line" data-test="input-threshold-warning">
+                安静音量线 {{ form.input.silenceThreshold }} 不高于环境底噪 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}：
+                一直判断不出你说完了，一段话不会结束，也就不会有转写。
+              </p>
+            </div>
+
+            <div class="g-card">
+              <div class="g-card-head"><h3>唤醒</h3></div>
+              <SettingRow label="唤醒词" :disabled="!form.local.kws.enabled">
+                <template #hint>
+                  用逗号分隔多个，例如「你好军哥，蛋哥蛋哥」。留空则保留引擎里现有的词。需要先开启「本地引擎」里的唤醒与识别引擎。
+                </template>
+                <input
+                  type="text"
+                  :value="keywordDrafts.kws"
+                  placeholder="你好军哥，蛋哥蛋哥"
+                  data-test="local-kws-keywords"
+                  @input="onEngineKeywordsInput('kws', $event)"
+                />
+              </SettingRow>
+              <SettingRow label="唤醒时叮一声" hint="听到唤醒词时响一下。需要同时开启语音输出。" data-test="wake-tone">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.wakeTone" />
+              </SettingRow>
+            </div>
+
+            <div class="g-card">
+              <div class="g-card-head">
+                <h3>识别服务</h3>
+                <TestButton
+                  kind="asr"
+                  label="测试"
+                  :testing="voiceTesting.asr === true"
+                  :result="voiceTest.asr"
+                  :stale="testStale('asr')"
+                  :unsaved="dirty"
+                  data-test="asr-test-row"
+                  @test="testConnection('asr')"
+                />
+              </div>
+              <SettingRow label="接口类型" hint="按你的识别服务支持的方式选，不确定就看它的文档。">
+                <select v-model="form.asr.protocol" data-test="asr-protocol">
+                  <option value="chat-audio">对话接口 · chat/completions</option>
+                  <option value="openai">OpenAI 标准 · audio/transcriptions</option>
+                  <option value="sensevoice">本地 SenseVoice · /recognize</option>
+                </select>
+              </SettingRow>
+              <SettingRow label="服务地址" hint="识别服务（ASR）的网址。留空则不会把语音转成文字。">
+                <input type="text" v-model="form.asr.baseUrl" placeholder="http://127.0.0.1:45101" data-test="asr-base-url" />
+              </SettingRow>
+              <SettingRow label="模型" hint="识别服务里的模型名。">
+                <input type="text" v-model="form.asr.model" data-test="asr-model" />
+              </SettingRow>
+            </div>
+
+            <div class="g-card">
+              <div class="g-card-head"><h3>断句</h3></div>
+              <SettingRow label="多小声算安静" hint="音量低于这个值，就当作你没在说话。环境吵就调大，老是收不到你说话就调小。默认 0.03。">
+                <input type="number" step="0.01" min="0" v-model.number="form.input.silenceThreshold" />
+              </SettingRow>
+              <SettingRow label="停顿多久算说完" unit="毫秒" hint="你停顿超过这个时间，就当这句话说完了。默认 1200，即 1.2 秒。">
+                <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
+              </SettingRow>
+            </div>
+
+            <button class="ghost more" :aria-expanded="advanced.input === true" data-test="settings-more-input" @click="toggleAdvanced('input')">
+              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.input === true }" />
+              更多选项
+            </button>
+            <div v-show="advanced.input === true" class="g-card">
+              <div class="g-card-head"><h3>断句</h3></div>
+              <SettingRow label="唤醒后等你开口" unit="毫秒" hint="叫醒助手后，最多等你多久开口；一开口就改按「停顿多久算说完」判断。默认 5000，即 5 秒。" data-test="wake-timeout">
+                <input type="number" v-model.number="form.input.wakeTimeoutMs" />
+              </SettingRow>
+              <SettingRow label="边说边识别" hint="开启后一句一句识别，反应更快；关闭则等整段说完再识别。">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.asrStream" data-test="input-asr-stream" />
+              </SettingRow>
+              <SettingRow label="句内停顿" unit="毫秒" hint="只在「边说边识别」开启时有用：停顿超过这个时间，就先识别前面那一句。默认 450。">
+                <input type="number" v-model.number="form.input.sentenceGapMs" />
+              </SettingRow>
+              <SettingRow label="单次识别最长" unit="秒" hint="一次最多把多长的录音送去识别。默认 8 秒。">
+                <input type="number" v-model.number="form.input.windowSeconds" />
+              </SettingRow>
+              <SettingRow label="无标点时多少字断开" unit="字" hint="识别结果没有标点时，超过这个字数就强行断句。默认 40。">
+                <input type="number" v-model.number="form.input.maxSplitChars" />
+              </SettingRow>
+              <div class="g-card-head"><h3>识别服务</h3></div>
+              <SettingRow label="语言" hint="告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。">
+                <input type="text" v-model="form.asr.language" placeholder="Chinese" />
+              </SettingRow>
+              <SettingRow label="连接等待" unit="毫秒" hint="连不上服务时，等多久放弃。">
+                <input type="number" v-model.number="form.asr.connectTimeoutMs" />
+              </SettingRow>
+              <SettingRow label="单次等待" unit="毫秒" hint="设得比较短：卡住的那一段会整段重试，等太久会让录音堆积丢失。">
+                <input type="number" v-model.number="form.asr.readTimeoutMs" />
+              </SettingRow>
+              <SettingRow label="采样率" unit="Hz" hint="录音的音质参数，一般不用改。默认 16000。">
+                <input type="number" v-model.number="form.asr.sampleRate" />
+              </SettingRow>
+            </div>
+          </section>
+
+          <!-- ================= 语音输出 ================= -->
+          <section v-show="section === 'output'" class="panel" data-test="settings-section-output">
+            <header class="panel-head"><h2>语音输出</h2></header>
+
+            <div class="g-card">
+              <div class="g-card-head"><h3>朗读</h3></div>
+              <SettingRow label="开启朗读" hint="助手的回复会念出来。">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.output.enabled" data-test="output-enabled" />
+              </SettingRow>
+              <SettingRow label="扬声器" hint="选声音从哪里出来。">
+                <select v-if="outputOptions.length > 0" v-model="form.output.deviceId" data-test="output-device">
+                  <option :value="null">（默认设备）</option>
+                  <option v-for="name in outputOptions" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <input v-else type="text" v-model="form.output.deviceId" placeholder="（默认设备）" data-test="output-device" />
+              </SettingRow>
+              <SettingRow label="音色" hint="留空使用朗读服务默认的声音。">
+                <input type="text" v-model="form.output.voice" placeholder="（服务默认音色）" />
+              </SettingRow>
+              <SettingRow label="语速" hint="1 是正常，0.8 慢一点，1.2 快一点。">
+                <input type="number" step="0.05" v-model.number="form.output.speed" />
+              </SettingRow>
+              <SettingRow label="朗读时不听麦克风" hint="避免助手把自己的声音当成你在说话。建议保持开启。">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.output.muteDuringTts" data-test="output-mute-during-tts" />
+              </SettingRow>
+              <p class="status-line" data-test="output-effect">
+                <template v-if="voice?.output.running">运行中 · {{ voice.output.device }} · 已朗读 {{ voice.output.count }} 句</template>
+                <template v-else-if="voice">未运行 · {{ voice.output.reason }}</template>
+                <template v-else>保存后可以看到运行状态</template>
+              </p>
+            </div>
+
+            <div class="g-card">
+              <div class="g-card-head">
+                <h3>朗读服务</h3>
+                <TestButton
+                  kind="tts"
+                  label="测试"
+                  :testing="voiceTesting.tts === true"
+                  :result="voiceTest.tts"
+                  :stale="testStale('tts')"
+                  :unsaved="dirty"
+                  data-test="tts-test-row"
+                  @test="testConnection('tts')"
+                />
+              </div>
+              <SettingRow label="接口类型" hint="选和你的朗读服务一致的那种。">
+                <select v-model="form.tts.protocol" data-test="tts-protocol">
+                  <option value="native">本地服务 · 流式</option>
+                  <option value="openai">OpenAI 标准 · audio/speech</option>
+                </select>
+              </SettingRow>
+              <SettingRow label="服务地址" hint="朗读服务（TTS）的网址。留空则助手的回复不会被念出来。">
+                <input type="text" v-model="form.tts.baseUrl" placeholder="http://127.0.0.1:45102" data-test="tts-base-url" />
+              </SettingRow>
+              <template v-if="form.tts.protocol === 'native'">
+                <SettingRow label="语言" hint="本地服务用的语言代码，例如 zh。">
+                  <input type="text" v-model="form.tts.lang" />
+                </SettingRow>
+                <SettingRow label="克隆音色的参考音频" hint="填本地音频文件的路径，朗读时会模仿这个声音。只在启动时读取一次。">
+                  <input type="text" v-model="form.tts.speakerRefPath" placeholder="（不使用克隆）" />
+                </SettingRow>
+              </template>
+              <template v-else>
+                <SettingRow label="模型" hint="例如 tts-1。">
+                  <input type="text" v-model="form.tts.model" placeholder="tts-1" />
+                </SettingRow>
+                <SettingRow label="音色" hint="服务提供的音色名，例如 alloy。">
+                  <input type="text" v-model="form.tts.voice" placeholder="alloy" />
+                </SettingRow>
+                <SettingRow label="语速" hint="这个接口自己的语速参数。">
+                  <input type="number" step="0.05" v-model.number="form.tts.speed" />
+                </SettingRow>
+              </template>
+              <audio v-if="testTtsUrl" controls :src="testTtsUrl" data-test="tts-test-audio" class="tts-test-audio" />
+            </div>
+
+            <button class="ghost more" :aria-expanded="advanced.output === true" data-test="settings-more-output" @click="toggleAdvanced('output')">
+              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.output === true }" />
+              更多选项
+            </button>
+            <div v-show="advanced.output === true" class="g-card">
+              <SettingRow label="句间停顿" unit="毫秒" hint="两段话之间加入的停顿。用克隆音色时固定为 0。">
+                <input type="number" v-model.number="form.output.gapMs" />
+              </SettingRow>
+              <SettingRow label="念完后再静音" unit="毫秒" hint="朗读结束后继续不听麦克风的时间，避免尾音被听进去。默认 400。">
+                <input type="number" v-model.number="form.output.drainMs" />
+              </SettingRow>
+              <SettingRow label="播放采样率" unit="Hz" hint="必须和朗读服务输出的一致，否则声音会变快或变慢。">
+                <input type="number" v-model.number="form.output.sampleRate" />
+              </SettingRow>
+              <SettingRow label="服务返回采样率" unit="Hz" hint="必须和服务实际返回的一致，否则播放速度会不对。">
+                <input type="number" v-model.number="form.tts.sampleRate" />
+              </SettingRow>
+              <SettingRow label="最长等待" unit="秒" hint="超过这个时间还没合成完，就放弃这一句。">
+                <input type="number" v-model.number="form.tts.timeoutSeconds" />
+              </SettingRow>
+              <SettingRow label="分段大小" unit="毫秒" hint="边合成边播放时每一小段的长度，一般不用改。">
+                <input type="number" v-model.number="form.tts.chunkMs" />
+              </SettingRow>
+            </div>
+          </section>
+
+          <!-- ================= 电脑操控 ================= -->
+          <section v-show="section === 'desktop'" class="panel" data-test="settings-section-desktop">
+            <header class="panel-head"><h2>电脑操控</h2></header>
+
+            <!-- The one sentence on this page that is not behind an ⓘ. A hover is a good place for a footnote and a
+                 bad place for the fact that this capability acts on your computer. -->
+            <p class="callout" data-test="desktop-callout">
+              开启后，助手可以观察你的窗口，并申请控制鼠标键盘。每一步都需要你批准。
+            </p>
+
+            <div class="g-card">
+              <SettingRow label="允许助手操作电脑">
+                <template #hint>
+                  默认关闭。开启后助手能看你的窗口，并申请点击、按键；每个动作都要你点「允许」，没人回应就当拒绝。关闭时助手根本拿不到这些工具。
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.desktop.enabled" data-test="desktop-enabled" />
+              </SettingRow>
+              <p v-if="desktopAgentOff" class="warn-line" data-test="desktop-agent-warning">
+                还需要启用「桌面操控」子 agent，助手才能使用这个能力。
+                <button class="ghost" data-test="desktop-agent-fix" @click="emit('navigate', 'prompts')">去启用</button>
+              </p>
+              <SettingRow label="只允许操作这些窗口">
+                <template #hint>
+                  填窗口标题里的关键词，用逗号分隔，不分大小写；留空表示不限制。真正拦住动作的是你的批准，这里只是缩小范围。
+                </template>
+                <input
+                  type="text"
+                  :value="form.desktop.allowedWindowTitles.join('、')"
+                  placeholder="记事本、计算器"
+                  data-test="desktop-allowed-titles"
+                  @input="onTitlesInput"
+                />
+              </SettingRow>
+            </div>
+
+            <button class="ghost more" :aria-expanded="advanced.desktop === true" data-test="settings-more-desktop" @click="toggleAdvanced('desktop')">
+              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.desktop === true }" />
+              更多选项
+            </button>
+            <div v-show="advanced.desktop === true" class="g-card">
+              <SettingRow label="看屏幕后可操作多久" unit="毫秒">
+                <template #hint>
+                  助手看过一次屏幕后，这段时间内可以照着看到的内容去点、去输入；超时要重新看一遍。默认 15000，即 15 秒。
+                </template>
+                <input type="number" min="1000" v-model.number="form.desktop.leaseTtlMs" data-test="desktop-lease-ttl" />
+              </SettingRow>
+            </div>
+          </section>
+
+          <!-- ================= 文件访问 ================= -->
+          <section v-show="section === 'files'" class="panel" data-test="settings-section-files">
+            <header class="panel-head"><h2>文件访问</h2></header>
+
+            <div class="g-card">
+              <SettingRow label="允许助手读取文件">
+                <template #hint>
+                  <span data-test="files-whitelist-hint">只读，默认关闭。助手只能读下面列出的文件夹和里面的所有内容，其他位置它看不到。</span>
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.files.enabled" data-test="files-enabled" />
+              </SettingRow>
+
+              <div class="folders" data-test="files-roots">
+                <div class="folders-head">
+                  <h3>可读取的文件夹</h3>
+                  <HintTip align="end">填完整路径，一行一个。</HintTip>
+                </div>
+                <p v-if="form.files.roots.length === 0" class="muted" data-test="files-roots-empty">
+                  还没有文件夹。开启后至少添加一个，否则无法保存。
+                </p>
+                <div v-for="(root, index) in form.files.roots" :key="index" class="folder-row">
+                  <Icon name="folder" :size="16" class="folder-icon" />
+                  <input
+                    type="text"
+                    :value="root"
+                    :aria-label="`第 ${index + 1} 个可读取的文件夹`"
+                    placeholder="D:/资料"
+                    data-test="files-root"
+                    @input="form.files.roots[index] = ($event.target as HTMLInputElement).value"
+                  />
+                  <button
+                    class="ghost icon-only"
+                    :aria-label="`移除第 ${index + 1} 个文件夹`"
+                    title="移除"
+                    data-test="files-root-remove"
+                    @click="form.files.roots = form.files.roots.filter((_, at) => at !== index)"
+                  >
+                    <Icon name="x" :size="14" /><span class="sr-only">移除</span>
+                  </button>
+                </div>
+                <button class="ghost add" data-test="files-root-add" @click="form.files.roots = [...form.files.roots, '']">
+                  <Icon name="plus" :size="14" /> 添加文件夹
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ================= 本地引擎 ================= -->
+          <section v-show="section === 'engines'" class="panel" data-test="settings-section-engines">
+            <header class="panel-head">
+              <h2>本地引擎</h2>
+              <span class="g-chip">进阶</span>
+              <HintTip align="end">
+                由 Partner 帮你启动和关闭的本地语音程序。关闭会真正结束进程、释放显存和内存；只是不再请求，并不会释放。
+                识别和朗读服务的地址仍在各自页面填，指向这里设置的端口。
+              </HintTip>
+            </header>
+
+            <div v-for="engine in (['tts', 'kws'] as const)" :key="engine" class="g-card" :data-test="`local-engine-${engine}`">
+              <div class="g-card-head">
+                <h3>
+                  {{ engine === 'tts' ? '朗读引擎' : '唤醒与识别引擎' }}
+                  <HintTip>{{ engine === 'tts' ? '例如 qwentts.cpp server。' : '例如 sherpa-onnx。开启后语音输入进入「唤醒模式」。' }}</HintTip>
+                </h3>
+                <TestButton
+                  v-if="engine === 'kws'"
+                  kind="kws"
+                  label="测试"
+                  :testing="voiceTesting.kws === true"
+                  :result="voiceTest.kws"
+                  :stale="testStale('kws')"
+                  :unsaved="dirty"
+                  data-test="kws-test-row"
+                  @test="testConnection('kws')"
+                />
+              </div>
+              <SettingRow label="由 Partner 启动" hint="开启后，启动时自动运行这个程序，关闭时自动结束。">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.local[engine].enabled" :data-test="`local-${engine}-enabled`" />
+              </SettingRow>
+              <SettingRow label="程序路径" hint="要启动的程序的完整路径。">
+                <input type="text" v-model="form.local[engine].command" :data-test="`local-${engine}-command`" />
+              </SettingRow>
+              <SettingRow label="启动参数">
+                <template #hint>用空格分隔；端口用 <code>{port}</code> 代替。</template>
+                <input
+                  type="text"
+                  :value="form.local[engine].arguments.join(' ')"
+                  :data-test="`local-${engine}-arguments`"
+                  @input="onEngineArgumentsInput(engine, $event)"
+                />
+              </SettingRow>
+              <SettingRow label="运行目录" hint="程序启动时所在的文件夹。留空则不指定。">
+                <input type="text" v-model="form.local[engine].workingDirectory" />
+              </SettingRow>
+              <SettingRow label="端口" hint="本地服务监听的端口。">
+                <input type="number" v-model.number="form.local[engine].port" :data-test="`local-${engine}-port`" />
+              </SettingRow>
+              <SettingRow label="启动等待" unit="秒" hint="启动后最多等多久，还没准备好就算失败。">
+                <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
+              </SettingRow>
+            </div>
+          </section>
+
+          <!-- ================= 外观 ================= -->
+          <section v-show="section === 'appearance'" class="panel" data-test="settings-section-appearance">
+            <header class="panel-head"><h2>外观</h2></header>
+            <div class="g-card">
+              <SettingRow label="主题" hint="顶栏的主题按钮也可以切换。">
+                <Segmented
+                  :model-value="theme ?? 'auto'"
+                  :options="THEME_OPTIONS"
+                  label="主题"
+                  data-test="settings-theme"
+                  @update:model-value="emit('set-theme', $event as Theme)"
+                />
+              </SettingRow>
+              <SettingRow label="减弱透明效果" hint="去掉毛玻璃的模糊，界面更清晰、占用更低。系统开启「减少透明」时会自动生效。">
+                <input
+                  type="checkbox"
+                  class="g-switch"
+                  role="switch"
+                  :checked="reducedTransparency"
+                  data-test="settings-reduce-transparency"
+                  @change="onReducedTransparency(($event.target as HTMLInputElement).checked)"
+                />
+              </SettingRow>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
 
-    <div class="toolbar footer-actions">
-      <button class="primary" data-test="settings-save" @click="persist">保存设置</button>
-      <span v-if="error" class="error" data-test="error">{{ error }}</span>
-    </div>
+    <SaveBar
+      prefix="settings"
+      :dirty="dirty"
+      :status="status"
+      :error="error"
+      can-discard
+      @save="persist"
+      @discard="refresh"
+    />
   </div>
 </template>
 
 <style scoped>
-.footer-actions {
-  border-block-start: 1px solid var(--line);
-  border-block-end: none;
+.settings-scroll {
+  flex: 1;
+  min-block-size: 0;
 }
 
-.card-note code {
-  padding: 0.1em 0.3em;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-0);
-  font-size: 0.92em;
+/* Two columns: the categories, and one category at a time. The nav sticks under the top bar so switching never
+   needs a scroll back up. */
+.settings {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, var(--column-form));
+  gap: var(--space-6);
+  justify-content: center;
+  padding: calc(var(--topbar-h) + var(--space-4)) var(--space-5) 7rem;
 }
 
-/* A card heading now carries two children: the toggle that folds the card, and the mark that explains it. They
-   sit on one line with the toggle keeping its full width, so a click anywhere along the row still folds. */
-.card > h2 {
+.settings-nav {
+  position: sticky;
+  inset-block-start: calc(var(--topbar-h) + var(--space-4));
+  align-self: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+
+.nav-item {
+  justify-content: flex-start;
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding: 0 var(--space-3);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+}
+
+.nav-item:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-pressed);
+  font-weight: 500;
+}
+
+.live-dot {
+  margin-inline-start: auto;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-inline-size: 0;
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-content: start;
+  min-inline-size: 0;
+}
+
+.panel-head {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
-/* 输入电平：条 + 阈值刻度 + 读数，一行放下。 */
+.panel-head h2 {
+  font-size: var(--fs-title);
+  margin-inline-end: auto;
+}
+
+/* A grouped list in a glass card: a title row, then rows that separate themselves with a hairline. */
+.g-card {
+  background: var(--glass-1);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-hi), var(--shadow-1);
+  padding: var(--space-2) var(--space-5) var(--space-3);
+  min-inline-size: 0;
+}
+
+.g-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-block-size: 3rem;
+  padding-block-start: var(--space-1);
+}
+
+.g-card-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8125rem;
+  color: var(--text-2);
+}
+
+.row-note {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  padding-block-end: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.status-line {
+  margin: 0;
+  padding-block: var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.warn-line {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: var(--fs-meta);
+}
+
+.warn-line button {
+  min-block-size: 1.75rem;
+  font-size: var(--fs-meta);
+}
+
+.callout {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--text);
+  font-size: var(--fs-ui);
+}
+
+.more {
+  justify-self: start;
+  color: var(--text-2);
+}
+
+.more-chevron {
+  transition: transform var(--motion-fast) var(--ease);
+  transform: rotate(-90deg);
+}
+
+.more-chevron.is-open {
+  transform: none;
+}
+
+.icon-only {
+  flex: none;
+  inline-size: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* ---- input level --------------------------------------------------------------------------------- */
 .level {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  margin-block-start: var(--space-1);
+  gap: var(--space-3);
+  padding-block: var(--space-2) var(--space-1);
 }
 
 .level-track {
   position: relative;
   flex: 1 1 auto;
   block-size: 0.5rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-0);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
   overflow: hidden;
 }
 
 .level-fill {
   block-size: 100%;
-  background: var(--accent, currentColor);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
   transition: width 120ms linear;
 }
 
-/* 阈值刻度：够不着它的电平就是「静音」，判不出静音的一段话永远不会结束。 */
+/* The threshold: a level that cannot reach it is silence, and silence that is never detected means an utterance
+   that never ends. */
 .level-mark {
   position: absolute;
   inset-block: 0;
   inline-size: 2px;
-  background: var(--line);
+  background: var(--text);
+  opacity: 0.55;
 }
 
 .level-readout {
   flex: none;
-  font-variant-numeric: tabular-nums;
-  font-size: 0.9em;
-}
-
-/* Connectivity test sits at the card's end: result then audio trail it to the right. */
-.card-footer {
-  margin-top: var(--space-3);
-  padding-top: var(--space-2);
-  border-top: 1px dashed var(--line);
+  display: inline-flex;
   align-items: center;
-}
-
-.card-footer button {
-  flex: none;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
 }
 
 .tts-test-audio {
-  inline-size: min(320px, 100%);
-  block-size: 2.2rem;
+  inline-size: 100%;
+  block-size: 2.25rem;
+  margin-block: var(--space-2);
 }
 
-.gear-default {
+/* ---- folders ------------------------------------------------------------------------------------- */
+.folders {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block: var(--space-3) var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.folders-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
 
-.gear-default input {
-  inline-size: 12ch;
-}
-
-.gear-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.folder-row {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  /* The rows are a control group, so they read as one block rather than as loose list items. */
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-  background: var(--surface-1);
-}
-
-/* A grid, not a flex row: the default badge is present on only one row, and with flex the buttons on
-   every other row would slide left to close the gap. Named tracks keep each column in line. */
-.gear-row {
-  display: grid;
-  grid-template-columns: 14ch 3em repeat(4, 2.25em);
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
-.gear-row input {
+.folder-row input {
+  flex: 1;
   min-inline-size: 0;
 }
 
-.gear-row .badge {
-  font-size: var(--fs-meta);
+.folder-icon {
+  flex: none;
   color: var(--text-3);
-  text-align: start;
-  white-space: nowrap;
+}
+
+.add {
+  justify-self: start;
+}
+
+/* ---- narrow: categories become a row of chips ------------------------------------------------- */
+@container body (max-width: 52rem) {
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .settings-nav {
+    position: static;
+    display: flex;
+    overflow-x: auto;
+    padding-block-end: var(--space-1);
+  }
+
+  .nav-item {
+    flex: none;
+    border-radius: var(--radius-pill);
+  }
+
+  .live-dot {
+    margin-inline-start: var(--space-1);
+  }
 }
 </style>

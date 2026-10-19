@@ -96,27 +96,40 @@ const summary = computed(() => {
 </template>
 
 <style scoped>
+/* The same capsule as a tool call, quieter: a finished thought is in the log but is not part of the
+   conversation, so it recedes. While the model is thinking it is the only thing moving on screen, and the
+   accent says so. */
 .thinking {
-  /* Same treatment as the tool card: an inset block whose surface step does the work, with the stripe left
-     because it says "receded" — a finished thought is in the log but is not part of the conversation. */
-  border-inline-start: 3px solid var(--text-3);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  padding: var(--space-1) var(--space-2);
+  max-inline-size: 100%;
   min-inline-size: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: 0 var(--space-3);
 }
 
-/* While the model is thinking this is the only thing moving on screen, so it has to look alive. */
+.thinking[open] {
+  padding-block-end: var(--space-3);
+  background: var(--glass-1);
+  border-color: var(--glass-edge);
+}
+
 .thinking.is-running {
-  border-inline-start-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 summary {
   cursor: pointer;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-2);
+  min-block-size: 2.25rem;
   min-inline-size: 0;
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
 }
 
 .mark {
@@ -124,10 +137,8 @@ summary {
   color: var(--text-3);
   display: inline-flex;
   align-items: center;
-  animation: none;
 }
 
-/* The parent already carries `.is-running`, so the state is read from there rather than set twice. */
 .thinking.is-running .mark {
   color: var(--accent);
   animation: pulse 1.6s ease-in-out infinite;
@@ -136,9 +147,8 @@ summary {
 .thinking-label {
   flex: none;
   font-size: var(--fs-meta);
-  color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  color: var(--text-2);
+  font-weight: 500;
 }
 
 .summary-line {
@@ -147,7 +157,8 @@ summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
 }
 
 .elapsed {
@@ -157,29 +168,18 @@ summary {
   font-variant-numeric: tabular-nums;
 }
 
-/* No scroll container here, deliberately.
-
-   This used to be `max-block-size: 18rem; overflow-y: auto`, on the reasoning that a long chain of thought
-   must not push everything after it off the screen. But the list it lives in already scrolls: growing here
-   pushes the rest of the log *down the log*, which is what a log is, and nothing leaves the screen that the
-   reader could not scroll to anyway.
-
-   What the inner scroller actually cost was a bug, not a design: a classic scrollbar takes width out of the
-   box it belongs to, so the moment a thought was long enough to need one, every line of it ended ~17px short
-   of the line end — a wrap that moved as the text scrolled. Prose that reflows while you read it is worse
-   than prose that is simply further down. Code blocks keep their scrollers, where a fixed width is what you
-   want; prose does not.
-
-   Named `thinking-body`, not `body`: styles.css has a global `.body` that lays the shell out as sidebar +
-   content, and a scoped rule that only sets colour and font-size does not stop that from applying. It did,
-   and every line of a long thought wrapped at the sidebar's width — which is why this element is not the
-   obvious name. */
+/* No inner scroll container: the list already scrolls, and a classic scrollbar inside prose takes width out of
+   the box it belongs to so every line wraps short of the line end. Prose that reflows while you read it is worse
+   than prose that is simply further down. Named `thinking-body`, not `body`: styles.css has a global `.body`. */
 .thinking-body {
-  margin-block-start: var(--space-2);
+  margin-block-start: var(--space-1);
   color: var(--text-2);
   font-size: var(--fs-ui);
 }
 
-/* Motion is handled in one place — the app-wide `prefers-reduced-motion` block in styles.css. This used to
-   carry its own guard for `.mark`; two blocks means the next animation somebody adds is not covered. */
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
 </style>

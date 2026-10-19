@@ -12,10 +12,17 @@ export interface NavItem {
   icon: IconName
 }
 
-const props = defineProps<{ items: NavItem[]; active: string; collapsed: boolean }>()
+const props = defineProps<{
+  items: NavItem[]
+  active: string
+  collapsed: boolean
+  /** The window is too narrow for the sidebar to open at all, so the toggle is not offered. */
+  toggleHidden?: boolean | undefined
+}>()
 
 const emit = defineEmits<{
   select: [key: string]
+  'update:collapsed': [value: boolean]
 }>()
 
 /**
@@ -56,24 +63,34 @@ function choose(index: number): void {
 
 <template>
   <!--
-    A rail.
+    A floating glass rail, inset from the window edge so the page reads as a surface behind it.
 
     <para>
     The obvious alternative was a panel that peeks open on hover. It is the wrong shape: the pointer sits on
-    the track, so anything that widens the track grows *under* the cursor and the content under it reflows.
-    Making it an overlay instead costs a whole second layout mechanism — and one that nothing can test, since
-    the only place hover lives is a real browser. So the rail is rail, and one button opens it (ui.md §12 S5).
+    the track, so anything that widens the track grows *under* the cursor and the content under it reflows. So
+    the rail is a rail, and one button opens it (ui.md §12 S5).
     </para>
 
     <para>
-    The rail is navigation and nothing else. It used to carry two more controls — a primary 「新建查询」 and a
-    「重建投影」 behind a divider — and both are gone. The first only switched to the session view and focused the
-    box, which the keyboard already does; the second reported four counts about a rebuild the system performs on
-    its own. A rail that offers actions a reader cannot act on is a rail with false promises on it.
+    Navigation and nothing else: an action a reader cannot act on is a false promise on a rail.
     </para>
   -->
-  <nav class="sidebar" :class="{ 'is-collapsed': collapsed }" data-test="sidebar">
-    <div class="nav-section-title">工作区</div>
+  <nav class="sidebar g-float" :class="{ 'is-collapsed': collapsed }" data-test="sidebar" aria-label="主导航">
+    <!-- The one place the sidebar is opened and closed (Ctrl+B does the same). -->
+    <div class="brand">
+      <button
+        v-if="toggleHidden !== true"
+        class="ghost brand-toggle"
+        type="button"
+        data-test="sidebar-toggle"
+        :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
+        :title="`${collapsed ? '展开侧栏' : '收起侧栏'}（Ctrl+B）`"
+        @click="emit('update:collapsed', !collapsed)"
+      >
+        <Icon name="panel-left" :size="18" />
+      </button>
+      <span class="brand-name" aria-hidden="true">Partner</span>
+    </div>
 
     <ul ref="listElement" class="nav" role="list" aria-label="视图导航">
       <li
@@ -89,7 +106,7 @@ function choose(index: number): void {
         @focus="focusIndex = index"
         @keydown="onKeydown($event, index)"
       >
-        <span class="icon"><Icon :name="item.icon" :size="16" /></span>
+        <span class="icon"><Icon :name="item.icon" :size="18" /></span>
         <span class="nav-label">{{ item.label }}</span>
       </li>
     </ul>
@@ -100,23 +117,37 @@ function choose(index: number): void {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  gap: var(--space-4);
+  margin: var(--space-3) 0 var(--space-3) var(--space-3);
+  padding: var(--space-4) var(--space-3);
   min-inline-size: 0;
   min-block-size: 0;
-  border-inline-end: 1px solid var(--line);
-  background: var(--surface-1);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-hi), var(--shadow-1);
+  z-index: 12;
 }
 
-.nav-section-title {
-  font-size: var(--fs-meta);
-  line-height: var(--lh-meta);
-  color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   padding-inline: var(--space-2);
   white-space: nowrap;
   overflow: hidden;
+}
+
+.brand-toggle {
+  flex: none;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  inline-size: 2.25rem;
+  min-block-size: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.brand-name {
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .nav {
@@ -124,15 +155,18 @@ function choose(index: number): void {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 2px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
 }
 
 .nav > li {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding: 0 var(--space-3);
   border-radius: var(--radius-sm);
+  color: var(--text-2);
   /* A row the reader cannot name is not navigable by sight, and the rail is six rows tall. */
   white-space: nowrap;
   overflow: hidden;
@@ -141,12 +175,14 @@ function choose(index: number): void {
 
 .nav > li:hover {
   background: var(--surface-2);
+  color: var(--text);
 }
 
-/* Selection is a thin accent bar plus a very light fill — no large saturated block (ui.md §4). */
+/* Selection is a soft filled pill: the page you are on, not a bar pointing at it. */
 .nav > li.active {
-  background: var(--selected);
-  box-shadow: inset 2px 0 0 var(--accent-pressed);
+  background: var(--accent-soft);
+  color: var(--accent-pressed);
+  font-weight: 500;
 }
 
 .icon {
@@ -156,12 +192,6 @@ function choose(index: number): void {
   inline-size: 1.35em;
   /* A fixed box, so the labels of six rows share a left edge whether the icon is a page or a plug. */
   flex: none;
-  color: var(--text-2);
-}
-
-.nav > li.active .icon,
-.nav > li:hover .icon {
-  color: var(--text);
 }
 
 .nav-label {
@@ -170,18 +200,20 @@ function choose(index: number): void {
 }
 
 /* ---- the rail --------------------------------------------------------------------------------
-   Collapsed is now the *normal* narrow state rather than a compromise forced on a small window, so it gets
-   the same care the expanded panel has: centred icons, a square icon button, and no half-measures like a
-   section heading squeezed to three characters. */
+   Collapsed is the *normal* narrow state, so it gets the same care as the open panel: centred icons, a square
+   hit target, and no half-measures like a heading squeezed to three characters. */
 .sidebar.is-collapsed {
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-1);
+  padding-inline: var(--space-2);
   align-items: center;
 }
 
-.sidebar.is-collapsed .nav-section-title,
+.sidebar.is-collapsed .brand-name,
 .sidebar.is-collapsed .nav-label {
   display: none;
+}
+
+.sidebar.is-collapsed .brand {
+  padding-inline: 0;
 }
 
 .sidebar.is-collapsed .nav {
@@ -191,11 +223,5 @@ function choose(index: number): void {
 .sidebar.is-collapsed .nav > li {
   justify-content: center;
   padding-inline: 0;
-  /* The bar moves inside now: with no left gutter there is nothing outside it to align to. */
-  box-shadow: none;
-}
-
-.sidebar.is-collapsed .nav > li.active {
-  box-shadow: inset 0 0 0 1px var(--accent-pressed);
 }
 </style>

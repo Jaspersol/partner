@@ -286,15 +286,16 @@ describe('app shell', () => {
     expect(event.defaultPrevented).toBe(true)
     expect(toggle().attributes('aria-label')).not.toBe(collapsedBefore)
 
-    // Ctrl+K: the search box of whichever view is showing — and that is the session view's.
-    expect(wrapper.find('[data-test="session-query"]').attributes('title')).toBe('Ctrl+K')
+    // Ctrl+K: the search of whichever view is showing — and that is the session view's. It is an icon until it is
+    // asked for; the icon says the chord, and the chord opens the field.
+    expect(wrapper.find('[data-test="session-search-open"]').attributes('title')).toContain('Ctrl+K')
+    expect(wrapper.find('[data-test="session-query"]').exists()).toBe(false)
 
-    const search = wrapper.find('[data-test="session-query"]').element as HTMLInputElement
-    search.focus()
     const searchEvent = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, cancelable: true })
     window.dispatchEvent(searchEvent)
     await flushPromises()
     expect(searchEvent.defaultPrevented).toBe(true)
+    expect(wrapper.find('[data-test="session-query"]').attributes('title')).toBe('Ctrl+K')
   })
 
   it('does nothing for Ctrl+K on a view that has no search box', async () => {

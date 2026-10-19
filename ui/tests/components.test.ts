@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings } from '../src/api'
 import ApprovalBanner from '../src/components/ApprovalBanner.vue'
 import Composer from '../src/components/Composer.vue'
-import Inspector from '../src/components/Inspector.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
 import SideBar from '../src/components/SideBar.vue'
 import StatusBar from '../src/components/StatusBar.vue'
@@ -312,10 +311,12 @@ describe('event list', () => {
     expect(row.text()).toContain('未闭合的 *星号')
   })
 
-  it('selects a normal event on click', async () => {
+  it('does not react to a click on a message', async () => {
+    // A click used to select the row and name it in the top bar. There is nothing behind a selection any more,
+    // so the message is just text.
     const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 3 }] } })
     await wrapper.find('li').trigger('click')
-    expect(wrapper.emitted('select')?.[0]).toEqual([3])
+    expect(wrapper.emitted('select')).toBeUndefined()
   })
 
   it('names the kind rather than printing the enum', () => {
@@ -1079,11 +1080,20 @@ describe('composer', () => {
     })
     await flushPromises()
 
-    const picker = wrapper.find<HTMLSelectElement>('[data-test="composer-gear"]')
-    expect(picker.element.value).toBe('medium')
-    expect(picker.findAll('option').map((node) => node.attributes('value'))).toEqual(['off', 'low', 'medium', 'high'])
+    // The picker is a pill that opens a segmented choice like the approval gear: its value is on the pill, its menu is the segments.
+    const picker = wrapper.find('[data-test="composer-gear"]')
+    expect(picker.attributes('data-value')).toBe('medium')
+    expect(picker.text()).toContain('中')
 
-    await picker.setValue('high')
+    await picker.trigger('click')
+    expect(wrapper.findAll('[data-test="composer-gear-pop"] .segmented button').map((node) => node.attributes('data-value'))).toEqual([
+      'off',
+      'low',
+      'medium',
+      'high',
+    ])
+
+    await wrapper.find('[data-test="composer-gear-pop"] .segmented button[data-value="high"]').trigger('click')
     await wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').setValue('慢慢想')
     await wrapper.find('[data-test="composer-send"]').trigger('click')
     await flushPromises()
@@ -1100,10 +1110,13 @@ describe('composer', () => {
     })
     await flushPromises()
 
-    await wrapper.find<HTMLSelectElement>('[data-test="composer-gear"]').setValue('high')
+    await wrapper.find('[data-test="composer-gear"]').trigger('click')
+    await wrapper.find('[data-test="composer-gear-pop"] .segmented button[data-value="high"]').trigger('click')
+    expect(wrapper.find('[data-test="composer-gear"]').attributes('data-value')).toBe('high')
+
     await wrapper.setProps({ gears: ['low', 'medium', 'high'], defaultGear: 'low' })
 
-    expect(wrapper.find<HTMLSelectElement>('[data-test="composer-gear"]').element.value).toBe('low')
+    expect(wrapper.find('[data-test="composer-gear"]').attributes('data-value')).toBe('low')
   })
 
   it('still offers a default that is not on the menu rather than silently sending something else', async () => {
@@ -1115,7 +1128,15 @@ describe('composer', () => {
     })
     await flushPromises()
 
-    expect(wrapper.find<HTMLSelectElement>('[data-test="composer-gear"]').element.value).toBe('turbo')
+    expect(wrapper.find('[data-test="composer-gear"]').attributes('data-value')).toBe('turbo')
+
+    // And it is a segment, so the current value has somewhere to be.
+    await wrapper.find('[data-test="composer-gear"]').trigger('click')
+    expect(wrapper.findAll('[data-test="composer-gear-pop"] .segmented button').map((node) => node.attributes('data-value'))).toEqual([
+      'low',
+      'high',
+      'turbo',
+    ])
   })
 
   it('offers no picker at all when no menu is configured', async () => {
@@ -1186,16 +1207,19 @@ describe('composer', () => {
     const on = mount(Composer, { props: { api, consumer, approval: 'all' } })
     await flushPromises()
 
-    const select = on.find<HTMLSelectElement>('[data-test=composer-approval]')
-    expect(select.element.value).toBe('all')
-    expect(select.findAll('option').map((option) => option.text())).toEqual([
-      '审批：不审批',
-      '审批：危险指令审批',
-      '审批：全部审批',
+    const pill = on.find('[data-test=composer-approval]')
+    expect(pill.attributes('data-value')).toBe('all')
+    expect(pill.text()).toContain('全部')
+
+    await pill.trigger('click')
+    expect(on.findAll('[data-test=composer-approval-pop] .segmented button').map((option) => option.text())).toEqual([
+      '不审批',
+      '危险指令',
+      '全部',
     ])
 
     // The choice is the shell's to apply: the composer only reports it.
-    await select.setValue('dangerous')
+    await on.find('[data-test=composer-approval-pop] .segmented button[data-value="dangerous"]').trigger('click')
     expect(on.emitted('approval')?.[0]).toEqual(['dangerous'])
   })
 
@@ -1387,176 +1411,22 @@ describe('composer', () => {
   })
 })
 
-describe('inspector', () => {
-  const revisions = [
-    { at: '2026-09-26T10:00:01+00:00', actor: 'human', body: 'first pass' },
-    { at: '2026-09-26T10:00:02+00:00', actor: 'human', body: 'second pass' },
-  ]
-
-  it('restores an older revision into the editor rather than editing history', async () => {
-    const wrapper = mount(Inspector, {
-      props: { testPrefix: 'session', title: '编辑选中事件（追加修订，原文保留）', target: '#1 · user', draft: 'second pass', revisions },
-    })
-
-    await wrapper.findAll('[data-test="inspector-restore"]')[0]?.trigger('click')
-
-    expect(wrapper.find<HTMLTextAreaElement>('[data-test="session-draft"]').element.value).toBe('first pass')
-    // The restore is a draft change; only saving appends anything.
-    expect(wrapper.emitted('save')).toBeUndefined()
-  })
-
-  it('keeps the memory hooks and offers delete only where it means something', () => {
-    const memory = mount(Inspector, {
-      props: { testPrefix: 'memory', title: '编辑选中记忆', target: '未选中', draft: '', revisions: [], deleteLabel: '删除' },
-    })
-
-    expect(memory.find('[data-test="memory-target"]').text()).toBe('未选中')
-    expect(memory.find('[data-test="memory-draft"]').exists()).toBe(true)
-    expect(memory.find('[data-test="memory-delete"]').exists()).toBe(true)
-
-    const session = mount(Inspector, {
-      props: { testPrefix: 'session', title: '编辑选中事件', target: '未选中', draft: '', revisions: [] },
-    })
-
-    expect(session.find('[data-test="session-draft"]').exists()).toBe(true)
-    expect(session.find('[data-test="memory-delete"]').exists()).toBe(false)
-  })
-
-  it('announces its own two-step confirmation', async () => {
-    const wrapper = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [], canDeleteLatest: true },
-    })
-
-    const announcer = () => wrapper.find('[data-test="inspector-arm-announcer"]')
-    expect(announcer().text()).toBe('')
-
-    await wrapper.find('[data-test="session-delete"]').trigger('click')
-    expect(announcer().text()).toContain('再次按下确认')
-    expect(announcer().text()).toContain('最新一次对话')
-
-    await wrapper.find('[data-test="session-delete-cancel"]').trigger('click')
-    expect(announcer().text()).toBe('')
-  })
-
-  it('withdraws on one click, with no confirmation step to announce', async () => {
-    const wrapper = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [] },
-    })
-
-    await wrapper.find('[data-test="session-withdraw"]').trigger('click')
-
-    expect(wrapper.emitted('withdraw')).toHaveLength(1)
-    // Nothing armed, so there is nothing to announce and no confirm button to press.
-    expect(wrapper.find('[data-test="inspector-arm-announcer"]').text()).toBe('')
-    expect(wrapper.find('[data-test="session-withdraw-confirm"]').exists()).toBe(false)
-  })
-
-  it('offers delete only when the selection is in the latest conversation', () => {
-    const allowed = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [], canDeleteLatest: true },
-    })
-    expect(allowed.find('[data-test="session-delete"]').exists()).toBe(true)
-
-    // An earlier conversation, a pending withdrawal, or a running turn all mean "no delete": the server
-    // refuses it then, and the panel must not offer what it cannot do.
-    const refused = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '#1', draft: 'x', revisions: [], canDeleteLatest: false },
-    })
-    expect(refused.find('[data-test="session-delete"]').exists()).toBe(false)
-    expect(refused.find('[data-test="session-withdraw"]').exists()).toBe(true)
-  })
-
-  it('offers a resize handle only where resizing would mean something', () => {
-    // A panel floating over the list has nothing beside it to take width from. Leaving a handle there would be
-    // a control that cannot act — the same defect the sidebar toggle had for years.
-    const column = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '', draft: '', revisions: [], resizable: true },
-    })
-    expect(column.find('[data-test="inspector-resizer"]').exists()).toBe(true)
-
-    const overlay = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '', draft: '', revisions: [], resizable: false },
-    })
-    expect(overlay.find('[data-test="inspector-resizer"]').exists()).toBe(false)
-  })
-
-  it('resizes from the keyboard, in steps, inside the bounds it declares', async () => {
-    const wrapper = mount(Inspector, {
-      props: { testPrefix: 'session', title: 't', target: '', draft: '', revisions: [], resizable: true },
-    })
-
-    const handle = wrapper.find('[data-test="inspector-resizer"]')
-    expect(handle.attributes('role')).toBe('separator')
-    expect(handle.attributes('aria-orientation')).toBe('vertical')
-    expect(handle.attributes('aria-valuemin')).toBe('16')
-    expect(handle.attributes('aria-valuemax')).toBe('26')
-    // The value is only meaningful once the reader has set one; before that, the clamp in styles.css owns it.
-    expect(handle.attributes('aria-valuenow')).toBeUndefined()
-
-    // Arrow keys are the only way a reader without a pointer resizes anything, so they move it — and they move
-    // the panel's *track*, which is what the reader is dragging. On a panel docked to the right, ArrowLeft
-    // widens it (its left edge travels left) and ArrowRight narrows it.
-    await handle.trigger('keydown', { key: 'ArrowLeft' })
-    expect(handle.attributes('aria-valuenow')).toBe('21')
-
-    await handle.trigger('keydown', { key: 'ArrowRight', shiftKey: true })
-    expect(handle.attributes('aria-valuenow')).toBe('17')
-
-    // Both ends clamp. Without this a reader could hold an arrow key into a width that hides the list, or one
-    // so narrow the revision rows stop being readable.
-    for (let i = 0; i < 20; i++) await handle.trigger('keydown', { key: 'ArrowRight', shiftKey: true })
-    expect(wrapper.find('[data-test="inspector-resizer"]').attributes('aria-valuenow')).toBe('16')
-
-    for (let i = 0; i < 20; i++) await handle.trigger('keydown', { key: 'ArrowLeft', shiftKey: true })
-    expect(wrapper.find('[data-test="inspector-resizer"]').attributes('aria-valuenow')).toBe('26')
-
-    // Anything else is not a resize and must not move it.
-    await handle.trigger('keydown', { key: 'Enter' })
-    expect(wrapper.find('[data-test="inspector-resizer"]').attributes('aria-valuenow')).toBe('26')
-  })
-})
-
 describe('status bar', () => {
-  it('names the model when the queue is being executed', () => {
+  it('draws nothing while the connection is healthy', () => {
+    // The endpoint, the model and the version used to be printed here permanently. The model now lives in the
+    // composer; a healthy window has nothing to report at the foot.
     const wrapper = mount(StatusBar, {
       props: {
         connected: true,
         connectionError: '',
         endpoint: 'http://127.0.0.1:5280',
-        consumer: {
-          running: true,
-          reason: '运行中',
-          model: 'qwen3',
-          stats: { completed: 3, failed: 0, canceled: 0, skipped: 0, handled: 3 },
-          tools: [],
-        },
+        consumer: null,
         version: 'v0.1.0',
       },
     })
 
-    expect(wrapper.find('[data-test="status-consumer"]').text()).toBe('消费中 · qwen3')
-  })
-
-  it('says the queue is not being executed, and why', () => {
-    const wrapper = mount(StatusBar, {
-      props: {
-        connected: true,
-        connectionError: '',
-        endpoint: 'http://127.0.0.1:5280',
-        consumer: {
-          running: false,
-          reason: '未配置模型：缺少 PARTNER_LLM_BASE_URL',
-          model: null,
-          stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 },
-          tools: [],
-        },
-        version: 'v0.1.0',
-      },
-    })
-
-    const text = wrapper.find('[data-test="status-consumer"]').text()
-    expect(text).toContain('未执行')
-    expect(text).toContain('PARTNER_LLM_BASE_URL')
+    expect(wrapper.find('footer').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('ok ·')
   })
 
   it('stays a connection readout and leaves the queue to the top bar badge', () => {
@@ -1594,7 +1464,7 @@ describe('status bar', () => {
     }
 
     const healthy = mount(StatusBar, { props })
-    expect(healthy.find('[data-test="status-announcer"]').text()).toBe('')
+    expect(healthy.find('[data-test="status-announcer"]').exists()).toBe(false)
 
     // Dropping the endpoint is the failure that makes every other control on the screen a lie, so it speaks.
     const dead = mount(StatusBar, { props: { ...props, connected: false, connectionError: 'token 失效（401）' } })
@@ -1899,6 +1769,14 @@ describe('hint tip', () => {
     // A mark at the right-hand end of a row opens leftward, or the pop runs off the panel it is in.
     const wrapper = mount(HintTip, { props: { align: 'end' }, slots: { default: '说明' } })
     expect(wrapper.find('.hint-pop').classes()).toContain('is-end')
+  })
+
+  it('is not a labelable element, so a click on its row reaches the field rather than the mark', () => {
+    // A <label> forwards a click to its first labelable descendant. As a <button> the mark was that descendant,
+    // so clicking a form row's name pinned the sentence open instead of focusing the field.
+    const wrapper = mount(HintTip, { slots: { default: '说明' } })
+    expect(wrapper.find('button').exists()).toBe(false)
+    expect(wrapper.find('.hint-dot').attributes('tabindex')).toBe('0')
   })
 
   it('does not let a click on the mark reach the field it stands beside', () => {

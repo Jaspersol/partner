@@ -303,7 +303,7 @@ describe('session view', () => {
     expect(rows[1]?.text()).toContain('second')
   })
 
-  it('marks the selected row rather than opening an editor for it', async () => {
+  it('does nothing when a message is clicked', async () => {
     const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -313,9 +313,9 @@ describe('session view', () => {
     await wrapper.findAll('[data-test="session-list"] li')[1]?.trigger('click')
     await flushPromises()
 
-    // What a row can do to a row — 复用, 删除, 撤回 — is on the row itself, one hover away, so the selection is
-    // only a marker now.
-    expect(wrapper.findAll('[data-test="session-list"] li')[1]?.attributes('aria-current')).toBe('true')
+    // What a row can do to a row — 复用, 删除, 撤回 — is on the row itself, one hover away. A click on the
+    // message itself neither marks it nor names it in the top bar.
+    expect(wrapper.find('[aria-current="true"]').exists()).toBe(false)
   })
 })
 
@@ -521,7 +521,6 @@ describe('session removal', () => {
 
     // Selecting the row must not offer it either — there is no second place delete is offered from.
     expect(wrapper.find('[data-test="session-row-delete-inline"]').exists()).toBe(false)
-    expect(wrapper.find('[aria-current="true"]').exists()).toBe(true)
   })
 
   it('deletes from a row without selecting it first', async () => {
@@ -897,6 +896,16 @@ describe('session refresh cadence', () => {
 })
 
 describe('memory view', () => {
+  /** Types a query and presses Enter: the search box is the only way to search. */
+  async function search(wrapper: ReturnType<typeof mount>, text: string) {
+    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue(text)
+    await wrapper.find('[data-test="memory-query"]').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+  }
+
+  const pickTier = (wrapper: ReturnType<typeof mount>, value: string) =>
+    wrapper.find(`[data-test="memory-tier"] button[data-value="${value}"]`).trigger('click')
+
   it('marks validity and switches the list to recall hits', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(MemoryView, { props: { api: stub } })
@@ -904,9 +913,7 @@ describe('memory view', () => {
 
     expect(wrapper.find('[data-test="memory-list"] li').text()).toContain('有效')
 
-    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('jasmine')
-    await wrapper.find('[data-test="memory-recall"]').trigger('click')
-    await flushPromises()
+    await search(wrapper, 'jasmine')
 
     expect(calls.recalls).toEqual(['jasmine'])
     expect(wrapper.find('[data-test="memory-summary"]').text()).toContain('1 条命中')
@@ -926,12 +933,10 @@ describe('memory view', () => {
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('Retain')
-    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
-    await wrapper.find('[data-test="memory-recall"]').trigger('click')
-    await flushPromises()
+    await wrapper.find<HTMLInputElement>('[data-test="memory-pinned-only"]').setValue(true)
+    await search(wrapper, '部署')
 
-    // The retained one survives the filter; the ordinary one is gone.
+    // The pinned one survives the filter; the ordinary one is gone.
     const rows = wrapper.findAll('[data-test="memory-list"] li')
     expect(rows).toHaveLength(1)
     expect(rows[0].text()).toContain('部署在阿里云上')
@@ -940,7 +945,7 @@ describe('memory view', () => {
     expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中 · 筛选后 1 条')
   })
 
-  it('says 无命中 rather than 无记忆 when a search filters everything away', async () => {
+  it('says nothing was found rather than nothing is remembered when a search filters everything away', async () => {
     const { stub } = createStub({
       recall: vi.fn(async () => [
         { recordId: 'm2', body: '部署手册在 wiki', total: 0.8, reasons: ['lexical'], tier: 'Procedural', scope: 'Recall', createdAt: '2026-09-26T10:00:00+00:00' },
@@ -949,22 +954,20 @@ describe('memory view', () => {
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-tier"]').setValue('Procedural')
-    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
-    await wrapper.find('[data-test="memory-recall"]').trigger('click')
-    await flushPromises()
+    await pickTier(wrapper, 'Procedural')
+    await search(wrapper, '部署')
 
     // Only the matching tier is left empty; the store plainly is not.
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-tier"]').setValue('Working')
+    await pickTier(wrapper, 'Working')
     await flushPromises()
 
     expect(wrapper.findAll('[data-test="memory-list"] li')).toHaveLength(0)
-    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('（无命中）')
+    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('没有找到相关的记忆')
 
     // Back to the stored records and the same filter shows nothing — which is a different sentence.
     await wrapper.find('[data-test="memory-back-to-all"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('（无记忆）')
+    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('助手还没记住任何事')
   })
 
   it('keeps the summary honest when the filter changes after the search', async () => {
@@ -980,24 +983,22 @@ describe('memory view', () => {
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
-    await wrapper.find('[data-test="memory-recall"]').trigger('click')
-    await flushPromises()
+    await search(wrapper, '部署')
     expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中')
 
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('Retain')
+    await wrapper.find<HTMLInputElement>('[data-test="memory-pinned-only"]').setValue(true)
     await flushPromises()
     expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中 · 筛选后 1 条')
 
     // And loosening it again puts the single number back rather than a second one.
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('all')
+    await wrapper.find<HTMLInputElement>('[data-test="memory-pinned-only"]').setValue(false)
     await flushPromises()
     expect(wrapper.find('[data-test="memory-summary"]').text()).toBe('检索「部署」→ 2 条命中')
   })
 
-  it('shows the tier and retention a hit actually has, not a blank', async () => {
-    // With the placeholder tier, selecting a hit left the tier select on no option at all and the retention
-    // checkbox unticked whatever the record actually was — the panel describing something that is not there.
+  it('shows the tier and pin a hit actually has, not a blank', async () => {
+    // With the placeholder tier, selecting a hit left the tier on no option at all and the pin off whatever the
+    // record actually was — the panel describing something that is not there.
     const { stub } = createStub({
       recall: vi.fn(async () => [
         { recordId: 'm1', body: '部署在阿里云上', total: 0.9, reasons: ['lexical'], tier: 'Semantic', scope: 'Retain', createdAt: '2026-09-26T10:00:00+00:00' },
@@ -1006,42 +1007,47 @@ describe('memory view', () => {
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.find<HTMLInputElement>('[data-test="memory-query"]').setValue('部署')
-    await wrapper.find('[data-test="memory-recall"]').trigger('click')
-    await flushPromises()
+    await search(wrapper, '部署')
     await wrapper.find('[data-test="memory-list"] li').trigger('click')
-    await wrapper.find('[data-test="memory-inspector-toggle"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-set-tier"]').element.value).toBe('Semantic')
+    expect(wrapper.find('[data-test="memory-set-tier"] [aria-pressed="true"]').attributes('data-value')).toBe('Semantic')
     expect(wrapper.find<HTMLInputElement>('[data-test="memory-retain"]').element.checked).toBe(true)
   })
 
-  it('edits and deletes the selected record', async () => {
+  it('edits the selected record in a drawer, and deleting it takes two presses', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
+    // Nothing is open until a card is chosen.
+    expect(wrapper.find('[data-test="drawer"]').exists()).toBe(false)
+
     await wrapper.find('[data-test="memory-list"] li').trigger('click')
     await flushPromises()
+    expect(wrapper.find('[data-test="memory-target"]').text()).toBe('m1')
+
     await wrapper.find<HTMLTextAreaElement>('[data-test="memory-draft"]').setValue('likes jasmine tea, no sugar')
     await wrapper.find('[data-test="memory-save"]').trigger('click')
     await flushPromises()
 
     expect(calls.memoryEdits).toEqual([{ recordId: 'm1', body: 'likes jasmine tea, no sugar' }])
 
-    await wrapper.find('[data-test="memory-list"] li').trigger('click')
-    await flushPromises()
+    // A memory that is deleted is gone: the first press only arms it.
+    await wrapper.find('[data-test="memory-delete"]').trigger('click')
+    expect(calls.deletes).toEqual([])
+    expect(wrapper.find('[data-test="memory-delete"]').text()).toContain('确认删除')
+
     await wrapper.find('[data-test="memory-delete"]').trigger('click')
     await flushPromises()
 
     expect(calls.deletes).toEqual(['m1'])
-    expect(wrapper.find('[data-test="memory-target"]').text()).toBe('未选中')
+    expect(wrapper.find('[data-test="drawer"]').exists()).toBe(false)
   })
 
-  it('lists retired memories and says what replaced them', async () => {
-    // "Fully visible" means the retired record is still there: the useful answer to a conflict is "what changed
-    // it", and that answer lives on the row that was replaced.
+  it('hides retired memories until asked, and says what replaced them', async () => {
+    // "Fully visible" means the retired record is still reachable: the useful answer to a conflict is "what
+    // changed it", and that answer lives on the row that was replaced. It is behind a switch, not deleted.
     const { stub } = createStub({
       memoryAll: vi.fn(async () => [
         {
@@ -1073,14 +1079,19 @@ describe('memory view', () => {
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
+    expect(wrapper.findAll('[data-test="memory-list"] li')).toHaveLength(1)
+    expect(wrapper.find('[data-test="memory-list"] li').text()).toContain('有效')
+
+    await wrapper.find<HTMLInputElement>('[data-test="memory-show-retired"]').setValue(true)
     const rows = wrapper.findAll('[data-test="memory-list"] li')
     expect(rows).toHaveLength(2)
     expect(rows[0]?.text()).toContain('已失效 → m2')
+    expect(rows[0]?.text()).toContain('已被 m2 取代')
     expect(rows[1]?.text()).toContain('有效')
 
-    // The tier is named, not shown as an enum value: "暂记" and "确定" answer questions a reader has.
-    expect(rows[0]?.find('[data-test="memory-row-tier"]').text()).toContain('暂记')
-    expect(rows[1]?.find('[data-test="memory-row-tier"]').text()).toContain('确定')
+    // The tier is named in words, not shown as an enum value: "刚记下" and "事实" answer questions a reader has.
+    expect(rows[0]?.find('[data-test="memory-row-tier"]').text()).toContain('刚记下')
+    expect(rows[1]?.find('[data-test="memory-row-tier"]').text()).toContain('事实')
   })
 
   it('lets a person move a memory between tiers and re-reads afterwards', async () => {
@@ -1091,34 +1102,34 @@ describe('memory view', () => {
     await wrapper.find('[data-test="memory-list"] li').trigger('click')
     await flushPromises()
 
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-set-tier"]').setValue('Semantic')
+    await wrapper.find('[data-test="memory-set-tier"] button[data-value="Procedural"]').trigger('click')
     await flushPromises()
 
-    expect(calls.tierChanges).toEqual([{ recordId: 'm1', tier: 'Semantic' }])
+    expect(calls.tierChanges).toEqual([{ recordId: 'm1', tier: 'Procedural' }])
     // The norm (ui.md): what is on screen is what the server kept, not what was sent.
     expect(stub.memoryAll).toHaveBeenCalledTimes(2)
   })
 
-  it('lists all four tiers with a count, including the ones with nothing in them', async () => {
+  it('offers all four tiers with a count, including the ones with nothing in them', async () => {
     const { stub } = createStub()
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    const options = wrapper.findAll('[data-test="memory-tier"] option').map((option) => option.text())
-    expect(options).toHaveLength(5) // 全部 + 四层
+    const options = wrapper.findAll('[data-test="memory-tier"] button').map((option) => option.text())
+    expect(options).toHaveLength(5) // 全部 + 四类
 
     // The list used to build this from the tiers the loaded rows happened to have, so an empty tier could not be
     // selected and the rest showed a bare enum name. "This tier is empty" and "this tier does not exist" are
     // different facts.
-    expect(options[1]).toContain('暂记')
-    expect(options[2]).toContain('经过')
-    expect(options[3]).toContain('确定')
+    expect(options[1]).toContain('刚记下')
+    expect(options[2]).toContain('经历')
+    expect(options[3]).toContain('事实')
     expect(options[4]).toContain('做法')
     expect(options[2]).toContain('0')
     expect(options[3]).toContain('1')
   })
 
-  it('marks a retained row and says what retention does not do', async () => {
+  it('marks a pinned row and says what pinning does not do', async () => {
     const { stub } = createStub({
       memoryAll: vi.fn(async () => [
         {
@@ -1138,12 +1149,12 @@ describe('memory view', () => {
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    expect(wrapper.find('[data-test="memory-list"] li').find('[data-test="memory-row-retain"]').text()).toBe('保留')
+    expect(wrapper.find('[data-test="memory-list"] li').find('[data-test="memory-row-retain"]').text()).toBe('固定')
 
-    // Retention is about time, not about being right. A person who corrects themselves means it.
+    // Pinning is about time, not about being right. A person who corrects themselves means it.
     await wrapper.find('[data-test="memory-list"] li').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-test="memory-retain-hint"]').text()).toContain('不挡纠正')
+    expect(wrapper.find('[data-test="memory-retain-hint"]').text()).toContain('仍然可以纠正')
   })
 
   it('pins a memory against forgetting and releases it again, re-reading each time', async () => {
@@ -1166,7 +1177,7 @@ describe('memory view', () => {
     expect(stub.memoryAll).toHaveBeenCalledTimes(3)
   })
 
-  it('keeps the tier picker usable while a record is retained', async () => {
+  it('keeps the tier picker usable while a record is pinned', async () => {
     const { stub } = createStub({
       memoryAll: vi.fn(async () => [
         {
@@ -1189,28 +1200,29 @@ describe('memory view', () => {
     await wrapper.find('[data-test="memory-list"] li').trigger('click')
     await flushPromises()
 
-    // Trust and time are separate axes, so a retained Working record is legal and there is nothing to lock.
-    // Silently dropping the retention on a tier change would be a state change nobody asked for.
-    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-set-tier"]').element.disabled).toBe(false)
-    expect(wrapper.find('[data-test="memory-set-tier"]').findAll('option')).toHaveLength(4)
+    // Trust and time are separate axes, so a pinned 「刚记下」 is legal and there is nothing to lock.
+    // Silently dropping the pin on a tier change would be a state change nobody asked for.
+    const buttons = wrapper.findAll('[data-test="memory-set-tier"] button')
+    expect(buttons).toHaveLength(4)
+    expect(buttons.every((button) => button.attributes('disabled') === undefined)).toBe(true)
   })
 
-  it('filters by retention', async () => {
+  it('filters by pin', async () => {
     const { stub } = createStub({
       memoryAll: vi.fn(async () => [
-        { recordId: 'm1', tier: 'Semantic', scope: 'Retain', body: '保留的那条', createdAt: '2026-09-26T10:00:00+00:00', lastRecalledAt: null, validTo: null, supersededBy: null, editedBy: null, importance: 0.7 },
+        { recordId: 'm1', tier: 'Semantic', scope: 'Retain', body: '固定的那条', createdAt: '2026-09-26T10:00:00+00:00', lastRecalledAt: null, validTo: null, supersededBy: null, editedBy: null, importance: 0.7 },
         { recordId: 'm2', tier: 'Semantic', scope: 'Recall', body: '普通的那条', createdAt: '2026-09-26T10:00:00+00:00', lastRecalledAt: null, validTo: null, supersededBy: null, editedBy: null, importance: 0.7 },
       ]),
     })
     const wrapper = mount(MemoryView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.find<HTMLSelectElement>('[data-test="memory-scope"]').setValue('Retain')
+    await wrapper.find<HTMLInputElement>('[data-test="memory-pinned-only"]').setValue(true)
     await flushPromises()
 
     const rows = wrapper.findAll('[data-test="memory-list"] li')
     expect(rows).toHaveLength(1)
-    expect(rows[0]?.text()).toContain('保留的那条')
+    expect(rows[0]?.text()).toContain('固定的那条')
   })
 
   it('writes a memory the distiller would not have kept, and selects it afterwards', async () => {
@@ -1222,8 +1234,8 @@ describe('memory view', () => {
     await flushPromises()
 
     // The default is an established fact: something a person typed is not a note waiting to be corroborated.
-    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-new-tier"]').element.value).toBe('Semantic')
-    expect(wrapper.find<HTMLSelectElement>('[data-test="memory-new-scope"]').element.value).toBe('Recall')
+    expect(wrapper.find('[data-test="memory-new-tier"] [aria-pressed="true"]').attributes('data-value')).toBe('Semantic')
+    expect(wrapper.find<HTMLInputElement>('[data-test="memory-new-pin"]').element.checked).toBe(false)
 
     await wrapper.find<HTMLTextAreaElement>('[data-test="memory-new-body"]').setValue('每周五之前提交周报')
     await wrapper.find('[data-test="memory-new-submit"]').trigger('click')
@@ -1265,8 +1277,8 @@ describe('memory view', () => {
 
   it('sends a short body and shows the server refusal, rather than keeping its own length rule', async () => {
     // The 4-character minimum belongs to the distiller (`ConversationDistiller.MinBodyLength`) and the server
-    // enforces it. A second copy of the number in the view is a number that will drift: raise the rule there
-    // and this one keeps refusing text the store would have taken. So the view sends and reports.
+    // enforces it. A second copy of the number in the view is a number that will drift: raise the rule there and
+    // this one keeps refusing text the store would have taken. So the view sends and reports.
     const { stub, calls } = createStub({
       createMemory: vi.fn(async () => {
         throw new Error('正文至少 4 个字')
@@ -1284,7 +1296,7 @@ describe('memory view', () => {
     expect(calls.creates).toEqual([])
     expect(wrapper.find('[data-test="error"]').text()).toContain('正文至少 4 个字')
 
-    // The panel stays open, so the text is still there to be fixed.
+    // The dialog stays open, so the text is still there to be fixed.
     expect(wrapper.find('[data-test="memory-composer"]').exists()).toBe(true)
   })
 })
@@ -1346,7 +1358,7 @@ describe('mcp view', () => {
     // A blank command would otherwise start a process nobody can identify, and the failure would be one line
     // in a log at a moment when the reason is not obvious.
     expect(calls.saves).toEqual([])
-    expect(wrapper.find('[data-test="error"]').text()).toContain('名字和命令')
+    expect(wrapper.find('[data-test="error"]').text()).toContain('名称和启动命令')
   })
 
   it('saves a configured server as a settings change', async () => {
@@ -1376,14 +1388,16 @@ describe('settings view', () => {
     expect(wrapper.emitted('context')).toBeUndefined()
   })
 
-  it('renders a card per configurable subsystem', async () => {
+  it('groups the form by what a person wants to do, not by module', async () => {
     const { stub } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    const headings = wrapper.findAll('section.card h2 button.group-toggle').map((node) => node.text())
-    expect(headings).toEqual(['语音输入', '语音输出', '语音识别（ASR）', '语音合成（TTS）', '本地引擎进程', '桌面（M9）', '读文件', '模型（对话）'])
+    const nav = wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())
+    expect(nav).toEqual(['对话模型', '语音输入', '语音输出', '电脑操控', '文件访问', '本地引擎', '外观'])
 
+    // Every field is in the document whichever category is showing (the others are only hidden), so a change on
+    // one category is never lost by looking at another.
     expect(wrapper.find('[data-test="asr-base-url"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="tts-base-url"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="local-tts-enabled"]').exists()).toBe(true)
@@ -1391,6 +1405,50 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="model-base-url"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="desktop-enabled"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="model-api-key"]').exists()).toBe(true)
+    // The wake words are edited where a person looks for them — under voice input — though they are stored with
+    // the engine.
+    expect(wrapper.find('[data-test="settings-section-input"] [data-test="local-kws-keywords"]').exists()).toBe(true)
+  })
+
+  it('shows one category at a time and remembers which', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const shown = (key: string) => !(wrapper.find(`[data-test="settings-section-${key}"]`).attributes('style') ?? '').includes('display: none')
+    expect(shown('model')).toBe(true)
+    expect(shown('input')).toBe(false)
+
+    await wrapper.find('[data-test="settings-nav-input"]').trigger('click')
+    expect(shown('model')).toBe(false)
+    expect(shown('input')).toBe(true)
+    expect(wrapper.find('[data-test="settings-nav-input"]').attributes('aria-current')).toBe('true')
+
+    // Remembered, because the views are `v-if`: a control that forgets itself on every tab switch is worse than none.
+    const second = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    expect(second.find('[data-test="settings-nav-input"]').attributes('aria-current')).toBe('true')
+    second.unmount()
+  })
+
+  it('keeps the rarely-changed options behind one 更多选项, and remembers it was opened', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const more = () => wrapper.find('[data-test="settings-more-model"]')
+    const body = () => wrapper.find('[data-test="model-context-tokens"]').element.closest('.g-card')?.getAttribute('style') ?? ''
+    expect(more().attributes('aria-expanded')).toBe('false')
+    expect(body()).toContain('display: none')
+
+    await more().trigger('click')
+    expect(more().attributes('aria-expanded')).toBe('true')
+    expect(body()).not.toContain('display: none')
+
+    const second = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    expect(second.find('[data-test="settings-more-model"]').attributes('aria-expanded')).toBe('true')
+    second.unmount()
   })
 
   it('offers the image capability, and saves it with the model', async () => {
@@ -1410,87 +1468,79 @@ describe('settings view', () => {
     expect(calls.saves[0]?.model.supportsImages).toBe(true)
   })
 
-  it('edits the gear menu itself: add, rename, reorder, remove, and set the default', async () => {
-    // The menu is stored state now, not a constant in the file, so the editor has to round-trip the order
-    // it was given and put the default on a gear that is actually in the list.
+  it('shows the thinking gears as a mapping and edits it as a list with a default', async () => {
+    // The strength is not chosen here. The table shows the name next to the value that is sent; rows are added
+    // and removed, and one row is marked as the default.
     const { stub, calls } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    const rows = () => wrapper.findAll('[data-test="model-gear"]')
-    expect(rows().map((node) => (node.element as HTMLInputElement).value))
-      .toEqual(['off', 'low', 'medium', 'high'])
+    const values = () => wrapper.findAll('[data-test="reasoning-row"]').map((node) => node.attributes('data-value'))
+    expect(values()).toEqual(['off', 'low', 'medium', 'high'])
+    const row = (value: string) => wrapper.find(`[data-test="reasoning-row"][data-value="${value}"]`)
+    expect((row('medium').find('[data-test="reasoning-label"]').element as HTMLInputElement).value).toBe('中')
+    expect(row('medium').text()).toContain('medium')
+    expect(wrapper.find('[data-test="reasoning-row"].is-default').attributes('data-value')).toBe('medium')
 
-    // Rename is committed on change and lower-cased: casing is not a different gear.
-    await rows()[1].setValue('  MINIMAL ')
-    await rows()[1].trigger('change')
-    expect(rows().map((node) => (node.element as HTMLInputElement).value))
-      .toEqual(['off', 'minimal', 'medium', 'high'])
+    // The default is a radio on the row.
+    await wrapper.find('[data-test="reasoning-row"][data-value="high"] [data-test="reasoning-default"]').setValue(true)
+    expect(wrapper.find('[data-test="reasoning-row"].is-default').attributes('data-value')).toBe('high')
 
-    // The default moves to a gear in the list rather than being typed blind.
-    await wrapper.findAll('[data-test="model-gear-set-default"]')[3].trigger('click')
-    expect(wrapper.find<HTMLInputElement>('[data-test="model-reasoning-effort"]').element.value).toBe('high')
+    // A new row takes a display text and a value; the value is trimmed and lower-cased.
+    await wrapper.find('[data-test="reasoning-add-label"]').setValue(' 极速 ')
+    const add = wrapper.find('[data-test="reasoning-add-input"]')
+    await add.setValue('  TURBO ')
+    await add.trigger('keydown', { key: 'Enter' })
+    expect(values()).toEqual(['off', 'low', 'medium', 'high', 'turbo'])
+    expect((row('turbo').find('[data-test="reasoning-label"]').element as HTMLInputElement).value).toBe('极速')
 
-    // Moving the first row down swaps it with its neighbour; the rest keep their order.
-    await wrapper.findAll('[data-test="model-gear-down"]')[0].trigger('click')
-    expect(rows().map((node) => (node.element as HTMLInputElement).value))
-      .toEqual(['minimal', 'off', 'medium', 'high'])
+    // A row's text can be changed in place; emptying it falls back to the built-in name.
+    await row('low').find('[data-test="reasoning-label"]').setValue('浅')
+    await row('low').find('[data-test="reasoning-label"]').trigger('change')
 
-    await wrapper.find('[data-test="model-gear-add"]').trigger('click')
-    expect(rows()).toHaveLength(5)
+    // Moving the first row down swaps it with its neighbour.
+    await wrapper.findAll('[data-test="reasoning-down"]')[0].trigger('click')
+    expect(values()).toEqual(['low', 'off', 'medium', 'high', 'turbo'])
 
-    // The new row is empty; typing into it is what makes it a gear.
-    await rows()[4].setValue('turbo')
-    await rows()[4].trigger('change')
+    // Removing a row that is not the default leaves the default where it was.
+    await wrapper.findAll('[data-test="reasoning-remove"]')[0].trigger('click')
+    expect(values()).toEqual(['off', 'medium', 'high', 'turbo'])
+
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
 
-    expect(calls.saves[0]?.model.reasoningGears).toEqual(['minimal', 'off', 'medium', 'high', 'turbo'])
+    expect(calls.saves[0]?.model.reasoningGears).toEqual(['off', 'medium', 'high', 'turbo'])
     expect(calls.saves[0]?.model.reasoningEffort).toBe('high')
+    expect(calls.saves[0]?.model.reasoningLabels).toEqual({ turbo: '极速' }) // low's text went with its row
   })
 
-  it('drops a duplicate rather than storing a menu entry that can never be chosen', async () => {
+  it('moves the default to the first row when the default row is removed', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    const rows = () => wrapper.findAll('[data-test="model-gear"]')
-
-    // Renaming the third row to "off" makes it a repeat. The row the user just typed wins and the earlier
-    // copy goes, so the caret stays in a row that still holds what they entered.
-    await rows()[2].setValue('off')
-    await rows()[2].trigger('change')
-    expect(rows().map((node) => (node.element as HTMLInputElement).value)).toEqual(['low', 'off', 'high'])
+    await wrapper.find('[data-test="reasoning-row"][data-value="medium"] [data-test="reasoning-remove"]').trigger('click')
+    expect(wrapper.find('[data-test="reasoning-row"].is-default').attributes('data-value')).toBe('off')
 
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
-
-    expect(calls.saves[0]?.model.reasoningGears).toEqual(['low', 'off', 'high'])
+    expect(calls.saves[0]?.model.reasoningEffort).toBe('off')
   })
 
-  it('drops a row that was left blank instead of storing a gap in the menu', async () => {
-    const { stub, calls } = createStub()
-    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
-    await flushPromises()
-
-    await wrapper.find('[data-test="model-gear-add"]').trigger('click')
-    await wrapper.find('[data-test="settings-save"]').trigger('click')
-    await flushPromises()
-
-    // The added row is empty and never reaches the server: a blank entry would be a menu item that reads
-    // as a level that thinks very little, or as a silent no-op.
-    expect(calls.saves[0]?.model.reasoningGears).toEqual(['off', 'low', 'medium', 'high'])
-  })
-
-  it('marks which gear is the default instead of leaving it to be inferred', async () => {
+  it('drops a duplicate or blank value rather than storing a row that can never be told apart', async () => {
     const { stub } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    // The stored default is "medium"; the row next to it says so, so the two cannot silently disagree.
-    const marks = wrapper.findAll('[data-test="model-gear-default"]')
-    expect(marks).toHaveLength(1)
-    expect(wrapper.findAll('[data-test="model-gear"]')[2].element.parentElement?.textContent).toContain('默认')
+    const add = wrapper.find('[data-test="reasoning-add-input"]')
+    await add.setValue('OFF')
+    await add.trigger('keydown', { key: 'Enter' })
+    await add.setValue('   ')
+    await add.trigger('keydown', { key: 'Enter' })
+
+    expect(wrapper.findAll('[data-test="reasoning-row"]')).toHaveLength(4)
+    // The list did not change, so there is nothing to save.
+    expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
   })
 
   it('never fills the key field from the server and says whether one is stored', async () => {
@@ -1516,7 +1566,7 @@ describe('settings view', () => {
     // The key is write-only: the server has one, the field must not.
     expect(wrapper.find<HTMLInputElement>('[data-test="model-api-key"]').element.value).toBe('')
     expect(wrapper.find('[data-test="model-api-key-state"]').text()).toBe('已设置')
-    expect(wrapper.find('[data-test="model-api-key-hint"]').text()).toContain('留空保持不变')
+    expect(wrapper.find('[data-test="model-api-key-hint"]').text()).toContain('留空表示不改')
   })
 
   it('does not send an untouched key, and sends an explicit clear when asked', async () => {
@@ -1539,6 +1589,8 @@ describe('settings view', () => {
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
+    // The save button only exists while there is something to save, so make an unrelated edit first.
+    await wrapper.find<HTMLInputElement>('[data-test="model-max-tokens"]').setValue('2048')
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
 
@@ -1558,7 +1610,7 @@ describe('settings view', () => {
     await flushPromises()
 
     // No endpoint filled in, no consumer running: the page must not imply the settings took effect.
-    expect(wrapper.find('[data-test="model-effect"]').text()).toContain('未配置模型')
+    expect(wrapper.find('[data-test="model-effect"]').text()).toContain('未配置')
   })
 
   it('reports each voice half, so an enabled-but-dead one is visible', async () => {
@@ -1829,47 +1881,7 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
   })
 
-  it('folds groups away, and remembers which ones between visits', async () => {
-    const { stub } = createStub()
-    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
-    await flushPromises()
 
-    // Open on arrival: folding by default would hide five of six groups from someone who came to change one
-    // thing, and only the reader knows which thing.
-    const asr = () => wrapper.find('[data-test="settings-group-asr"]')
-    expect(asr().attributes('aria-expanded')).toBe('true')
-
-    await asr().trigger('click')
-    expect(asr().attributes('aria-expanded')).toBe('false')
-    // The inline style rather than `isVisible()`: happy-dom does not fold 's \n    // into its visibility calculation, so `isVisible()` would report a folded group as visible.
-    expect(wrapper.find('#settings-body-asr').attributes('style')).toContain('display: none')
-
-    // Remembered, because the views are `v-if` — a control that forgets itself on every tab switch is worse
-    // than no control.
-    const second = mount(SettingsViewComponent, { props: { api: stub } })
-    await flushPromises()
-    expect(second.find('[data-test="settings-group-asr"]').attributes('aria-expanded')).toBe('false')
-    second.unmount()
-
-    await wrapper.find('[data-test="settings-group-asr"]').trigger('click')
-    expect(wrapper.find('#settings-body-asr').attributes('style') ?? '').not.toContain('display: none')
-  })
-
-  it('folds and unfolds everything at once', async () => {
-    const { stub } = createStub()
-    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
-    await flushPromises()
-
-    await wrapper.find('[data-test="settings-fold-all"]').trigger('click')
-    const expanded = () => wrapper.findAll('[aria-expanded="true"]').length
-    expect(expanded()).toBe(0)
-
-    // The label says what the button will do, not what just happened.
-    expect(wrapper.find('[data-test="settings-fold-all"]').text()).toContain('展开全部')
-    await wrapper.find('[data-test="settings-fold-all"]').trigger('click')
-    // Eight groups now: 读文件 joined the form between 桌面 and 模型.
-    expect(expanded()).toBe(8)
-  })
 
   it('loads the stored values and shows what the API kept', async () => {
     const { stub, calls } = createStub()
@@ -1955,7 +1967,7 @@ describe('settings view', () => {
     // Off by default, and the note says what the list means rather than leaving it to be guessed. It lives in
     // the card heading's hover mark now, so it is asked for rather than printed over the form.
     expect(wrapper.find<HTMLInputElement>('[data-test="files-enabled"]').element.checked).toBe(false)
-    expect(wrapper.find('[data-test="files-whitelist-hint"]').text()).toContain('白名单')
+    expect(wrapper.find('[data-test="files-whitelist-hint"]').text()).toContain('只能读')
 
     await wrapper.find('[data-test="files-enabled"]').setValue(true)
     await wrapper.find('[data-test="files-root-add"]').trigger('click')
@@ -1976,15 +1988,19 @@ describe('settings view', () => {
 
     // The sentence is still in the document and still reachable — what changed is that it no longer stands as
     // a line of its own, so the control above it and the control below it are one row closer.
-    const field = wrapper.findAll('label.field').find((label) => label.text().includes('静音阈值'))
+    const field = wrapper.findAll('label.g-row').find((label) => label.text().includes('多小声算安静'))
     expect(field).toBeDefined()
     expect(field!.find('[data-icon="info"]').exists()).toBe(true)
-    expect(field!.find('.hint-pop').text()).toContain('低于此电平视为静音')
-    expect(field!.findAll('span.source')).toHaveLength(0)
+    expect(field!.find('.hint-pop').text()).toContain('音量低于这个值')
 
-    // The card's own explanation moved up to its heading, and only the heading carries it.
-    const heading = wrapper.find('[data-test="settings-group-input"]').element.parentElement
-    expect(heading?.textContent).toContain('关闭会立即释放麦克风设备')
+    // The unit is a suffix on the control, not part of the name.
+    const gap = wrapper.findAll('label.g-row').find((label) => label.text().includes('停顿多久算说完'))
+    expect(gap!.find('.g-unit').text()).toBe('毫秒')
+    expect(gap!.find('.g-row-label').text()).not.toContain('ms')
+
+    // The category's own explanation sits on its first switch.
+    const first = wrapper.find('[data-test="input-enabled"]').element.closest('label')
+    expect(first?.textContent).toContain('关闭后会立刻释放麦克风')
   })
 
   it('leaves the live status lines where they were, visible', async () => {
@@ -2020,7 +2036,7 @@ describe('settings view', () => {
     await wrapper.find('[data-test="desktop-enabled"]').setValue(true)
     const warning = wrapper.find('[data-test="desktop-agent-warning"]')
     expect(warning.exists()).toBe(true)
-    expect(warning.text()).toContain('桌面操控已开启，必须有一个启用的桌面操控子 agent')
+    expect(warning.text()).toContain('还需要启用「桌面操控」子 agent')
 
     await wrapper.find('[data-test="desktop-agent-fix"]').trigger('click')
     expect(wrapper.emitted('navigate')?.[0]).toEqual(['prompts'])
@@ -2170,7 +2186,8 @@ describe('prompts view', () => {
     const wrapper = mount(PromptsView, { props: { api: stub } })
     await flushPromises()
 
-    expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(true)
+    // Nothing to save yet, so there is no button to be wrong about.
+    expect(wrapper.find('[data-test="prompts-save"]').exists()).toBe(false)
 
     // 41 CJK characters are 41 tokens, plus the 13-token generated block the fixture's effective prompt carries.
     await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('字'.repeat(41))

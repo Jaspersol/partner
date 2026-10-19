@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import Icon from '../components/Icon.vue'
+import Dialog from '../components/Dialog.vue'
 import HintTip from '../components/HintTip.vue'
+import Icon from '../components/Icon.vue'
+import { gearName, setGearLabels } from '../gears'
+import SaveBar from '../components/SaveBar.vue'
+import Segmented from '../components/Segmented.vue'
+import SettingRow from '../components/SettingRow.vue'
 import type {
   AgentsSettings,
   AgentsView,
@@ -305,12 +310,11 @@ async function save() {
   }
 }
 
-/** Throws the drafts away and re-reads the server: the page never keeps an edit nobody stored. */
+/**
+ * Throws the drafts away and re-reads the server: the page never keeps an edit nobody stored. The save bar asks
+ * 「确认放弃」 in place before this is called, so there is no native dialog to block the webview.
+ */
 async function discard() {
-  if (!window.confirm('放弃未保存的修改？')) {
-    return
-  }
-
   adding.value = false
   await refresh()
 }
@@ -410,15 +414,26 @@ function isBuiltin(agent: SubDraft): boolean {
   return agent.id === 'desktop' || view.value?.subAgents.some((item) => item.id === agent.id && item.builtin) === true
 }
 
+/** Choosing an agent. A pending 「确认删除」 belongs to the agent it was pressed on, so it does not follow the selection. */
+function pick(key: string) {
+  selectedKey.value = key
+  confirmingRemove.value = false
+}
+
+/** Deleting a sub-agent arms first: the button turns into 「确认删除」, and picking another agent disarms it. */
+const confirmingRemove = ref(false)
+
 function removeSelected() {
   const current = selectedSub.value
   if (current === null || isBuiltin(current)) {
     return
   }
-  if (!window.confirm(`删除子 agent「${current.name || '（未命名）'}」？`)) {
+  if (!confirmingRemove.value) {
+    confirmingRemove.value = true
     return
   }
 
+  confirmingRemove.value = false
   subs.value = subs.value.filter((agent) => agent !== current)
   selectedKey.value = 'main'
 }
@@ -464,7 +479,28 @@ const capabilityOff = computed(() => {
   return ''
 })
 
-onMounted(refresh)
+/**
+ * The thinking gears a custom model may use: the same menu the settings page edits. A page that cannot read it
+ * falls back to the six usual words, and an unknown value in a stored sub-agent still shows (the dial adds it).
+ */
+/** The segments for one agent: the menu, plus the agent's own value when the menu no longer carries it. */
+function gearChoices(current: string) {
+  const list = current !== '' && !gears.value.includes(current) ? [...gears.value, current] : gears.value
+  return list.map((value) => ({ value, label: gearName(value) }))
+}
+
+const gears = ref<string[]>(['off', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+onMounted(async () => {
+  await refresh()
+  try {
+    const settings = await props.api.settings()
+    if (settings.model.reasoningGears?.length > 0) gears.value = [...settings.model.reasoningGears]
+    setGearLabels(settings.model.reasoningLabels)
+  } catch {
+    // The usual six are a fine menu.
+  }
+})
 
 function hasUnsavedChanges(): boolean {
   return dirty.value
@@ -475,412 +511,402 @@ defineExpose({ refresh, hasUnsavedChanges })
 
 <template>
   <div class="view">
-    <div class="toolbar">
-      <button data-test="prompts-refresh" @click="refresh">刷新</button>
-      <span class="spacer" />
-      <span v-if="dirty" class="muted" data-test="prompts-dirty">有未保存的修改</span>
-      <span class="muted" data-test="prompts-status">{{ notice }}</span>
-    </div>
+    <div class="scroll prompts-scroll">
+      <div v-if="view === null" class="g-page">
+        <p v-if="error" class="error" data-test="error">{{ error }}</p>
+        <p v-else class="pending">正在读取指令…</p>
+      </div>
 
-    <div v-if="view === null" class="scroll">
-      <p v-if="error" class="error notice" data-test="error">{{ error }}</p>
-      <p v-else class="pending">正在读取提示词…</p>
-    </div>
+      <div v-else class="g-page is-wide">
+        <!--
+          The server's own warnings, at the top rather than beside the field they concern: a problem is usually a
+          pair of settings (a capability on, the agent that would use it off), and no single field is the place.
+        -->
+        <ul v-if="view.problems.length > 0" class="problems" data-test="prompts-problems">
+          <li v-for="(problem, index) in view.problems" :key="index">{{ problem }}</li>
+        </ul>
 
-    <div v-else class="scroll">
-      <!--
-        The server's own warnings, at the top rather than beside the field they concern: a problem is usually a
-        pair of settings (a capability on, the agent that would use it off), and no single field is the place.
-      -->
-      <ul v-if="view.problems.length > 0" class="problems" data-test="prompts-problems">
-        <li v-for="(problem, index) in view.problems" :key="index">{{ problem }}</li>
-      </ul>
-
-      <div class="split">
-        <section class="list-column" aria-label="Agent 列表">
-          <ul class="agents" role="list">
-            <li
-              :class="{ active: mainSelected }"
-              data-test="prompts-main"
-              tabindex="0"
-              @click="selectedKey = 'main'"
-              @keydown.enter="selectedKey = 'main'"
-              @keydown.space.prevent="selectedKey = 'main'"
-            >
-              <Icon name="prompt" :size="16" />
-              <span class="agent-name">主 Agent</span>
-            </li>
-
-            <li
-              v-for="agent in subs"
-              :key="agent.key"
-              :class="{ active: agent.key === selectedKey }"
-              data-test="prompts-agent"
-              tabindex="0"
-              @click="selectedKey = agent.key"
-              @keydown.enter="selectedKey = agent.key"
-              @keydown.space.prevent="selectedKey = agent.key"
-            >
-              <input
-                type="checkbox"
-                :checked="agent.enabled"
-                :aria-label="`启用「${agent.name || '（未命名）'}」`"
-                data-test="prompts-agent-enabled"
-                @click.stop
-                @change="agent.enabled = ($event.target as HTMLInputElement).checked"
-              />
-              <span class="agent-name">{{ agent.name || '（未命名）' }}</span>
-              <span v-if="isBuiltin(agent)" class="badge" data-test="prompts-agent-builtin">内置</span>
-              <span class="scenario">{{ nameOf(agent.scenario) }}</span>
-              <span v-if="!availableOf(agent)" class="unavailable" data-test="prompts-agent-unavailable">
-                暂不可用
-              </span>
-            </li>
-          </ul>
-
-          <button
-            class="ghost add"
-            :disabled="!canAdd"
-            :title="addBlockedReason"
-            data-test="prompts-add"
-            @click="openAdd"
-          >
-            ＋ 新增子 agent
-          </button>
-
-          <div v-if="adding" class="add-form" data-test="prompts-add-form">
-            <label class="field">
-              <span>名字</span>
-              <input v-model="newName" type="text" data-test="prompts-add-name" />
-            </label>
-            <label class="field">
-              <span>场景</span>
-              <select v-model="newScenario" data-test="prompts-add-scenario">
-                <option
-                  v-for="scenario in view.scenarios"
-                  :key="scenario.key"
-                  :value="scenario.key"
-                  :disabled="scenario.ownerId !== null"
-                >
-                  {{ scenario.name }}{{ scenario.ownerId !== null
-                    ? scenario.key === 'desktop'
-                      ? ' · 已被内置的桌面操控占用'
-                      : ' · 已被占用'
-                    : '' }}
-                </option>
-              </select>
-            </label>
-            <p v-if="addError" class="error" data-test="prompts-add-error">{{ addError }}</p>
-            <div class="row">
-              <button class="primary" data-test="prompts-add-commit" @click="commitAdd">添加</button>
-              <button class="ghost" data-test="prompts-add-cancel" @click="adding = false">取消</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="detail" aria-label="Agent 详情">
-          <!-- Main agent: a prompt, a default, and the generated delegation block underneath. -->
-          <template v-if="mainSelected">
-            <h2 class="detail-title">
-              主 Agent
-              <span v-if="main.prompt.trim() !== ''" class="badge" data-test="prompts-main-modified">已修改</span>
-              <HintTip>
-                主 agent 判断该不该把活交给子 agent。下面的「模型实际看到的提示词」里有它读得到的场景清单，
-                那部分由服务端生成，不能改。
-              </HintTip>
-            </h2>
-
-            <label class="field prompt-box">
-              <span>提示词</span>
-              <textarea
-                :value="main.prompt"
-                rows="14"
-                :placeholder="view.main.defaultPrompt"
-                data-test="prompts-main-textarea"
-                @input="main.prompt = ($event.target as HTMLTextAreaElement).value"
-              />
-            </label>
-
-            <div class="row">
-              <button
-                class="ghost"
-                :disabled="main.prompt.trim() === ''"
-                data-test="prompts-main-reset"
-                @click="resetMain"
+        <div class="split">
+          <section class="list-column" aria-label="Agent 列表">
+            <ul class="agents g-glass" role="list">
+              <li
+                :class="{ active: mainSelected }"
+                data-test="prompts-main"
+                tabindex="0"
+                @click="pick('main')"
+                @keydown.enter="pick('main')"
+                @keydown.space.prevent="pick('main')"
               >
-                恢复默认
-              </button>
-              <span
-                class="muted"
-                :class="{ error: mainTokens > limit }"
-                data-test="prompts-main-tokens"
+                <Icon name="prompt" :size="16" />
+                <span class="agent-name">主 Agent</span>
+              </li>
+
+              <li
+                v-for="agent in subs"
+                :key="agent.key"
+                :class="{ active: agent.key === selectedKey }"
+                data-test="prompts-agent"
+                tabindex="0"
+                @click="pick(agent.key)"
+                @keydown.enter="pick(agent.key)"
+                @keydown.space.prevent="pick(agent.key)"
               >
-                约 {{ mainTokens }} token / 上限 {{ limit }}
-              </span>
-            </div>
+                <input
+                  type="checkbox"
+                  class="g-switch is-small"
+                  role="switch"
+                  :checked="agent.enabled"
+                  :aria-label="`启用「${agent.name || '（未命名）'}」`"
+                  data-test="prompts-agent-enabled"
+                  @click.stop
+                  @change="agent.enabled = ($event.target as HTMLInputElement).checked"
+                />
+                <span class="agent-name">{{ agent.name || '（未命名）' }}</span>
+                <span v-if="isBuiltin(agent)" class="g-chip" data-test="prompts-agent-builtin">内置</span>
+                <span class="scenario">{{ nameOf(agent.scenario) }}</span>
+                <span v-if="!availableOf(agent)" class="g-chip is-warn" data-test="prompts-agent-unavailable">
+                  暂不可用
+                  <HintTip align="end">要么对应的能力没开，要么没有启用的子 agent 负责它。</HintTip>
+                </span>
+              </li>
+            </ul>
 
             <button
-              class="ghost preview-toggle"
-              :aria-expanded="previewOpen === 'main'"
-              data-test="prompts-main-preview-toggle"
-              @click="previewOpen = previewOpen === 'main' ? null : 'main'"
+              class="ghost add"
+              :disabled="!canAdd"
+              :title="addBlockedReason"
+              data-test="prompts-add"
+              @click="openAdd"
             >
-              {{ previewOpen === 'main' ? '收起' : '展开' }}模型实际看到的提示词
+              <Icon name="plus" :size="14" /> 新增子 agent
             </button>
-            <pre v-if="previewOpen === 'main'" class="effective" data-test="prompts-main-preview">{{ view.main.effectivePrompt }}</pre>
-          </template>
+          </section>
 
-          <!-- Sub-agent: the same prompt editor plus what makes it a sub-agent. -->
-          <template v-else-if="selectedSub">
-            <h2 class="detail-title">
-              <input
-                v-model="selectedSub.name"
-                type="text"
-                aria-label="子 agent 名字"
-                data-test="prompts-agent-name"
-              />
-              <span v-if="isBuiltin(selectedSub)" class="badge" data-test="prompts-agent-builtin">内置</span>
-            </h2>
+          <section class="detail g-glass" aria-label="Agent 详情">
+            <!-- Main agent: a prompt, a default, and the generated delegation block underneath. -->
+            <template v-if="mainSelected">
+              <header class="detail-head">
+                <h2>主 Agent</h2>
+                <span v-if="main.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-main-modified">已修改</span>
+                <HintTip>
+                  主 Agent 负责和你对话，并决定要不要把活交给子 agent。「实际发送的指令」里有它读得到的任务清单，
+                  那部分由服务端生成，不能改。
+                </HintTip>
+              </header>
 
-            <label class="field">
-              <span>启用</span>
-              <input v-model="selectedSub.enabled" type="checkbox" data-test="prompts-agent-toggle" />
-            </label>
-
-            <div class="field">
-              <span>场景 <HintTip>{{ whenOf(selectedSub.scenario) }}</HintTip></span>
-              <span class="scenario-text" data-test="prompts-agent-scenario">
-                {{ nameOf(selectedSub.scenario) }}
-              </span>
-            </div>
-
-            <p v-if="capabilityOff" class="card-note error" data-test="prompts-agent-capability">
-              {{ capabilityOff }}
-              <button class="ghost" data-test="prompts-agent-goto-settings" @click="emit('navigate', 'settings')">
-                去设置页开启
-              </button>
-            </p>
-
-            <div class="field">
-              <span>模型</span>
-              <select
-                :value="selectedSub.model === null ? 'main' : 'custom'"
-                data-test="prompts-agent-model-mode"
-                @change="setCustomModel(($event.target as HTMLSelectElement).value === 'custom')"
-              >
-                <option value="main">跟随主模型（默认）</option>
-                <option value="custom">自定义</option>
-              </select>
-            </div>
-
-            <template v-if="selectedSub.model">
-              <label class="field">
-                <span>服务地址</span>
-                <input v-model="selectedSub.model.baseUrl" type="text" data-test="prompts-agent-base-url" />
-              </label>
-              <label class="field">
-                <span>模型名</span>
-                <input v-model="selectedSub.model.model" type="text" data-test="prompts-agent-model" />
-              </label>
-              <label class="field">
-                <span>API Key</span>
-                <input
-                  type="password"
-                  :value="selectedSub.apiKeyEdited ? selectedSub.model.apiKey ?? '' : ''"
-                  :placeholder="keySetFor(selectedSub) ? '（已设置，留空保持不变）' : '（未设置）'"
-                  data-test="prompts-agent-api-key"
-                  @input="editKey(selectedSub, ($event.target as HTMLInputElement).value)"
+              <div class="block">
+                <h3>指令 <HintTip>告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。</HintTip></h3>
+                <textarea
+                  :value="main.prompt"
+                  rows="12"
+                  :placeholder="view.main.defaultPrompt"
+                  aria-label="主 Agent 的指令"
+                  data-test="prompts-main-textarea"
+                  @input="main.prompt = ($event.target as HTMLTextAreaElement).value"
                 />
-                <span class="source" data-test="prompts-agent-api-key-state">
-                  {{ keySetFor(selectedSub) ? '已设置' : '未设置' }}
-                </span>
-              </label>
-              <label class="field">
-                <span>请求超时 (s)</span>
-                <input v-model.number="selectedSub.model.timeoutSeconds" type="number" min="1" />
-              </label>
-              <label class="field">
-                <span>上下文大小（token）</span>
-                <input v-model.number="selectedSub.model.contextTokens" type="number" min="1" />
-              </label>
-              <label class="field">
-                <span>输出长度（token）</span>
-                <input v-model.number="selectedSub.model.maxTokens" type="number" min="1" />
-              </label>
-              <label class="field">
-                <span>支持图片（视觉）</span>
-                <input v-model="selectedSub.model.supportsImages" type="checkbox" data-test="prompts-agent-images" />
-              </label>
-              <label class="field">
-                <span>思考挡位</span>
-                <input v-model="selectedSub.model.reasoningEffort" type="text" placeholder="medium" />
-              </label>
+                <div class="meter-row">
+                  <button class="ghost" :disabled="main.prompt.trim() === ''" data-test="prompts-main-reset" @click="resetMain">
+                    恢复默认
+                  </button>
+                  <span class="spacer" />
+                  <span class="meter" :class="{ error: mainTokens > limit, 'is-near': mainTokens > limit * 0.85 }" data-test="prompts-main-tokens">
+                    约 {{ mainTokens }} token / 上限 {{ limit }}
+                  </span>
+                </div>
+                <div class="bar" aria-hidden="true">
+                  <div class="bar-fill" :class="{ 'is-near': mainTokens > limit * 0.85, 'is-over': mainTokens > limit }" :style="{ width: Math.min(100, (mainTokens / Math.max(1, limit)) * 100) + '%' }" />
+                </div>
+              </div>
+
+              <button
+                class="ghost preview-toggle"
+                :aria-expanded="previewOpen === 'main'"
+                data-test="prompts-main-preview-toggle"
+                @click="previewOpen = previewOpen === 'main' ? null : 'main'"
+              >
+                {{ previewOpen === 'main' ? '收起' : '查看' }}实际发送的指令
+              </button>
+              <pre v-if="previewOpen === 'main'" class="effective" data-test="prompts-main-preview">{{ view.main.effectivePrompt }}</pre>
             </template>
 
-            <label class="field">
-              <span>最大轮数 <HintTip>一次任务最多试几轮（1–{{ maxRounds }}），默认 {{ defaultMaxRounds }}</HintTip></span>
-              <input
-                v-model.number="selectedSub.maxRounds"
-                type="number"
-                min="1"
-                :max="maxRounds"
-                data-test="prompts-agent-rounds"
-              />
-            </label>
+            <!-- Sub-agent: the same prompt editor plus what makes it a sub-agent. -->
+            <template v-else-if="selectedSub">
+              <header class="detail-head">
+                <input
+                  v-model="selectedSub.name"
+                  type="text"
+                  class="name-input"
+                  aria-label="子 agent 名字"
+                  data-test="prompts-agent-name"
+                />
+                <span v-if="isBuiltin(selectedSub)" class="g-chip" data-test="prompts-agent-builtin">内置</span>
+                <span class="spacer" />
+                <input v-model="selectedSub.enabled" type="checkbox" class="g-switch" role="switch" aria-label="启用" data-test="prompts-agent-toggle" />
+              </header>
 
-            <label class="field prompt-box">
-              <span>
-                提示词
-                <span v-if="selectedSub.prompt.trim() !== ''" class="badge" data-test="prompts-agent-modified">已修改</span>
-              </span>
-              <textarea
-                v-model="selectedSub.prompt"
-                rows="12"
-                :placeholder="selectedSubView?.defaultPrompt ?? ''"
-                data-test="prompts-agent-textarea"
-              />
-            </label>
+              <div class="block">
+                <div class="scenario-row">
+                  <span class="label">负责的任务 <HintTip>{{ whenOf(selectedSub.scenario) || '这个子 agent 在什么情况下被叫来干活。同一类任务只能有一个子 agent。' }}</HintTip></span>
+                  <span class="g-chip is-accent" data-test="prompts-agent-scenario">{{ nameOf(selectedSub.scenario) }}</span>
+                </div>
+                <p v-if="capabilityOff" class="warn-line" data-test="prompts-agent-capability">
+                  {{ capabilityOff }}
+                  <button class="ghost" data-test="prompts-agent-goto-settings" @click="emit('navigate', 'settings')">
+                    去设置页开启
+                  </button>
+                </p>
+              </div>
 
-            <div class="row">
-              <button
-                class="ghost"
-                :disabled="selectedSub.prompt.trim() === ''"
-                data-test="prompts-agent-reset"
-                @click="resetSubPrompt"
-              >
-                恢复默认
-              </button>
-              <span
-                class="muted"
-                :class="{ error: selectedSubTokens > limit }"
-                data-test="prompts-agent-tokens"
-              >
-                约 {{ selectedSubTokens }} token / 上限 {{ limit }}
-              </span>
-            </div>
+              <div class="block">
+                <h3>指令
+                  <span v-if="selectedSub.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-agent-modified">已修改</span>
+                  <HintTip>告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。</HintTip>
+                </h3>
+                <textarea
+                  v-model="selectedSub.prompt"
+                  rows="10"
+                  :placeholder="selectedSubView?.defaultPrompt ?? ''"
+                  aria-label="子 agent 的指令"
+                  data-test="prompts-agent-textarea"
+                />
+                <div class="meter-row">
+                  <button class="ghost" :disabled="selectedSub.prompt.trim() === ''" data-test="prompts-agent-reset" @click="resetSubPrompt">
+                    恢复默认
+                  </button>
+                  <span class="spacer" />
+                  <span class="meter" :class="{ error: selectedSubTokens > limit, 'is-near': selectedSubTokens > limit * 0.85 }" data-test="prompts-agent-tokens">
+                    约 {{ selectedSubTokens }} token / 上限 {{ limit }}
+                  </span>
+                </div>
+                <div class="bar" aria-hidden="true">
+                  <div class="bar-fill" :class="{ 'is-near': selectedSubTokens > limit * 0.85, 'is-over': selectedSubTokens > limit }" :style="{ width: Math.min(100, (selectedSubTokens / Math.max(1, limit)) * 100) + '%' }" />
+                </div>
+                <button
+                  class="ghost preview-toggle"
+                  :aria-expanded="previewOpen === selectedSub.key"
+                  data-test="prompts-agent-preview-toggle"
+                  @click="previewOpen = previewOpen === selectedSub.key ? null : selectedSub.key"
+                >
+                  {{ previewOpen === selectedSub.key ? '收起' : '查看' }}实际发送的指令
+                </button>
+                <pre
+                  v-if="previewOpen === selectedSub.key"
+                  class="effective"
+                  data-test="prompts-agent-preview"
+                >{{ selectedSubView?.effectivePrompt }}</pre>
+              </div>
 
-            <button
-              class="ghost preview-toggle"
-              :aria-expanded="previewOpen === selectedSub.key"
-              data-test="prompts-agent-preview-toggle"
-              @click="previewOpen = previewOpen === selectedSub.key ? null : selectedSub.key"
-            >
-              {{ previewOpen === selectedSub.key ? '收起' : '展开' }}模型实际看到的提示词
-            </button>
-            <pre
-              v-if="previewOpen === selectedSub.key"
-              class="effective"
-              data-test="prompts-agent-preview"
-            >{{ selectedSubView?.effectivePrompt }}</pre>
+              <div class="block rows">
+                <h3>模型</h3>
+                <SettingRow label="使用哪个模型" hint="默认用和主 Agent 同一个模型。">
+                  <Segmented
+                    :model-value="selectedSub.model === null ? 'main' : 'custom'"
+                    :options="[
+                      { value: 'main', label: '跟随主 Agent' },
+                      { value: 'custom', label: '单独设置' },
+                    ]"
+                    label="模型来源"
+                    data-test="prompts-agent-model-mode"
+                    @update:model-value="setCustomModel($event === 'custom')"
+                  />
+                </SettingRow>
 
-            <div v-if="!isBuiltin(selectedSub)" class="row">
-              <button class="ghost danger" data-test="prompts-agent-delete" @click="removeSelected">删除</button>
-            </div>
-          </template>
-        </section>
+                <template v-if="selectedSub.model">
+                  <SettingRow label="接口地址" hint="模型服务的网址，一般以 /v1 结尾。">
+                    <input v-model="selectedSub.model.baseUrl" type="text" data-test="prompts-agent-base-url" />
+                  </SettingRow>
+                  <SettingRow label="模型">
+                    <input v-model="selectedSub.model.model" type="text" data-test="prompts-agent-model" />
+                  </SettingRow>
+                  <SettingRow label="API Key" hint="保存后不会再显示出来。留空表示不改；本地模型一般不需要。">
+                    <input
+                      type="password"
+                      :value="selectedSub.apiKeyEdited ? selectedSub.model.apiKey ?? '' : ''"
+                      :placeholder="keySetFor(selectedSub) ? '（已设置，留空保持不变）' : '（未设置）'"
+                      autocomplete="off"
+                      data-test="prompts-agent-api-key"
+                      @input="editKey(selectedSub, ($event.target as HTMLInputElement).value)"
+                    />
+                    <span class="g-chip" :class="keySetFor(selectedSub) ? 'is-ok' : ''" data-test="prompts-agent-api-key-state">
+                      {{ keySetFor(selectedSub) ? '已设置' : '未设置' }}
+                    </span>
+                  </SettingRow>
+                  <SettingRow label="思考强度" hint="回答前想多久。越高通常越准，但越慢、越费。">
+                    <Segmented
+                      v-model="selectedSub.model.reasoningEffort"
+                      :options="gearChoices(selectedSub.model.reasoningEffort)"
+                      label="思考强度"
+                      data-test="prompts-agent-reasoning"
+                    />
+                  </SettingRow>
+                  <SettingRow label="能看图片" hint="纯文字模型请保持关闭，否则请求会失败。">
+                    <input v-model="selectedSub.model.supportsImages" type="checkbox" class="g-switch" role="switch" data-test="prompts-agent-images" />
+                  </SettingRow>
+                  <SettingRow label="最长等待" unit="秒" hint="模型超过这个时间还没答完，就放弃这次请求。">
+                    <input v-model.number="selectedSub.model.timeoutSeconds" type="number" min="1" />
+                  </SettingRow>
+                  <SettingRow label="记忆长度" unit="token" hint="模型一次最多能「看」多少内容，约 1 个汉字算 1 token。">
+                    <input v-model.number="selectedSub.model.contextTokens" type="number" min="1" />
+                  </SettingRow>
+                  <SettingRow label="单次回复上限" unit="token" hint="一次回复最多写多长，必须小于「记忆长度」。">
+                    <input v-model.number="selectedSub.model.maxTokens" type="number" min="1" />
+                  </SettingRow>
+                </template>
+              </div>
+
+              <div class="block rows">
+                <SettingRow label="最多尝试几次" unit="次">
+                  <template #hint>一个任务最多试几轮（1–{{ maxRounds }}），默认 {{ defaultMaxRounds }}。全都失败时，会把原因告诉主 Agent。</template>
+                  <input
+                    v-model.number="selectedSub.maxRounds"
+                    type="number"
+                    min="1"
+                    :max="maxRounds"
+                    data-test="prompts-agent-rounds"
+                  />
+                </SettingRow>
+              </div>
+
+              <div v-if="!isBuiltin(selectedSub)" class="block">
+                <button
+                  class="ghost danger remove"
+                  :class="{ 'is-armed': confirmingRemove }"
+                  data-test="prompts-agent-delete"
+                  @click="removeSelected"
+                >
+                  <Icon name="trash" :size="14" /> {{ confirmingRemove ? '确认删除' : '删除这个子 agent' }}
+                </button>
+              </div>
+            </template>
+          </section>
+        </div>
       </div>
     </div>
 
-    <div class="toolbar footer-actions">
-      <button
-        class="primary"
-        :disabled="!dirty || overLimit"
-        data-test="prompts-save"
-        @click="save"
-      >
-        保存
-      </button>
-      <button class="ghost" :disabled="!dirty" data-test="prompts-discard" @click="discard">放弃修改</button>
-      <span v-if="overLimit" class="error" data-test="prompts-over-limit">提示词超出上限，先缩短再保存</span>
-      <span v-if="error" class="error" data-test="error">{{ error }}</span>
-      <ul v-if="errors.length > 0" class="save-errors" data-test="prompts-errors">
-        <li v-for="(entry, index) in errors" :key="index">{{ entry }}</li>
-      </ul>
-    </div>
+    <Dialog :open="adding" title="新增子 agent" @close="adding = false">
+      <div v-if="view" data-test="prompts-add-form" class="add-form">
+        <label class="add-field">
+          <span>名字</span>
+          <input v-model="newName" type="text" placeholder="例如：读资料的" data-test="prompts-add-name" />
+        </label>
+        <label class="add-field">
+          <span>负责的任务 <HintTip>同一类任务只能有一个子 agent。</HintTip></span>
+          <select v-model="newScenario" data-test="prompts-add-scenario">
+            <option
+              v-for="scenario in view.scenarios"
+              :key="scenario.key"
+              :value="scenario.key"
+              :disabled="scenario.ownerId !== null"
+            >
+              {{ scenario.name }}{{ scenario.ownerId !== null
+                ? scenario.key === 'desktop'
+                  ? ' · 已被内置的桌面操控占用'
+                  : ' · 已被占用'
+                : '' }}
+            </option>
+          </select>
+        </label>
+        <p v-if="addError" class="error" data-test="prompts-add-error">{{ addError }}</p>
+      </div>
+      <template #footer>
+        <button class="ghost" data-test="prompts-add-cancel" @click="adding = false">取消</button>
+        <button class="primary" data-test="prompts-add-commit" @click="commitAdd">添加</button>
+      </template>
+    </Dialog>
+
+    <SaveBar
+      prefix="prompts"
+      :dirty="dirty"
+      :status="notice"
+      :error="error"
+      :errors="errors"
+      :blocked-reason="overLimit ? '指令太长了，先缩短再保存' : ''"
+      can-discard
+      @save="save"
+      @discard="discard"
+    />
   </div>
 </template>
 
 <style scoped>
-.scroll {
+.prompts-scroll {
   flex: 1;
   min-block-size: 0;
-  overflow-y: auto;
-  padding: var(--space-3);
-  display: grid;
-  gap: var(--space-3);
-  align-content: start;
 }
 
 /* The server's warnings: a tint rather than a border, so they read as a banner over the page rather than as
    one more card in the form. */
 .problems {
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  padding: var(--space-3) var(--space-5);
+  list-style: none;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
   color: var(--warn);
-  font-size: var(--fs-meta);
-  line-height: var(--lh-meta);
+  font-size: var(--fs-ui);
+  line-height: 1.6;
 }
 
-/* Two columns: the list of agents, and the one being edited. The list is narrow because a name and a switch
-   are all it holds; the prompt editor takes whatever is left. */
+/* Two columns: the agents, and the one being edited. The list is narrow because a name and a switch are all
+   it holds; the editor takes whatever is left. */
 .split {
   display: grid;
-  grid-template-columns: minmax(14rem, 20rem) minmax(0, 1fr);
-  gap: var(--space-3);
+  grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
+  gap: var(--space-4);
   align-items: start;
 }
 
 .list-column {
   display: grid;
-  gap: var(--space-2);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
   align-content: start;
+  position: sticky;
+  inset-block-start: calc(var(--topbar-h) + var(--space-4));
 }
 
 .agents {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--space-2);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 
 .agents > li {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  padding: var(--space-2);
+  min-block-size: 2.75rem;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   cursor: pointer;
   min-inline-size: 0;
+  outline: none;
 }
 
 .agents > li:hover {
   background: var(--surface-2);
 }
 
-/* Selection is a thin accent bar plus a light fill, the same as the rail (ui.md §4). */
+.agents > li:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Selection is a soft fill, the same as the rail. */
 .agents > li.active {
-  background: var(--selected);
-  box-shadow: inset 2px 0 0 var(--accent-pressed);
+  background: var(--accent-soft);
+  color: var(--accent-pressed);
+  font-weight: 500;
 }
 
 .agent-name {
-  font-size: var(--fs-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.badge {
-  flex: none;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-meta);
-  line-height: 1.5;
-  color: var(--text-2);
 }
 
 .scenario {
@@ -890,79 +916,126 @@ defineExpose({ refresh, hasUnsavedChanges })
   color: var(--text-3);
 }
 
-.unavailable {
-  flex: none;
-  font-size: var(--fs-meta);
-  color: var(--warn);
-}
-
 .add {
   justify-self: start;
-}
-
-.add-form {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
+  color: var(--text-2);
 }
 
 .detail {
   display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
   min-inline-size: 0;
 }
 
-.detail-title {
+.detail-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin: 0;
+}
+
+.detail-head h2 {
   font-size: var(--fs-title);
 }
 
-.detail-title input {
-  font: inherit;
+.name-input {
+  font-size: 1.125rem;
   font-weight: 600;
+  inline-size: min(100%, 18rem);
 }
 
-/* The prompt box is the page's main control, so it gets its own row rather than the label/control split the
-   global `.field` gives numeric inputs. */
-.prompt-box {
+.block {
+  display: grid;
   grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  min-inline-size: 0;
 }
 
-.prompt-box textarea {
-  inline-size: 100%;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: var(--lh-code);
-  resize: vertical;
+.block.rows {
+  gap: 0;
 }
 
-.scenario-text {
+.block h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.scenario-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+textarea {
   font-size: var(--fs-ui);
+  line-height: 1.7;
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.meter {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.meter.is-near {
+  color: var(--warn);
+}
+
+.meter.error {
+  color: var(--error);
+}
+
+.bar {
+  block-size: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.bar-fill {
+  block-size: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--motion-base) var(--ease);
+}
+
+.bar-fill.is-near {
+  background: var(--warn);
+}
+
+.bar-fill.is-over {
+  background: var(--error);
 }
 
 .preview-toggle {
   justify-self: start;
+  color: var(--text-2);
 }
 
 /* Read-only, and shown as the document it is: monospace, preserved whitespace, its own scroll so a long
-   prompt does not push the Save button off the page. */
+   prompt does not push the save bar off the page. */
 .effective {
   margin: 0;
-  padding: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   max-block-size: 24rem;
   overflow: auto;
   border-radius: var(--radius-sm);
-  background: var(--surface-0);
+  background: var(--surface-2);
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   line-height: var(--lh-code);
@@ -970,18 +1043,42 @@ defineExpose({ refresh, hasUnsavedChanges })
   overflow-wrap: anywhere;
 }
 
-.footer-actions {
-  border-block-start: 1px solid var(--line);
-  border-block-end: none;
-  flex-wrap: wrap;
+.warn-line {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: var(--fs-meta);
 }
 
-.save-errors {
-  margin: 0;
-  padding-inline-start: var(--space-4);
-  color: var(--error);
+.warn-line button {
+  min-block-size: 1.75rem;
   font-size: var(--fs-meta);
-  flex-basis: 100%;
+}
+
+.remove.is-armed {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+}
+
+.add-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.add-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.add-field > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-ui);
+  color: var(--text-2);
 }
 
 /* Narrow: the list goes above the editor. A 14rem list beside a form on a 600px window would leave the form
@@ -989,6 +1086,10 @@ defineExpose({ refresh, hasUnsavedChanges })
 @container body (max-width: 52rem) {
   .split {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .list-column {
+    position: static;
   }
 }
 </style>

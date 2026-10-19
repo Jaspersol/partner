@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { TOPBAR_TOOLS } from '../topbarTools'
 import type {
   ConsumerState,
   DesktopState,
@@ -13,6 +14,7 @@ import type {
 import { sourceLabel } from '../sessionKind'
 import ApprovalBanner from '../components/ApprovalBanner.vue'
 import Icon from '../components/Icon.vue'
+import Segmented from '../components/Segmented.vue'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
 
@@ -30,7 +32,6 @@ const props = defineProps<{
   queueItems?: readonly QueueItem[] | undefined
 }>()
 const emit = defineEmits<{
-  context: [value: string]
   changed: []
   approval: [gear: string]
   /** The human's answer to a parked tool call; the shell owns the call itself. */
@@ -38,6 +39,9 @@ const emit = defineEmits<{
   /** A running turn was stopped, so the queue needs re-reading. */
   cancel: [itemId: string]
 }>()
+
+/** Where the search goes: the top bar's slot when there is one, otherwise right here. */
+const topbarTools = inject(TOPBAR_TOOLS, ref<HTMLElement | null>(null))
 
 const view = ref<SessionView | null>(null)
 
@@ -108,10 +112,6 @@ async function refresh() {
   try {
     view.value = await props.api.session()
     loaded.value = true
-    if (selectedSeq.value !== null) {
-      emit('context', contextFor(selectedSeq.value))
-    }
-
     // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
     await followIfFollowing()
   } catch {
@@ -120,18 +120,12 @@ async function refresh() {
   }
 }
 
-function contextFor(seq: number): string {
-  const item = view.value?.items.find((candidate) => candidate.seq === seq)
-  return item ? `会话 #${item.seq} · ${item.kind}` : '会话'
-}
-
 /**
- * Selecting a row marks it and names it in the top bar. There is no editor behind the selection any more: what
+ * Selecting a row (from the keyboard) marks it; nothing is shown for it. There is no editor behind the selection any more: what
  * a row can do to a row — 复用, 删除, 撤回 — is on the row itself, one hover away.
  */
 function select(seq: number) {
   selectedSeq.value = seq
-  emit('context', contextFor(seq))
 }
 
 /**
@@ -388,9 +382,41 @@ function answer(approvalId: string, approved: boolean) {
  */
 const searchInput = ref<HTMLInputElement | null>(null)
 
+/**
+ * The search is a single icon until it is wanted. It stays open while it is doing something (a query, a source
+ * filter) so a filtered list never has an invisible filter on it, and folds back on Esc.
+ */
+const searching = ref(false)
+
 function focusSearch() {
   query.value = ''
-  searchInput.value?.focus()
+  searching.value = true
+  void nextTick(() => searchInput.value?.focus())
+}
+
+function closeSearch() {
+  query.value = ''
+  sourceFilter.value = 'all'
+  searching.value = false
+}
+
+const searchOpen = computed(() => searching.value || query.value !== '' || sourceFilter.value !== 'all')
+
+const sourceOptions = computed(() =>
+  sources.value.map((option) => ({ value: option, label: option === 'all' ? '全部' : sourceLabel(option) })),
+)
+
+/** What the composer's ring and its tooltip say. Absent until the API has said it. */
+const contextRing = computed(() => {
+  const usage = view.value?.context
+  return usage ? { fraction: usage.fraction, label: contextLabel.value, hint: contextHint.value } : undefined
+})
+
+/** Three things to say to an empty conversation. They only fill the box; sending is still the reader's call. */
+const STARTERS = ['介绍一下你能做什么', '帮我记住：我喜欢简洁的回答', '明天早上九点提醒我开会']
+
+function starter(text: string) {
+  composer.value?.restore(text)
 }
 
 defineExpose({ refresh, focusSearch })
@@ -398,37 +424,13 @@ defineExpose({ refresh, focusSearch })
 
 <template>
   <div class="view">
-    <div class="toolbar">
-      <label class="search-field">
-        <Icon name="search" :size="14" class="search-glyph" />
-        <input
-          ref="searchInput"
-          v-model="query"
-          placeholder="检索正文…"
-          title="Ctrl+K"
-          aria-label="检索事件正文"
-          data-test="session-query"
-        />
-      </label>
-      <select v-model="sourceFilter" data-test="session-source-filter" aria-label="来源">
-        <option v-for="option in sources" :key="option" :value="option">
-          {{ option === 'all' ? '全部' : sourceLabel(option) }}
-        </option>
-      </select>
-      <span class="spacer" />
-      <span
-        v-if="contextLabel"
-        class="muted context-meter"
-        :class="{ 'context-tight': (view?.context.fraction ?? 0) >= 0.85 }"
-        :title="contextHint"
-        data-test="session-context"
-      >
-        {{ contextLabel }}
-      </span>
-    </div>
-
-    <div class="split">
-      <div ref="scroller" class="scroll" @scroll="measureFollow">
+    <!--
+      The conversation scrolls under the top bar and under the dock; the padding in `.g-page` is what keeps its
+      first and last lines clear of them at rest. No toolbar: search is an icon (below), and the context meter
+      lives in the composer, where the thing it measures is being written.
+    -->
+    <div ref="scroller" class="scroll session-scroll" @scroll="measureFollow">
+      <div class="g-page chat">
         <EventList
           :items="visible"
           :selected-seq="selectedSeq"
@@ -440,75 +442,214 @@ defineExpose({ refresh, focusSearch })
           @withdraw="withdrawFrom"
           @restore="restoreIntoComposer"
         />
+
         <!--
           Where the log stops. A pending withdrawal hid a range of rows, so the one thing to say about it sits
-          exactly where they were — under the newest message — rather than in a banner far from the gap it
-          describes. Shown only while a withdrawal is actually pending.
+          exactly where they were — under the newest message — and is both the report and the remedy.
         -->
-        <button
-          v-if="withdrawn !== null"
-          class="ghost withdrawn-undo"
-          data-test="session-withdrawn-cancel"
-          title="把撤回隐藏的对话放回来（发送新消息后就无法恢复了）"
-          @click="cancelWithdrawal"
-        >
-          取消撤回
-        </button>
+        <div v-if="withdrawn !== null" class="withdrawn" data-test="session-withdrawn">
+          <span>已撤回一部分对话</span>
+          <button
+            class="ghost"
+            data-test="session-withdrawn-cancel"
+            title="把撤回隐藏的对话放回来。发送新消息后就无法恢复了。"
+            @click="cancelWithdrawal"
+          >
+            取消撤回
+          </button>
+        </div>
 
         <div v-if="!loaded" class="skeleton-stack" aria-hidden="true">
           <div class="skeleton-line" />
           <div class="skeleton-line" />
           <div class="skeleton-line" />
         </div>
+
+        <!-- An empty conversation gets an invitation, not a blank page. Only once the first read has come back:
+             before that, "empty" would be a confident wrong answer. -->
+        <div v-else-if="(view?.items.length ?? 0) === 0" class="empty-state" data-test="session-empty">
+          <p class="empty-title">说点什么吧</p>
+          <div class="starters">
+            <button v-for="text in STARTERS" :key="text" class="starter" @click="starter(text)">{{ text }}</button>
+          </div>
+        </div>
+
+        <p v-else-if="visible.length === 0" class="empty" data-test="session-no-match">没有匹配的对话</p>
       </div>
     </div>
 
-    <ApprovalBanner
-      :pending="approvals ?? []"
-      :desktop="desktop ?? null"
-      @answer="answer"
-    />
+    <!-- Search: one icon until it is wanted (Ctrl+K), then a glass field with the source filter under it. -->
+    <Teleport :to="topbarTools ?? 'body'" :disabled="topbarTools === null">
+    <div class="searchbar" :class="{ 'is-open': searchOpen }">
+      <button
+        v-if="!searchOpen"
+        class="ghost search-open"
+        aria-label="搜索对话"
+        title="搜索对话（Ctrl+K）"
+        data-test="session-search-open"
+        @click="focusSearch"
+      >
+        <Icon name="search" :size="16" />
+      </button>
+      <div v-else class="search-panel g-float" @keydown.escape="closeSearch">
+        <label class="search-field">
+          <Icon name="search" :size="14" class="search-glyph" />
+          <input
+            ref="searchInput"
+            v-model="query"
+            placeholder="搜索对话"
+            title="Ctrl+K"
+            aria-label="搜索对话"
+            data-test="session-query"
+          />
+        </label>
+        <Segmented
+          v-if="sources.length > 2"
+          v-model="sourceFilter"
+          :options="sourceOptions"
+          label="来源"
+          data-test="session-source-filter"
+        />
+        <button class="ghost" aria-label="关闭搜索" data-test="session-search-close" @click="closeSearch">
+          <Icon name="x" :size="14" />
+        </button>
+      </div>
+    </div>
+    </Teleport>
 
-    <Composer
-      ref="composer"
-      :api="api"
-      :summary="summary"
-      :consumer="consumer"
-      :approval="approval"
-      :gears="gears"
-      :default-gear="defaultGear"
-      :queue-items="queueItems"
-      @sent="onSent"
-      @approval="emit('approval', $event)"
-      @cancel="onCancel"
-    />
+    <div class="dock-stack">
+      <ApprovalBanner
+        :pending="approvals ?? []"
+        :desktop="desktop ?? null"
+        @answer="answer"
+      />
+
+      <Composer
+        ref="composer"
+        :api="api"
+        :summary="summary"
+        :consumer="consumer"
+        :approval="approval"
+        :gears="gears"
+        :default-gear="defaultGear"
+        :queue-items="queueItems"
+        :context="contextRing"
+        @sent="onSent"
+        @approval="emit('approval', $event)"
+        @cancel="onCancel"
+      />
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* One column, explicitly. `.split` is a two-track grid globally because the memory view puts a panel in the
-   second one; this view has no panel any more, and inheriting that rule left an empty track on the right — a
-   band of nothing as wide as the panel used to be. */
-.split {
+.session-scroll {
   flex: 1;
   min-block-size: 0;
+}
+
+/* The page's bottom padding clears the dock at rest (a two-line box, one row of tools); the dock grows over the
+   list when the box does, which is the glass doing its job. */
+.chat {
+  padding-block-end: 11rem;
+}
+
+/* Floating things: the dock stack is anchored to the bottom and centred on the reading column. Its container
+   ignores the pointer so the empty space around the dock still scrolls the list underneath. */
+.dock-stack {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  z-index: 15;
+  display: grid;
   grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  justify-items: center;
+  padding: 0 var(--space-5) var(--space-3);
+  pointer-events: none;
 }
 
-/* The way back from a withdrawal. It stands where the hidden rows stood — just under the newest message — at the
-   same left gutter the rows are padded to, so it reads as the end of the log rather than as a control bolted
-   under it. Quiet by default: it is an offer, not another event. */
-.withdrawn-undo {
-  margin: var(--space-2) var(--space-4) var(--space-4);
+.dock-stack > * {
+  inline-size: min(var(--column), 100%);
+  pointer-events: auto;
 }
 
-/* The meter turns loud only when the window is nearly full — that is when it matters. */
-.context-meter {
-  white-space: nowrap;
+/* Lives in the top bar (teleported), so it is the anchor for the panel that drops from it. */
+.searchbar {
+  position: relative;
+  display: inline-flex;
 }
 
-.context-tight {
-  color: var(--warn);
+.search-panel {
+  position: absolute;
+  inset-block-start: calc(100% + var(--space-2));
+  inset-inline-end: 0;
+  z-index: 30;
+}
+
+.search-open {
+  inline-size: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  background: var(--glass-2);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-hi), var(--shadow-1);
+}
+
+.search-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-pill);
+}
+
+.search-panel input {
+  inline-size: 12rem;
+  border-radius: var(--radius-pill);
+}
+
+.withdrawn {
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.withdrawn button {
+  min-block-size: 1.75rem;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-meta);
+}
+
+.empty-state {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: var(--space-4);
+  padding-block: var(--space-7);
+}
+
+.empty-title {
+  margin: 0;
+  font-size: var(--fs-title);
   font-weight: 600;
+}
+
+.starters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.starter {
+  border-radius: var(--radius-pill);
+  color: var(--text-2);
 }
 </style>

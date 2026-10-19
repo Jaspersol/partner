@@ -34,6 +34,8 @@ pub fn run() {
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Partner")
+                // No native title bar: the UI draws its own drag area and window buttons in the top bar.
+                .decorations(false)
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(800.0, 520.0)
                 .initialization_script(&script)

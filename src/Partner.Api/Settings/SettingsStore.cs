@@ -71,6 +71,7 @@ public sealed class SettingsStore
         ArgumentNullException.ThrowIfNull(incoming);
 
         var stored = Load();
+        var gears = NormalizeGears(incoming.Model.ReasoningGears, incoming.Model.ReasoningEffort);
         var merged = incoming with
         {
             Agents = incoming.AgentsSpecified ? MergeAgentKeys(incoming.Agents, stored.Agents) : stored.Agents,
@@ -85,9 +86,8 @@ public sealed class SettingsStore
                 // the user arranged — the order is the menu order, so preserving it is the point.
                 // An empty list falls back to the built-in one: an empty menu is not a usable setting. The
                 // default is re-added if the user dropped it, so the value stays selectable in the picker.
-                ReasoningGears = NormalizeGears(
-                    incoming.Model.ReasoningGears,
-                    incoming.Model.ReasoningEffort),
+                ReasoningGears = gears,
+                ReasoningLabels = NormalizeLabels(incoming.Model.ReasoningLabels, gears),
             },
         };
 
@@ -158,6 +158,33 @@ public sealed class SettingsStore
         }
 
         return kept.Count > 0 ? kept : ReasoningEfforts.Values;
+    }
+
+    /// <summary>
+    /// Keys are normalized like the gears they name, labels are trimmed, and a label for a word that is not in the
+    /// list (or a blank one) is dropped: a name for nothing is clutter that would outlive the row it described.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> NormalizeLabels(
+        IReadOnlyDictionary<string, string>? labels,
+        IReadOnlyList<string> gears)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (labels is null)
+        {
+            return result;
+        }
+
+        foreach (var (key, label) in labels)
+        {
+            var gear = ReasoningEfforts.Normalize(key);
+            var text = label?.Trim() ?? string.Empty;
+            if (text.Length > 0 && gears.Contains(gear))
+            {
+                result[gear] = text;
+            }
+        }
+
+        return result;
     }
 
     private void Write(RuntimeSettings settings)

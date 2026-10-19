@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { McpSettings, McpServerSettings, PartnerApiSurface, RuntimeSettings } from '../api'
 import HintTip from '../components/HintTip.vue'
+import Icon from '../components/Icon.vue'
+import SaveBar from '../components/SaveBar.vue'
+import SettingRow from '../components/SettingRow.vue'
 
 /**
  * The MCP servers this installation starts, and how the model is allowed to call them.
@@ -10,6 +13,12 @@ import HintTip from '../components/HintTip.vue'
  * Editing is a settings save like any other (ui.md): nothing here is optimistic, and the list on screen is
  * what the server kept. The alternative — a separate store — would mean two places where "which servers are
  * running" is answered.
+ * </para>
+ *
+ * <para>
+ * The 「免审批」 switch that used to live in a separate list at the top of the page is now on the server it
+ * belongs to. The stored shape is unchanged — it is still the `mcp_<name>_*` entry in `allowedTools` — only the
+ * place a person finds it moved.
  * </para>
  */
 const props = defineProps<{ api: PartnerApiSurface }>()
@@ -20,22 +29,48 @@ const baseline = ref<RuntimeSettings | null>(null)
 const error = ref('')
 const notice = ref('')
 
+/** The form as last stored, so "changed" is a comparison and not a flag some handler remembered to set. */
+const stored = ref<string | null>(null)
+const dirty = computed(() => stored.value !== null && JSON.stringify(form.value) !== stored.value)
+
+/** Which server cards are unfolded, by position. A new server opens itself: it is empty and about to be filled. */
+const open = ref<boolean[]>([])
+/** Set once a save has been refused for an incomplete server, so the empty fields can say which ones. */
+const attempted = ref(false)
+
 function blankServer(): McpServerSettings {
   return { name: '', command: '', arguments: [], workingDirectory: null, callTimeoutSeconds: 30 }
 }
 
 function addServer() {
   form.value = { ...form.value, servers: [...form.value.servers, blankServer()] }
+  open.value = [...open.value, true]
 }
 
 function removeServer(index: number) {
-  form.value = { ...form.value, servers: form.value.servers.filter((_, at) => at !== index) }
+  const gone = form.value.servers[index]
+  form.value = {
+    ...form.value,
+    servers: form.value.servers.filter((_, at) => at !== index),
+    // Its direct-run entry goes with it: a rule for a server that no longer exists would silently apply to the
+    // next one given the same name.
+    allowedTools: gone ? form.value.allowedTools.filter((tool) => tool !== toolKey(gone.name)) : form.value.allowedTools,
+  }
+  open.value = open.value.filter((_, at) => at !== index)
 }
 
 function updateServer(index: number, patch: Partial<McpServerSettings>) {
+  const before = form.value.servers[index]
+  const renamed = patch.name !== undefined && before !== undefined && patch.name !== before.name
+
   form.value = {
     ...form.value,
     servers: form.value.servers.map((server, at) => (at === index ? { ...server, ...patch } : server)),
+    // The direct-run entry is keyed by name, so renaming a server carries its switch along.
+    allowedTools:
+      renamed && before && form.value.allowedTools.includes(toolKey(before.name))
+        ? form.value.allowedTools.map((tool) => (tool === toolKey(before.name) ? toolKey(patch.name ?? '') : tool))
+        : form.value.allowedTools,
   }
 }
 
@@ -49,20 +84,47 @@ function updateArguments(index: number, text: string) {
   })
 }
 
-function toggleAllowed(tool: string) {
-  const has = form.value.allowedTools.includes(tool)
+function toolKey(name: string): string {
+  return `mcp_${name}_*`
+}
+
+function isDirect(server: McpServerSettings): boolean {
+  return form.value.allowedTools.includes(toolKey(server.name))
+}
+
+function toggleDirect(server: McpServerSettings) {
+  const key = toolKey(server.name)
   form.value = {
     ...form.value,
-    allowedTools: has ? form.value.allowedTools.filter((t) => t !== tool) : [...form.value.allowedTools, tool],
+    allowedTools: isDirect(server) ? form.value.allowedTools.filter((tool) => tool !== key) : [...form.value.allowedTools, key],
   }
+}
+
+function toggleOpen(index: number) {
+  open.value = open.value.map((value, at) => (at === index ? !value : value))
+}
+
+/** A one-line description of what a server runs, for the folded card. */
+function commandLine(server: McpServerSettings): string {
+  return [server.command, ...server.arguments].join(' ').trim()
+}
+
+function missing(server: McpServerSettings, field: 'name' | 'command'): boolean {
+  return attempted.value && server[field].trim() === ''
+}
+
+function adopt(settings: RuntimeSettings) {
+  baseline.value = settings
+  form.value = { ...settings.mcp, servers: [...settings.mcp.servers], allowedTools: [...settings.mcp.allowedTools] }
+  open.value = form.value.servers.map(() => false)
+  stored.value = JSON.stringify(form.value)
+  attempted.value = false
 }
 
 async function refresh() {
   error.value = ''
   try {
-    const settings = await props.api.settings()
-    baseline.value = settings
-    form.value = settings.mcp
+    adopt(await props.api.settings())
   } catch (failure) {
     error.value = String(failure)
   }
@@ -76,9 +138,11 @@ async function save() {
 
   // A server with no name or command would start a process the operator cannot identify, so it is refused
   // here rather than at start-up where the failure would be one line in a log.
-  const incomplete = form.value.servers.find((server) => server.name.trim() === '' || server.command.trim() === '')
-  if (incomplete) {
-    error.value = '每个服务器都要有名字和命令'
+  const incomplete = form.value.servers.findIndex((server) => server.name.trim() === '' || server.command.trim() === '')
+  if (incomplete >= 0) {
+    attempted.value = true
+    open.value = open.value.map((value, at) => (at === incomplete ? true : value))
+    error.value = '每个服务都要有名称和启动命令'
     return
   }
 
@@ -86,9 +150,8 @@ async function save() {
   notice.value = ''
   try {
     const saved = await props.api.saveSettings({ ...baseline.value, mcp: form.value })
-    baseline.value = saved.settings
-    form.value = saved.settings.mcp
-    notice.value = '已保存 · 消费者已重启'
+    adopt(saved.settings)
+    notice.value = '已保存，助手已重新加载'
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -96,279 +159,298 @@ async function save() {
 }
 
 onMounted(refresh)
-defineExpose({ refresh })
+
+/** Asked by the shell before it switches away: the views are `v-if`, so leaving discards every edit. */
+function hasUnsavedChanges(): boolean {
+  return dirty.value
+}
+
+defineExpose({ refresh, hasUnsavedChanges })
 </script>
 
 <template>
   <div class="view">
-    <div class="toolbar">
-      <button data-test="mcp-refresh" @click="refresh">刷新</button>
-      <span class="spacer" />
-      <span class="muted" data-test="mcp-summary">
-        {{ form.servers.length }} 个服务器 · {{ form.enabled ? '已启用' : '未启用' }}
-      </span>
-    </div>
-
-    <div class="scroll">
-      <section class="card">
-        <h2>MCP</h2>
+    <div class="scroll mcp-scroll">
+      <div class="g-page">
         <!--
-          Off by default and said plainly, because enabling is not "let the model ask a tool" — it is "let a
-          child process run". A switch that reads like a feature toggle and starts processes is how someone
-          ends up surprised by what is on their machine.
+          Off by default and said plainly, because enabling is not "let the model ask a tool" — it is "let a child
+          process run". A switch that reads like a feature toggle and starts processes is how someone ends up
+          surprised by what is on their machine.
         -->
-        <label class="mcp-field">
-          <input
-            v-model="form.enabled"
-            type="checkbox"
-            data-test="mcp-enabled"
-          />
-          <span>
-            启用 MCP
-            <HintTip>启用即在消费者启动时拉起下面配置的子进程，并把它们的工具交给模型。默认关闭。</HintTip>
+        <label class="master g-glass">
+          <span class="master-text">
+            <span class="master-title">
+              启用 MCP
+              <HintTip>开启后，助手启动时会运行下面配置的程序，并使用它们提供的工具。默认关闭。</HintTip>
+            </span>
+            <span class="master-sub">让助手使用其他程序提供的工具</span>
           </span>
+          <input v-model="form.enabled" type="checkbox" class="g-switch" role="switch" data-test="mcp-enabled" />
         </label>
 
-        <div class="mcp-field">
-          <span>
-            直接执行、不必人工批准的工具
-            <HintTip>留空表示全部工具都要批准。启用只决定「提供哪些工具」，不决定「哪些可以直接动」。</HintTip>
-          </span>
-          <div v-if="form.servers.length > 0" class="tools">
-            <label v-for="server in form.servers" :key="server.name" class="tool">
-              <input
-                type="checkbox"
-                :checked="form.allowedTools.includes(`mcp_${server.name}_*`)"
-                @change="toggleAllowed(`mcp_${server.name}_*`)"
-              />
-              <span>{{ server.name || '(未命名)' }}</span>
-            </label>
-          </div>
-          <p v-else class="muted">（还没有服务器）</p>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>服务器</h2>
-        <p v-if="form.servers.length === 0" class="muted" data-test="mcp-empty">
-          （未配置。启用也不会启动任何东西。）
+        <p class="summary-line">
+          <span data-test="mcp-summary">{{ form.servers.length }} 个服务 · {{ form.enabled ? '已启用' : '未启用' }}</span>
+          <button class="ghost refresh" aria-label="刷新" title="刷新" data-test="mcp-refresh" @click="refresh">
+            <Icon name="refresh" :size="14" />
+          </button>
         </p>
 
-        <div v-for="(server, index) in form.servers" :key="index" class="server" :data-test="'mcp-server'">
-          <div class="server-row">
-            <label class="span-2">
-              <span>名字</span>
-              <input
-                :value="server.name"
-                data-test="mcp-server-name"
-                placeholder="files"
-                @input="updateServer(index, { name: ($event.target as HTMLInputElement).value })"
-              />
-            </label>
-            <label class="span-2">
-              <span>命令</span>
-              <input
-                :value="server.command"
-                data-test="mcp-server-command"
-                placeholder="node"
-                @input="updateServer(index, { command: ($event.target as HTMLInputElement).value })"
-              />
-              <!-- How the process is started decides what this field accepts: a bare name is looked up on
-                   PATH and nothing else. A path that only works because someone's shell sets an alias fails
-                   here, at start-up, with the reason a few lines deep in a consumer log. -->
-            </label>
-          </div>
+        <div class="servers" :class="{ 'is-off': !form.enabled }">
+          <p v-if="form.servers.length === 0" class="empty" data-test="mcp-empty">还没有服务。添加一个，助手才有东西可用。</p>
 
-          <div class="server-row">
-            <label class="grow">
-              <span>参数（每行一个）</span>
-              <textarea
-                :value="server.arguments.join('\n')"
-                data-test="mcp-server-args"
-                rows="2"
-                @input="updateArguments(index, ($event.target as HTMLTextAreaElement).value)"
-              />
-            </label>
-            <label>
-              <span>工作目录：可执行文件名或绝对路径；裸名字只按 PATH 查找</span>
-              <input
-                :value="server.workingDirectory ?? ''"
-                data-test="mcp-server-cwd"
-                @input="updateServer(index, { workingDirectory: ($event.target as HTMLInputElement).value || null })"
-              />
-            </label>
-            <label>
-              <span>超时（秒）</span>
-              <input
-                :value="server.callTimeoutSeconds"
-                type="number"
-                min="1"
-                data-test="mcp-server-timeout"
-                @input="updateServer(index, { callTimeoutSeconds: Math.max(1, Number(($event.target as HTMLInputElement).value) || 30) })"
-              />
-            </label>
-          </div>
+          <section v-for="(server, index) in form.servers" :key="index" class="server g-glass" data-test="mcp-server">
+            <header class="server-head">
+              <button class="server-toggle" :aria-expanded="open[index] === true" @click="toggleOpen(index)">
+                <Icon name="chevron-down" :size="14" class="chevron" :class="{ 'is-open': open[index] === true }" />
+                <span class="server-name">{{ server.name || '（未命名）' }}</span>
+                <span class="server-command break">{{ commandLine(server) }}</span>
+              </button>
+              <label class="direct">
+                免审批
+                <HintTip align="end">开启后，这个服务的工具直接执行，不再逐次询问你。关闭则每次都要批准。</HintTip>
+                <input
+                  type="checkbox"
+                  class="g-switch"
+                  role="switch"
+                  :checked="isDirect(server)"
+                  data-test="mcp-server-direct"
+                  @change="toggleDirect(server)"
+                />
+              </label>
+              <button class="ghost danger" aria-label="移除这个服务" data-test="mcp-server-remove" @click="removeServer(index)">
+                <Icon name="trash" :size="14" /> 移除
+              </button>
+            </header>
 
-          <button class="ghost danger" data-test="mcp-server-remove" @click="removeServer(index)">移除</button>
+            <div v-show="open[index] === true" class="server-body">
+              <SettingRow label="名称" hint="给这个服务起个名字，如 files。">
+                <input
+                  :value="server.name"
+                  data-test="mcp-server-name"
+                  placeholder="files"
+                  :aria-invalid="missing(server, 'name') || undefined"
+                  @input="updateServer(index, { name: ($event.target as HTMLInputElement).value })"
+                />
+              </SettingRow>
+              <p v-if="missing(server, 'name')" class="field-error">请填写名称</p>
+
+              <SettingRow label="启动命令">
+                <template #hint>
+                  要运行的程序。只写名字时，只会在系统 PATH 里查找；用了别名或自定义路径的请写完整路径。
+                </template>
+                <input
+                  :value="server.command"
+                  data-test="mcp-server-command"
+                  placeholder="node"
+                  :aria-invalid="missing(server, 'command') || undefined"
+                  @input="updateServer(index, { command: ($event.target as HTMLInputElement).value })"
+                />
+              </SettingRow>
+              <p v-if="missing(server, 'command')" class="field-error">请填写启动命令</p>
+
+              <SettingRow label="启动参数" hint="每行一个参数，不要把整条命令写在一行里。" stack>
+                <textarea
+                  :value="server.arguments.join('\n')"
+                  data-test="mcp-server-args"
+                  rows="3"
+                  @input="updateArguments(index, ($event.target as HTMLTextAreaElement).value)"
+                />
+              </SettingRow>
+
+              <SettingRow label="运行目录" hint="程序启动时所在的文件夹，可以留空。">
+                <input
+                  :value="server.workingDirectory ?? ''"
+                  data-test="mcp-server-cwd"
+                  @input="updateServer(index, { workingDirectory: ($event.target as HTMLInputElement).value || null })"
+                />
+              </SettingRow>
+
+              <SettingRow label="最长等待" unit="秒" hint="一次工具调用超过这个时间还没结果就放弃。默认 30 秒。">
+                <input
+                  :value="server.callTimeoutSeconds"
+                  type="number"
+                  min="1"
+                  data-test="mcp-server-timeout"
+                  @input="updateServer(index, { callTimeoutSeconds: Math.max(1, Number(($event.target as HTMLInputElement).value) || 30) })"
+                />
+              </SettingRow>
+            </div>
+          </section>
+
+          <button class="ghost add" data-test="mcp-server-add" @click="addServer">
+            <Icon name="plus" :size="14" /> 添加服务
+          </button>
         </div>
-
-        <button class="ghost" data-test="mcp-server-add" @click="addServer">＋ 添加服务器</button>
-      </section>
-
-      <div class="actions">
-        <button class="primary" data-test="mcp-save" @click="save">保存</button>
-        <span v-if="notice" class="muted" data-test="mcp-notice">{{ notice }}</span>
       </div>
-
-      <p v-if="error" class="error notice" data-test="error">{{ error }}</p>
     </div>
+
+    <SaveBar
+      prefix="mcp"
+      status-test="mcp-notice"
+      :dirty="dirty"
+      :status="notice"
+      :error="error"
+      can-discard
+      @save="save"
+      @discard="refresh"
+    />
   </div>
 </template>
 
 <style scoped>
-.scroll {
+.mcp-scroll {
   flex: 1;
   min-block-size: 0;
-  overflow-y: auto;
-  padding: var(--space-3);
-  display: grid;
-  gap: var(--space-3);
-  align-content: start;
 }
 
-/* Only the layout. Border, radius, background and padding come from styles.css — repeating them here is how
-   this card ended up without the `background: var(--surface-1)` the settings cards have, so two views built with
-   the same token set rendered as two different products. */
-.card {
-  display: grid;
-  gap: var(--space-2);
-}
-
-h2 {
-  /* 14px, two steps under the global 20px heading: these are card labels inside a form, and at full card
-     width a 20px title out-shouts the fields it titles. */
-  font-size: var(--fs-ui);
-  margin: 0;
-}
-
-/* Not `.field`: styles.css has a global one that lays a settings row out as label + auto-sized control,
-   and a scoped rule that only sets gap and font-size does not stop that template from applying here.
-
-   Two columns — a narrow optional-control column and the text column — so the checkbox rows and the plain
-   text rows share one left edge instead of every block starting wherever its own first item puts it. */
-.mcp-field {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--space-1) var(--space-2);
-  font-size: var(--fs-ui);
-}
-
-label.mcp-field > span {
-  grid-column: 2;
-}
-
-.mcp-field:not(label) > * {
-  grid-column: 2;
-}
-
-.mcp-field > label {
+.master {
   display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  cursor: pointer;
 }
 
-.tools {
+.master-text {
   display: grid;
-  gap: var(--space-1);
-}
-
-.tool {
-  display: flex;
-  gap: var(--space-2);
-  align-items: baseline;
-}
-
-/* An inset step on --surface-2, not a bordered box: the card already draws the outer edge, and a second
-   border inside it made the block read as a box in a box. The darker step is what the surface ladder is for. */
-.server {
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  padding: var(--space-3);
-  display: grid;
-  gap: var(--space-2);
-}
-
-/* One four-column track, shared by both rows, so 名字/命令 and 参数/工作目录/超时 line up on the same
-   divisions instead of each flex row choosing its own widths. span-2 on the two wide fields; the narrow
-   container below drops to a single column and the spans go with it. */
-.server-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.server-row label {
-  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
-  font-size: var(--fs-meta);
-  color: var(--text-3);
-  min-inline-size: 0;
-  /* Start, not the default stretch: the label cell stretches to the tallest sibling (the 参数 textarea),
-     and stretch would hand that spare height to the name track — so 工作目录's name row grew to 29px next
-     to 参数's 18px and every control below it sat 11px lower. Pinned to the top, all controls in a row
-     share one top edge. */
-  align-content: start;
 }
 
-.server-row label.span-2,
-.server-row .grow {
-  grid-column: span 2;
+.master-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 1rem;
+  font-weight: 600;
 }
 
-/* The field's name is read; the label's grey is the container's. One step apart so the row scans as
-   "name over control" rather than as four lines of the same grey. */
-.server-row label > span {
+.master-sub {
   color: var(--text-2);
-  font-weight: 500;
-}
-
-.server-row input,
-.server-row textarea {
   font-size: var(--fs-ui);
-  color: var(--text);
-  inline-size: 100%;
 }
 
-/* The global rule is scoped to .field, which this row is not, so the hint needs its own. */
-.server-row .source {
-  font-size: var(--fs-meta);
-  line-height: 1.4;
-}
-
-.actions {
+.summary-line {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin: calc(var(--space-2) * -1) 0 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
 }
 
-/* The global button rule centres its label — right inside a toolbar chip, wrong for a full-width ghost
-   button in a form card, where "添加服务器" and "移除" belong on the same left edge as the fields. */
-.card button.ghost,
-.server button.ghost {
+.refresh {
+  min-block-size: 1.75rem;
+  inline-size: 1.75rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.servers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+  transition: opacity var(--motion-base) var(--ease);
+}
+
+/* Off is still editable — the list is configuration — but it should look like it is not doing anything yet. */
+.servers.is-off {
+  opacity: 0.6;
+}
+
+.server {
+  padding: var(--space-2) var(--space-5);
+}
+
+.server-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 3.5rem;
+}
+
+.server-toggle {
+  flex: 1;
+  min-inline-size: 0;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  text-align: start;
+}
+
+.server-toggle:hover:not(:disabled) {
+  background: transparent;
+}
+
+.server-name {
+  flex: none;
+  font-weight: 600;
+}
+
+.server-command {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+.chevron {
+  flex: none;
+  transition: transform var(--motion-fast) var(--ease);
+  transform: rotate(-90deg);
+  color: var(--text-3);
+}
+
+.chevron.is-open {
+  transform: none;
+}
+
+.direct {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+/* A quiet remove: red only once the pointer is on it, so a column of servers is not a column of red buttons. */
+.server-head .danger {
+  background: transparent;
+  color: var(--text-3);
+}
+
+.server-head .danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+
+.server-body {
+  padding-block-end: var(--space-3);
+}
+
+.field-error {
+  margin: 0;
+  padding-block-end: var(--space-2);
+  color: var(--error);
+  font-size: var(--fs-meta);
+  text-align: end;
+}
+
+.add {
   justify-self: start;
+  color: var(--text-2);
 }
 
-/* Narrow: one column. The spans have to go with it — `span 2` against a single explicit track would open
-   an implicit second column and push the third field onto its own row. */
-@container body (max-width: 40rem) {
-  .server-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .server-row label.span-2,
-  .server-row .grow {
-    grid-column: auto;
-  }
+input[aria-invalid='true'] {
+  border-color: var(--error);
 }
 </style>

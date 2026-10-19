@@ -1,217 +1,16 @@
 /*
- * Design tokens and layout primitives, per ui.md §8.
+ * Layout primitives and shared component styles. Tokens live in tokens.css (ui-redesign.md §2).
  *
  * Two rules run through this file:
  *   1. Layout sizes are never absolute. Regions are sized by their content, by fractional tracks, or by
  *      clamps with a ratio in the middle — so the same rules hold when the window, the panel, or the root
  *      font size changes.
- *   2. Only visual scalars (radius, spacing, type scale, shadow) live in :root, and only in rem. Nothing
- *      here sets a width or height that a component should be deriving from its content.
+ *   2. Only visual scalars (radius, spacing, type scale, shadow) are tokens, and only in rem.
  *
- * A third, added 2026-10-01 (P5 S1): depth comes from the surface ladder and from shadows, not from borders.
- * The palette this file used before had `--bg` and `--pane` 2% apart and no shadow at all, which left a 1px
- * rule as the only way to say "this is a different thing" — so every block drew its own border and the app
- * read as a 2005 table. `--surface-*` is the replacement, and `--line` is now for boundaries that genuinely
- * need to be seen rather than for structure.
- *
- * A fourth, 2026-10-13 (UI modernization): the token *values* moved to the slate system — brand blue
- * #2563eb, window #f8fafc, card #fff, ink #0f172a, hairline #e2e8f0, system radius 12px, motion 150ms.
- * Nothing structural changed: same token names, same layering rules, every ratio re-measured against the
- * worst surface a value can land on (see the comments beside each token). Light and dark are both full
- * ladders, and Inter leads the font stack without a network fetch — the CSP allows no remote origins, so
- * the stack degrades to the platform UI font where Inter is not installed.
+ * New global classes carry a `g-` prefix so scripts/check-css-names.mjs can tell a shared primitive from a
+ * component's own scoped class.
  */
 
-:root {
-  /* ---- surfaces: the depth ladder ---------------------------------------------------------------
-     Three steps, each with a job. --surface-0 is the window behind everything, --surface-1 is any panel or
-     card, --surface-2 is a thing resting *on* a surface (a hovered row, an inset block).
-
-     There is deliberately no fourth step. One thing genuinely leaves the page today: the narrow-window
-     inspector overlay — separated by --shadow-3, which is how a floating panel is normally drawn. A token
-     nobody reads is not sitting here waiting for a popover that does not exist. */
-  --surface-0: #f8fafc; /* window, per the modernization token sheet */
-  --surface-1: #ffffff; /* card */
-  --surface-2: #f1f5f9; /* 1.09:1 against --surface-1. Measured, not guessed: a value closer than
-                           this (e.g. #f8fafc at 1.04:1) is not a step, it is a rounding error. */
-
-  /* ---- borders: only where a boundary has to be read ----------------------------------------------
-     --line is the token-sheet hairline (#e2e8f0) carrying structure — a row divider, a section edge. It is
-     deliberately below 3:1 (1.2:1 measured): WCAG 1.4.11 covers the boundary you must see to *identify a
-     control*, which is not what a divider between two rows of the same list is. --line-strong is the one
-     that has to be found — the edge of a field or a secondary button — so it is measured against every
-     surface it can sit on and the worst case still clears 3:1 (3.3:1). */
-  --line: #e2e8f0;
-  --line-strong: #7c8899; /* 3.6:1 card / 3.4:1 window / 3.3:1 hover */
-
-  /* ---- text: three levels, by meaning rather than by which one looks nicer ------------------------
-     Measured against all three surfaces; the worst case (hover) is the quoted one. The modernization sheet
-     lists #64748b as the secondary ink — it measures 4.34:1 on a hovered row, under the AA floor, so the
-     two read levels land one step darker instead. Same slate hue family, ratio first. */
-  --text: #0f172a; /* 16.3:1 worst  正文 */
-  --text-2: #475569; /*  6.9:1 worst  次级：说明、按钮 */
-  --text-3: #5f6b7d; /*  4.9:1 worst  meta：时间、id、计数 —— 是内容，不是装饰 */
-
-  --accent: #2563eb; /*  5.2:1 card, brand blue from the sheet */
-  --accent-soft: rgb(37 99 235 / 0.1);
-  /* Focus ring for form fields, deliberately *not* accent. A blue edge on a field reads as "this one is
-     wrong" rather than "this is where you are", and on a settings page of nothing-but-fields it reads as a
-     validation state that does not exist. A neutral grey says only the first thing. Accent stays on
-     buttons, where there is no border for it to be confused with. */
-  --focus-ring: #7c8899; /* same 3.3–3.6:1 band as --line-strong: a non-text indicator, not a colour cue */
-  /* Accent text sitting *on* a tint of itself, and the ink on a filled accent button. `--accent` on
-     `--accent-soft` lands on a darkened ground, so pressed segments use this deeper step instead; white on
-     the fill is 5.2:1. Dark mode swaps --on-accent for near-black ink because the fill there is light. */
-  --accent-pressed: #1d4ed8;
-  --on-accent: #ffffff;
-  --warn: #b45309; /*  4.6:1 worst */
-  --error: #c81d31; /*  4.8:1 on its own 10% tint — the worst surface an error sentence sits on */
-  --ok: #15803d; /*  4.6:1 worst */
-
-  /* Selection is a tint of the accent, not a new hue: the row is still this app's row, just the one you are
-     on. The 2px bar down its edge is what actually carries "selected" for anyone who cannot separate the
-     tint from the surface. */
-  --selected: var(--accent-soft);
-
-  /* ---- shadows ----------------------------------------------------------------------------------
-     Only for things that leave the page. A card sitting on a surface is told apart by --surface, not by a
-     shadow — putting one on every card is what makes an interface look like a stack of sticky notes. Two
-     steps, because there are two things that leave the page: the narrow-window inspector, and the window's
-     own popovers. --shadow-1 is the modernization sheet's one soft lift; --shadow-3 is reserved for genuinely
-     floating panels and stays soft — heavy shadow is what makes an interface look like a 2014 dashboard. */
-  --shadow-1: 0 1px 3px rgb(0 0 0 / 8%);
-  --shadow-3: 0 8px 24px rgb(0 0 0 / 12%), 0 2px 6px rgb(0 0 0 / 6%);
-
-  /* ---- radii & spacing ---------------------------------------------------------------------------
-     One system radius: 12px, the sheet's value, aliased across the three names so component CSS that asks
-     for a "small" radius still gets the system one without a sweep through every scoped block. 50% survives
-     on its own for dots and avatars; nothing here should need a second radius until a real need appears. */
-  --radius-sm: 0.75rem; /* 12px */
-  --radius-md: 0.75rem; /* 12px */
-  --radius-lg: 0.75rem; /* 12px */
-  --space-1: 0.25rem; /* 4 */
-  --space-2: 0.5rem; /* 8 */
-  --space-3: 0.75rem; /* 12 */
-  --space-4: 1rem; /* 16 */
-  --space-5: 1.5rem; /* 24 */
-  --space-6: 2rem; /* 32: section rhythm on the larger layouts */
-
-  /* ---- type scale: the sheet's steps, under their existing names -----------------------------------
-     12 / 14 / 16 / 20 / 24, each step at least 2px so the hierarchy is on the screen and not only in the
-     token names. Prose is 16px — the one surface in this app anybody reads rather than scans, and therefore
-     the only place a bigger size is information. h1 (markdown's top heading) picks up the 24px step below;
-     32px exists in the sheet as a display size and this app has no display text, so no token waits for it. */
-  --fs-ui: 0.875rem; /* 14px  控件、按钮、列表 */
-  --lh-ui: 1.5;
-  --fs-meta: 0.75rem; /* 12px  时间、id、计数 */
-  --lh-meta: 1.4;
-  --fs-code: 0.875rem; /* 14px  等宽 */
-  --lh-code: 1.6; /* 代码用 1.6：14px 配 UI 的 1.5 在等宽字里明显偏挤 */
-  --fs-prose: 1rem; /* 16px  事件正文 —— 页面上唯一的「大字」 */
-  --lh-prose: 1.75; /* 1.75 而不是 1.6：中文方块字没有拉丁文的升降部，字框内的余量就是行与行之间的呼吸 */
-  --fs-title: 1.25rem; /* 20px  卡片标题、面板标题 */
-  --fs-h1: 1.5rem; /* 24px  markdown 一级标题 */
-
-  --font-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
-
-  /* Reading measure: constrains characters per line, not pixels of container. Prose only (ui.md §8.3). */
-  --measure: 68ch;
-
-  /* Panels that need "how much of the window" rather than a fixed width. The rail and its expanded form are
-     states rather than ratios, so they are two values and not one clamp — see .body. */
-  --rail: 3.5rem; /* 56px: one icon plus its own padding, and nothing else */
-  --rail-expanded: 15rem; /* 240px: a label and an id fit; more would be a second column's worth of waste */
-
-  /* Motion: three kinds, all of them short enough to read as "responsive" rather than "animated".
-     ui.md §8.5. The sheet's window is 150–250ms; these are the slow end of that word on purpose — a
-     workbench that bounces is a workbench you wait for. */
-  --motion-fast: 150ms;
-  --motion-base: 200ms;
-  --motion-slow: 250ms;
-  --ease: ease;
-
-  /* Tool families (ui/src/toolAppearance.ts). One hue per family so a turn's calls can be scanned by colour
-     before they are read by name; dark mode reuses the same hues at a lighter value rather than inverting.
-     --tool-read follows the brand accent; --tool-schedule and --tool-control are ink levels, not hues. */
-  --tool-shell: #b0601e;
-  --tool-read: #2563eb;
-  --tool-write: #8a4bd0;
-  --tool-search: #15803d;
-  --tool-web: #0a8f96;
-  --tool-record: #b45309;
-  --tool-schedule: #475569;
-  --tool-agent: #c2185b;
-  --tool-control: #475569;
-}
-
-/* Dark mode is a token rewrite, never a component change (ui.md §8). It follows the OS unless the user
-   picked a side, which is what the two selectors below express.
-
-   The ladder is the slate system's own dark half — the same hue family as light mode, not a re-scale of it.
-   Measured worst cases (hover surface is the hard one): --text-3 4.9:1, --error 4.7:1, --accent 4.9:1.
-   --on-accent flips here: the dark-mode fills are light blues and pinks, so the ink on them is the window
-   colour — white text on #60a5fa is 2.5:1 and would fail on the app's most used button. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --surface-0: #0f172a;
-    --surface-1: #1e293b; /* 1.21:1 from --surface-0 */
-    --surface-2: #27344a; /* 1.17:1 from --surface-1 */
-    --line: rgb(226 232 240 / 0.1);
-    --line-strong: #6b7b93; /* 3.4:1 card / 4.2:1 window — fields do not sit on hover rows */
-    --text: #f1f5f9; /* 13.4:1 worst */
-    --text-2: #cbd5e1; /*  7.0:1 worst */
-    --text-3: #94a3b8; /*  4.9:1 worst */
-    --accent: #60a5fa; /*  4.9:1 worst */
-    --accent-soft: rgb(96 165 250 / 0.14);
-    --focus-ring: #94a3b8;
-    --accent-pressed: #93c5fd;
-    --on-accent: #0f172a; /* 7.0:1 on the accent fill */
-    --warn: #fbbf24;
-    --error: #fb7185;
-    --ok: #4ade80;
-    --shadow-1: 0 1px 3px rgb(0 0 0 / 40%);
-    --shadow-3: 0 8px 24px rgb(0 0 0 / 55%), 0 2px 6px rgb(0 0 0 / 40%);
-    --tool-shell: #e0a458;
-    --tool-read: #60a5fa;
-    --tool-write: #c39cf0;
-    --tool-search: #4ade80;
-    --tool-web: #5fd0d6;
-    --tool-record: #fbbf24;
-    --tool-schedule: #cbd5e1;
-    --tool-agent: #f07ba8;
-    --tool-control: #cbd5e1;
-  }
-}
-
-:root[data-theme='dark'] {
-  --surface-0: #0f172a;
-  --surface-1: #1e293b;
-  --surface-2: #27344a;
-  --line: rgb(226 232 240 / 0.1);
-  --line-strong: #6b7b93;
-  --text: #f1f5f9;
-  --text-2: #cbd5e1;
-  --text-3: #94a3b8;
-  --accent: #60a5fa;
-  --accent-soft: rgb(96 165 250 / 0.14);
-  --focus-ring: #94a3b8;
-  --accent-pressed: #93c5fd;
-  --on-accent: #0f172a;
-  --warn: #fbbf24;
-  --error: #fb7185;
-  --ok: #4ade80;
-  --shadow-1: 0 1px 3px rgb(0 0 0 / 40%);
-  --shadow-3: 0 8px 24px rgb(0 0 0 / 55%), 0 2px 6px rgb(0 0 0 / 40%);
-  --tool-shell: #e0a458;
-  --tool-read: #60a5fa;
-  --tool-write: #c39cf0;
-  --tool-search: #4ade80;
-  --tool-web: #5fd0d6;
-  --tool-record: #fbbf24;
-  --tool-schedule: #cbd5e1;
-  --tool-agent: #f07ba8;
-  --tool-control: #cbd5e1;
-}
 
 /* Scrollbars are part of the layout, so they get a budget. WebView2 draws a classic Windows scrollbar that
    takes ~17px of width the moment it appears, which is a 17px shortfall in the middle of a line of text
@@ -259,6 +58,43 @@ body {
     sans-serif;
   font-size: var(--fs-ui);
   line-height: var(--lh-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The ambient wash: two very faint blooms fixed to the window, so glass layers have something to refract.
+   It is a pseudo-element behind everything (z-index -1 paints above the canvas background but below all
+   content) and it is skipped entirely when --ambient is 0. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: var(--ambient);
+  background:
+    radial-gradient(60rem 40rem at 8% -10%, var(--ambient-a), transparent 70%),
+    radial-gradient(50rem 36rem at 105% 105%, var(--ambient-b), transparent 70%);
+}
+
+/* ---- glass ----------------------------------------------------------------------------------------
+ * Two primitives. `.g-glass` is a panel resting on the ground: tint, edge, highlight, no blur. `.g-float`
+ * is a layer that floats over scrolling content (top bar, dock, popover, drawer, dialog): stronger tint,
+ * blur, and a real shadow. Putting blur on the first kind would cost a composited layer per card for an
+ * effect nobody could see. */
+.g-glass {
+  background: var(--glass-1);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-hi), var(--shadow-1);
+}
+
+.g-float {
+  background: var(--glass-2);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-hi), var(--shadow-3);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 
 /* ---- motion -------------------------------------------------------------------------------------
@@ -266,14 +102,10 @@ body {
  * rather than of whichever component somebody remembered to animate. S2 moves the button styles into this
  * shape; S1 lands the primitive so there is something to move them onto. */
 button,
-input,
-textarea,
-select,
-.list > li,
 .nav > li,
+.memory-card,
 .tool,
-.thinking,
-.card {
+.thinking {
   transition:
     background-color var(--motion-fast) var(--ease),
     border-color var(--motion-fast) var(--ease),
@@ -302,10 +134,12 @@ button {
   font: inherit;
   /* `currentColor` so a tier that sets only `color` still paints its own hover. */
   color: var(--text);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--line-strong);
+  padding: var(--space-1) var(--space-4);
+  min-block-size: 2.25rem;
+  border: 1px solid var(--glass-edge);
   border-radius: var(--radius-sm);
-  background: var(--surface-1);
+  background: var(--field-bg);
+  box-shadow: var(--glass-hi);
   cursor: pointer;
   /* Inline-block so a button does not stretch when it is a flex child, which is what made the toolbar rows
      look ragged before. */
@@ -341,6 +175,7 @@ button:disabled {
 /* ---- tier 1: primary -------------------------------------------------------------------------- */
 button.primary {
   border-color: transparent;
+  box-shadow: none;
   background: var(--accent);
   /* The one place in this palette where the text colour is decided by the button rather than by the surface
      it sits on: white on the light-mode fill (5.2:1), near-black on the dark-mode fill (7.0:1). White on
@@ -359,8 +194,8 @@ button.primary:hover:not(:disabled) {
 
 /* ---- tier 2: secondary — the default, stated so the tiers read as three ---------------------------- */
 button.secondary {
-  border-color: var(--line-strong);
-  background: var(--surface-1);
+  border-color: var(--glass-edge);
+  background: var(--field-bg);
   color: var(--text);
 }
 
@@ -368,6 +203,7 @@ button.secondary {
 button.ghost {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--text-2);
 }
 
@@ -382,6 +218,7 @@ button.ghost:hover:not(:disabled) {
  * single-valued variant could not express that. */
 button.danger {
   border-color: transparent;
+  box-shadow: none;
   background: color-mix(in srgb, var(--error) 10%, transparent);
   color: var(--error);
   font-weight: 500;
@@ -400,29 +237,27 @@ button.primary.danger {
 }
 
 /* ---- segmented control -------------------------------------------------------------------------
- * A group of mutually exclusive buttons that must not read as four separate controls. The queue filters were
- * the only place in the app doing this, and they did it locally; it is the right shape for the gear pickers
- * and the source filter too, so it lives here once.
- *
- * Bounded on purpose: this is for a handful of short labels that fit side by side. Above roughly four, or
- * with labels that need to wrap, a `<select>` says the same thing in a fraction of the width — which is why
- * the reasoning-gear list and the memory tier filter are still selects. Converting them here would be a
- * downgrade dressed as a consistency win. */
+ * 2–4 mutually exclusive options that must read as one control, not as four buttons. A sunken pill track with
+ * a raised selected segment (the iOS shape), because the selected member must read as "the one I am on" and
+ * not as a separate action. For more options, or names that need to wrap, use a <select>. */
 .segmented {
   display: inline-flex;
-  padding: 2px;
+  padding: 3px;
   gap: 2px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--glass-edge);
   border-radius: var(--radius-sm);
-  background: var(--surface-1);
+  background: var(--surface-2);
 }
 
 .segmented > button {
+  min-block-size: 1.75rem;
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--text-2);
-  font-size: var(--fs-meta);
-  padding: 0 var(--space-2);
+  font-size: var(--fs-ui);
+  padding: 0 var(--space-3);
+  border-radius: calc(var(--radius-sm) - 3px);
 }
 
 .segmented > button:hover:not(:disabled) {
@@ -430,44 +265,44 @@ button.primary.danger {
   color: var(--text);
 }
 
-/* The pressed member of a segmented group is the one place a `primary` fill is wrong: filling one segment of
-   a four-wide strip reads as a separate, unrelated button. A tinted surface plus accent text reads as
-   "selected within this group", which is what it is. */
-.segmented > button[aria-pressed='true'] {
-  background: var(--accent-soft);
-  color: var(--accent-pressed);
+.segmented > button[aria-pressed='true'],
+.segmented > button[aria-checked='true'] {
+  background: var(--glass-2-solid);
+  color: var(--text);
   font-weight: 500;
+  box-shadow: var(--shadow-1);
 }
 
+/* ---- fields -------------------------------------------------------------------------------------- */
 input,
 textarea,
 select {
   font: inherit;
   color: inherit;
-  padding: var(--space-1) var(--space-2);
-  /* --line-strong, not --line: this outline is what tells you the field is there. */
+  padding: var(--space-1) var(--space-3);
+  min-block-size: 2.25rem;
+  /* --line-strong, not --line: this outline is what tells you the field is there (3:1 non-text floor). */
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
-  background: var(--surface-1);
+  background: var(--field-bg);
 }
 
-/* A field's focus is a neutral ring and nothing else — no outline, no recoloured border.
+/* Fields answer focus at once: a 150ms fade on the edge reads as lag the moment you click into one. */
+input,
+textarea,
+select {
+  transition: none;
+}
 
-   Both were tried and both were wrong. The outline fought the control's own edge and read as two competing
-   lines; recolouring that edge to accent read as an error state — and on a settings page that is nothing but
-   fields, it read as a validation state that does not exist. What is left says "you are here" and says
-   nothing about what you typed. The composer box gets the same treatment; accent stays on buttons, where
-   there is no border for it to be confused with. */
+/* A field's focus is a thin, pale grey edge and nothing else: recolouring it to the accent reads as a validation
+   state, which a settings page of nothing but fields does not have. The old 3px full-strength ring was the
+   loudest thing on the page, so the edge is one pixel and only a shade darker than at rest. */
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: none;
-  border-color: var(--line-strong);
-  /* Full strength, not a tint of it: at 30% this ring measured 1.36:1, which is not "subtle", it is invisible —
-     and an invisible focus indicator is a worse fault than a blue one. `--focus-ring` at full is 3.6:1 light
-     and 5.7:1 dark, which is what a non-text indicator wants. It sits outside the field, so it recolours
-     nothing. */
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: color-mix(in srgb, var(--focus-ring) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus-ring) 22%, transparent);
 }
 
 input::placeholder,
@@ -475,17 +310,158 @@ textarea::placeholder {
   color: var(--text-3);
 }
 
-/* The webview hands us the OS checkbox, which is a grey-blue box that belongs to no palette here. This is the
-   whole fix — it recolours the native control without replacing it, so it keeps its own hit target and its own
-   keyboard behaviour. */
+/* Native <select> keeps its keyboard behaviour, its popup and its accessible name; only the skin changes.
+   The caret is two gradients so it can use a theme variable (an SVG data-URI cannot). */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-inline-end: 2.25rem;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position:
+    calc(100% - 1.15rem) 50%,
+    calc(100% - 0.8rem) 50%;
+  background-size:
+    0.35rem 0.35rem,
+    0.35rem 0.35rem;
+  background-repeat: no-repeat;
+}
+
+/* Spin buttons are noise next to a unit suffix; the keyboard (arrow keys) still steps the value. */
+input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 input[type='checkbox'],
 input[type='radio'] {
   accent-color: var(--accent);
+  min-block-size: 0;
+}
+
+/* ---- switch ---------------------------------------------------------------------------------------
+ * A real checkbox with role="switch": it keeps its form semantics, its keyboard behaviour and every
+ * `setValue` test. Off is a track with the strong edge and a dark thumb (the 3:1 non-text floor); on is the
+ * accent with a light thumb. */
+input.g-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  inline-size: 2.5rem;
+  block-size: 1.5rem;
+  min-block-size: 0;
+  padding: 0;
+  margin: 0;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+
+input.g-switch::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 0.2rem;
+  inline-size: 1rem;
+  block-size: 1rem;
+  border-radius: 50%;
+  background: var(--text-3);
+  transform: translateY(-50%);
+  transition:
+    transform var(--motion-fast) var(--ease),
+    background-color var(--motion-fast) var(--ease);
+}
+
+input.g-switch:checked {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+input.g-switch:checked::after {
+  background: var(--on-accent);
+  transform: translate(1rem, -50%);
+}
+
+/* The small one sits on a list row, where the full size would out-shout the name beside it. */
+input.g-switch.is-small {
+  inline-size: 2rem;
+  block-size: 1.2rem;
+}
+
+input.g-switch.is-small::after {
+  inline-size: 0.8rem;
+  block-size: 0.8rem;
+  inset-inline-start: 0.15rem;
+}
+
+input.g-switch.is-small:checked::after {
+  transform: translate(0.8rem, -50%);
+}
+
+input.g-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+input.g-switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---- chip ---------------------------------------------------------------------------------------- */
+.g-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  min-block-size: 1.5rem;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.g-chip.is-accent {
+  background: var(--accent-soft);
+  color: var(--accent-pressed);
+}
+
+.g-chip.is-ok {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+}
+
+.g-chip.is-warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+}
+
+.g-chip.is-error {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
 }
 
 textarea {
   inline-size: 100%;
   resize: vertical;
+  line-height: 1.6;
 }
 
 h1,
@@ -496,7 +472,7 @@ h3 {
 }
 
 h1 {
-  font-size: var(--fs-h1); /* 24px: the sheet's heading step, used by markdown's top level */
+  font-size: var(--fs-h1);
   line-height: 1.35;
 }
 
@@ -505,47 +481,51 @@ h2 {
   line-height: 1.4;
 }
 
+/* A section label, not a shout: 13px, ink-2, no capitals and no tracking (neither means anything in Chinese). */
 h3 {
-  font-size: var(--fs-meta);
+  font-size: 0.8125rem;
   line-height: var(--lh-meta);
-  color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  color: var(--text-2);
 }
 
 /* ---- shell ------------------------------------------------------------------------------------ */
 
 .app {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
   block-size: 100dvb;
   /* The narrow breakpoints query this, not .body: a container cannot style itself, and collapsing the
-     sidebar track is a change to .body's own columns. .app spans the same inline size as .body because
-     the top and status bars are full width. */
+     sidebar track is a change to .body's own columns. */
   container-type: inline-size;
   container-name: shell;
 }
 
-/* The only scroll containers in the app are inside the content region. */
+/* Sidebar on the left, the stage (page + status line) on the right. The sidebar column includes its own
+   12px outer margin, so the numbers below are the visible width plus that margin. */
 .body {
   display: grid;
-  /* Two named widths rather than a clamp: the rail is a *state*, and a state expressed as a ratio against the
-     window meant a small window got a narrower rail than a large one, which is backwards — the rail exists
-     precisely because the window is small. */
-  grid-template-columns: minmax(0, var(--rail-expanded)) minmax(0, 1fr);
+  grid-template-columns: minmax(0, calc(var(--rail-expanded) + var(--space-3))) minmax(0, 1fr);
+  block-size: 100%;
   min-block-size: 0;
   container-type: inline-size;
   container-name: body;
 }
 
 .body.is-sidebar-collapsed {
-  grid-template-columns: minmax(0, var(--rail)) minmax(0, 1fr);
+  grid-template-columns: minmax(0, calc(var(--rail) + var(--space-3))) minmax(0, 1fr);
 }
 
-/* The rail's own labels are hidden by the sidebar's own `is-collapsed` rules (SideBar.vue), not from here.
-   That is a change from before and it matters: those two selectors used to hide the labels while leaving the
-   track at full width, so a narrow window got icons nobody could name at 240px of space (ui.md §8.4). */
+.stage {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+
+/* The page. Positioned, so the top bar, the save bar, drawers and dialogs can float over it — which is also
+   what gives the glass something to blur: pages scroll *under* the top bar. */
 .content {
+  --topbar-h: 3.5rem;
+  position: relative;
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-inline-size: 0;
@@ -554,19 +534,43 @@ h3 {
 
 /* ---- view scaffolding ------------------------------------------------------------------------ */
 
-/* Every view is the same three-track column: a toolbar that does not scroll, a body that does, and an action
-   row pinned to the bottom. It was pasted into six files before it lived here; the one thing each view adds is
-   its own `flex: 1` on whichever region scrolls. */
+/* Every view fills the page. Its scroll region starts at the very top and pads itself clear of the top bar, so
+   content passes underneath the bar's glass instead of stopping at a hard edge. */
 .view {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-block-size: 0;
   block-size: 100%;
 }
 
+/* The centred reading column every page uses; pages with a wider job (settings) override the width. */
+.g-page {
+  inline-size: min(var(--column), 100%);
+  margin-inline: auto;
+  padding: calc(var(--topbar-h) + var(--space-4)) var(--space-5) 7rem;
+  display: grid;
+  /* One track that may shrink: an auto track is as wide as its widest unbreakable line, so a long command line
+     would push the whole page — and its switches — past the right edge. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-content: start;
+}
+
+/* Pages with a wider job than reading (skills, prompts): the column grows, the padding stays. */
+.g-page.is-wide {
+  inline-size: min(62rem, 100%);
+}
+
 /* Pushes whatever follows it to the far end of a toolbar. */
 .spacer {
   flex: 1;
+}
+
+/* "Not connected" fills the page, centred, with the top bar above it. */
+.g-connect {
+  margin: auto;
+  max-inline-size: 28rem;
 }
 
 /* ---- shared bits ------------------------------------------------------------------------------ */
@@ -578,7 +582,7 @@ h3 {
 }
 
 /* The generic de-emphasis utility, and therefore --text-2 rather than --text-3: it lands on statements and
-   hints, which are read. --text-3 is for data — ids, timestamps, counts, section labels — which is parsed. */
+   hints, which are read. --text-3 is for data — ids, timestamps, counts — which is parsed. */
 .muted {
   color: var(--text-2);
 }
@@ -615,49 +619,24 @@ h3 {
   gap: var(--space-2);
 }
 
-/* The toolbar is a surface sitting on the window, not a boxed region: it gets a hairline because a control
-   strip and the content under it really are two different things, and no shadow — a shadow here would put
-   the whole content area "below" the toolbar, which is not the relationship. */
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid var(--line);
-  background: var(--surface-1);
-}
-
-/* A search box: an icon that is part of the control rather than a character typed into its placeholder.
-
-   `⌕ 检索…` was the last Unicode glyph left in the UI, and it could not leave on its own: a placeholder is a
-   string, and an SVG cannot live inside one without becoming a background image that cannot inherit
-   `currentColor`. Putting the icon beside the input instead is both possible and better — it stops
-   disappearing the moment the reader types, which is when it stops being useful anyway. */
+/* A search box: an icon that is part of the control rather than a character typed into its placeholder. The icon
+   sits beside the input, not in its placeholder, so it does not disappear the moment the reader types. */
 .search-field {
   position: relative;
   display: inline-flex;
   align-items: center;
 }
 
-/* Its own class rather than `.icon`: `Icon.vue`'s root already *is* an `.icon`, so a `.search-field > .icon`
-   rule would be addressing the component through a name it shares with three other places — and it would keep
-   working only for as long as the icon stayed a direct child. */
+/* Its own class rather than `.icon`: `Icon.vue`'s root already *is* an `.icon`. */
 .search-field > .search-glyph {
   position: absolute;
-  inset-inline-start: var(--space-2);
+  inset-inline-start: var(--space-3);
   color: var(--text-3);
   pointer-events: none;
 }
 
 .search-field > input {
-  padding-inline-start: calc(var(--space-2) + 1.35em + var(--space-1));
-}
-
-.readable {
-  max-inline-size: var(--measure);
-  margin-inline: auto;
-  inline-size: 100%;
+  padding-inline-start: calc(var(--space-3) + 1.35em + var(--space-1));
 }
 
 .scroll {
@@ -671,140 +650,30 @@ h3 {
   text-overflow: ellipsis;
 }
 
-/* The one surface in the app that is read rather than scanned is an assistant's answer, and it is the one that
-   grows to fill whatever width is left over. `--measure` caps it. Not `.readable`: centring a column inside a
-   row whose meta line is flush left would put the prose and its own heading on different axes, and this row
-   keeps an accent bar down its left edge. Only the event log's own body is matched — a tool card's result and a
-   stretch of thinking sit deeper in the tree, so wide JSON and code blocks keep the full width they need. */
-.list > li > .markdown {
-  max-inline-size: var(--measure);
-}
-
-/* ---- master / detail -------------------------------------------------------------------------- */
-
-.split {
-  display: grid;
-  /* A share of the area it shares, with a floor. It was `clamp(16rem, 28vw, 26rem)`, which made the panel a
-     share of the *window*: the sidebar's width — 56px as a rail, 240px open — came straight out of it, so two
-     windows of the same size gave different panels depending on whether the sidebar happened to be open.
-
-     `var(..., minmax(...))` rather than a token, because there are two different things to express: the
-     default is a *fraction* of the content area, and a width the reader dragged is an explicit *length*. A
-     single length-valued token could only be one of those, and picking the wrong one is how the panel ended up
-     tracking the window. The fallback holds the fraction; the drag replaces the whole value. */
-  grid-template-columns: minmax(0, 1fr) var(--inspector, minmax(16rem, 0.42fr));
-  min-block-size: 0;
-  block-size: 100%;
-  position: relative;
-}
-
-/* The scrim is a sibling of the panes but must never be a grid item — otherwise it takes a column and
-   pushes the inspector onto a second row. It is invisible until a narrow container needs the overlay. */
-.inspector-scrim {
-  display: none;
-  position: absolute;
-  inset: 0;
-  background: rgb(0 0 0 / 25%);
-  z-index: 1;
-}
-
-/* Collapsed: the panel leaves the layout entirely.
-   It used to be squeezed to a zero-width track instead, which is not the same thing — the panel kept its
-   1px leading border and its content, and both of those are scrollable overflow of the grid. So closing the
-   inspector produced a horizontal scrollbar (1px of border past a zero track) *and* a vertical one (the
-   textarea and the button row refusing to fit a zero-width column). The narrow-container branch below
-   already got this right by hiding it; this is the wide-container version of the same rule. */
-.split.is-inspector-collapsed {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.split.is-inspector-collapsed .inspector {
-  display: none;
-}
-
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.list > li {
-  padding: var(--space-2) var(--space-3);
-  border-block-end: 1px solid var(--line);
-  cursor: pointer;
-  border-inline-start: 2px solid transparent;
-}
-
-.list > li:hover {
-  background: var(--surface-2);
-}
-
-.list > li.selected {
-  background: var(--selected);
-  /* --accent-pressed, like the pressed segment: the plain accent against its own tint measures 4.47:1, which
-     clears the 3:1 that a non-text indicator needs — but the bar is the *only* thing saying "you are here",
-     so it gets the same token as every other accent-on-accent-tint state rather than a special case. */
-  border-inline-start-color: var(--accent-pressed);
-}
-
-/* Rows are the listbox options, so the focus ring is drawn inside the row rather than against the list
-   edge, where the scroll container would clip it. */
-.list > li:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* A view's own outcome line, pinned to the bottom of its region. Was duplicated verbatim in the three
-   views that have one; it belongs here with the rest of the shared bits.
-
-   Every bare notice this app renders is a confirmation (「已保存」「已删除 #3」「已入队…」 — grepped, no
-   exceptions), so the strip carries the success tint: a success prompt that looks like body text is easy
-   to miss at the bottom of a toolbar. An error notice opts into its own tint below; both tints were
-   measured with their own ink on top (4.9:1 or better, worst case dark). */
-.notice {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-block-start: 1px solid var(--line);
-  background: color-mix(in srgb, var(--ok) 8%, transparent);
-}
-
-.error.notice {
-  background: color-mix(in srgb, var(--error) 8%, transparent);
-}
-
-/* "Nothing here" — a real answer, so it is stated rather than left as blank space. Centered with air
-   around it: an empty state that is just grey text at the top-left of a pane reads like a rendering bug. */
+/* "Nothing here" — a real answer, so it is stated rather than left as blank space. Centred with air around it:
+   an empty state that is just grey text at the top-left of a pane reads like a rendering bug. */
 .empty {
   margin: 0;
-  padding: var(--space-5) var(--space-3);
+  padding: var(--space-6) var(--space-3);
   color: var(--text-2);
   text-align: center;
 }
 
-/* "Not known yet" — a different answer from "nothing here", and the difference matters.
-
-   <para>
-   A view that has not read anything yet renders with empty data, and if both states share a message the first
-   thing the reader sees is a confident wrong answer: 「（无匹配事件）」 on a session that is merely unread, said
-   before the request that would have contradicted it. So the two states are separate rows, and only the first
-   load shows this one.
-   </para>
-
-   <para>
-   Only the <b>first</b> load. The session view re-reads itself every 400ms while a turn runs, and a pending
-   state on every poll would strobe the screen — a worse fault than the one it replaces.
-   </para> */
+/* "Not known yet" — a different answer from "nothing here", and the difference matters: a view that has not read
+   anything yet renders with empty data, and if both states share a message the first thing the reader sees is a
+   confident wrong answer. Only the *first* load shows this one; the session view re-reads itself every 400ms
+   while a turn runs, and a pending state on every poll would strobe the screen. */
 .pending {
   margin: 0;
   padding: var(--space-3);
   color: var(--text-3);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
 }
 
-/* A slow breath rather than a spinner: nothing here can be cancelled, so the honest signal is "still trying",
-   not "working". It also stops on its own the moment the answer arrives, which a spinner cannot promise. */
+/* A slow breath rather than a spinner: nothing here can be cancelled, so the honest signal is "still trying". */
 .pending::before {
   content: '';
   flex: none;
@@ -826,171 +695,8 @@ h3 {
   }
 }
 
-/* ---- inspector -------------------------------------------------------------------------------- */
-
-.inspector {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-inline-size: 0;
-  min-block-size: 0;
-  border-inline-start: 1px solid var(--line);
-  background: var(--surface-1);
-}
-
-/* The panel's own left edge is where its resize handle belongs — the same reason a window's frame is on its
-   frame. 3px of hit area over a 1px border, so the edge is still grabbable without the reader hunting for it,
-   and `cursor: col-resize` says so before the press rather than after it. */
-.inspector.is-resizable::before {
-  content: '';
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: -3px;
-  inline-size: 7px;
-  cursor: col-resize;
-  z-index: 1;
-}
-
-.inspector.is-resizable:hover::before {
-  background: var(--accent-soft);
-}
-
-.inspector-resizer:focus-visible {
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: -3px;
-  inline-size: 7px;
-  outline: none;
-  background: var(--accent-soft);
-  cursor: col-resize;
-}
-
-.inspector-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border-block-end: 1px solid var(--line);
-}
-
-.inspector-body {
-  padding: var(--space-3);
-  overflow: auto;
-  min-block-size: 0;
-}
-
-.inspector-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) 0;
-}
-
-/* ---- composer --------------------------------------------------------------------------------- */
-
-.composer {
-  border-block-start: 1px solid var(--line);
-  /* Opaque, not `color-mix(... 88%, transparent)` over a `backdrop-filter: blur(0.5rem)`. That combination
-     was buying a translucency nobody asked for: the composer is a bar at the bottom of the window, not
-     something floating *over* content — the thing it scrolls away from is the list above it, and blurring it
-     cost a composited layer on every frame for an effect with nothing to show through it. In dark mode it
-     also bought nothing: the surface behind it is the same surface, so the translucency just muddied the text. */
-  background: var(--surface-1);
-}
-
-.composer-strip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-block-end: 1px solid var(--line);
-  font-size: var(--fs-meta);
-  line-height: var(--lh-meta);
-  color: var(--text-2);
-}
-
-.composer-input {
-  padding: var(--space-2) var(--space-3);
-}
-
-.composer-input textarea {
-  min-block-size: 2.5lh;
-  border: none;
-  background: transparent;
-  resize: vertical;
-}
-
-/* The box is the whole composer, so it used to carry `outline: none` and leave a keyboard user with nothing to
-   see. The border moves to the wrapper instead: the control itself stays unadorned, and the ring is drawn
-   around the region rather than against the control's own edge. `:has()` keeps this to keyboard focus, which
-   is the same rule the app-wide `:focus-visible` follows — a pointer user who clicked the box should not get
-   a ring that then never goes away. */
-/* Same decision as the field ring above, applied to the wrapper rather than the control: a neutral ring. The
-   control's own ring is switched off underneath so the two do not stack into a thicker band. `:has()` keeps
-   this to keyboard focus, following the app-wide rule — a pointer user who clicked the box should not be
-   left with a ring that never goes away. */
-.composer-input:has(textarea:focus-visible) {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-  border-radius: var(--radius-sm);
-}
-
-.composer-input textarea:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.composer-tools {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3) var(--space-2);
-}
-
-.composer-tools .spacer {
-  flex: 1;
-}
-
-/* ---- queue status stripe ---------------------------------------------------------------------- */
-
-.queue-item {
-  border-inline-start-width: 0.25em;
-  border-inline-start-style: solid;
-}
-
-.queue-item[data-status='Queued'] {
-  border-inline-start-color: var(--text-3);
-}
-
-.queue-item[data-status='Running'] {
-  border-inline-start-color: var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-.queue-item[data-status='Failed'] {
-  border-inline-start-color: var(--error);
-}
-
-.queue-item[data-status='Done'] {
-  border-inline-start-color: var(--ok);
-}
-
-.queue-item[data-status='Canceled'] {
-  border-inline-start-color: var(--line);
-}
-
-@keyframes pulse {
-  50% {
-    border-inline-start-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  }
-}
-
-/* One place, rather than a guard per animation. This used to be two blocks — one for the queue stripe, one
-   for the thinking glyph — which meant the streaming caret, added later, was never covered: a reader who asked
- * their system for less motion still got a blinking cursor. A blanket is the only version of this that cannot
-   fall behind the next animation somebody adds. */
+/* One place, rather than a guard per animation. A blanket is the only version of this that cannot fall behind
+   the next animation somebody adds. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1002,125 +708,16 @@ h3 {
   }
 }
 
-/* ---- settings --------------------------------------------------------------------------------- */
-
-.cards {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-3);
-}
-
-/* A card is a surface, not a box. It used to draw a border *and* sit on --surface-1, which is two signals for
-   one relationship and leaves the settings page looking like a form printed on a sheet. The step from
-   --surface-0 to --surface-1 is the whole signal now; the hairline stays only because a card among other
-   cards at the same lightness still needs an edge. */
-.card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
-  padding: var(--space-3);
-  box-shadow: var(--shadow-1);
-}
-
-.card > h2 {
-  margin-block-end: var(--space-1);
-}
-
-/* ---- collapsible groups (settings) --------------------------------------------------------------
-   The heading is a button rather than a heading *with* a button beside it: on a page of six stacked groups,
-   a separate disclosure control is one more thing to aim at, and the heading is the only part of a card most
-   readers actually touch. */
-.group-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  inline-size: 100%;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  /* 14px, two steps under the global 20px heading: on the settings page each group title is a row label
-     above a form, and at 20px it out-shouts every field under it. */
-  font-size: var(--fs-ui);
-  font-weight: 600;
-  text-align: start;
-  /* The global button rule centres its contents — right for a one-line toolbar button, wrong for a
-     full-width disclosure heading, where the chevron belongs at the text's edge and the text at the
-     card's start. */
-  justify-content: flex-start;
-  cursor: pointer;
-}
-
-.group-toggle:hover {
-  background: var(--surface-2);
-}
-
-/* Rotated rather than swapped, so the control's shape is stable and the reading direction carries the state —
-   down is open, right is folded. */
-.group-chevron {
-  transition: transform var(--motion-fast) var(--ease);
-}
-
-.group-chevron.is-flipped {
-  transform: rotate(-90deg);
-}
-
-/* A folded card keeps its edge but gives up its padding: an empty box the height of a header is what a
-   disclosure that has not been *styled* looks like, and it is worth not shipping that. */
-.card.is-folded {
-  padding-block: var(--space-2);
-}
-
-.card.is-folded > h2 {
-  margin-block-end: 0;
-}
-
-.card-note {
-  font-size: var(--fs-meta);
-  line-height: var(--lh-meta);
-  color: var(--text-2);
-  margin-block: 0 var(--space-3);
-}
-
-.field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
-  padding-block: var(--space-1);
-}
-
-.field > input[type='number'] {
-  inline-size: 7rem;
-}
-
-.field .source {
-  grid-column: 1 / -1;
-  font-size: var(--fs-meta);
-  line-height: var(--lh-meta);
-  color: var(--text-2);
-}
-
 /* ---- loading -----------------------------------------------------------------------------------
-
-   A disabled button is already styled above; this is the *other* half of the state pair — the control is
-   still the control, it is just mid-flight. `aria-busy` is the signal rather than a class, because it is
-   also the signal assistive technology gets (the composer sets it while a send or an interrupt is running).
-   No spinner: every busy control in this app changes its own label (「中断中…」「上传中…」), and a second
-   animated affordance next to a changed label is decoration. */
+   `aria-busy` is the signal rather than a class, because it is also the signal assistive technology gets. No
+   spinner: every busy control in this app changes its own label (「中断中…」「上传中…」). */
 button[aria-busy='true'] {
   cursor: progress;
 }
 
-/* ---- skeletons ----------------------------------------------------------------------------------
-
-   "Not known yet" has two faces in this app. `.pending` (below) is the spoken one — a sentence, because the
-   difference between *empty* and *unread* is information. The block is the shape of the thing being waited
-   for, shown beside that sentence on the two list views' first load, so the pane does not read as blank
-   while the request is in flight. Opacity pulse rather than a shimmer gradient: the modernization brief
-   rules out decorative gradients, and reduced-motion already flattens this to a static block. */
+/* ---- skeletons -----------------------------------------------------------------------------------
+   The shape of the thing being waited for, shown beside `.pending`'s sentence on first load so the pane does not
+   read as blank while the request is in flight. Opacity pulse rather than a shimmer gradient. */
 .skeleton-stack {
   display: grid;
   gap: var(--space-2);
@@ -1153,101 +750,38 @@ button[aria-busy='true'] {
   }
 }
 
-/* ---- large screens ------------------------------------------------------------------------------
-
-   The workbench itself fills the window — that is what a workbench is for. What must not fill a 4K window
-   is a *form*: the settings cards cap at a readable width and centre, so the fields stay in one column the
-   eye does not have to chase. The event list deliberately stays uncapped: tool payloads want every pixel
-   they can get, and prose is already capped by --measure. The MCP and skills cards fill their pane — the
-   pane's own padding is the margin, and their fields stretch to match. */
-.cards {
-  max-inline-size: 64rem;
-  margin-inline: auto;
-}
-
-/* ---- touch --------------------------------------------------------------------------------------
-
-   44px targets wherever the pointer is a finger. This is a media query rather than a container query on
-   purpose: it is a fact about the input device, not about the window — a 1200px-wide tablet still wants
-   thumb-sized controls. Rows and buttons grow; nothing else about the layout moves, and the desktop is
-   untouched. */
+/* ---- touch ---------------------------------------------------------------------------------------
+   44px targets wherever the pointer is a finger. A media query rather than a container query on purpose: it is a
+   fact about the input device, not about the window. */
 @media (pointer: coarse) {
   button,
   select,
   input:not([type='checkbox']):not([type='radio']),
-  .list > li,
-  .nav > li {
+  .nav > li,
+  .memory-card {
     min-block-size: 2.75rem; /* 44px */
   }
 }
 
-/* ---- high contrast -------------------------------------------------------------------------------
-
-   The system's own "more contrast" flag, honoured: hairlines that are deliberately quiet in the default
-   scheme step up to the ones that must be found, so a row divider stops disappearing and a field edge
-   stops blending into its card. Nothing else changes — hue and layout are the user's to keep. */
+/* ---- high contrast ---------------------------------------------------------------------------------
+   The system's own "more contrast" flag, honoured: the quiet hairlines step up to the ones that must be found,
+   and the glass loses its translucency so text never sits on a blurred background. */
 @media (prefers-contrast: more) {
-  :root {
-    --line: var(--line-strong);
+  :root:root {
+    --glass-edge: var(--line-strong);
+    --glass-1: var(--glass-1-solid);
+    --glass-2: var(--glass-2-solid);
+    --field-bg: var(--glass-1-solid);
+    --glass-blur: none;
   }
 }
 
-/* ---- responsive: container queries, no fixed breakpoints in px --------------------------------- */
+/* ---- responsive: container queries, no fixed breakpoints in px ----------------------------------- */
 
-/* Narrow: the inspector becomes an overlay instead of a column. */
-/* The floating form of the inspector is the one place in the app that genuinely leaves the page: it covers the
-   list rather than sharing the row with it. So it is the one place that gets a real shadow — --shadow-3, the
-   deepest step, because it is the tallest thing on screen at this width. */
-@container body (max-width: 64rem) {
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-    position: relative;
-  }
-
-  .split.is-inspector-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .inspector {
-    position: absolute;
-    inset-block: 0;
-    inset-inline-end: 0;
-    /* A floating overlay has nothing beside it to share with, so the fraction is meaningless here and the
-       width is just "most of the list, with a limit". */
-    inline-size: min(90%, 26rem);
-    border-inline-start: 1px solid var(--line);
-    box-shadow: var(--shadow-3);
-    z-index: 2;
-  }
-
-  .split.is-inspector-collapsed .inspector {
-    display: none;
-  }
-
-  .inspector-scrim {
-    display: block;
-  }
-}
-
-/* Narrower still: the rail is the only state there is.
-
-   <para>
-   The *state* is handled in script (App.vue reads the width and hides the toggle), because a control that
-   cannot act must not be on screen at all. What is left for CSS here is only the consequences for things that
-   have no state: the toolbars lose their gaps so four controls fit beside a 56px rail.
-   </para> */
+/* Narrower than this the rail is the only state there is. The *state* is handled in script (App.vue reads the
+   width and hides the toggle), because a control that cannot act must not be on screen at all. */
 @container shell (max-width: 52rem) {
-  .toolbar {
-    gap: var(--space-1);
-    padding-inline: var(--space-2);
-  }
-}
-
-/* Narrowest: the top bar drops its secondary items. The top bar sits outside `.body`, so this could never
-   have matched `body`; it is the same shell container as the sidebar collapse above. */
-@container shell (max-width: 40rem) {
-  .topbar .breadcrumb,
-  .topbar .brand-scope {
-    display: none;
+  .g-page {
+    padding-inline: var(--space-4);
   }
 }

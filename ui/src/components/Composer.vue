@@ -3,7 +3,10 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { APPROVAL_GEARS } from '../api'
 import type { ConsumerState, PartnerApiSurface, QueueItem, QueueSummary, SubmitResult, UploadedMedia } from '../api'
 import { parseComposerCommand } from '../composerCommand'
+import { gearName } from '../gears'
+import HintTip from './HintTip.vue'
 import Icon from './Icon.vue'
+import Segmented from './Segmented.vue'
 
 /**
  * The delivery entry point (ui.md §6, design doc §2.3.1). Submitting never inserts locally: the answer is
@@ -23,6 +26,11 @@ const props = defineProps<{
    */
   gears?: readonly string[] | undefined
   defaultGear?: string | undefined
+  /**
+   * How full the model's memory is, as the occupancy ring next to the send button. `label` and `hint` are the
+   * sentences behind its ⓘ; `fraction` is 0–1. Absent until the session has been read once.
+   */
+  context?: { fraction: number; label: string; hint: string } | undefined
 }>()
 const emit = defineEmits<{
   sent: [result: SubmitResult]
@@ -35,7 +43,6 @@ const emit = defineEmits<{
 
 const box = ref<HTMLTextAreaElement | null>(null)
 const draft = ref('')
-const stripOpen = ref(true)
 const uploading = ref(false)
 /**
  * Whether the waiting items are folded away.
@@ -104,10 +111,52 @@ const queueShown = computed(() => waiting.value.length === 1 || !queueCollapsed.
  * Why nothing will move. Rendered independently of the queue summary: when the summary is unavailable the
  * explanation matters more, not less.
  */
+const modelName = computed(() => props.consumer?.model ?? '')
+
 const consumerNote = computed(() => {
   const state = props.consumer
   return state && !state.running ? `未执行 · ${state.reason}` : ''
 })
+
+/**
+ * Which pill's popover is open. The two pickers are choices, not configuration, so they open in place above the
+ * dock and close on a click anywhere else or on Esc — a native `<select>` would have been a second kind of
+ * dropdown in an app that is trying to have one.
+ */
+const picker = ref<'gear' | 'approval' | null>(null)
+const dock = ref<HTMLElement | null>(null)
+
+function togglePicker(which: 'gear' | 'approval'): void {
+  picker.value = picker.value === which ? null : which
+}
+
+function onDocumentPointerDown(event: Event): void {
+  if (picker.value !== null && dock.value !== null && event.target instanceof Node) {
+    const open = dock.value.querySelector('.picker-pop')
+    const pills = dock.value.querySelectorAll('.pill')
+    const inside = (open?.contains(event.target) ?? false) || Array.from(pills).some((pill) => pill.contains(event.target as Node))
+    if (!inside) picker.value = null
+  }
+}
+
+watch(picker, (open) => {
+  if (open !== null) document.addEventListener('pointerdown', onDocumentPointerDown)
+  else document.removeEventListener('pointerdown', onDocumentPointerDown)
+})
+
+const gearChoices = computed(() => gearOptions.value.map((value) => ({ value, label: gearName(value) })))
+
+const approvalOptions = APPROVAL_GEARS.map((option) => ({
+  value: option.value,
+  label: ({ none: '不审批', dangerous: '危险指令', all: '全部' } as Record<string, string>)[option.value] ?? option.label,
+  title: option.hint,
+}))
+const approvalLabel = computed(() => approvalOptions.find((option) => option.value === props.approval)?.label ?? props.approval ?? '')
+const approvalHint = computed(() => APPROVAL_GEARS.find((option) => option.value === props.approval)?.hint ?? '')
+
+/** The ring: circumference 2πr with r=8 in a 20-unit box. */
+const RING = 2 * Math.PI * 8
+const ringOffset = computed(() => RING * (1 - Math.min(1, Math.max(0, props.context?.fraction ?? 0))))
 
 const busy = ref(false)
 
@@ -322,6 +371,7 @@ function restore(body: string) {
 
 onUnmounted(() => {
   attachments.value.forEach(release)
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
 })
 
 defineExpose({ focus, restore })
@@ -329,192 +379,247 @@ defineExpose({ focus, restore })
 
 <template>
   <div
-    class="composer"
+    class="composer-root"
     :class="{ 'is-dragging': dragging }"
     data-test="composer"
     @dragover.prevent="dragging = true"
     @dragleave="dragging = false"
     @drop="onDrop"
     @paste="onPaste"
+    @keydown.escape="picker = null"
   >
     <!--
-      The status line says why nothing will move, and says nothing when something will: with the queue and the
-      tool list no longer rendered here, an empty strip was a row of padding with a chevron on it.
+      Why nothing will move, and nothing at all when something will: a standing status line on a healthy
+      composer is a sentence about nothing.
     -->
-    <div
-      v-if="stripOpen && consumerNote"
-      class="composer-strip"
-      data-test="composer-strip"
-    >
-      <span class="muted" data-test="composer-consumer">{{ consumerNote }}</span>
-      <span class="spacer" />
-      <button class="ghost" data-test="composer-strip-toggle" aria-label="收起状态条" @click="stripOpen = false">
-        <Icon name="chevron-up" :size="14" />
-      </button>
+    <div v-if="consumerNote" class="dock-note" data-test="composer-strip">
+      <span data-test="composer-consumer">{{ consumerNote }}</span>
     </div>
 
-    <div v-if="attachments.length > 0" class="attachments" data-test="composer-attachments">
-      <span
-        v-for="attachment in attachments"
-        :key="attachment.media.mediaId"
-        class="attachment"
-        data-test="composer-attachment"
-        :title="attachment.media.fileName"
-      >
-        <img v-if="attachment.preview" :src="attachment.preview" alt="附图预览" />
-        <span v-else class="file-glyph"><Icon name="file" :size="14" /></span>
-        <span class="file-name">{{ attachment.media.fileName }}</span>
-        <span class="meta">{{ Math.round(attachment.media.bytes / 1024) }} KB</span>
-        <button
-          class="ghost"
-          data-test="composer-detach"
-          :title="'移除附件'"
-          @click="detach(attachment.media.mediaId)"
+    <div ref="dock" class="dock g-float">
+      <div v-if="attachments.length > 0" class="attachments" data-test="composer-attachments">
+        <span
+          v-for="attachment in attachments"
+          :key="attachment.media.mediaId"
+          class="attachment"
+          data-test="composer-attachment"
+          :title="attachment.media.fileName"
         >
-          ×
+          <img v-if="attachment.preview" :src="attachment.preview" alt="附图预览" />
+          <span v-else class="file-glyph"><Icon name="file" :size="14" /></span>
+          <span class="file-name">{{ attachment.media.fileName }}</span>
+          <span class="meta">{{ Math.round(attachment.media.bytes / 1024) }} KB</span>
+          <button
+            class="ghost"
+            data-test="composer-detach"
+            title="移除附件"
+            aria-label="移除附件"
+            @click="detach(attachment.media.mediaId)"
+          >
+            <Icon name="x" :size="12" />
+          </button>
+        </span>
+      </div>
+
+      <!--
+        What is waiting, in the order it will run — only while there is anything, and only the waiting ones. The
+        arrow folds the list when there is more than one entry to fold, and folds nothing when there is one.
+      -->
+      <div v-if="waiting.length > 0" class="queue" data-test="composer-queue">
+        <ol v-if="queueShown" class="queue-items" data-test="composer-queue-list">
+          <li v-for="item in waiting" :key="item.itemId" data-test="composer-queue-item">
+            <span class="queue-payload">{{ item.payload }}</span>
+            <span class="queue-id sr-only">{{ item.itemId }}</span>
+          </li>
+        </ol>
+        <button
+          v-if="waiting.length > 1"
+          class="ghost queue-toggle"
+          data-test="composer-queue-toggle"
+          :aria-expanded="queueShown"
+          :aria-label="queueShown ? '收起队列' : '展开队列'"
+          @click="queueCollapsed = !queueCollapsed"
+        >
+          <Icon :name="queueShown ? 'chevron-up' : 'chevron-down'" :size="14" />
         </button>
-      </span>
-    </div>
+      </div>
 
-    <!--
-      The queue, fixed directly above the input box: what is waiting to run, in the order it will run.
-
-      <para>
-      Only waiting entries, and only while there are any. A standing 「队列 0」 is a line about nothing, and a
-      count of the queue is not what a reader wants to know — what is in it is. The arrow folds the list when
-      there is more than one entry to fold, and folds nothing when there is only one.
-      </para>
-    -->
-    <div v-if="waiting.length > 0" class="queue" data-test="composer-queue">
-      <ol v-if="queueShown" class="queue-items" data-test="composer-queue-list">
-        <li v-for="item in waiting" :key="item.itemId" data-test="composer-queue-item">
-          <span class="queue-payload">{{ item.payload }}</span>
-          <span class="queue-id">{{ item.itemId }}</span>
-        </li>
-      </ol>
-      <button
-        v-if="waiting.length > 1"
-        class="ghost queue-toggle"
-        data-test="composer-queue-toggle"
-        :aria-expanded="queueShown"
-        :aria-label="queueShown ? '收起队列' : '展开队列'"
-        @click="queueCollapsed = !queueCollapsed"
-      >
-        <Icon :name="queueShown ? 'chevron-up' : 'chevron-down'" :size="14" />
-      </button>
-    </div>
-
-    <div class="composer-input">
-      <textarea
-        ref="box"
-        v-model="draft"
-        rows="2"
-        data-test="composer-input"
-        aria-label="输入消息"
-        placeholder="输入消息…（Enter 发送，Shift+Enter 换行；/status 查看队列）"
-        @keydown.enter.exact="onEnter"
-      />
-    </div>
-
-    <div class="composer-tools">
-      <label class="ghost attach" :class="{ busy: uploading }" :aria-busy="uploading || undefined" data-test="composer-attach">
-        {{ uploading ? '上传中…' : '＋ 附件' }}
-        <input
-          type="file"
-          multiple
-          data-test="composer-attach-input"
-          @change="onPicked"
+      <div class="composer-input">
+        <textarea
+          ref="box"
+          v-model="draft"
+          rows="2"
+          data-test="composer-input"
+          aria-label="输入消息"
+          placeholder="输入消息…"
+          @keydown.enter.exact="onEnter"
         />
-      </label>
-      <span class="spacer" />
-      <span v-if="!stripOpen && consumerNote" class="meta" data-test="composer-consumer-folded">{{ consumerNote }}</span>
-      <button
-        v-if="!stripOpen && consumerNote"
-        class="ghost"
-        data-test="composer-strip-toggle"
-        aria-label="展开状态条"
-        @click="stripOpen = true"
-      >
-        <Icon name="chevron-down" :size="14" />
-      </button>
-      <!--
-        The two gears sit next to the send button, where the choice they carry lands: they are read at the
-        moment of sending, so they belong on the same side as the button rather than across the row from it.
-      -->
-      <select
-        v-if="approval"
-        class="gear"
-        :value="approval"
-        aria-label="审批挡位"
-        data-test="composer-approval"
-        @change="emit('approval', ($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="gear in APPROVAL_GEARS" :key="gear.value" :value="gear.value" :title="gear.hint">
-          审批：{{ gear.label }}
-        </option>
-      </select>
+        <HintTip align="end" class="input-hint">Enter 发送，Shift+Enter 换行。输入 <code>/status</code> 查看排队情况。</HintTip>
+      </div>
 
-      <select
-        v-if="gearOptions.length > 0"
-        class="gear"
-        :value="gear"
-        aria-label="思考挡位"
-        data-test="composer-gear"
-        @change="gear = ($event.target as HTMLSelectElement).value"
-      >
-        <option v-for="option in gearOptions" :key="option" :value="option">思考：{{ option }}</option>
-      </select>
+      <div class="composer-tools">
+        <label class="attach" :class="{ busy: uploading }" :aria-busy="uploading || undefined" data-test="composer-attach" title="添加附件">
+          <Icon name="paperclip" :size="16" />
+          <span :class="{ 'sr-only': !uploading }">{{ uploading ? '上传中…' : '添加附件' }}</span>
+          <input type="file" multiple data-test="composer-attach-input" @change="onPicked" />
+        </label>
 
-      <!--
-        One button, four states, decided by whether the box has anything in it and whether a turn is running.
-        `composer-send` stays on the two states that submit, because that is what the tests drive; the
-        interrupt is a different action and gets its own hook rather than overloading one.
-      -->
-      <button
-        v-if="action.kind === 'interrupt'"
-        class="danger"
-        data-test="composer-interrupt"
-        :disabled="busy"
-        :aria-busy="busy || undefined"
-        :title="`中断正在运行的 ${runningId}`"
-        @click="interrupt"
-      >
-        {{ busy ? '中断中…' : action.label }}
-      </button>
-      <button
-        v-else
-        class="primary"
-        :disabled="!canSend"
-        :aria-busy="busy || undefined"
-        data-test="composer-send"
-        @click="send"
-      >
-        {{ action.label }}
-        <Icon name="return" :size="14" label="Enter 发送" />
-      </button>
+        <!--
+          The two pickers sit next to the send button, where the choice they carry lands: they are read at the moment
+          of sending, so they belong on the same side as the button rather than across the row from it.
+        -->
+        <span v-if="approval" class="pill-wrap">
+          <button
+            class="pill"
+            type="button"
+            :aria-expanded="picker === 'approval'"
+            aria-label="审批挡位"
+            :data-value="approval"
+            data-test="composer-approval"
+            @click="togglePicker('approval')"
+          >
+            <Icon name="shield" :size="14" /> 审批 · {{ approvalLabel }}
+          </button>
+          <div v-if="picker === 'approval'" class="picker-pop g-float" data-test="composer-approval-pop">
+            <Segmented
+              :model-value="approval"
+              :options="approvalOptions"
+              label="审批挡位"
+              @update:model-value="emit('approval', $event)"
+            />
+            <p class="picker-hint">{{ approvalHint }}</p>
+          </div>
+        </span>
+
+        <span class="spacer" />
+
+        <!-- The model that answers, read off the consumer: it sits with the gear and the ring because the three
+             together say how the next message will be handled. -->
+        <span v-if="modelName" class="model" :title="`当前模型：${modelName}`" data-test="composer-model">{{ modelName }}</span>
+
+        <span v-if="gearOptions.length > 0" class="pill-wrap">
+          <button
+            class="pill"
+            type="button"
+            :aria-expanded="picker === 'gear'"
+            aria-label="思考强度"
+            :data-value="gear"
+            data-test="composer-gear"
+            @click="togglePicker('gear')"
+          >
+            <Icon name="sparkle" :size="14" /> 思考 · {{ gearName(gear) }}
+          </button>
+          <div v-if="picker === 'gear'" class="picker-pop is-end g-float" data-test="composer-gear-pop">
+            <Segmented
+              :model-value="gear"
+              :options="gearChoices"
+              label="思考强度"
+              @update:model-value="gear = $event"
+            />
+            <p class="picker-hint">越高想得越仔细，回答也越慢。</p>
+          </div>
+        </span>
+
+        <!-- Memory occupancy: a ring that fills as the history grows and turns amber near the limit. The detail
+             the ring has no room for is the tooltip. -->
+        <span
+          v-if="context"
+          class="ctx"
+          :class="{ 'context-tight': context.fraction >= 0.85 }"
+          :title="context.hint"
+          data-test="session-context"
+        >
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="10" cy="10" r="8" class="ring-track" />
+            <circle cx="10" cy="10" r="8" class="ring-fill" :stroke-dasharray="RING" :stroke-dashoffset="ringOffset" />
+          </svg>
+          <span class="ctx-pct" aria-hidden="true">{{ Math.round(context.fraction * 100) }}%</span>
+          <span class="sr-only">{{ context.label }}</span>
+        </span>
+
+        <!--
+          One button, three states, decided by whether the box has anything in it and whether a turn is running.
+          `composer-send` stays on the two states that submit, because that is what the tests drive; the
+          interrupt is a different action and gets its own hook rather than overloading one. The words stay in
+          the DOM (and in the accessible name) even though the shape is a circle with an arrow.
+        -->
+        <button
+          v-if="action.kind === 'interrupt'"
+          class="send is-stop"
+          data-test="composer-interrupt"
+          :disabled="busy"
+          :aria-busy="busy || undefined"
+          :title="`中断正在运行的 ${runningId}`"
+          @click="interrupt"
+        >
+          <Icon name="square" :size="14" /><span class="sr-only">{{ busy ? '中断中…' : action.label }}</span>
+        </button>
+        <button
+          v-else
+          class="send primary"
+          :disabled="!canSend"
+          :aria-busy="busy || undefined"
+          data-test="composer-send"
+          :title="action.label"
+          @click="send"
+        >
+          <Icon name="arrow-up" :size="16" :stroke-width="2.2" /><span class="sr-only">{{ action.label }}</span>
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.composer-strip .spacer {
-  flex: 1;
+.composer-root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  inline-size: 100%;
+}
+
+/* The drop target has to announce itself: a paste that silently fails is worse than one that is refused. */
+.composer-root.is-dragging .dock {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+}
+
+.dock-note {
+  justify-self: center;
+  max-inline-size: 100%;
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--glass-2);
+  border: 1px solid var(--glass-edge);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The dock: a floating glass bar. The message list scrolls underneath it, which is where the blur is visible. */
+.dock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-3) var(--space-2);
 }
 
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
+  gap: var(--space-2);
+  padding-inline: var(--space-2);
 }
 
 .attachment {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  border: 1px solid var(--line);
+  gap: var(--space-2);
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
-  padding: 2px var(--space-1);
+  padding: 2px var(--space-1) 2px 2px;
   max-inline-size: 100%;
   min-inline-size: 0;
 }
@@ -524,13 +629,19 @@ defineExpose({ focus, restore })
   inline-size: 32px;
   flex: none;
   object-fit: cover;
+  border-radius: 8px;
+}
+
+.attachment button {
+  min-block-size: 1.5rem;
+  padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
 }
 
 .file-glyph {
   flex: none;
   color: var(--text-2);
-  padding-inline: 0.2em;
+  padding-inline: 0.5em;
 }
 
 /* A long path has to give way somewhere, and the middle is where a reader does not look. */
@@ -539,50 +650,43 @@ defineExpose({ focus, restore })
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-inline-size: 16rem;
+  max-inline-size: 14rem;
 }
 
+/* ---- what is waiting ------------------------------------------------------------------------------ */
 .queue {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-block-start: var(--space-1);
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
 }
 
 .queue-items {
   list-style: none;
   margin: 0;
-  padding: 0 var(--space-3);
-  display: grid;
-  gap: 2px;
-  /* A scroll container, which ui.md §2 otherwise forbids — and deliberately so. It is capped so a fifty-deep
-     queue cannot push the input box off the window, and it is bounded on purpose: the rule targets the page
-     layout — the top bar, the sidebar and the composer itself must never scroll — and this list is none of
-     those. */
-  max-block-size: 8rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  flex: 1;
+  min-inline-size: 0;
+  /* A scroll container, which ui.md §2 otherwise forbids — and deliberately so: capped so a fifty-deep queue
+     cannot push the input off the window. */
+  max-block-size: 5rem;
   overflow-y: auto;
 }
 
 .queue-items > li {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  font-size: var(--fs-meta);
+  display: inline-flex;
+  max-inline-size: 100%;
   min-inline-size: 0;
+  padding: 2px var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  font-size: var(--fs-meta);
 }
 
-.queue-id {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: var(--lh-code);
-  color: var(--text-3);
-}
-
-/* What is waiting, which is the payload — the whole reason the line is there. It gets the room; the id
-   follows it and is the first thing to go when there is not enough. */
 .queue-payload {
-  flex: 1;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -590,41 +694,88 @@ defineExpose({ focus, restore })
   color: var(--text-2);
 }
 
-/* The fold, at the end of the list it folds. It is the only control here, so it is placed where the eye
-   already is after reading the last entry. */
 .queue-toggle {
-  align-self: flex-end;
-  margin-inline-end: var(--space-3);
+  min-block-size: 1.5rem;
   padding: 0 var(--space-1);
-  line-height: 1;
+  border-radius: var(--radius-sm);
 }
 
-/* The drop target has to announce itself: a paste that silently fails is worse than one that is refused. */
-.composer.is-dragging {
-  outline: 2px dashed var(--accent);
-  outline-offset: -2px;
+/* ---- the box ------------------------------------------------------------------------------------- */
+.composer-input {
+  position: relative;
 }
 
-.gear {
-  font-size: var(--fs-meta);
+.composer-input textarea {
+  min-block-size: 3.25rem;
+  max-block-size: 12rem;
+  padding: var(--space-2) var(--space-6) var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  resize: none;
+  font-size: var(--fs-prose);
+}
+
+/* The dock itself is the field, so the textarea shows no ring of its own; the dock gets one instead. */
+.composer-input textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.dock {
+  transition: box-shadow var(--motion-fast) var(--ease);
+}
+
+/* Focus is a deeper, longer shadow, not a grey ring. */
+.dock.g-float:has(textarea:focus) {
+  box-shadow:
+    var(--glass-hi),
+    0 2px 6px rgb(0 0 0 / 7%),
+    0 12px 32px rgb(0 0 0 / 10%);
+}
+
+/* On pure black a black shadow is invisible, so the dark deepening is a faint light spread instead. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .dock.g-float:has(textarea:focus) {
+    box-shadow:
+      var(--glass-hi),
+      0 0 0 1px rgb(255 255 255 / 6%),
+      0 10px 30px rgb(255 255 255 / 7%);
+  }
+}
+
+:root[data-theme='dark'] .dock.g-float:has(textarea:focus) {
+  box-shadow:
+    var(--glass-hi),
+    0 0 0 1px rgb(255 255 255 / 6%),
+    0 10px 30px rgb(255 255 255 / 7%);
+}
+
+.input-hint {
+  position: absolute;
+  inset-block-start: var(--space-2);
+  inset-inline-end: var(--space-2);
+}
+
+/* ---- the row under the box ---------------------------------------------------------------------- */
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .attach {
-  /* The file picker is a `<label>`, not a `<button>`, so the `.ghost` tier in styles.css — which is written
-     against the element — never reached it and "＋ 附件" rendered as plain text while opening a file dialog
-     on click. The tokens are the tier's, repeated here, because the component owns the element and the tier
-     rules are about `<button>`. */
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
+  min-block-size: 2.25rem;
+  min-inline-size: 2.25rem;
+  justify-content: center;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
   color: var(--text-2);
   cursor: pointer;
   white-space: nowrap;
-  font-size: var(--fs-ui);
+  font-size: var(--fs-meta);
 }
 
 .attach:hover {
@@ -635,7 +786,6 @@ defineExpose({ focus, restore })
 .attach:focus-within {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
 }
 
 .attach input {
@@ -643,7 +793,117 @@ defineExpose({ focus, restore })
 }
 
 .attach.busy {
-  color: var(--text-2);
   cursor: progress;
+}
+
+.pill-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.pill {
+  min-block-size: 2rem;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  border-color: transparent;
+  background: var(--surface-2);
+  box-shadow: none;
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.pill:hover:not(:disabled),
+.pill[aria-expanded='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-pressed);
+}
+
+.picker-pop {
+  position: absolute;
+  inset-block-end: calc(100% + var(--space-2));
+  inset-inline-start: 0;
+  z-index: 25;
+  inline-size: min(26rem, 80vw);
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.picker-pop.is-end {
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+}
+
+.model {
+  max-inline-size: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.picker-pop .segmented {
+  justify-self: start;
+}
+
+.picker-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+/* The occupancy ring. */
+.ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx svg {
+  transform: rotate(-90deg);
+}
+
+.ring-track,
+.ring-fill {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.ring-track {
+  stroke: var(--surface-2);
+}
+
+.ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--motion-slow) var(--ease);
+}
+
+.ctx.context-tight {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.ctx.context-tight .ring-fill {
+  stroke: var(--warn);
+}
+
+.send {
+  flex: none;
+  inline-size: 2.25rem;
+  min-block-size: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.send.is-stop {
+  background: var(--error);
+  color: var(--on-accent);
+  border-color: transparent;
 }
 </style>

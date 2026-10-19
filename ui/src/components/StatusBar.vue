@@ -30,59 +30,48 @@ const announcement = computed(() => (props.connected ? '' : `连接已断开：$
 </script>
 
 <template>
-  <footer class="statusbar">
-    <span data-test="status" :class="{ error: !connected }">
-      <!-- 401 is worth naming: it means the token, not the network (ui.md §7). -->
-      {{ connected ? `ok · ${endpoint}` : connectionError }}
-    </span>
-    <!-- The status above is visible but not announced: it is a quiet line of text at the foot of the window,
-         and re-rendering it on every poll would make a screen reader talk over whatever is being read. This
-         carries the same fact only when it changes into the state that matters. -->
+  <!--
+    Silent while everything works. The endpoint, the model and the version used to sit here permanently; the
+    model now lives in the composer and the rest was a sentence about nothing. What remains is what a reader has
+    to act on or be warned about: no connection, a stale read, a delegated job they can stop.
+  -->
+  <footer v-if="!connected || stale || job" class="statusbar">
+    <!-- 401 is worth naming: it means the token, not the network (ui.md §7). -->
+    <span v-if="!connected" class="error" data-test="status">{{ connectionError }}</span>
     <span class="sr-only" role="status" aria-live="polite" data-test="status-announcer">{{ announcement }}</span>
-    <span class="consumer" data-test="status-consumer">
-      <template v-if="consumer?.running">消费中 · {{ consumer.model ?? "模型" }}</template>
-      <template v-else-if="consumer">未执行 · {{ consumer.reason }}</template>
-    </span>
 
-    <!--
-      A delegated job is work happening that the main turn may be waiting on. It is not the queue, so it does
-      not live in the badge, and it is not the consumer, so it does not replace the model line. One line, and
-      a stop button: a job a reader cannot see is a job they cannot cancel. Nothing renders when idle.
-    -->
     <span v-if="job" class="job" data-test="status-job">
       子任务进行中 · {{ job.agentName }} · 第 {{ job.round }}/{{ job.maxRounds }} 轮
       <button class="ghost" data-test="status-job-cancel" @click="emit('cancel-job', job.id)">停止</button>
     </span>
 
-    <!--
-      The status bar is where connection state belongs, so this is where "what you are reading is the last
-      thing we managed to read" goes. Everything above it — the badge, the queue list, the interrupt button —
-      keeps working on that last good read rather than being wiped, because a blocked-work indicator that
-      blinks out on one failed poll is not a blocked-work indicator.
-    -->
     <span v-if="stale" class="stale" data-test="status-stale">读取失败 · 以下是上次读到的</span>
-
-    <span class="muted">{{ version }}</span>
   </footer>
 </template>
 
 <style scoped>
+/* Not a bar: a line of small print under the page. No fill, no rule — the connection, the model and a running job
+   are things to glance at, and the page above them is the point. */
 .statusbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-1) var(--space-3);
-  border-block-start: 1px solid var(--line);
-  background: var(--surface-1);
+  gap: var(--space-4);
+  padding: var(--space-1) var(--space-5) var(--space-2);
+  min-block-size: 1.75rem;
   font-size: var(--fs-meta);
   color: var(--text-3);
 }
 
-.consumer {
-  white-space: nowrap;
+.statusbar > span {
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.consumer {
+  flex: 1;
 }
 
 .stale {
@@ -90,17 +79,23 @@ const announcement = computed(() => (props.connected ? '' : `连接已断开：$
   white-space: nowrap;
 }
 
-/* The job line is live work, so it is not muted: it has to be findable at the foot of the window. */
+/* The job line is live work, so it is not muted: it has to be findable. A glass pill, because it is the one
+   thing down here that asks for a click. */
 .job {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
   color: var(--accent-pressed);
   white-space: nowrap;
 }
 
 .job button {
+  min-block-size: 1.5rem;
   font-size: var(--fs-meta);
-  padding: 0 var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
 }
 </style>

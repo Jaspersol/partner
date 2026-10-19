@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { DesktopState, PendingApproval } from '../api'
+import HintTip from './HintTip.vue'
+import Icon from './Icon.vue'
 
 /**
  * A tool call waiting for a human. It lives in the app shell rather than inside a view because the turn is
@@ -37,38 +39,64 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 </script>
 
 <template>
-  <div v-if="current" class="approval" data-test="approval-banner">
-    <span class="title">模型请求执行动作</span>
-    <!--
-      Whose question this is. A sub-agent's approval arrives while the person may be looking at something
-      else entirely; without the origin it reads as the main agent acting, which is a different thing to allow.
-    -->
-    <span v-if="current.origin" class="origin" data-test="approval-origin">来自 {{ current.origin }}</span>
-    <strong data-test="approval-tool">{{ current.toolName }}</strong>
-    <span v-if="kind" class="kind">{{ kind }}</span>
-    <span v-if="target" class="target" data-test="approval-target">目标 {{ target }}</span>
-    <code class="break args">{{ current.arguments }}</code>
-    <span class="spacer" />
-    <span class="muted" data-test="approval-hint">
-      无人应答即拒绝 · 允许将授权目标窗口继续 {{ grantSteps }} 步（危险类仍逐次询问）
-    </span>
-    <button class="primary" data-test="approval-allow" @click="emit('answer', current.approvalId, true)">
-      允许
-    </button>
-    <button class="ghost" data-test="approval-deny" @click="emit('answer', current.approvalId, false)">
-      拒绝
-    </button>
+  <div v-if="current" class="approval g-float" data-test="approval-banner" role="alert">
+    <div class="approval-body">
+      <div class="approval-head">
+        <Icon name="shield" :size="16" class="approval-icon" />
+        <span class="title">模型请求执行动作</span>
+        <!--
+          Whose question this is. A sub-agent's approval arrives while the person may be looking at something
+          else entirely; without the origin it reads as the main agent acting, which is a different thing to allow.
+        -->
+        <span v-if="current.origin" class="origin" data-test="approval-origin">来自 {{ current.origin }}</span>
+      </div>
+      <div class="approval-what">
+        <strong data-test="approval-tool">{{ current.toolName }}</strong>
+        <span v-if="kind" class="kind">{{ kind }}</span>
+        <span v-if="target" class="target" data-test="approval-target">目标 {{ target }}</span>
+      </div>
+      <code class="break args">{{ current.arguments }}</code>
+    </div>
+    <div class="approval-actions">
+      <HintTip align="end" data-test="approval-hint">
+        无人应答即拒绝。允许后，助手可以在这个窗口上继续操作 {{ grantSteps }} 步；危险类的动作仍然逐次询问。
+      </HintTip>
+      <button class="ghost" data-test="approval-deny" @click="emit('answer', current.approvalId, false)">拒绝</button>
+      <button class="primary" data-test="approval-allow" @click="emit('answer', current.approvalId, true)">允许</button>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* A warning is a glass card with an amber edge, not a full-width stripe: it has to be unmissable and it has to
+   sit inside the same column as the dock it interrupts. */
 .approval {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-5);
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+}
+
+.approval-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.approval-head,
+.approval-what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-block-end: 1px solid var(--warn);
-  background: var(--surface-1);
+}
+
+.approval-icon {
+  align-self: center;
+  color: var(--warn);
 }
 
 .title {
@@ -84,8 +112,8 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 
 .kind {
   font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: var(--lh-code);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
 }
 
 .target {
@@ -95,9 +123,14 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 .args {
   color: var(--text-3);
   font-size: var(--fs-meta);
+  max-block-size: 3rem;
+  overflow: hidden;
 }
 
-.spacer {
-  flex: 1;
+.approval-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
 }
 </style>

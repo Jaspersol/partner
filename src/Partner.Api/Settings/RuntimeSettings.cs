@@ -451,6 +451,12 @@ public sealed record ModelSettings
     /// </para>
     /// </summary>
     public IReadOnlyList<string> ReasoningGears { get; init; } = ReasoningEfforts.Values;
+
+    /// <summary>
+    /// 挡位的显示文字：词 → 界面上写的字。只影响显示，发给模型的永远是词本身。
+    /// 没有登记的词由 UI 回退到内置名称（常见六个词）或原词。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ReasoningLabels { get; init; } = new Dictionary<string, string>();
 }
 
 
@@ -476,6 +482,12 @@ public sealed record ModelSettingsView
 
     /// <summary>The gears the UI offers, in order. See <see cref="ModelSettings.ReasoningGears"/>.</summary>
     public IReadOnlyList<string> ReasoningGears { get; init; } = ReasoningEfforts.Values;
+
+    /// <summary>
+    /// 挡位的显示文字：词 → 界面上写的字。只影响显示，发给模型的永远是词本身。
+    /// 没有登记的词由 UI 回退到内置名称（常见六个词）或原词。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ReasoningLabels { get; init; } = new Dictionary<string, string>();
 }
 
 public sealed record SettingsView
@@ -527,6 +539,7 @@ public sealed record SettingsView
                 .Select(ReasoningEfforts.Normalize)
                 .Where(gear => gear.Length > 0)
                 .ToArray(),
+            ReasoningLabels = settings.Model.ReasoningLabels,
         },
         // Without these the settings response drops the sections, and the UI — which refills its form from the
         // response — flips the switches back to off the moment it is saved.

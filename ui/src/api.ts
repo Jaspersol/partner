@@ -297,6 +297,9 @@ export interface ModelSettings {
 
   /** The gears the UI offers as a menu, in the order the user arranged them. */
   reasoningGears: string[]
+
+  /** Display text per gear word (word -> text). Display only: the word itself is what is sent. */
+  reasoningLabels?: Record<string, string>
 }
 
 /** What the API returns: no key, only whether one is stored. */
@@ -314,6 +317,8 @@ export interface ModelSettingsView {
 
   /** The gears offered as a menu, in the order the user arranged them. */
   reasoningGears: string[]
+
+  reasoningLabels?: Record<string, string>
 }
 
 /** The main agent's editable part. Null means the built-in prompt. */

@@ -16,21 +16,47 @@ export interface MemoryRow {
   lastRecalledAt: string | null
   /** True once a later statement has retired this record. Still shown: what replaced it is the useful part. */
   retired: boolean
+  /** The one short phrase a card shows: when it was last used, what replaced it, or that it was a search hit. */
+  brief: string
 }
 
 /** The four tiers, in the order the picker offers them: a person can move a record between any two. */
 export const MEMORY_TIERS = ['Working', 'Episodic', 'Semantic', 'Procedural'] as const
 
 const TIER_LABEL: Record<string, string> = {
-  Working: '暂记 · 刚听到，还没印证',
-  Episodic: '经过 · 反复出现过的事',
-  Semantic: '确定 · 可以当事实用',
+  Working: '刚记下 · 还没印证',
+  Episodic: '经历 · 反复出现过的事',
+  Semantic: '事实 · 可以当事实用',
   Procedural: '做法 · 该怎么做某件事',
+}
+
+/** The short name a chip carries: four words a person can tell apart at a glance. */
+const TIER_SHORT: Record<string, string> = {
+  Working: '刚记下',
+  Episodic: '经历',
+  Semantic: '事实',
+  Procedural: '做法',
+}
+
+/** One sentence per tier, for the ⓘ beside the picker. */
+const TIER_HINT: Record<string, string> = {
+  Working: '刚听到的，还没被印证过。',
+  Episodic: '反复出现过的事。',
+  Semantic: '可以当事实用的内容。',
+  Procedural: '做某件事的步骤和习惯。',
 }
 
 /** What a row's tier means, in the words a person deciding between them would use. */
 export function tierLabel(tier: string): string {
   return TIER_LABEL[tier] ?? tier
+}
+
+export function tierShort(tier: string): string {
+  return TIER_SHORT[tier] ?? tier
+}
+
+export function tierHint(tier: string): string {
+  return TIER_HINT[tier] ?? ''
 }
 
 /**
@@ -43,7 +69,7 @@ export const MEMORY_SCOPES = ['Recall', 'Retain'] as const
 
 const SCOPE_LABEL: Record<string, string> = {
   Recall: '普通',
-  Retain: '保留',
+  Retain: '固定',
 }
 
 /** What a row's retention means, in one word. The full promise is spelled out next to the checkbox. */
@@ -88,6 +114,7 @@ export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow
     createdAt: item.createdAt,
     lastRecalledAt: item.lastRecalledAt ?? null,
     retired,
+    brief: retired ? `已被 ${item.supersededBy ?? '新记录'} 取代` : ago(item.lastRecalledAt, now),
   }
 }
 
@@ -109,5 +136,6 @@ export function memoryRowFromHit(hit: RecallHit): MemoryRow {
     createdAt: hit.createdAt,
     lastRecalledAt: null,
     retired: false,
+    brief: '检索命中',
   }
 }

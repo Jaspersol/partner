@@ -1,0 +1,228 @@
+/*
+ * Design tokens (ui-redesign.md §2).
+ *
+ * Token *names* are the ones styles.css and every component already use; only the values moved, from the
+ * slate system to a warm-white / pure-black ground with translucent glass layers on top.
+ *
+ *   - Ground: --surface-0. Light is rgb(251 251 249), dark is #000. Nothing else may repaint the window.
+ *   - Glass: --glass-1 for panels resting on the ground, --glass-2 for things that float over content. The
+ *     blur (--glass-blur) is only ever applied to layers with something scrolling underneath them
+ *     (top bar, composer dock, sidebar, popovers, drawers); flat cards get the tint, the edge and the
+ *     highlight but no blur, because blur over a flat colour is cost without effect.
+ *   - Inks and the accent are starting values. Contrast is measured on the worst surface each one can land on
+ *     (a hovered row on translucent glass); the figures in the comments are those worst cases.
+ *   - Three ways out of the glass: no backdrop-filter support, the OS's reduce-transparency flag, and the
+ *     in-app "减弱透明效果" switch (html[data-glass='off']). All three swap --glass-* for opaque colours.
+ */
+
+:root {
+  /* ---- ground & surfaces ----------------------------------------------------------------------- */
+  --surface-0: rgb(251 251 249);
+  --surface-1: var(--glass-1);
+  /* A step *down* onto something resting on a surface (hovered row, inset block). An alpha rather than a
+     solid so it works on the ground, on glass and on a glass popover alike. */
+  --surface-2: rgb(0 0 0 / 0.045);
+
+  /* ---- glass ---------------------------------------------------------------------------------- */
+  --glass-1: rgb(255 255 255 / 0.62);
+  --glass-2: rgb(255 255 255 / 0.8);
+  --glass-1-solid: #ffffff;
+  --glass-2-solid: #ffffff;
+  --glass-edge: rgb(0 0 0 / 0.07);
+  --glass-hi: inset 0 1px 0 rgb(255 255 255 / 0.7);
+  --glass-blur: blur(20px) saturate(160%);
+  /* The field fill sits inside a glass card, so it is a touch whiter than the card around it. */
+  --field-bg: rgb(255 255 255 / 0.72);
+
+  /* A very faint wash behind everything so the glass has something to refract. --ambient: 0 turns it off. */
+  --ambient: 1;
+  --ambient-a: rgb(255 214 170 / 0.22);
+  --ambient-b: rgb(170 196 255 / 0.2);
+
+  /* ---- borders --------------------------------------------------------------------------------- */
+  --line: var(--glass-edge);
+  /* The edge of a field or a switch: has to be found, so it keeps the 3:1 non-text floor (3.4:1 on the
+     ground, 3.6:1 on a white card). */
+  --line-strong: #8a8a84;
+
+  /* ---- text ------------------------------------------------------------------------------------ */
+  --text: #1c1c1a; /* 16.5:1 on the ground */
+  --text-2: #55554f; /*  7.4:1 */
+  --text-3: #6b6b66; /*  5.2:1 on the ground, 4.8:1 on a hovered glass row */
+
+  --accent: #2c5fd6; /*  5.4:1 on the ground */
+  --accent-soft: rgb(44 95 214 / 0.1);
+  --focus-ring: #8a8a84;
+  --accent-pressed: #244fb8;
+  --on-accent: #ffffff;
+  --warn: #a45206; /*  4.9:1 */
+  --error: #c81d31; /*  4.8:1 */
+  --ok: #15803d; /*  4.6:1 */
+  --selected: var(--accent-soft);
+
+  /* ---- shadows --------------------------------------------------------------------------------- */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 4%);
+  --shadow-3: 0 1px 3px rgb(0 0 0 / 5%), 0 2px 8px rgb(0 0 0 / 4%);
+
+  /* ---- radii & spacing ------------------------------------------------------------------------- */
+  --radius-sm: 0.5rem; /* 8   controls: inputs, buttons, chips */
+  --radius-md: 0.75rem; /* 12  cards */
+  --radius-lg: 1rem; /* 16  floating layers: dock, popover, dialog */
+  --radius-pill: 0.625rem; /* 10  chips, pills, badges: no full capsules */
+  --space-1: 0.25rem; /* 4 */
+  --space-2: 0.5rem; /* 8 */
+  --space-3: 0.75rem; /* 12 */
+  --space-4: 1rem; /* 16 */
+  --space-5: 1.5rem; /* 24 */
+  --space-6: 2rem; /* 32 */
+  --space-7: 2.5rem; /* 40 */
+
+  /* ---- type ------------------------------------------------------------------------------------ */
+  --fs-ui: 0.875rem; /* 14 */
+  --lh-ui: 1.5;
+  --fs-meta: 0.75rem; /* 12 */
+  --lh-meta: 1.4;
+  --fs-code: 0.875rem;
+  --lh-code: 1.6;
+  --fs-prose: 0.9375rem; /* 15  conversation text */
+  --lh-prose: 1.7;
+  --fs-title: 1.25rem; /* 20  page title */
+  --fs-h1: 1.5rem;
+
+  --font-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --measure: 68ch;
+
+  /* ---- layout ---------------------------------------------------------------------------------- */
+  --rail: 3.5rem;
+  --rail-expanded: 15rem;
+  --column: 46rem; /* the one reading column: conversation, memory list */
+  --column-form: 44rem; /* settings content */
+
+  /* ---- motion ---------------------------------------------------------------------------------- */
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --motion-slow: 250ms;
+  --ease: ease;
+
+  /* ---- tool families (toolAppearance.ts) ------------------------------------------------------- */
+  --tool-shell: #a8571a;
+  --tool-read: #2c5fd6;
+  --tool-write: #8a4bd0;
+  --tool-search: #15803d;
+  --tool-web: #0a8f96;
+  --tool-record: #a45206;
+  --tool-schedule: #55554f;
+  --tool-agent: #c2185b;
+  --tool-control: #55554f;
+}
+
+/* Dark is a token rewrite, never a component change. It follows the OS unless the reader picked a side,
+   which is what the two selectors below express (keep their bodies identical). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --surface-0: #000000;
+    --surface-2: rgb(255 255 255 / 0.07);
+    --glass-1: rgb(255 255 255 / 0.06);
+    --glass-2: rgb(255 255 255 / 0.1);
+    --glass-1-solid: #101010;
+    --glass-2-solid: #181818;
+    --glass-edge: rgb(255 255 255 / 0.1);
+    --glass-hi: inset 0 1px 0 rgb(255 255 255 / 0.08);
+    --field-bg: rgb(255 255 255 / 0.05);
+    --ambient-a: rgb(120 140 255 / 0.1);
+    --ambient-b: rgb(255 255 255 / 0.05);
+    --line-strong: #74746e;
+    --text: #f5f5f2; /* 19:1 */
+    --text-2: #b8b8b2; /* 10.6:1 */
+    --text-3: #8f8f89; /*  6.3:1 on black, 5.2:1 on a hovered glass row */
+    --accent: #6aa5fa;
+    --accent-soft: rgb(106 165 250 / 0.16);
+    --focus-ring: #a4a49e;
+    --accent-pressed: #9bc3fc;
+    --on-accent: #000000;
+    --warn: #fbbf24;
+    --error: #fb7185;
+    --ok: #4ade80;
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 50%);
+    --shadow-3: 0 1px 3px rgb(0 0 0 / 60%), 0 2px 8px rgb(0 0 0 / 40%);
+    --tool-shell: #e0a458;
+    --tool-read: #6aa5fa;
+    --tool-write: #c39cf0;
+    --tool-search: #4ade80;
+    --tool-web: #5fd0d6;
+    --tool-record: #fbbf24;
+    --tool-schedule: #b8b8b2;
+    --tool-agent: #f07ba8;
+    --tool-control: #b8b8b2;
+  }
+}
+
+:root[data-theme='dark'] {
+  --surface-0: #000000;
+  --surface-2: rgb(255 255 255 / 0.07);
+  --glass-1: rgb(255 255 255 / 0.06);
+  --glass-2: rgb(255 255 255 / 0.1);
+  --glass-1-solid: #101010;
+  --glass-2-solid: #181818;
+  --glass-edge: rgb(255 255 255 / 0.1);
+  --glass-hi: inset 0 1px 0 rgb(255 255 255 / 0.08);
+  --field-bg: rgb(255 255 255 / 0.05);
+  --ambient-a: rgb(120 140 255 / 0.1);
+  --ambient-b: rgb(255 255 255 / 0.05);
+  --line-strong: #74746e;
+  --text: #f5f5f2;
+  --text-2: #b8b8b2;
+  --text-3: #8f8f89;
+  --accent: #6aa5fa;
+  --accent-soft: rgb(106 165 250 / 0.16);
+  --focus-ring: #a4a49e;
+  --accent-pressed: #9bc3fc;
+  --on-accent: #000000;
+  --warn: #fbbf24;
+  --error: #fb7185;
+  --ok: #4ade80;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 50%);
+  --shadow-3: 0 1px 3px rgb(0 0 0 / 60%), 0 2px 8px rgb(0 0 0 / 40%);
+  --tool-shell: #e0a458;
+  --tool-read: #6aa5fa;
+  --tool-write: #c39cf0;
+  --tool-search: #4ade80;
+  --tool-web: #5fd0d6;
+  --tool-record: #fbbf24;
+  --tool-schedule: #b8b8b2;
+  --tool-agent: #f07ba8;
+  --tool-control: #b8b8b2;
+}
+
+/* ---- the three ways out of the glass ----------------------------------------------------------------
+   All three land on the same rule so they cannot drift: opaque layers, no blur, no ambient wash. They sit
+   after both theme blocks on purpose — equal specificity, so source order decides. */
+:root[data-glass='off'] {
+  --glass-1: var(--glass-1-solid);
+  --glass-2: var(--glass-2-solid);
+  --field-bg: var(--glass-1-solid);
+  --glass-blur: none;
+  --ambient: 0;
+}
+
+/* `:root:root` (0,2,0) so these tie with the theme blocks above and win on source order. A bare `:root`
+   would lose to them in exactly the dark case, where the glass is thinnest and the fallback matters most. */
+@media (prefers-reduced-transparency: reduce) {
+  :root:root {
+    --glass-1: var(--glass-1-solid);
+    --glass-2: var(--glass-2-solid);
+    --field-bg: var(--glass-1-solid);
+    --glass-blur: none;
+    --ambient: 0;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root:root {
+    --glass-1: var(--glass-1-solid);
+    --glass-2: var(--glass-2-solid);
+    --field-bg: var(--glass-1-solid);
+    --glass-blur: none;
+    --ambient: 0;
+  }
+}

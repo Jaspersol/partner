@@ -2,7 +2,9 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import type { SessionItem } from '../api'
 import { clampIndex, isActivationKey, normalizeKey, rovingTarget } from '../rovingFocus'
-import { sessionKindLabel, sessionRole, sourceHasChip, sourceLabel } from '../sessionKind'
+import { sessionKindLabel, sourceHasChip, sourceLabel } from '../sessionKind'
+import { showToast } from '../toast'
+import Icon from './Icon.vue'
 import MarkdownBody from './MarkdownBody.vue'
 import ToolCard from './ToolCard.vue'
 import ThinkingRow from './ThinkingRow.vue'
@@ -143,6 +145,67 @@ const rows = computed<Row[]>(() => {
 })
 
 /**
+ * Which side of the conversation a row sits on, and whether it opens a run.
+ *
+ * <para>
+ * The reader's own messages are on the right and the assistant's whole turn — its thinking, its tool calls and its
+ * answer — is on the left; everything else the log carries (system lines, schedule triggers, summaries, kinds this
+ * list has never heard of) is a centred note, because none of it is anybody speaking. Position is the first
+ * channel for "who said this"; the role word stays in the row for a screen reader.
+ * </para>
+ *
+ * <para>
+ * `first` is true when the side changes from the row above (a note always starts a run). It is what puts a gap
+ * between speakers and gives only the first row of an assistant run its avatar. It is computed here and applied
+ * with `data-first`, so a row is still exactly one `<li>` and the markup the tests read does not move.
+ * </para>
+ */
+type Side = 'left' | 'right' | 'center'
+
+function sideOf(row: Row): Side {
+  if (row.kind === 'tool' || row.kind === 'thinking') return 'left'
+  if (row.item.kind === 'User') return 'right'
+  if (row.item.kind === 'Assistant') return 'left'
+  return 'center'
+}
+
+const layout = computed(() =>
+  rows.value.map((row, at) => {
+    const side = sideOf(row)
+    const before = at > 0 ? sideOf(rows.value[at - 1] as Row) : null
+    return { side, first: side === 'center' || before !== side }
+  }),
+)
+
+/** The row's role as a word, for the one thing the page no longer prints: who is speaking. */
+function roleWord(row: Row): string {
+  if (row.kind === 'tool') return '工具'
+  if (row.kind === 'thinking') return '思考'
+  return sessionKindLabel(row.item.kind)
+}
+
+const NOTE_FOLD_CHARS = 140
+
+function isLongNote(body: string): boolean {
+  return body.length > NOTE_FOLD_CHARS || body.trim().includes('\n')
+}
+
+function noteTitle(body: string): string {
+  const first = body.split('\n').map((line) => line.trim()).find((line) => line !== '') ?? ''
+  return first.length > 60 ? `${first.slice(0, 60)}…` : first
+}
+
+async function copy(row: Row): Promise<void> {
+  if (row.kind !== 'event') return
+  try {
+    await navigator.clipboard.writeText(row.item.body)
+    showToast('已复制')
+  } catch {
+    showToast('复制失败', 'error')
+  }
+}
+
+/**
  * Only the reader's own typed messages can be put back in the box. An assistant reply restored there would be
  * sent as the human's words, and a scheduled task's text is not theirs to resend either.
  */
@@ -281,31 +344,23 @@ function rowSeq(index: number): number | null {
 
 <template>
   <!--
-    The event list is the product, so it is the one place this app spends its whole visual budget on.
+    A conversation, not a log. Left is the assistant's turn (thinking, tool calls, answer), right is the reader,
+    and the few things nobody is saying — system lines, schedule triggers, summaries — are centred notes.
 
-    It used to be a table: every row a strip with a 1px rule under it, and user messages, assistant replies,
-    tool calls, reasoning and system notes all looking like the same kind of row with different words in it.
-    A reader scanning a long turn had to read every row to find out who was talking. Three changes fix that, and
-    none of them are cosmetic:
+    <para>
+    Every event is still exactly one `<li>`, with `data-kind` carrying the wire value: the sides are CSS
+    (`data-side`), the run gaps are CSS (`data-first`), and nothing is re-nested. That is what keeps the keyboard
+    model (one tab stop, arrows move) and every test that reads rows as they are.
+    </para>
 
-      - rows are grouped by *space* rather than by rules, because a hairline between two rows of a conversation
-        reads as two separate documents;
-      - each row carries who said it as a word **and** a dot, so the word is what a reader uses and the dot is
-        what the eye scans;
-      - the body is the largest text in the app, because it is the only thing here anybody actually reads.
-  -->
-  <!--
-    `role="list"`, not `role="listbox"`.
-
-    A listbox may only contain options, and this one cannot: a tool card and a stretch of reasoning are part of
-    the conversation but are not things one *selects* — clicking them does nothing and they have no sequence to
-    edit. They were `role="undefined"` children of a listbox, which is invalid markup that a screen reader
-    renders as an unpredictable number of unnamed items. A list says "these are things", which is true, and
-    loses nothing that was being announced reliably.
+    <para>
+    `role="list"`, not `role="listbox"`: a tool card and a stretch of reasoning are part of the conversation but
+    are not things one *selects*, and a listbox may only contain options.
+    </para>
   -->
   <ul
     ref="listElement"
-    class="list event-list"
+    class="event-list"
     role="list"
     aria-label="会话事件"
     data-test="session-list"
@@ -316,242 +371,322 @@ function rowSeq(index: number): number | null {
       :class="{
         selected: row.kind === 'event' && row.item.seq === selectedSeq,
         streaming: row.kind === 'event' && row.item.streaming === true,
-        // The row keeps its actions on screen while a confirmation is armed. They appear on hover, and a
-        // confirmation that vanishes the moment the pointer wanders off is worse than no confirmation at all:
-        // the reader has to go hunting for the button again to finish what they started.
+        // The toolbar stays up while a confirmation is armed. It appears on hover, and a confirmation that
+        // vanishes the moment the pointer wanders off is worse than none: the reader would have to hunt for the
+        // button again to finish what they started.
         'is-armed': row.kind === 'event' && armed?.seq === row.item.seq,
       }"
       :data-kind="row.kind === 'tool' ? 'Tool' : row.kind === 'thinking' ? 'Thinking' : row.item.kind"
+      :data-side="layout[index]?.side"
+      :data-first="layout[index]?.first ? 'true' : 'false'"
       :data-chat-anchor-key="row.kind === 'tool' ? `tool-${row.seq}` : row.kind === 'thinking' ? row.key : `event-${row.item.streaming ? 'streaming' : row.item.seq}`"
       :data-row="index"
       :tabindex="row.kind === 'event' && row.selectable && index === focusIndex ? 0 : -1"
       :aria-current="row.kind === 'event' && row.selectable && row.item.seq === selectedSeq ? 'true' : undefined"
-      @click="row.kind === 'event' && row.selectable ? onSelect(row.item.seq, index) : undefined"
       @focus="row.kind === 'event' && row.selectable ? (focusIndex = index) : undefined"
       @keydown="row.kind === 'event' && row.selectable ? onListKeydown($event, index) : undefined"
     >
-      <ToolCard
-        v-if="row.kind === 'tool'"
-        :name="row.name"
-        :args="row.args"
-        :status="row.status"
-        :result="row.result"
-      />
+      <div class="stack">
+        <ToolCard
+          v-if="row.kind === 'tool'"
+          :name="row.name"
+          :args="row.args"
+          :status="row.status"
+          :result="row.result"
+        />
 
-      <ThinkingRow
-        v-else-if="row.kind === 'thinking'"
-        :body="row.body"
-        :running="row.running"
-        :since="row.since"
-      />
+        <ThinkingRow
+          v-else-if="row.kind === 'thinking'"
+          :body="row.body"
+          :running="row.running"
+          :since="row.since"
+        />
 
-      <template v-else>
-        <div class="meta">
-          <!-- The dot is a second channel, never the only one: the word beside it says the same thing in
-               text, so a reader who cannot separate the tints loses nothing (ui.md §5.2). -->
-          <span class="role-dot" :data-role="sessionRole(row.item.kind) ?? 'other'" aria-hidden="true" />
-          <!-- The row says what the event *is*; `data-kind` on the <li> keeps the wire value for tests and
-               for anyone reading the markup. Both are deliberate — the word is for the reader, the enum for us. -->
-          <span class="role">{{ sessionKindLabel(row.item.kind) }}</span>
-          <span class="seq">#{{ row.item.seq }}</span>
-          <span v-if="row.item.source && sourceHasChip(row.item.source)" class="source">{{
-            sourceLabel(row.item.source)
-          }}</span>
+        <template v-else>
+          <!-- A long note (the memory the assistant was handed, a summary) folds to its first line: it is context
+               for the turn, not part of the conversation, and a screenful of it between two messages is the
+               opposite of low density. A short one is just a pill. -->
+          <details v-if="layout[index]?.side === 'center' && isLongNote(row.item.body)" class="bubble note-fold" :data-role="row.item.kind">
+            <summary>{{ noteTitle(row.item.body) }}</summary>
+            <MarkdownBody :body="row.item.body" />
+          </details>
+          <div v-else class="bubble" :data-role="row.item.kind">
+            <MarkdownBody :body="row.item.body" />
+          </div>
 
-          <!-- Pushed to the far end with `margin-inline-start: auto`, and tabular so a column of them lines
-               up: the clock is read by comparison far more often than by reading. -->
-          <time class="at" :datetime="row.item.at">{{ row.item.at.slice(11, 19) }}</time>
+          <!--
+            Who, when, and what can be done — shown on hover or focus and otherwise not at all. The role word is
+            there for a screen reader (position is the only thing saying it on screen); the source is an icon,
+            because the row beside a microphone does not need the word 「语音」 spelled out.
+          -->
+          <div class="meta">
+            <span class="role sr-only">{{ roleWord(row) }}</span>
+            <span v-if="row.item.source && sourceHasChip(row.item.source)" class="source" :title="sourceLabel(row.item.source)">
+              <Icon v-if="row.item.source === 'Voice'" name="mic" :size="12" />
+              <Icon v-else-if="row.item.source === 'Text'" name="keyboard" :size="12" />
+              <Icon v-else-if="row.item.source === 'Schedule'" name="clock" :size="12" />
+              <template v-else>{{ sourceLabel(row.item.source) }}</template>
+              <span class="sr-only">{{ sourceLabel(row.item.source) }}</span>
+            </span>
+            <time class="at" :datetime="row.item.at">{{ row.item.at.slice(11, 16) }}</time>
+            <span class="seq" title="事件序号">#{{ row.item.seq }}</span>
 
-          <!-- The actions, on the row itself and nothing else. There is no `⋯` any more: every one of them fits
-               on the row at these label lengths, so a second place to reach them was a second place to look. -->
-          <span class="row-actions" data-test="session-row-actions">
-            <button
-              v-if="restorable(row.item)"
-              class="ghost row-action"
-              data-test="session-row-restore"
-              title="把这轮输入放回输入框"
-              @click.stop="emit('restore', row.item.seq)"
-            >
-              复用
-            </button>
-            <button
-              v-if="deletable(row.item)"
-              class="ghost row-action"
-              data-test="session-row-delete-inline"
-              title="删除最新一次对话（不可恢复）"
-              @click.stop="act(row)"
-            >
-              {{ armed?.seq === row.item.seq ? '确认删除' : '删除' }}
-            </button>
-            <!-- Armed: the way out sits next to the button that armed it. Without it, the only way back from a
-                 mis-press would be Escape. -->
-            <button
-              v-if="armed?.seq === row.item.seq"
-              class="ghost row-action is-quiet"
-              data-test="session-row-cancel"
-              title="取消删除"
-              @click.stop="cancelArm"
-            >
-              取消
-            </button>
-            <button
-              class="ghost row-action"
-              data-test="session-row-withdraw-inline"
-              title="撤回此处及之后的全部对话（发送新消息前可取消）"
-              @click.stop="withdraw(row)"
-            >
-              撤回
-            </button>
-          </span>
-        </div>
-
-        <MarkdownBody :body="row.item.body" />
-      </template>
+            <span v-if="row.item.streaming !== true" class="row-actions" data-test="session-row-actions">
+              <button class="ghost row-action" data-test="session-row-copy" title="复制" @click.stop="copy(row)">
+                <Icon name="copy" :size="14" /><span class="sr-only">复制</span>
+              </button>
+              <button
+                v-if="restorable(row.item)"
+                class="ghost row-action"
+                data-test="session-row-restore"
+                title="把这条放回输入框"
+                @click.stop="emit('restore', row.item.seq)"
+              >
+                <Icon name="pencil" :size="14" /><span class="sr-only">复用</span>
+              </button>
+              <button
+                v-if="deletable(row.item)"
+                class="ghost row-action"
+                :class="{ 'is-danger': armed?.seq === row.item.seq }"
+                data-test="session-row-delete-inline"
+                title="删除最新一次对话，不能恢复"
+                @click.stop="act(row)"
+              >
+                <Icon v-if="armed?.seq !== row.item.seq" name="trash" :size="14" /><span :class="{ 'sr-only': armed?.seq !== row.item.seq }">{{ armed?.seq === row.item.seq ? '确认删除' : '删除' }}</span>
+              </button>
+              <!-- Armed: the way out sits next to the button that armed it. Without it, the only way back from a
+                   mis-press would be Escape. -->
+              <button
+                v-if="armed?.seq === row.item.seq"
+                class="ghost row-action is-quiet"
+                data-test="session-row-cancel"
+                title="取消删除"
+                @click.stop="cancelArm"
+              >
+                取消
+              </button>
+              <button
+                class="ghost row-action"
+                data-test="session-row-withdraw-inline"
+                title="撤回到这里：隐藏这条和之后的对话，发送新消息前可以取消"
+                @click.stop="withdraw(row)"
+              >
+                <Icon name="undo" :size="14" /><span class="sr-only">撤回</span>
+              </button>
+            </span>
+          </div>
+        </template>
+      </div>
     </li>
   </ul>
 </template>
 
 <style scoped>
-/* Scoped through `.event-list` rather than a bare `li`, which would be `li[data-v-x]` — the same specificity
-   as the global `.list > li` and therefore decided by which stylesheet happened to be injected last. Naming the
-   list raises this to `.event-list > li[data-v-x]` and makes the override a fact rather than an ordering
-   accident. */
-.event-list > li {
-  position: relative;
-  /* Space, not rules. A hairline between two rows of one conversation reads as two separate documents, which
-     is the opposite of what it was for. 12px above and below puts roughly one line of breathing room between
-     turns while still fitting a dense log on one screen. */
-  padding: var(--space-3) var(--space-4);
-  border-block-end: none;
+.event-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
-/* The head line is a flex row, so its children default to `min-width: auto` and a long source name would push
-   the clock past the row's edge rather than being clipped (ui.md §2: nothing may make a horizontal scrollbar). */
-.meta > * {
+/* One row = one grid: the stack. `data-first` is what separates
+   speakers — a run of the same side sits 4px apart, a change of speaker 20px apart. */
+.event-list > li {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-block-start: var(--space-1);
+  outline: none;
+}
+
+.event-list > li[data-first='true'] {
+  margin-block-start: var(--space-5);
+}
+
+.event-list > li:first-child {
+  margin-block-start: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
   min-inline-size: 0;
 }
 
-.source {
-  /* Already at meta size and already faint; the slash used to separate it read as an even smaller thing than
-     it is, so the divider is a rule rather than a character — and it is clipped rather than allowed to push
-     the clock off the row (ui.md §2). */
+li[data-side='left'] .stack {
+  align-items: stretch;
+}
+
+li[data-side='right'] .stack {
+  align-items: flex-end;
+}
+
+li[data-side='center'] .stack {
+  align-items: center;
+}
+
+/* ---- bubbles ------------------------------------------------------------------------------------- */
+.bubble {
+  position: relative;
+  min-inline-size: 0;
+  max-inline-size: min(100%, 44rem);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+}
+
+/* The assistant: a quiet glass panel. */
+li[data-side='left'] .bubble {
+  max-inline-size: 100%;
+  background: var(--glass-1);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-hi), var(--shadow-1);
+}
+
+/* The reader: a tint of the accent over an opaque glass, so it reads as "yours" without shouting. */
+li[data-side='right'] .bubble {
+  max-inline-size: min(100%, 36rem);
+  background: color-mix(in srgb, var(--accent) 13%, var(--glass-2-solid));
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-end-end-radius: 6px;
+}
+
+/* Notes: nobody is speaking, so no bubble — a small pill of text in the middle of the page. */
+li[data-side='center'] .bubble {
+  max-inline-size: min(100%, 36rem);
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  text-align: center;
+}
+
+li[data-side='center'] .note-fold {
+  inline-size: min(100%, 36rem);
+  text-align: start;
+}
+
+li[data-side='center'] .note-fold summary {
+  cursor: pointer;
+  text-align: center;
+  list-style: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-inline-start: var(--space-1);
-  border-inline-start: 1px solid var(--line);
 }
 
-/* The body is the largest text in the app, and the only thing here anybody reads for longer than a glance.
-   Scoped to a direct child so a tool card's result and a stretch of thinking keep their own size — a JSON
-   payload at 15px is unreadable, not grand. */
-li > .markdown {
+li[data-side='center'] .note-fold summary::-webkit-details-marker {
+  display: none;
+}
+
+li[data-side='center'] .note-fold[open] summary {
+  margin-block-end: var(--space-2);
+}
+
+li[data-side='center'] .bubble :deep(.markdown) {
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+/* The body is the largest text in the app, and the only thing here anybody reads for longer than a glance. */
+.bubble :deep(.markdown) {
   font-size: var(--fs-prose);
   line-height: var(--lh-prose);
   color: var(--text);
 }
 
-/* ---- the head line ----------------------------------------------------------------------------- */
+li:focus-visible .bubble {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- the line under a bubble ------------------------------------------------------------------- */
+/* Present in the layout (so hovering never moves anything) and invisible until it is wanted. */
 .meta {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-block-size: 1.75rem;
+  padding-inline: var(--space-1);
   font-size: var(--fs-meta);
   line-height: var(--lh-meta);
   color: var(--text-3);
-  margin-block-end: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease);
 }
 
-.role {
-  color: var(--text-2);
-  font-weight: 500;
+li:hover > .stack > .meta,
+li:focus-within > .stack > .meta,
+li.is-armed > .stack > .meta {
+  opacity: 1;
+}
+
+/* A touch screen has no hover; the line is simply there. */
+@media (hover: none) {
+  .meta {
+    opacity: 1;
+  }
+}
+
+li[data-side='center'] .meta {
+  display: none;
+}
+
+.meta > * {
+  min-inline-size: 0;
+}
+
+.source {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .seq {
   font-family: var(--font-mono);
 }
 
-/* The clock is compared far more often than it is read, so the figures are tabular — otherwise two rows a
-   second apart are a pixel apart in the digit and nobody can tell which is which. */
 .at {
-  margin-inline-start: auto;
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- the role dot ------------------------------------------------------------------------------ */
-.role-dot {
-  flex: none;
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: var(--text-3);
-}
-
-.role-dot[data-role='user'] {
-  background: var(--accent);
-}
-
-.role-dot[data-role='assistant'] {
-  background: var(--text-2);
-}
-
-.role-dot[data-role='system'] {
-  background: var(--warn);
-}
-
-/* Tool and thinking rows never render this — they are their own component and carry their own stripe. */
-.role-dot[data-role='summary'] {
-  background: var(--ok);
-}
-
-/* ---- row actions ------------------------------------------------------------------------------- */
 .row-actions {
-  position: relative;
-  flex: none;
-  display: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-inline-start: var(--space-1);
 }
 
-/* Shown on hover, and on focus-within, so a control only a pointer can reach is not a control at all. Kept in
-   the flow rather than floated to the corner: floating it meant it covered the row's own text. */
-li:hover > .meta > .row-actions,
-li:focus-within > .meta > .row-actions,
-/* …and while a confirmation is armed, for the reason given on the `is-armed` class above. */
-li.is-armed > .meta > .row-actions {
-  display: flex;
-}
-
-/* Short labels, so the buttons can live on the row without covering it. `--fs-meta` puts them at the size of
-   the rest of the meta line — they are about one row, not the main event — and `nowrap` keeps 「确认删除」
-   from breaking mid-phrase when it arms. */
 .row-action {
+  min-block-size: 1.75rem;
   padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
   font-size: var(--fs-meta);
   white-space: nowrap;
 }
 
-/* The way out of a confirmation is quieter than the confirmation itself: 取消 must be findable, not inviting. */
+.row-action.is-danger {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+
 .row-action.is-quiet {
   color: var(--text-3);
-  font-weight: 400;
 }
 
-/* ---- state ------------------------------------------------------------------------------------- */
-.revision-note {
-  margin-block-start: var(--space-1);
-}
-
-.streaming .meta {
+/* ---- streaming ---------------------------------------------------------------------------------- */
+/* The caret is the whole point of the streaming row: the text is still arriving. It is the one animation in the
+   app that carries meaning rather than decoration, so under reduced motion it stops blinking but stays. */
+.streaming .bubble::after {
+  content: '▌';
+  margin-inline-start: 0.2em;
   color: var(--accent);
-}
-
-/* The caret is the whole point of the streaming row: the text is still arriving. It also blinks, which is the
-   one animation in the app that carries meaning rather than decoration — so under `prefers-reduced-motion` it
-   is not removed, it stops moving. The glyph stays, because "the model is still writing" is a fact the row
-   has to keep saying; only the pulse goes. */
-.streaming .meta::after {
-  content: "▌";
-  margin-inline-start: 0.25em;
   animation: caret 1s steps(2, start) infinite;
 }
 
@@ -562,7 +697,7 @@ li.is-armed > .meta > .row-actions {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .streaming .meta::after {
+  .streaming .bubble::after {
     animation: none;
   }
 }

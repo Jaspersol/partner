@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { MemoryRevision, PartnerApiSurface } from '../api'
-import { memoryRowFromHit, memoryRowFromItem, MEMORY_SCOPES, MEMORY_TIERS, scopeLabel, tierLabel, type MemoryRow } from '../memoryRow'
-import { useOverlayMode } from '../narrow'
-import Inspector from '../components/Inspector.vue'
-import Icon from '../components/Icon.vue'
+import {
+  memoryRowFromHit,
+  memoryRowFromItem,
+  MEMORY_TIERS,
+  tierHint,
+  tierLabel,
+  tierShort,
+  type MemoryRow,
+} from '../memoryRow'
+import { showToast } from '../toast'
+import Dialog from '../components/Dialog.vue'
+import Drawer from '../components/Drawer.vue'
 import HintTip from '../components/HintTip.vue'
+import Icon from '../components/Icon.vue'
 import MemoryList from '../components/MemoryList.vue'
+import Segmented from '../components/Segmented.vue'
 
 const props = defineProps<{ api: PartnerApiSurface }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -22,19 +32,16 @@ const selected = ref<MemoryRow | null>(null)
 const draft = ref('')
 const revisions = ref<MemoryRevision[]>([])
 
-/** The inspector shows one body per revision; for a memory record that is the text after the edit. */
-const revisionRows = computed(() =>
-  revisions.value.map((revision) => ({ at: revision.at, actor: revision.actor, body: revision.after })),
-)
+/** The detail panel. Separate from the selection: closing the panel keeps the row marked, deleting clears both. */
+const drawerOpen = ref(false)
+
 const query = ref('')
 const tier = ref('all')
-const scope = ref('all')
+/** 「只看已固定」: the retention filter, now a switch — retention is a yes/no with one exception, not a rank. */
+const pinnedOnly = ref(false)
+/** Records a later statement replaced are kept but are not part of the day-to-day picture, so they start hidden. */
+const showRetired = ref(false)
 const error = ref('')
-/** Closed on arrival, like the session view's: the list is what a reader opens this page for. */
-const inspectorCollapsed = ref(true)
-
-/** See SessionView: the handle is only honest while the panel is a column rather than an overlay. */
-const { isOverlay } = useOverlayMode()
 
 /** True while the list shows recall hits rather than the stored records. */
 const recalling = ref(false)
@@ -77,18 +84,30 @@ const summary = computed(() => {
  * get an answer rather than an absent option.
  * </para>
  */
-const tierOptions = computed(() =>
-  MEMORY_TIERS.map((option) => ({
+const tierOptions = computed(() => [
+  { value: 'all', label: '全部' },
+  ...MEMORY_TIERS.map((option) => ({
     value: option,
-    count: rows.value.filter((row) => row.tier === option).length,
+    label: `${tierShort(option)} ${rows.value.filter((row) => row.tier === option).length}`,
+    title: tierLabel(option),
   })),
-)
+])
 
 const visible = computed(() =>
   rows.value.filter(
     (row) =>
-      (tier.value === 'all' || row.tier === tier.value) && (scope.value === 'all' || row.scope === scope.value),
+      (tier.value === 'all' || row.tier === tier.value) &&
+      (!pinnedOnly.value || row.scope === 'Retain') &&
+      (showRetired.value || !row.retired),
   ),
+)
+
+/** The retired ones the switch is hiding, so the switch can say how many it would show. */
+const hiddenRetired = computed(() => rows.value.filter((row) => row.retired).length)
+
+/** The inspector shows one body per revision; for a memory record that is the text after the edit. */
+const revisionRows = computed(() =>
+  revisions.value.map((revision) => ({ at: revision.at, actor: revision.actor, body: revision.after })),
 )
 
 const note = computed(() => {
@@ -104,7 +123,8 @@ async function refresh() {
   error.value = ''
   try {
     // The full list, retired records included: a memory view that hides what a later statement replaced cannot
-    // answer "why does it now believe the opposite", which is the question a conflict raises.
+    // answer "why does it now believe the opposite", which is the question a conflict raises. They are filtered
+    // on screen, not left out of the read.
     const all = await props.api.memoryAll()
     rows.value = all.map((item) => memoryRowFromItem(item))
     loaded.value = true
@@ -112,6 +132,15 @@ async function refresh() {
     recalled.value = ''
   } catch (failure) {
     error.value = String(failure)
+  }
+}
+
+/** Re-reads, then re-selects the same record so the drawer shows what the server kept, not what was sent. */
+async function reselect(recordId: string) {
+  await refresh()
+  const updated = rows.value.find((candidate) => candidate.recordId === recordId)
+  if (updated) {
+    await select(updated)
   }
 }
 
@@ -124,22 +153,17 @@ async function refresh() {
  * norm (ui.md): the row on screen is what the server kept, not what was sent.
  * </para>
  */
-async function setTier(tier: string) {
+async function setTier(next: string) {
   const row = selected.value
   if (!row) {
-    error.value = '先选中一条记忆'
+    error.value = '先选一条记忆'
     return
   }
 
   error.value = ''
   try {
-    await props.api.setMemoryTier(row.recordId, tier)
-    await refresh()
-
-    const updated = rows.value.find((candidate) => candidate.recordId === row.recordId)
-    if (updated) {
-      await select(updated)
-    }
+    await props.api.setMemoryTier(row.recordId, next)
+    await reselect(row.recordId)
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -157,18 +181,14 @@ async function setTier(tier: string) {
 async function setScope(next: string) {
   const row = selected.value
   if (!row) {
-    error.value = '先选中一条记忆'
+    error.value = '先选一条记忆'
     return
   }
 
   error.value = ''
   try {
     await props.api.setMemoryScope(row.recordId, next)
-    await refresh()
-    const updated = rows.value.find((candidate) => candidate.recordId === row.recordId)
-    if (updated) {
-      await select(updated)
-    }
+    await reselect(row.recordId)
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -186,7 +206,7 @@ async function recall() {
 
   try {
     const hits = await props.api.recall(text)
-    rows.value = hits.map(hit => memoryRowFromHit(hit))
+    rows.value = hits.map((hit) => memoryRowFromHit(hit))
     recalling.value = true
     recalled.value = text
   } catch (failure) {
@@ -194,9 +214,19 @@ async function recall() {
   }
 }
 
+/** The × in the search box: empties it, and puts the full list back if the list was showing hits. */
+async function clearSearch() {
+  query.value = ''
+  if (recalling.value) {
+    await refresh()
+  }
+}
+
 async function select(row: MemoryRow) {
   selected.value = row
   draft.value = row.body
+  confirmingDelete.value = false
+  drawerOpen.value = true
 
   try {
     revisions.value = await props.api.memoryRevisions(row.recordId)
@@ -205,45 +235,63 @@ async function select(row: MemoryRow) {
   }
 }
 
-async function save(body: string) {
+function closeDrawer() {
+  drawerOpen.value = false
+  confirmingDelete.value = false
+}
+
+async function save() {
   const row = selected.value
   if (!row) {
-    error.value = '先选中一条记忆'
+    error.value = '先选一条记忆'
     return
   }
+
+  const body = draft.value.trim()
   if (body === '') {
-    error.value = '正文不能为空'
+    error.value = '内容不能为空'
     return
   }
 
   error.value = ''
   try {
     await props.api.editMemory(row.recordId, body)
-    await refresh()
-    const updated = rows.value.find((candidate) => candidate.recordId === row.recordId)
-    if (updated) {
-      await select(updated)
-    }
+    await reselect(row.recordId)
+    showToast('已保存')
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
   }
 }
 
+/**
+ * Deleting a memory cannot be taken back, and the old button deleted on the first press. It arms now: the first
+ * press turns the button into 「确认删除」 and the second does it.
+ */
+const confirmingDelete = ref(false)
+
 async function remove() {
   const row = selected.value
   if (!row) {
-    error.value = '先选中一条记忆'
+    error.value = '先选一条记忆'
+    return
+  }
+
+  if (!confirmingDelete.value) {
+    confirmingDelete.value = true
     return
   }
 
   error.value = ''
+  confirmingDelete.value = false
   try {
     await props.api.deleteMemory(row.recordId)
     selected.value = null
     draft.value = ''
     revisions.value = []
+    drawerOpen.value = false
     await refresh()
+    showToast('已删除')
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -263,13 +311,13 @@ async function remove() {
 const composing = ref(false)
 const newBody = ref('')
 const newTier = ref<string>('Semantic')
-const newScope = ref<string>('Recall')
+const newPinned = ref(false)
 
 function openComposer() {
   error.value = ''
   newBody.value = ''
   newTier.value = 'Semantic'
-  newScope.value = 'Recall'
+  newPinned.value = false
   composing.value = true
 }
 
@@ -281,19 +329,17 @@ async function create() {
   // one keeps rejecting text the store would have accepted. The server's refusal is already surfaced below,
   // with its own wording.
   if (body === '') {
-    error.value = '正文不能为空'
+    error.value = '内容不能为空'
     return
   }
 
   error.value = ''
   try {
-    const recordId = await props.api.createMemory({ body, tier: newTier.value, scope: newScope.value })
+    const recordId = await props.api.createMemory({ body, tier: newTier.value, scope: newPinned.value ? 'Retain' : 'Recall' })
     composing.value = false
-    await refresh()
-    const updated = rows.value.find((candidate) => candidate.recordId === recordId)
-    if (updated) {
-      await select(updated)
-    }
+    await reselect(recordId)
+    drawerOpen.value = false
+    showToast('记住了')
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -311,7 +357,7 @@ function focusSearch() {
 }
 
 function collapseInspector() {
-  inspectorCollapsed.value = true
+  closeDrawer()
 }
 
 defineExpose({ refresh, focusSearch, collapseInspector })
@@ -319,58 +365,58 @@ defineExpose({ refresh, focusSearch, collapseInspector })
 
 <template>
   <div class="view">
-    <div class="toolbar">
-      <button data-test="memory-refresh" @click="refresh">刷新</button>
-      <button data-test="memory-new" @click="openComposer">＋ 新建</button>
-      <label class="search-field">
-        <Icon name="search" :size="14" class="search-glyph" />
-        <input
-          ref="searchInput"
-          v-model="query"
-          placeholder="检索记忆…"
-          title="Ctrl+K"
-          aria-label="检索记忆"
-          data-test="memory-query"
-          @keydown.enter="recall"
-        />
-      </label>
-      <button data-test="memory-recall" @click="recall">检索</button>
-      <select v-model="tier" data-test="memory-tier" aria-label="层级">
-        <option value="all">层：全部</option>
-        <option v-for="option in tierOptions" :key="option.value" :value="option.value">
-          {{ tierLabel(option.value) }}（{{ option.count }}）
-        </option>
-      </select>
-      <select v-model="scope" data-test="memory-scope" aria-label="保留">
-        <option value="all">保留：全部</option>
-        <option v-for="option in MEMORY_SCOPES" :key="option" :value="option">
-          {{ scopeLabel(option) }}
-        </option>
-      </select>
-      <button
-        v-if="recalling"
-        class="ghost"
-        data-test="memory-back-to-all"
-        @click="refresh"
-      >
-        返回全量
-      </button>
-      <button
-        class="ghost"
-        data-test="memory-inspector-toggle"
-        aria-controls="memory-inspector"
-        :aria-expanded="!inspectorCollapsed"
-        @click="inspectorCollapsed = !inspectorCollapsed"
-      >
-        {{ inspectorCollapsed ? '‹ 展开检视' : '› 收起检视' }}
-      </button>
-      <span class="spacer" />
-      <span class="muted" data-test="memory-summary">{{ summary }}</span>
-    </div>
+    <div class="scroll memory-scroll">
+      <div class="g-page memory-page">
+        <header class="page-head">
+          <label class="search-field memory-search">
+            <Icon name="search" :size="14" class="search-glyph" />
+            <input
+              ref="searchInput"
+              v-model="query"
+              placeholder="搜一搜助手记得的…"
+              title="Ctrl+K"
+              aria-label="检索记忆"
+              data-test="memory-query"
+              @keydown.enter="recall"
+            />
+            <button
+              v-if="query !== '' || recalling"
+              class="ghost clear"
+              aria-label="清除搜索"
+              data-test="memory-back-to-all"
+              @click="clearSearch"
+            >
+              <Icon name="x" :size="14" />
+            </button>
+          </label>
+          <button class="primary" data-test="memory-new" @click="openComposer">
+            <Icon name="plus" :size="14" :stroke-width="2.2" /> 记住一件事
+          </button>
+        </header>
 
-    <div class="split" :class="{ 'is-inspector-collapsed': inspectorCollapsed }">
-      <div v-if="!inspectorCollapsed" class="inspector-scrim" @click="inspectorCollapsed = true" />
-      <div class="scroll">
+        <div class="filters">
+          <Segmented v-model="tier" :options="tierOptions" label="按类型筛选" data-test="memory-tier" />
+          <span class="spacer" />
+          <label class="toggle">
+            <input v-model="pinnedOnly" type="checkbox" class="g-switch" role="switch" data-test="memory-pinned-only" />
+            只看已固定
+          </label>
+          <label v-if="hiddenRetired > 0 || showRetired" class="toggle">
+            <input v-model="showRetired" type="checkbox" class="g-switch" role="switch" data-test="memory-show-retired" />
+            含已失效 {{ hiddenRetired }}
+            <HintTip align="end">被新记录取代的旧记忆。平时不用看，想知道「它为什么现在这么认为」时再打开。</HintTip>
+          </label>
+        </div>
+
+        <p class="summary-line">
+          <span data-test="memory-summary">{{ summary }}</span>
+          <button class="ghost refresh" aria-label="刷新" title="刷新" data-test="memory-refresh" @click="refresh">
+            <Icon name="refresh" :size="14" />
+          </button>
+        </p>
+
+        <p v-if="error && !composing" class="error" data-test="error">{{ error }}</p>
+
         <MemoryList :rows="visible" :selected-id="selected?.recordId ?? null" @select="select" />
         <div v-if="!loaded" class="skeleton-stack" aria-hidden="true">
           <div class="skeleton-line" />
@@ -379,157 +425,264 @@ defineExpose({ refresh, focusSearch, collapseInspector })
         </div>
         <p v-if="!loaded" class="pending" data-test="memory-pending">正在读取记忆…</p>
         <!--
-          Two different empties. 「无记忆」 in a search result says the store is empty when it has just reported
-          hits, and 「无命中」 over a filtered list says the same thing about the whole store.
+          Two different empties. 「没有相关的记忆」 in a search result says the store is empty when it has just reported
+          hits, and the other way round says the same thing about the whole store.
         -->
         <p v-else-if="visible.length === 0" class="empty" data-test="memory-empty">
-          {{ recalling ? '（无命中）' : '（无记忆）' }}
+          {{ recalling ? '没有找到相关的记忆' : '助手还没记住任何事' }}
         </p>
       </div>
-
-      <!--
-        The tier is editable because the demotion rule protects what a person marked as established. That
-        makes it a judgement rather than a score, and a judgement belongs to whoever reads the list.
-
-        Retention is a checkbox and not a third dropdown on purpose: it is a promise about time, not a rank, and
-        the two are independent — a retained Working record is a legal combination, so there is nothing to lock.
-      -->
-      <div v-if="selected" class="tier-picker">
-        <label for="memory-tier-picker">层级</label>
-        <select
-          id="memory-tier-picker"
-          :value="selected.tier"
-          data-test="memory-set-tier"
-          @change="setTier(($event.target as HTMLSelectElement).value)"
-        >
-          <option v-for="option in MEMORY_TIERS" :key="option" :value="option">
-            {{ tierLabel(option) }}
-          </option>
-        </select>
-        <label class="retain-toggle">
-          <input
-            type="checkbox"
-            data-test="memory-retain"
-            :checked="selected.scope === 'Retain'"
-            @change="setScope(($event.target as HTMLInputElement).checked ? 'Retain' : 'Recall')"
-          />
-          保留
-          <HintTip data-test="memory-retain-hint">保留只挡遗忘，不挡纠正 —— 同层的新记录仍会覆盖它</HintTip>
-        </label>
-      </div>
-      <Inspector
-        id="memory-inspector"
-        test-prefix="memory"
-        title="编辑选中记忆（旧记录软失效并标记 supersededBy）"
-        :target="selected?.recordId ?? '未选中'"
-        :draft="draft"
-        :revisions="revisionRows"
-        :note="note"
-        delete-label="删除"
-        :resizable="!isOverlay"
-        @save="save"
-        @remove="remove"
-      />
     </div>
 
-    <p v-if="error" class="error notice" data-test="error">{{ error }}</p>
+    <!--
+      The detail panel. The tier is editable because the demotion rule protects what a person marked as
+      established — a judgement, which belongs to whoever reads the list. Retention is a switch and not a second
+      picker on purpose: it is a promise about time, not a rank, and the two are independent (a pinned 「刚记下」 is a
+      legal combination), so there is nothing to lock.
+    -->
+    <Drawer id="memory-inspector" :open="drawerOpen" title="编辑记忆" @close="closeDrawer">
+      <div class="target">
+        <span class="meta break" data-test="memory-target">{{ selected?.recordId ?? '未选中' }}</span>
+        <span v-if="note" class="g-chip is-warn" data-test="memory-note">{{ note }}</span>
+        <HintTip align="end">保存后会生成一条新记录，旧的那条被标记为「已失效」，但不会丢。</HintTip>
+      </div>
 
-    <!-- Not a modal: it is one textarea and two judgements, and a dialog would hide the list it is adding to. -->
-    <div v-if="composing" class="composer" data-test="memory-composer">
-      <textarea
-        v-model="newBody"
-        rows="3"
-        placeholder="要记住的一句话…"
-        aria-label="新记忆正文"
-        data-test="memory-new-body"
-      />
-      <div class="composer-meta">
-        <label>
-          层级
-          <select v-model="newTier" data-test="memory-new-tier">
-            <option v-for="option in MEMORY_TIERS" :key="option" :value="option">{{ tierLabel(option) }}</option>
-          </select>
-        </label>
-        <label>
-          保留
-          <select v-model="newScope" data-test="memory-new-scope">
-            <option v-for="option in MEMORY_SCOPES" :key="option" :value="option">{{ scopeLabel(option) }}</option>
-          </select>
-          <HintTip align="end">默认是「确定 · 可以当事实用」—— 手写的不是待印证的东西</HintTip>
+      <textarea v-model="draft" rows="6" aria-label="记忆内容" data-test="memory-draft" />
+
+      <div v-if="selected" class="field-row">
+        <span class="field-name">类型 <HintTip>{{ tierHint(selected.tier) }}</HintTip></span>
+        <Segmented
+          :model-value="selected.tier"
+          :options="MEMORY_TIERS.map((option) => ({ value: option, label: tierShort(option), title: tierLabel(option) }))"
+          label="记忆类型"
+          data-test="memory-set-tier"
+          @update:model-value="setTier"
+        />
+      </div>
+      <label v-if="selected" class="field-row">
+        <span class="field-name">
+          固定
+          <HintTip data-test="memory-retain-hint">固定后不会被自动遗忘；但同类的新记录仍然可以纠正它。</HintTip>
+        </span>
+        <input
+          type="checkbox"
+          class="g-switch"
+          role="switch"
+          data-test="memory-retain"
+          :checked="selected.scope === 'Retain'"
+          @change="setScope(($event.target as HTMLInputElement).checked ? 'Retain' : 'Recall')"
+        />
+      </label>
+
+      <details class="history">
+        <summary>修改记录（{{ revisionRows.length }}）</summary>
+        <!-- Undo needs no special mechanism: restoring appends another edit pointing at the old text. -->
+        <ul class="revisions" data-test="memory-revisions">
+          <li v-for="(revision, index) in revisionRows" :key="index">
+            <div class="meta">
+              {{ revision.at.slice(0, 16).replace('T', ' ') }}<span v-if="revision.actor"> · {{ revision.actor }}</span>
+            </div>
+            <div class="break">{{ revision.body }}</div>
+            <button class="ghost" data-test="memory-revision-restore" @click="draft = revision.body">恢复这一版</button>
+          </li>
+        </ul>
+        <p v-if="revisionRows.length === 0" class="muted">还没有修改过。</p>
+      </details>
+
+      <p v-if="error && !composing" class="error" data-test="drawer-error">{{ error }}</p>
+
+      <template #footer>
+        <button
+          v-if="selected"
+          class="ghost"
+          :class="{ danger: confirmingDelete }"
+          data-test="memory-delete"
+          @click="remove"
+        >
+          {{ confirmingDelete ? '确认删除' : '删除' }}
+        </button>
+        <button v-if="confirmingDelete" class="ghost" @click="confirmingDelete = false">取消</button>
+        <span class="spacer" />
+        <button class="primary" data-test="memory-save" @click="save">保存</button>
+      </template>
+    </Drawer>
+
+    <!-- Not a page: it is one textarea and two judgements, and a bottom-of-page form hides the list it adds to. -->
+    <Dialog :open="composing" title="记住一件事" @close="composing = false">
+      <div data-test="memory-composer" class="composer-body">
+        <textarea
+          v-model="newBody"
+          rows="4"
+          placeholder="要记住的一句话…"
+          aria-label="新记忆内容"
+          data-test="memory-new-body"
+        />
+        <div class="field-row">
+          <span class="field-name">类型 <HintTip>手写的记忆默认算「事实」，不需要再被印证。</HintTip></span>
+          <Segmented
+            v-model="newTier"
+            :options="MEMORY_TIERS.map((option) => ({ value: option, label: tierShort(option), title: tierLabel(option) }))"
+            label="新记忆的类型"
+            data-test="memory-new-tier"
+          />
+        </div>
+        <label class="field-row">
+          <span class="field-name">
+            固定
+            <HintTip>固定后不会被自动遗忘；但同类的新记录仍然可以纠正它。</HintTip>
+          </span>
+          <input v-model="newPinned" type="checkbox" class="g-switch" role="switch" data-test="memory-new-pin" />
         </label>
         <!--
-          The one thing this form does not do, said while the reader is here rather than when they are
-          surprised: deleting a conversation (or sending a message after a withdrawal) takes the memories distilled from it with it, and this one is not one of
-          those. It belongs to the person, so deleting the conversation it was written next to leaves it
-          standing.
+          The one thing this form does not do, said while the reader is here rather than when they are surprised:
+          deleting a conversation (or sending a message after a withdrawal) takes the memories distilled from it
+          with it, and this one is not one of those. It belongs to the person.
         -->
-        <HintTip align="end" data-test="memory-new-cascade-hint">它不属于任何一轮对话 —— 删掉对话不会删掉它</HintTip>
-        <span class="spacer" />
-        <button class="ghost" data-test="memory-new-cancel" @click="composing = false">取消</button>
-        <button data-test="memory-new-submit" @click="create">保存</button>
+        <p class="cascade">
+          这条记忆不属于任何一次对话
+          <HintTip data-test="memory-new-cascade-hint">这条记忆不属于任何一次对话，删掉对话不会删掉它。</HintTip>
+        </p>
+        <p v-if="error" class="error" data-test="error">{{ error }}</p>
       </div>
-    </div>
+      <template #footer>
+        <button class="ghost" data-test="memory-new-cancel" @click="composing = false">取消</button>
+        <button class="primary" data-test="memory-new-submit" @click="create">保存</button>
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <style scoped>
-.split {
+.memory-scroll {
   flex: 1;
   min-block-size: 0;
 }
 
-.tier-picker {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border-block-end: 1px solid var(--line);
-  font-size: var(--fs-meta);
-}
-
-.tier-picker label {
-  color: var(--text-3);
-}
-
-.tier-picker select {
-  font-size: var(--fs-meta);
-  min-inline-size: 0;
-}
-
-/* A checkbox, not a select: "will this be forgotten" is a yes/no with one exception, and a dropdown of two
-   options makes the reader open it to find out which one means yes. */
-.retain-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--text-2);
-}
-
-.composer {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-block-start: 1px solid var(--line);
-}
-
-.composer textarea {
-  font: inherit;
-  inline-size: 100%;
-  box-sizing: border-box;
-  background: var(--bg-1);
-  color: var(--text-1);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2);
-  resize: block;
-}
-
-.composer-meta {
+.page-head {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  font-size: var(--fs-meta);
+}
+
+.memory-search {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.memory-search input {
+  inline-size: 100%;
+  min-block-size: 2.75rem;
+  border-radius: var(--radius-pill);
+}
+
+.memory-search .clear {
+  position: absolute;
+  inset-inline-end: var(--space-2);
+  min-block-size: 1.75rem;
+  inline-size: 1.75rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.summary-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: calc(var(--space-2) * -1) 0 0;
   color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.refresh {
+  min-block-size: 1.75rem;
+  inline-size: 1.75rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.target {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.target .meta {
+  flex: 1;
+  min-inline-size: 0;
+  font-family: var(--font-mono);
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.field-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.history summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+}
+
+.revisions {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.revisions li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.revisions button {
+  justify-self: start;
+  min-block-size: 1.75rem;
+  font-size: var(--fs-meta);
+}
+
+.composer-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.cascade {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
 }
 </style>

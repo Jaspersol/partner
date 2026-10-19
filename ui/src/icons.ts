@@ -63,7 +63,21 @@ export type IconName =
   | 'square'
   | 'sparkle'
   | 'plus'
+  | 'minus'
   | 'info'
+  | 'x'
+  | 'mic'
+  | 'speaker'
+  | 'folder'
+  | 'clock'
+  | 'keyboard'
+  | 'paperclip'
+  | 'pin'
+  | 'copy'
+  | 'trash'
+  | 'undo'
+  | 'shield'
+  | 'sliders'
 
 /**
  * Name → path data, in a 24×24 viewBox.
@@ -176,11 +190,26 @@ export const ICONS: Record<IconName, readonly string[]> = {
   // Two strokes rather than the ＋ character: at rail size the glyph's arms do not meet the vertical cleanly
   // at every weight, and this has to look the same as the other thirty.
   plus: ['M12 5v14M5 12h14'],
+  minus: ['M5 12h14'],
 
   // A ring with an exclamation in it: the mark that means "there is a sentence about this, ask for it". Drawn
   // as an outline rather than a filled disc so it stays quiet at 13px beside a field label — it is a footnote,
   // not a warning, and the app already has one loud red for things that are actually wrong.
   info: ['M12 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16z', 'M12 8.2v4.6', 'M12 15.9h.01'],
+  // ---- added for the glass redesign (ui-redesign.md) ------------------------------------------
+  x: ['M6 6l12 12M18 6L6 18'],
+  mic: ['M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z', 'M6 11a6 6 0 0 0 12 0', 'M12 17v4'],
+  speaker: ['M4 9.5v5h4l5 4v-13l-5 4H4z', 'M16.5 9a4 4 0 0 1 0 6', 'M19 6.5a7.5 7.5 0 0 1 0 11'],
+  folder: ['M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z'],
+  clock: ['M12 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16z', 'M12 8v4.5l3 1.8'],
+  keyboard: ['M3 7h18v10H3z', 'M7 11h.01M11 11h.01M15 11h.01M7 14h10'],
+  paperclip: ['M20 11.5l-7.6 7.6a4.5 4.5 0 0 1-6.4-6.4l8-8a3 3 0 0 1 4.2 4.2l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.3-7.3'],
+  pin: ['M9 4h6l-1 6 3 3H7l3-3-1-6z', 'M12 13v7'],
+  copy: ['M9 9h10v11H9z', 'M5 15V5a1 1 0 0 1 1-1h9'],
+  trash: ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13h10l1-13', 'M10 11v6M14 11v6'],
+  undo: ['M9 7L4 12l5 5', 'M4 12h10a6 6 0 0 1 0 6'],
+  shield: ['M12 3l8 3v6c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V6l8-3z', 'M9 12l2.2 2.2L15.5 10'],
+  sliders: ['M5 8h14M5 16h14', 'M9 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4z', 'M15 14a2 2 0 1 1 0 4 2 2 0 0 1 0-4z'],
 }
 
 /** The paths for one icon. Exported so a caller can assert a name actually has geometry. */

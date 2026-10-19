@@ -77,21 +77,29 @@ const argsPretty = computed(() => {
 </template>
 
 <style scoped>
+/* A capsule, not a card: one line that says which tool, on what, and how it went. Opening it unfolds the
+   details into the same shape rather than into a second box. The family colour is carried by the icon alone —
+   the left stripe it used to have was a third channel for something the icon and the name already said. */
 .tool {
-  /* An inset block, not a box. It used to draw a full hairline on all four sides *and* sit on --surface-1,
-     which is two signals for one relationship and left the card invisible against the row behind it. Now the
-     surface step carries it and only the family stripe stays — the stripe is information, the border was not. */
-  border-inline-start: 3px solid var(--tool-accent, var(--line-strong));
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  padding: var(--space-1) var(--space-2);
+  max-inline-size: 100%;
   min-inline-size: 0;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: 0 var(--space-3);
+  transition: background-color var(--motion-fast) var(--ease);
+}
+
+.tool[open] {
+  padding-block-end: var(--space-3);
+  background: var(--glass-1);
 }
 
 /* The colour says what kind of tool it is; the status says whether it worked. Two channels, two meanings —
    conflating them would leave a failed search indistinguishable from a successful terminal command. */
 .tool[data-status='failed'] {
   --tool-accent: var(--error);
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
 }
 
 .tool[data-tool-family='shell'] {
@@ -133,27 +141,31 @@ const argsPretty = computed(() => {
 summary {
   cursor: pointer;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-2);
+  min-block-size: 2.25rem;
   min-inline-size: 0;
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
 }
 
 .icon {
   flex: none;
-  color: var(--tool-accent, var(--accent));
+  color: var(--tool-accent, var(--text-2));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* A fixed box so the family glyph, the name and the status all sit on the same baseline whether the icon is
-     a page or a crosshair — the whole point of replacing the characters. */
   inline-size: 1.35em;
 }
 
 .name {
-  color: var(--accent);
+  color: var(--text);
   flex: none;
   font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-size: var(--fs-meta);
   line-height: var(--lh-code);
 }
 
@@ -163,13 +175,25 @@ summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
 }
 
 .status {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--fs-meta);
   color: var(--text-3);
+}
+
+.status::before {
+  content: '';
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .status.ok {
@@ -180,12 +204,22 @@ summary {
   color: var(--accent);
 }
 
+.status.running::before {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
 .status.failed {
   color: var(--error);
 }
 
+@keyframes pulse-dot {
+  50% {
+    opacity: 0.25;
+  }
+}
+
 .section {
-  margin-block-start: var(--space-2);
+  margin-block-start: var(--space-3);
   display: grid;
   gap: var(--space-1);
   min-inline-size: 0;
@@ -194,21 +228,18 @@ summary {
 .tool-section-label {
   font-size: var(--fs-meta);
   color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 pre {
   margin: 0;
-  padding: var(--space-2);
-  background: var(--surface-0);
+  padding: var(--space-3);
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
   overflow: auto;
   max-block-size: 20rem;
   font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: var(--lh-code);
   font-size: var(--fs-meta);
+  line-height: var(--lh-code);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

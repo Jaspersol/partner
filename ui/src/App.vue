@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, shallowRef } from 'vue'
+import { TOPBAR_TOOLS } from './topbarTools'
 import {
   ApiError,
   PartnerApi,
@@ -14,9 +15,11 @@ import {
 } from './api'
 import { resolveConnection } from './config'
 import { useRailOnlyMode } from './narrow'
-import { applyTheme, nextTheme, readTheme, type Theme } from './theme'
+import { applyReducedTransparency, applyTheme, nextTheme, readReducedTransparency, readTheme, type Theme } from './theme'
 import SideBar, { type NavItem } from './components/SideBar.vue'
+import { setGearLabels } from './gears'
 import StatusBar from './components/StatusBar.vue'
+import ToastHost from './components/ToastHost.vue'
 import TopBar from './components/TopBar.vue'
 import MemoryView from './views/MemoryView.vue'
 import SessionView from './views/SessionView.vue'
@@ -57,6 +60,10 @@ const QUEUE_POLL_MS = 5000
  * elsewhere — which is how two approvals once timed out with nobody watching.
  */
 const APPROVAL_POLL_MS = 500
+
+/** The top bar's slot for the page's own tools; the bar fills it, the page teleports into it. */
+const topbarTools = ref<HTMLElement | null>(null)
+provide(TOPBAR_TOOLS, topbarTools)
 
 const approvals = ref<PendingApproval[]>([])
 const desktop = ref<DesktopState | null>(null)
@@ -297,6 +304,7 @@ async function refreshGears() {
   try {
     const settings = await api.value.settings()
     gears.value = settings.model.reasoningGears ?? []
+    setGearLabels(settings.model.reasoningLabels)
     defaultGear.value = settings.model.reasoningEffort ?? ''
   } catch (failure) {
     connectionError.value = String(failure)
@@ -373,8 +381,12 @@ function onShortcut(event: KeyboardEvent) {
 }
 
 function cycleTheme() {
-  theme.value = nextTheme(theme.value)
-  applyTheme(theme.value)
+  setTheme(nextTheme(theme.value))
+}
+
+function setTheme(next: Theme) {
+  theme.value = next
+  applyTheme(next)
 }
 
 /**
@@ -398,6 +410,7 @@ async function waitForApi(client: PartnerApi): Promise<'ok' | 'unauthorized' | '
 
 onMounted(async () => {
   applyTheme(theme.value)
+  applyReducedTransparency(readReducedTransparency())
 
   // On the window, not on the shell: a shortcut has to work wherever the caret is, including inside the
   // composer. `isTyping` is what keeps the digit keys out of a message.
@@ -455,28 +468,28 @@ onUnmounted(() => {
 
 <template>
   <div class="app">
-    <TopBar
-      :view-label="viewLabel"
-      :context="context"
-      :summary="summary"
-      :collapsed="sidebarCollapsed"
-      :connected="connected"
-      :connection-error="connectionError"
-      :theme="theme"
-      :toggle-hidden="railOnly"
-      @update:collapsed="userWantsSidebar = $event"
-      @cycle-theme="cycleTheme"
-    />
-
     <div class="body" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
       <SideBar
         :items="NAV"
         :active="active"
         :collapsed="sidebarCollapsed"
+        :toggle-hidden="railOnly"
         @select="select"
+        @update:collapsed="userWantsSidebar = $event"
       />
 
+      <div class="stage">
       <main class="content">
+        <TopBar
+          :view-label="viewLabel"
+          :context="context"
+          :summary="summary"
+          :connected="connected"
+          :connection-error="connectionError"
+          :theme="theme"
+          @cycle-theme="cycleTheme"
+        />
+
         <template v-if="api">
           <SessionView
             v-if="active === 'session'"
@@ -490,7 +503,6 @@ onUnmounted(() => {
             :gears="gears"
             :default-gear="defaultGear"
             :queue-items="queueItems"
-            @context="context = $event"
             @approval="setApprovalGear"
             @answer="answerApproval"
             @changed="refreshSummary"
@@ -524,24 +536,28 @@ onUnmounted(() => {
             v-else
             ref="activeView"
             :api="api"
+            :theme="theme"
+            @set-theme="setTheme"
             @saved="refreshGears"
             @navigate="select"
           />
         </template>
 
-        <p v-else class="error empty" data-test="connection-error">{{ connectionError }}</p>
+        <p v-else class="error empty g-connect" data-test="connection-error">{{ connectionError }}</p>
       </main>
-    </div>
 
-    <StatusBar
-      :connected="connected"
-      :connection-error="connectionError"
-      :endpoint="endpoint"
-      :consumer="consumer"
-      :stale="stale"
-      :version="`v${version}`"
-      :job="runningJob"
-      @cancel-job="cancelJob"
-    />
+      <StatusBar
+        :connected="connected"
+        :connection-error="connectionError"
+        :endpoint="endpoint"
+        :consumer="consumer"
+        :stale="stale"
+        :version="`v${version}`"
+        :job="runningJob"
+        @cancel-job="cancelJob"
+      />
+      </div>
+    </div>
+    <ToastHost />
   </div>
 </template>
