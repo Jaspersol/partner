@@ -43,8 +43,35 @@ public interface IMemoryStore : IAsyncDisposable
     /// <summary>Retrieval pipeline: scope-filtered candidates → explainable re-rank → top <c>limit</c>.</summary>
     Task<IReadOnlyList<MemoryHit>> RecallAsync(string query, int? limit = null, CancellationToken ct = default);
 
+    /// <summary>
+    /// Recall that leaves out records distilled from <paramref name="excludeSourceSeqs"/>.
+    /// <para>
+    /// For a caller that already has those events in front of it. A turn recalls what earlier turns knew, but
+    /// the conversation it is about to send still contains the turn that produced the record — so without this
+    /// the model reads the same statement twice, once as history and once as a remembered fact, and the second
+    /// copy is labelled "background from an earlier session" when it is neither.
+    /// </para>
+    /// <para>
+    /// Filtering happens before the top-<c>limit</c> cut, so the answer still holds <c>limit</c> usable hits.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<MemoryHit>> RecallAsync(
+        string query,
+        int? limit,
+        IReadOnlySet<long>? excludeSourceSeqs,
+        CancellationToken ct = default);
+
     /// <summary>Recall bounded by the injection token budget.</summary>
     Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default);
+
+    /// <summary>
+    /// Recall bounded by the injection token budget, leaving out records distilled from
+    /// <paramref name="excludeSourceSeqs"/> (see the overload of <see cref="RecallAsync"/> for why).
+    /// </summary>
+    Task<InjectionResult> InjectAsync(
+        string query,
+        IReadOnlySet<long>? excludeSourceSeqs,
+        CancellationToken ct = default);
 
     /// <summary>Appends a revision and applies the new body (design doc §2.5.5).</summary>
     Task<string> ReviseAsync(string recordId, string newBody, Actor actor, CancellationToken ct = default);

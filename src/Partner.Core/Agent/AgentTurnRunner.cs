@@ -297,9 +297,24 @@ public sealed class AgentTurnRunner
 
                     if (!systemLogged && ctx.InjectedPrompts.Count > 0)
                     {
-                        await _session.AppendAsync(
-                            Event(SessionEventKind.System, item.Source, string.Join(" | ", ctx.InjectedPrompts), item), ct)
-                            .ConfigureAwait(false);
+                        // One event per injected block, not one joined line. The label is what lets the session
+                        // page show a block as the thing it is — a recall, a skill list — instead of as an
+                        // anonymous system line; a joined body could carry the label only as text the model
+                        // would then also read.
+                        var labels = ctx.InjectedLabels;
+                        for (var at = 0; at < ctx.InjectedPrompts.Count; at++)
+                        {
+                            var label = at < labels.Count ? labels[at] : null;
+                            await _session.AppendAsync(
+                                Event(
+                                    SessionEventKind.System,
+                                    item.Source,
+                                    ctx.InjectedPrompts[at],
+                                    item,
+                                    label is null ? null : new Dictionary<string, string> { ["label"] = label }),
+                                ct).ConfigureAwait(false);
+                        }
+
                         systemLogged = true;
                     }
 

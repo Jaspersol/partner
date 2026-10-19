@@ -459,7 +459,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         var hooks = new HookRegistry();
 
-        hooks.Register(new MemoryRecallHook(_context.Memory));
+        hooks.Register(new MemoryRecallHook(_context.Memory, _context.Session));
         hooks.Register(new MemoryDistilHook(_context.Memory, _context.Session, _clock));
 
         // A link the person pasted is a link they meant to open, so it goes into the ledger that web_fetch's

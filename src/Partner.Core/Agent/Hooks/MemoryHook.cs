@@ -14,14 +14,33 @@ namespace Partner.Core.Agent.Hooks;
 /// Runs through <see cref="IMemoryStore.InjectAsync"/> rather than a bare recall, so long bodies stop at the
 /// injection token budget with a truncation marker instead of crowding out the conversation itself.
 /// </para>
+/// <para>
+/// Records distilled from events the prompt still carries are left out. Memory is written at the end of every
+/// turn, so the turn that just happened is in the store a second later; recalling it would put the same
+/// sentence in the prompt twice, and label the copy "known from earlier sessions" when it is the turn right
+/// above. The exclusion is by source event, not by age, so it follows what the assembler actually keeps: once
+/// compaction folds that turn into a summary the event leaves the view, and the memory becomes recallable
+/// again — which is exactly when it stops being a duplicate.
+/// </para>
 /// </summary>
 public sealed class MemoryRecallHook : AgentHookBase
 {
     private readonly IMemoryStore _memory;
+    private readonly ISessionStore? _session;
 
     public MemoryRecallHook(IMemoryStore memory)
+        : this(memory, session: null)
+    {
+    }
+
+    /// <param name="session">
+    /// The log the prompt is built from. Optional so a store can be recalled without one — a test, or a caller
+    /// that only wants ranked hits — in which case nothing is excluded and the hook behaves as it did before.
+    /// </param>
+    public MemoryRecallHook(IMemoryStore memory, ISessionStore? session)
     {
         _memory = memory ?? throw new ArgumentNullException(nameof(memory));
+        _session = session;
     }
 
     /// <inheritdoc />
@@ -38,7 +57,9 @@ public sealed class MemoryRecallHook : AgentHookBase
             return HookOutcome.Continue;
         }
 
-        var injection = await _memory.InjectAsync(query, ct).ConfigureAwait(false);
+        var injection = await _memory
+            .InjectAsync(query, await VisibleSeqsAsync(ct).ConfigureAwait(false), ct)
+            .ConfigureAwait(false);
         if (injection.Hits.Count == 0)
         {
             return HookOutcome.Continue;
@@ -70,8 +91,32 @@ public sealed class MemoryRecallHook : AgentHookBase
             lines.Add("(more memories were scored but dropped to stay within the injection token budget)");
         }
 
-        ctx.Inject(string.Join('\n', lines), priority: 50);
+        // The label is for the session page, not the model: it names the block in the log the same way a tool
+        // card names itself, so the remembered facts read as one thing that happened in the turn rather than
+        // as a wall of system text.
+        ctx.Inject(string.Join('\n', lines), priority: 50, label: "recall");
         return HookOutcome.Continue;
+    }
+
+    /// <summary>
+    /// The seqs the prompt still carries, or null when there is no session to ask.
+    /// <para>
+    /// Every kind counts, not just the conversational ones: the assembler renders tool results and injected
+    /// prompts inside the system block, and a memory distilled from a turn is usually a paraphrase of one of
+    /// those. Asking "is it in the window at all" is the question that matches what the model reads.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlySet<long>?> VisibleSeqsAsync(CancellationToken ct)
+    {
+        if (_session is null)
+        {
+            return null;
+        }
+
+        var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
+
+        // Retraction is already applied by the projection, so what is here is what the next prompt sees.
+        return view.Items.Select(item => item.Seq).ToHashSet();
     }
 }
 

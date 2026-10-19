@@ -385,7 +385,14 @@ public sealed class MemoryStore : IMemoryStore
         return results;
     }
 
-    public async Task<IReadOnlyList<MemoryHit>> RecallAsync(string query, int? limit = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<MemoryHit>> RecallAsync(string query, int? limit = null, CancellationToken ct = default) =>
+        await RecallAsync(query, limit, excludeSourceSeqs: null, ct).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<MemoryHit>> RecallAsync(
+        string query,
+        int? limit,
+        IReadOnlySet<long>? excludeSourceSeqs,
+        CancellationToken ct = default)
     {
         var take = Math.Max(1, limit ?? _options.RecallLimit);
 
@@ -412,7 +419,19 @@ public sealed class MemoryStore : IMemoryStore
         var queryEmbedding = await TryEmbedAsync(query, ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
 
-        var result = candidates
+        // Excluded before scoring rather than after taking the top N: a filtered-out record that still occupied
+        // a slot would silently shorten the answer, and the caller asked for N useful hits, not N candidates
+        // minus however many it already knew.
+        var eligible = excludeSourceSeqs is null
+            ? candidates
+            : candidates.Where(c => c.SourceEventSeq is not { } seq || !excludeSourceSeqs.Contains(seq)).ToList();
+
+        if (eligible.Count == 0)
+        {
+            return Array.Empty<MemoryHit>();
+        }
+
+        var result = eligible
             .Select(candidate =>
             {
                 embeddings.TryGetValue(candidate.RecordId, out var candidateEmbedding);
@@ -425,7 +444,8 @@ public sealed class MemoryStore : IMemoryStore
                     candidate.CreatedAt,
                     candidate.Tier,
                     candidate.Scope,
-                    now);
+                    now,
+                    candidate.SourceEventSeq);
             })
             .OrderByDescending(h => h.Score.Total)
             .ThenBy(h => h.RecordId, StringComparer.Ordinal)
@@ -437,9 +457,15 @@ public sealed class MemoryStore : IMemoryStore
         return result;
     }
 
-    public async Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default)
+    public async Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default) =>
+        await InjectAsync(query, excludeSourceSeqs: null, ct).ConfigureAwait(false);
+
+    public async Task<InjectionResult> InjectAsync(
+        string query,
+        IReadOnlySet<long>? excludeSourceSeqs,
+        CancellationToken ct = default)
     {
-        var hits = await RecallAsync(query, _options.RecallLimit, ct).ConfigureAwait(false);
+        var hits = await RecallAsync(query, _options.RecallLimit, excludeSourceSeqs, ct).ConfigureAwait(false);
 
         var kept = new List<MemoryHit>();
         var tokens = 0;
@@ -926,7 +952,7 @@ public sealed class MemoryStore : IMemoryStore
         {
             cmd.CommandText = """
               SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                     bm25(memory_fts) AS rank
+                     bm25(memory_fts) AS rank, m.source_event_seq
               FROM memory_fts
               JOIN memories m ON m.rowid = memory_fts.rowid
               WHERE memory_fts MATCH $q AND m.valid_to IS NULL
@@ -939,7 +965,7 @@ public sealed class MemoryStore : IMemoryStore
         {
             cmd.CommandText = """
               SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                     bm25(memory_fts_cjk) AS rank
+                     bm25(memory_fts_cjk) AS rank, m.source_event_seq
               FROM memory_fts_cjk
               JOIN memories m ON m.rowid = memory_fts_cjk.rowid
               WHERE memory_fts_cjk MATCH $q AND m.valid_to IS NULL
@@ -964,7 +990,8 @@ public sealed class MemoryStore : IMemoryStore
                 reader.GetDouble(5),
                 reader.GetDouble(6),
                 reader.GetDouble(7),
-                reader.GetDouble(8)));
+                reader.GetDouble(8),
+                reader.IsDBNull(9) ? null : reader.GetInt64(9)));
         }
 
         return candidates;

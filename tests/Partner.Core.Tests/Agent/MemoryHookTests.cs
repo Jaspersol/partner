@@ -255,6 +255,46 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
+    public async Task A_memory_from_a_turn_the_prompt_still_carries_is_not_injected()
+    {
+        // Memory is written at the end of every turn, so the exchange right above is already in the store when
+        // the next prompt is built. Recalling it would send the same statement twice and label the second copy
+        // "from an earlier session" — when it is the turn directly above.
+        var (session, memory) = Open();
+        await ExchangeAsync(session, "我不太喜欢被打断", "明白，以后不打断你");
+        await new MemoryDistilHook(memory, session).RunAsync(Context("我不太喜欢被打断"), default);
+        Assert.Single(await memory.ListAsync());
+
+        var ctx = Context("我不太喜欢被打断");
+        await new MemoryRecallHook(memory, session).RunAsync(ctx, default);
+
+        Assert.Empty(ctx.InjectedPrompts);
+    }
+
+    [Fact]
+    public async Task A_memory_whose_turn_left_the_window_comes_back()
+    {
+        // The other half of the rule: exclusion follows the prompt, not the clock. Once compaction retracts the
+        // turn, the conversation no longer carries it — and that is the moment the memory is the only copy.
+        var (session, memory) = Open();
+        await ExchangeAsync(session, "我不太喜欢被打断", "明白，以后不打断你");
+        await new MemoryDistilHook(memory, session).RunAsync(Context("我不太喜欢被打断"), default);
+
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Retract,
+            Source = InputSource.Text,
+            Body = "summary of the first exchange",
+            Meta = SessionRetraction.Between(1, 2),
+        });
+
+        var ctx = Context("我不太喜欢被打断");
+        await new MemoryRecallHook(memory, session).RunAsync(ctx, default);
+
+        Assert.Contains("打断", string.Join('\n', ctx.InjectedPrompts), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Nothing_is_injected_when_nothing_is_remembered()
     {
         var (session, memory) = Open();

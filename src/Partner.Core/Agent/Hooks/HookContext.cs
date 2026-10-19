@@ -10,7 +10,7 @@ namespace Partner.Core.Agent.Hooks;
 /// </summary>
 public sealed class HookContext
 {
-    private readonly List<(int Priority, string Text)> _injected = new();
+    private readonly List<(int Priority, string Text, string? Label)> _injected = new();
     private IReadOnlyList<string>? _orderedInjected;
 
     /// <summary>本轮所属会话。</summary>
@@ -30,6 +30,16 @@ public sealed class HookContext
         // LINQ 的 OrderBy 是稳定排序：同优先级保持插入顺序。
         _orderedInjected ??= _injected.OrderBy(e => e.Priority).Select(e => e.Text).ToArray();
 
+    /// <summary>
+    /// 与 <see cref="InjectedPrompts"/> 一一对应的标签，没有标签的位置为 null。
+    /// <para>
+    /// 单独一条通道，不拼进正文：标签是给人读的，正文是给模型读的，两者混在一起会让模型看到本来只属于
+    /// 界面的词。
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string?> InjectedLabels =>
+        _injected.OrderBy(e => e.Priority).Select(e => e.Label).ToArray();
+
     /// <summary>钩子对之间传递数据的命名空间字典（快照等）。</summary>
     public IDictionary<string, string> Extras { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -39,11 +49,15 @@ public sealed class HookContext
     /// <summary>
     /// 注入一段提示词。<paramref name="priority"/> 越小越靠前；相同优先级保持插入顺序。
     /// </summary>
+    /// <param name="label">
+    /// 这段文字是什么，给读会话的人看（例如 <c>recall</c>）。只用于展示：提示词本身不变，模型看到的仍是
+    /// <paramref name="text"/>。不填时会话页把它当作普通系统行。
+    /// </param>
     /// <exception cref="ArgumentException"><paramref name="text"/> 为 null、空或纯空白。</exception>
-    public void Inject(string text, int priority = 100)
+    public void Inject(string text, int priority = 100, string? label = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
-        _injected.Add((priority, text));
+        _injected.Add((priority, text, label));
         _orderedInjected = null;
     }
 }

@@ -30,6 +30,10 @@ public enum MemoryScope
 }
 
 /// <summary>A retrieval candidate as loaded from the store (no body rewriting here).</summary>
+/// <param name="SourceEventSeq">
+/// The session event this record was distilled from, when it was. Carried through recall so a caller can
+/// tell whether the thing being recalled is still in the conversation it is about to be injected into.
+/// </param>
 public sealed record MemoryCandidate(
     string RecordId,
     string Body,
@@ -39,7 +43,8 @@ public sealed record MemoryCandidate(
     double Importance,      // 0..1
     double Veracity,        // 0..1
     double Confidence,      // 0..1
-    double FtsRank);        // lower = better, as returned by SQLite bm25(); may be 0 when unused
+    double FtsRank,         // lower = better, as returned by SQLite bm25(); may be 0 when unused
+    long? SourceEventSeq = null);
 
 /// <summary>
 /// Explainable score of a candidate: every component is in <c>[0,1]</c> and is reported separately so
@@ -105,7 +110,8 @@ public sealed record MemoryHit(
     DateTimeOffset CreatedAt,
     MemoryTier Tier,
     MemoryScope Scope,
-    DateTimeOffset Now);
+    DateTimeOffset Now,
+    long? SourceEventSeq = null);
 
 /// <summary>How old a recalled memory is, in the words a reader would use.</summary>
 public static class MemoryAge
