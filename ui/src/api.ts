@@ -59,9 +59,33 @@ export interface WithdrawalState {
   events: number
 }
 
+/**
+ * Which slice of the one session to read. Display only: the log is never split by day.
+ *
+ * `day` is a local calendar day (yyyy-MM-dd) or "latest". `open: false` reads that day alone; `open: true` reads
+ * from the start of that day to the end of the log, which is how a turn that crossed midnight is still shown
+ * under the day the reader was on.
+ */
+export interface SessionWindow {
+  day: string
+  open: boolean
+  /** The reader's UTC offset in minutes: "which day" is their calendar, not the server's. */
+  offsetMinutes: number
+}
+
+/** A calendar day that has at least one event. Days without events do not exist. */
+export interface SessionDay {
+  day: string
+  count: number
+}
+
 export interface SessionView {
   lastSeq: number
   items: SessionItem[]
+  /** Every day that has events, oldest first. Present only when a window was asked for. */
+  days?: SessionDay[]
+  /** The day `items` is a window onto; null when the log is empty. */
+  day?: string | null
   /** True while a turn is running: the view re-reads itself quickly so the turn is visible as it happens. */
   busy?: boolean
   conversation: ConversationView
@@ -718,7 +742,7 @@ export interface UploadedMedia {
 const FILE_NAME_HEADER = 'X-File-Name'
 
 export interface PartnerApiSurface {
-  session(from?: number, take?: number): Promise<SessionView>
+  session(from?: number, take?: number, window?: SessionWindow): Promise<SessionView>
   editSession(seq: number, body: string, actor?: string): Promise<void>
   /** Deletes the latest conversation as a whole; `seq` may be any row inside it. */
   deleteLatest(seq: number): Promise<DeleteResult>
@@ -786,8 +810,16 @@ export class PartnerApi implements PartnerApiSurface {
 
   // ---- session ---------------------------------------------------------------------------------
 
-  session(from = 1, take = 200): Promise<SessionView> {
-    return this.request<SessionView>('GET', `/api/session?from=${from}&take=${take}`)
+  session(from = 1, take?: number, window?: SessionWindow): Promise<SessionView> {
+    const query = new URLSearchParams({ from: String(from) })
+    if (window !== undefined) {
+      query.set('day', window.day)
+      query.set('open', String(window.open))
+      query.set('offsetMinutes', String(window.offsetMinutes))
+    }
+    // Left to the server when not given: a day's window and the old "first 200" have different sensible sizes.
+    if (take !== undefined) query.set('take', String(take))
+    return this.request<SessionView>('GET', `/api/session?${query.toString()}`)
   }
 
   async editSession(seq: number, body: string, actor = 'human'): Promise<void> {

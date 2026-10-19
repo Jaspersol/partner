@@ -258,7 +258,8 @@ public static class ViewEndpoints
     private static void MapSession(WebApplication app)
     {
         app.MapGet("/api/session", async (
-            ApiContext ctx, ConsumerHost consumer, long? from, int? take, CancellationToken ct) =>
+            ApiContext ctx, ConsumerHost consumer, long? from, int? take,
+            string? day, bool? open, int? offsetMinutes, CancellationToken ct) =>
         {
             var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
             var pending = await ctx.Withdrawals.PendingAsync(ct).ConfigureAwait(false);
@@ -266,10 +267,53 @@ public static class ViewEndpoints
             // A sub-agent's report is the runtime talking to the main agent, not part of the conversation a person
             // had: it stays in the log (the model reads it) and out of the view. The main agent's reply to it is
             // an ordinary assistant message and is shown.
-            var items = view.Items
+            var shown = view.Items
                 .Where(i => !(i.Kind == SessionEventKind.User && i.Source == InputSource.Agent))
-                .Where(i => i.Seq >= (from ?? 1))
-                .Take(take ?? 200)
+                .ToList();
+
+            // The day picker is a *view* over the one session: the log is not split, the days are only a way to
+            // look at it. The client passes its own UTC offset because "which day" is the reader's calendar, not
+            // the server's. Without `offsetMinutes` none of this runs and the response is what it always was.
+            //
+            // `day` picks the window ("latest" = the newest day that has events). A *closed* window is that day
+            // alone; an *open* one starts at that day and runs to the end of the log, which is how a turn that
+            // crosses midnight keeps showing under the day the reader was looking at until they are idle.
+            List<object>? days = null;
+            string? resolvedDay = null;
+            var windowFrom = from ?? 1;
+            Func<SessionViewItem, bool> inWindow = i => true;
+            var includeLive = true;
+
+            if (offsetMinutes is { } minutes)
+            {
+                var offset = TimeSpan.FromMinutes(Math.Clamp(minutes, -14 * 60, 14 * 60));
+                string DayOf(SessionViewItem i) => i.At.ToOffset(offset).ToString("yyyy-MM-dd");
+
+                var groups = shown
+                    .GroupBy(DayOf)
+                    .OrderBy(g => g.Key, StringComparer.Ordinal)
+                    .Select(g => new { Day = g.Key, FirstSeq = g.Min(i => i.Seq), Total = g.Count() })
+                    .ToList();
+                days = groups.Select(g => (object)new { day = g.Day, count = g.Total }).ToList();
+
+                if (day is not null && groups.Count > 0)
+                {
+                    var chosen = groups.FirstOrDefault(g => g.Day == day) ?? groups[^1];
+                    resolvedDay = chosen.Day;
+                    windowFrom = chosen.FirstSeq;
+                    var isLatest = chosen.Day == groups[^1].Day;
+                    if (open != true)
+                    {
+                        inWindow = i => DayOf(i) == chosen.Day;
+                        // An earlier day is history: the reply being written belongs to the newest one.
+                        includeLive = isLatest;
+                    }
+                }
+            }
+
+            var items = shown
+                .Where(i => i.Seq >= windowFrom && inWindow(i))
+                .Take(take ?? (day is null ? 200 : 5000))
                 .Select(i => new
                 {
                     seq = i.Seq,
@@ -299,7 +343,7 @@ public static class ViewEndpoints
             //
             // Reasoning rides on the same row rather than as a second one: a turn that is thinking has not yet
             // started answering, and a view that showed two live rows would be claiming two things are moving.
-            if (consumer.LiveAssistant is { } live)
+            if (includeLive && consumer.LiveAssistant is { } live)
             {
                 items.Add(new
                 {
@@ -324,7 +368,7 @@ public static class ViewEndpoints
             // Reasoning being streamed is not in the log yet either, so it gets the same treatment as the
             // answer: a row of its own, with seq 0, which the finished Thinking event replaces. While the model
             // is thinking there is no answer text yet, so this is the only live row there is.
-            if (consumer.LiveAssistant is { Reasoning: { } thinking, ReasoningSince: { } since })
+            if (includeLive && consumer.LiveAssistant is { Reasoning: { } thinking, ReasoningSince: { } since })
             {
                 items.Add(new
                 {
@@ -354,6 +398,8 @@ public static class ViewEndpoints
             {
                 lastSeq = view.LastSeq,
                 items,
+                days,
+                day = resolvedDay,
 
                 // What the view needs to offer the right actions: delete is for the latest conversation only, and
                 // a pending withdrawal is the one thing that can still be taken back.

@@ -319,6 +319,83 @@ describe('session view', () => {
   })
 })
 
+describe('day picker', () => {
+  const usage = { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 }
+  const reply = (day: string, days: string[], busy = false, seq = 1) => ({
+    lastSeq: seq,
+    conversation: { latestFromSeq: 1, withdrawn: null },
+    context: usage,
+    busy,
+    days: days.map((entry) => ({ day: entry, count: 2 })),
+    day,
+    items: [{ seq, at: `${day}T10:00:00+00:00`, kind: 'User', source: 'Text', body: `on ${day}`, originalBody: null, revisionCount: 0 }],
+  })
+
+  it('offers only days that exist, newest first, and nothing when the server sends none', async () => {
+    const plain = mount(SessionView, { props: { api: createStub().stub } })
+    await flushPromises()
+    expect(plain.find('[data-test="session-day"]').exists()).toBe(false)
+
+    const { stub } = createStub({ session: vi.fn(async () => reply('2026-09-27', ['2026-09-25', '2026-09-27'])) })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const values = wrapper.findAll('[data-test="session-day"] option').map((option) => option.attributes('value'))
+    expect(values).toEqual(['2026-09-27', '2026-09-25'])
+  })
+
+  it('reads one closed day when an older day is chosen, and follows the newest again when it is chosen back', async () => {
+    const session = vi.fn(async (_from?: number, _take?: number, window?: { day: string; open: boolean }) =>
+      reply(window?.day === '2026-09-25' ? '2026-09-25' : '2026-09-27', ['2026-09-25', '2026-09-27']),
+    )
+    const wrapper = mount(SessionView, { props: { api: createStub({ session }).stub } })
+    await flushPromises()
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: 'latest', open: true })
+
+    await wrapper.find('[data-test="session-day"]').setValue('2026-09-25')
+    await flushPromises()
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: '2026-09-25', open: false })
+    expect(wrapper.text()).toContain('on 2026-09-25')
+
+    await wrapper.find('[data-test="session-day"]').setValue('2026-09-27')
+    await flushPromises()
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ open: true })
+  })
+
+  it('keeps showing the previous day across midnight while work is running, and moves on once idle', async () => {
+    // The newest day on the server changes under the reader (a turn crossed midnight). While it runs the screen
+    // stays on the day it was on — its window is open, so the new events still appear — and the new day is not
+    // listed; on the first idle read it is.
+    let midnight = false
+    const session = vi.fn(async (_from?: number, _take?: number, window?: { day: string; open: boolean }) => {
+      if (!midnight) return reply('2026-09-26', ['2026-09-26'])
+      return reply(window?.day === 'latest' ? '2026-09-27' : '2026-09-26', ['2026-09-26', '2026-09-27'], true)
+    })
+    const wrapper = mount(SessionView, { props: { api: createStub({ session }).stub } })
+    await flushPromises()
+
+    midnight = true
+    await wrapper.setProps({ summary: { depth: 1, pending: 1, failed: 0, runningItemId: null } })
+    await (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh()
+    await flushPromises()
+
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: '2026-09-26', open: true })
+    expect(wrapper.findAll('[data-test="session-day"] option').map((option) => option.attributes('value'))).toEqual(['2026-09-26'])
+
+    session.mockImplementation(async (_from, _take, window) => reply(window?.day === 'latest' ? '2026-09-27' : '2026-09-26', ['2026-09-26', '2026-09-27']))
+    await wrapper.setProps({ summary: { depth: 0, pending: 0, failed: 0, runningItemId: null } })
+    // The first idle read still carries the previous answer's `busy`; the one after it is the idle one.
+    const refresh = (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh
+    session.mockImplementation(async (_from, _take, window) => reply(window?.day === 'latest' ? '2026-09-27' : '2026-09-26', ['2026-09-26', '2026-09-27'], false))
+    await refresh()
+    await refresh()
+    await flushPromises()
+
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: 'latest' })
+    expect(wrapper.findAll('[data-test="session-day"] option').map((option) => option.attributes('value'))).toEqual(['2026-09-27', '2026-09-26'])
+  })
+})
+
 describe('context meter', () => {
   it('shows what the history costs against the prompt budget', async () => {
     const { stub } = createStub({

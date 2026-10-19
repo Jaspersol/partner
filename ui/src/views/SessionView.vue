@@ -10,6 +10,7 @@ import type {
   QueueSummary,
   SessionItem,
   SessionView,
+  SessionWindow,
 } from '../api'
 import { sourceLabel } from '../sessionKind'
 import ApprovalBanner from '../components/ApprovalBanner.vue'
@@ -17,6 +18,7 @@ import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
 import Composer from '../components/Composer.vue'
 import EventList from '../components/EventList.vue'
+import DayPicker from '../components/DayPicker.vue'
 
 const props = defineProps<{
   api: PartnerApiSurface
@@ -108,9 +110,82 @@ function format(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens)
 }
 
+// ---- which day is on screen ---------------------------------------------------------------------------
+//
+// The session is one log; the days are only a way of looking at it. Nothing below changes what is stored or
+// where a message goes — a message sent while looking at an old day still lands in the log's tail.
+
+/** The day the reader chose, or null for "the newest" (which then follows along). */
+const selectedDay = ref<string | null>(null)
+
+/**
+ * The day shown as "newest" while work is running across midnight.
+ *
+ * <para>
+ * A turn that started yesterday and is still writing at 00:05 is saved under today, but the reader is in the
+ * middle of it: the screen must not jump to a new, nearly empty day under them. So while anything is running or
+ * queued the newest day stays what it was (the window is *open*, so the new events still show up here), and
+ * the switch happens on the first idle read.
+ * </para>
+ */
+const heldDay = ref<string | null>(null)
+
+/** Running, or something in the queue that will run. A blocked queue (a failure) is not going to run. */
+const working = computed(() => {
+  const summary = props.summary
+  const queued = summary !== undefined && summary.failed === 0 && summary.pending > 0
+  const running = summary !== undefined && (summary.runningItemId ?? '') !== ''
+  return view.value?.busy === true || queued || running
+})
+
+function windowRequest(): SessionWindow {
+  const offsetMinutes = -new Date().getTimezoneOffset()
+  if (selectedDay.value !== null) {
+    return { day: selectedDay.value, open: false, offsetMinutes }
+  }
+
+  return { day: working.value && heldDay.value !== null ? heldDay.value : 'latest', open: true, offsetMinutes }
+}
+
+/** The days on offer: while the newest day is held back, the days after it are not listed yet. */
+const days = computed(() => {
+  const all = view.value?.days ?? []
+  const limit = selectedDay.value === null ? heldDay.value : null
+  return limit !== null && working.value ? all.filter((entry) => entry.day <= limit) : all
+})
+
+/** What the picker shows as chosen. */
+const shownDay = computed(() => selectedDay.value ?? (working.value ? heldDay.value : null) ?? view.value?.day ?? '')
+
+function chooseDay(day: string) {
+  const newest = days.value[days.value.length - 1]?.day
+  selectedDay.value = day === newest ? null : day
+  // Landing on the newest day means "follow it". If work is running that day is the held one, so it stays held.
+  if (selectedDay.value === null) heldDay.value = newest ?? null
+  following.value = selectedDay.value === null
+  clearSelection()
+  void refresh().then(async () => {
+    await nextTick()
+    const el = scroller.value
+    if (el === null) return
+    pinning = true
+    el.scrollTop = selectedDay.value === null ? el.scrollHeight : 0
+    requestAnimationFrame(() => {
+      pinning = false
+    })
+  })
+}
+
 async function refresh() {
   try {
-    view.value = await props.api.session()
+    const next = await props.api.session(undefined, undefined, windowRequest())
+    view.value = next
+    // The chosen day no longer exists (its conversation was deleted): the server answered with the newest.
+    if (selectedDay.value !== null && next.day !== selectedDay.value) selectedDay.value = null
+    if (selectedDay.value === null && next.day !== undefined && next.day !== null && !(working.value && heldDay.value !== null)) {
+      heldDay.value = next.day
+    }
+
     loaded.value = true
     // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
     await followIfFollowing()
@@ -235,6 +310,12 @@ function onCancel() {
 }
 
 async function onSent() {
+  // Sending writes to the end of the log, so show the end: leave an older day for the newest one.
+  if (selectedDay.value !== null) {
+    selectedDay.value = null
+    heldDay.value = null
+  }
+
   // The delivery lands in the queue, so the session is unchanged until a consumer runs — and the queue above
   // the composer is where the reader sees it.
   await refresh()
@@ -480,6 +561,7 @@ defineExpose({ refresh, focusSearch })
 
     <!-- Search: one icon until it is wanted (Ctrl+K), then a glass field with the source filter under it. -->
     <Teleport :to="topbarTools ?? 'body'" :disabled="topbarTools === null">
+    <DayPicker v-if="days.length > 0" :days="days" :model-value="shownDay" @update:model-value="chooseDay" />
     <div class="searchbar" :class="{ 'is-open': searchOpen }">
       <button
         v-if="!searchOpen"
