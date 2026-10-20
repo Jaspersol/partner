@@ -31,7 +31,7 @@ public static class ApiHost
         // A job that was running when the process last stopped never reported; say so to the main agent now,
         // before anything new can start.
         await consumer.Agents.RecoverAsync().ConfigureAwait(false);
-        var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents());
+        var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents(), () => consumer.LiveAssistant);
         var localEngines = new LocalEngineHost();
 
         // The store ages whether or not a model is configured: the TTL and promotion rules do not need one.

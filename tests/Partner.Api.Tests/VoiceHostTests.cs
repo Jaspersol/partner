@@ -185,6 +185,33 @@ public sealed class VoiceHostTests : ApiFixture
         Assert.True(after.GetProperty("input").GetProperty("running").GetBoolean());
         Assert.Equal(openedSources, _components.SourcesOpened);
     }
+
+    [Fact]
+    public async Task A_sentence_is_spoken_while_the_reply_is_still_being_written()
+    {
+        await PutAsync(EnabledVoice());
+
+        // Deltas only: the log event for this reply does not exist yet, as it does not while a model is writing.
+        ((Core.Agent.IAssistantStream)_consumer).OnAssistantDelta("item-1", "书房的灯已经打开了。窗帘也");
+
+        var early = await Eventually.IsTrueAsync(() => Task.FromResult(_components.TtsRequests.Count >= 1));
+        Assert.True(early, "the first sentence was not spoken before the reply finished");
+        Assert.Equal("书房的灯已经打开了。", _components.TtsRequests[0]);
+
+        await _context.Session.AppendAsync(new Core.Sessions.SessionEvent
+        {
+            Kind = Core.Contracts.SessionEventKind.Assistant,
+            Source = Core.Contracts.InputSource.Text,
+            Body = "书房的灯已经打开了。窗帘也拉上了。",
+        });
+
+        var rest = await Eventually.IsTrueAsync(() => Task.FromResult(_components.TtsRequests.Count >= 2));
+        Assert.True(rest, "the rest of the reply was not spoken");
+        await Task.Delay(400);
+
+        // Each sentence exactly once: the log event added only what the live text had not.
+        Assert.Equal(new[] { "书房的灯已经打开了。", "窗帘也拉上了。" }, _components.TtsRequests);
+    }
 }
 
 /// <summary>Synthetic devices and scripted services: the whole pipeline without hardware or a network.</summary>

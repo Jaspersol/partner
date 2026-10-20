@@ -129,6 +129,9 @@ public sealed class SyntheticAudioSink(int sampleRate = 24_000, string deviceNam
         HasPending = !final;
     }
 
+    /// <summary>Whether playback is latched, so a test can see when a stream was let go.</summary>
+    public bool IsHeld => _held;
+
     public void Hold() => _held = true;
 
     public void Release() => _held = false;

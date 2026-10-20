@@ -47,15 +47,30 @@ public sealed class VoiceOutputHalf : IDisposable
     private readonly PlaybackGate _gate;
     private readonly Action<string> _log;
     private readonly List<SpeechItem> _items = new();
+    private readonly Func<long> _nowMs;
     private int _seq;
+
+    // Streaming start: audio is latched until the first sentence (or a short lead) is ready, see BeginStream.
+    private bool _streamHeld;
+    private int _streamSynthesized;
+    private long _streamFirstDoneMs;
+
+    /// <summary>
+    /// How long the first synthesized sentence may wait for a second one before playback starts anyway. Holding
+    /// for the second sentence is what keeps the join between the two seamless; holding longer than this would
+    /// trade a short gap for a long silence at the start, which is the thing streaming exists to remove.
+    /// </summary>
+    public const int StreamLeadMs = 1500;
 
     public VoiceOutputHalf(
         VoiceOutputSetting settings,
         IAudioSink sink,
         ITtsClient tts,
         PlaybackGate gate,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        Func<long>? nowMs = null)
     {
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _tts = tts ?? throw new ArgumentNullException(nameof(tts));
@@ -78,6 +93,9 @@ public sealed class VoiceOutputHalf : IDisposable
     public bool IsPlaying => _sink.IsPlaying;
 
     public bool PendingAudio => _sink.HasPending;
+
+    /// <summary>True between <see cref="BeginStream"/> and the playback release that ends the hold.</summary>
+    public bool IsStreaming => _streamHeld;
 
     public bool SentencesEmpty => Segmenter.IsEmpty && _items.All(i => i.Status is SpeechStatus.Played or SpeechStatus.Failed);
 
@@ -117,6 +135,56 @@ public sealed class VoiceOutputHalf : IDisposable
     }
 
     /// <summary>
+    /// Starts a reply that is being spoken while the model is still writing it. Audio is latched, the first
+    /// sentence is synthesized, and playback is released as soon as that sentence — plus a second one, or
+    /// <see cref="StreamLeadMs"/> of waiting — is in the sink. Later sentences are synthesized while earlier
+    /// ones play.
+    /// <para>
+    /// When audio is already playing (a later step of the same turn) nothing is latched: the sink's own backlog
+    /// already covers the synthesis time of the next sentence.
+    /// </para>
+    /// </summary>
+    public void BeginStream()
+    {
+        if (!Enabled || _streamHeld || _sink.IsPlaying || _sink.HasPending)
+        {
+            return;
+        }
+
+        _sink.Hold();
+        _streamHeld = true;
+        _streamSynthesized = 0;
+        _streamFirstDoneMs = 0;
+    }
+
+    /// <summary>Releases a held stream whose first sentence has waited long enough for a second one.</summary>
+    public void ReleaseStreamIfDue()
+    {
+        if (_streamHeld && _streamSynthesized >= 1 && _nowMs() - _streamFirstDoneMs >= StreamLeadMs)
+        {
+            ReleaseStream();
+        }
+    }
+
+    private void ReleaseStream()
+    {
+        if (!_streamHeld)
+        {
+            return;
+        }
+
+        _streamHeld = false;
+        _sink.Release();
+
+        // Audio is about to come out of the speaker, so the microphone closes with it — not at the end of the
+        // reply, when a streamed first sentence would already have been heard by the capture path.
+        if (_settings.MuteDuringTts)
+        {
+            _gate.Engage();
+        }
+    }
+
+    /// <summary>
     /// Ends the turn: flushes the trailing fragment, starts playback and closes the gate. Until this point
     /// everything has been synthesized but held — the assistant must not start speaking mid-sentence.
     /// <para>
@@ -134,7 +202,14 @@ public sealed class VoiceOutputHalf : IDisposable
         // 不上的话第 2 句要等第 1 句合成完才开始合成，两句之间就是一段随文本变长的静音。
         // 提示音走同一个 sink，所以闩住时它也只是排队——Release 前它不响，这是唤醒瞬间那一 tick
         // 就上闩的直接后果，不是提示音本身的问题。
-        _sink.Hold();
+        if (!_streamHeld)
+        {
+            // A stream that is already playing was released earlier; latching again would stall it.
+            if (!_sink.IsPlaying && !_sink.HasPending)
+            {
+                _sink.Hold();
+            }
+        }
 
         foreach (var sentence in DeduplicateAgainstPending(Segmenter.Flush()))
         {
@@ -150,6 +225,7 @@ public sealed class VoiceOutputHalf : IDisposable
 
         await PlayPendingAsync(ct).ConfigureAwait(false);
 
+        _streamHeld = false;
         _sink.Release();
 
         if (_settings.MuteDuringTts && _items.Any(i => i.Status is SpeechStatus.Played or SpeechStatus.Playing))
@@ -202,6 +278,7 @@ public sealed class VoiceOutputHalf : IDisposable
 
                 Replace(item with { Status = emitted ? SpeechStatus.Played : SpeechStatus.Played });
                 played++;
+                NoteSynthesized();
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -212,6 +289,7 @@ public sealed class VoiceOutputHalf : IDisposable
                 // Tombstone: the sequence still terminates so later sentences are not dragged down.
                 _sink.Enqueue(Array.Empty<float>(), _settings.SampleRate, final: true);
                 Replace(item with { Status = SpeechStatus.Failed, Error = ex.Message });
+                NoteSynthesized();
                 _log($"voice: synthesis failed for '{item.Text}': {ex.Message}");
             }
             finally
@@ -221,6 +299,25 @@ public sealed class VoiceOutputHalf : IDisposable
         }
 
         return played;
+    }
+
+    private void NoteSynthesized()
+    {
+        if (!_streamHeld)
+        {
+            return;
+        }
+
+        _streamSynthesized++;
+        if (_streamSynthesized == 1)
+        {
+            _streamFirstDoneMs = _nowMs();
+        }
+
+        if (_streamSynthesized >= 2 || _nowMs() - _streamFirstDoneMs >= StreamLeadMs)
+        {
+            ReleaseStream();
+        }
     }
 
     /// <summary>The seven gate conditions, filled in from the output half's own state.</summary>

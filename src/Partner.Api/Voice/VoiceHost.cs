@@ -208,8 +208,15 @@ public sealed class VoiceHost : IAsyncDisposable
 
     private static readonly TimeSpan OutputPollInterval = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>While a reply is being written the live text is read much more often: it sets how soon the first word is heard.</summary>
+    private static readonly TimeSpan StreamingPollInterval = TimeSpan.FromMilliseconds(50);
+
     private readonly ApiContext _context;
     private readonly IVoiceComponents _components;
+
+    /// <summary>The reply the model is writing right now; null when the host has no stream to listen to.</summary>
+    private readonly Func<LiveAssistant?>? _live;
+    private readonly LiveSpeech _liveSpeech = new();
     private readonly SemaphoreSlim _reconfigure = new(1, 1);
     private readonly PlaybackGate _playbackGate = new();
 
@@ -228,10 +235,11 @@ public sealed class VoiceHost : IAsyncDisposable
     /// <summary>输出设置里配的播放采样率。唤醒提示音按它合成，与 TTS 同档才不会被 sink 分到另一个流。</summary>
     private int _toneSampleRate = 24_000;
 
-    private VoiceHost(ApiContext context, IVoiceComponents components)
+    private VoiceHost(ApiContext context, IVoiceComponents components, Func<LiveAssistant?>? live)
     {
         _context = context;
         _components = components;
+        _live = live;
     }
 
     public VoiceState State => new(_inputState, _outputState);
@@ -241,12 +249,12 @@ public sealed class VoiceHost : IAsyncDisposable
 
     public IReadOnlyList<string> OutputDevices => _components.ListOutputDevices();
 
-    public static VoiceHost Create(ApiContext context, IVoiceComponents components)
+    public static VoiceHost Create(ApiContext context, IVoiceComponents components, Func<LiveAssistant?>? live = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(components);
 
-        return new VoiceHost(context, components);
+        return new VoiceHost(context, components, live);
     }
 
     /// <summary>Applies settings: stops whatever is running, then starts whichever halves are usable.</summary>
@@ -461,16 +469,27 @@ public sealed class VoiceHost : IAsyncDisposable
                 {
                     from = e.Seq;
 
-                    if (e.Kind != SessionEventKind.Assistant || string.IsNullOrWhiteSpace(e.Body))
+                    if (e.Kind != SessionEventKind.Assistant)
                     {
                         continue;
                     }
 
-                    _output!.OnText(e.Body, e.Seq);
+                    // What the live text already put in the speaker's mouth is not said again.
+                    var rest = _liveSpeech.TakeRemainder(e.Body ?? string.Empty);
+
+                    if (string.IsNullOrWhiteSpace(rest) && !_output!.IsStreaming && _output.Segmenter.IsEmpty)
+                    {
+                        continue;
+                    }
+
+                    _output!.OnText(rest, e.Seq);
                     await _output.FlushTurnAsync(ct).ConfigureAwait(false);
                     await _output.PlayPendingAsync(ct).ConfigureAwait(false);
                     _outputState = _outputState with { Count = _output.Items.Count };
                 }
+
+                await SpeakLiveAsync(from, ct).ConfigureAwait(false);
+                _output!.ReleaseStreamIfDue();
 
                 // Playback closes the gate; only the conditions being clear may reopen it.
                 _output!.TryReleaseGate(
@@ -478,7 +497,8 @@ public sealed class VoiceHost : IAsyncDisposable
                     asrBusy: _input?.AsrBusy ?? false,
                     nowSeconds: Environment.TickCount64 / 1000.0);
 
-                await Task.Delay(OutputPollInterval, ct).ConfigureAwait(false);
+                await Task.Delay(_output.IsStreaming || _liveSpeech.InProgress ? StreamingPollInterval : OutputPollInterval, ct)
+                    .ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -491,6 +511,29 @@ public sealed class VoiceHost : IAsyncDisposable
                 await Task.Delay(OutputPollInterval, ct).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// Speaks the sentences of the reply the model is still writing, so the first one is heard long before the
+    /// reply is done. The log event for the same text arrives later and only adds the unspoken rest.
+    /// </summary>
+    private async Task SpeakLiveAsync(long lastSeq, CancellationToken ct)
+    {
+        if (_live?.Invoke() is not { Text.Length: > 0 } live)
+        {
+            return;
+        }
+
+        var chunk = _liveSpeech.NextChunk(live.ItemId, live.Text);
+        if (chunk is null)
+        {
+            return;
+        }
+
+        _output!.BeginStream();
+        _output.OnText(chunk, lastSeq);
+        await _output.PlayPendingAsync(ct).ConfigureAwait(false);
+        _outputState = _outputState with { Count = _output.Items.Count };
     }
 
     private async Task StopAsync()

@@ -67,6 +67,89 @@ public sealed class VoiceOutputHalfTests
             tts.Requests);
     }
 
+    private static VoiceOutputHalf TimedHalf(IAudioSink sink, ITtsClient tts, Func<long> nowMs) =>
+        new(
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0 },
+            sink,
+            tts,
+            new PlaybackGate(),
+            nowMs: nowMs);
+
+    [Fact]
+    public async Task A_streamed_reply_starts_once_two_sentences_are_ready_not_when_it_ends()
+    {
+        var sink = new RecordingSink();
+        var tts = new ScriptedTts();
+        using var output = TimedHalf(sink, tts, () => 0);
+
+        output.BeginStream();
+        output.OnText("第一句话。第二句话。", sessionEventSeq: 1);
+        await output.PlayPendingAsync();
+
+        // No Flush yet: the reply is still being written, and the speaker is already let go.
+        Assert.Equal(1, sink.Releases);
+        Assert.False(output.IsStreaming);
+        Assert.Equal(0, sink.EnqueuedWhileFree);
+
+        // A later sentence plays as soon as it is synthesized.
+        output.OnText("第三句话。", sessionEventSeq: 1);
+        await output.PlayPendingAsync();
+        Assert.Equal(2, sink.EnqueuedWhileFree); // the audio chunk and the sentence-final marker
+    }
+
+    [Fact]
+    public async Task A_lone_first_sentence_waits_a_short_lead_for_a_second_then_plays_anyway()
+    {
+        long now = 0;
+        var sink = new RecordingSink();
+        using var output = TimedHalf(sink, new ScriptedTts(), () => now);
+
+        output.BeginStream();
+        output.OnText("第一句话。", sessionEventSeq: 1);
+        await output.PlayPendingAsync();
+
+        now = VoiceOutputHalf.StreamLeadMs - 1;
+        output.ReleaseStreamIfDue();
+        Assert.Equal(0, sink.Releases);
+        Assert.True(output.IsStreaming);
+
+        now = VoiceOutputHalf.StreamLeadMs;
+        output.ReleaseStreamIfDue();
+        Assert.Equal(1, sink.Releases);
+        Assert.False(output.IsStreaming);
+    }
+
+    [Fact]
+    public async Task A_reply_that_ends_before_the_lead_is_released_by_the_flush_exactly_once()
+    {
+        var sink = new RecordingSink();
+        using var output = TimedHalf(sink, new ScriptedTts(), () => 0);
+
+        output.BeginStream();
+        output.OnText("好的。", sessionEventSeq: 1);
+        await output.PlayPendingAsync();
+        await output.FlushTurnAsync();
+
+        Assert.Equal(1, sink.Releases);
+        Assert.False(output.IsStreaming);
+    }
+
+    [Fact]
+    public async Task A_stream_does_not_latch_audio_that_is_already_playing()
+    {
+        var sink = new RecordingSink();
+        using var output = TimedHalf(sink, new ScriptedTts(), () => 0);
+
+        // Audio of the previous step is still coming out of the speaker.
+        output.OnText("上一步的话。", sessionEventSeq: 1);
+        await output.PlayPendingAsync();
+        Assert.True(sink.IsPlaying);
+
+        output.BeginStream();
+
+        Assert.False(output.IsStreaming);
+    }
+
     /// <summary>逐句记下「到达时闩着没有」，同时数 Release 次数。</summary>
     private sealed class RecordingSink : IAudioSink
     {
