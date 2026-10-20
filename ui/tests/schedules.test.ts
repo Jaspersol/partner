@@ -21,6 +21,12 @@ function task(over: Partial<ScheduleTaskView> = {}): ScheduleTaskView {
     lastAt: null,
     attempt: 0,
     lastError: null,
+    catchUp: 'once',
+    missed: 0,
+    lastMissedAt: null,
+    lastRunAt: null,
+    lastRunOk: null,
+    lastRunError: null,
     ...over,
   }
 }
@@ -101,7 +107,7 @@ describe('schedules view', () => {
     await wrapper.find('[data-test="schedule-add"]').trigger('click')
     await flushPromises()
 
-    expect(api.createSchedule).toHaveBeenCalledWith({ kind: 'cron', cron: '0 9 * * *', payload: '早报' })
+    expect(api.createSchedule).toHaveBeenCalledWith({ kind: 'cron', cron: '0 9 * * *', payload: '早报', catchUp: 'once' })
     expect((wrapper.find('[data-test="schedule-payload"]').element as HTMLTextAreaElement).value).toBe('')
     expect(schedules).toHaveBeenCalledTimes(2)
     wrapper.unmount()
@@ -117,7 +123,7 @@ describe('schedules view', () => {
     await wrapper.find('[data-test="schedule-add"]').trigger('click')
     await flushPromises()
 
-    expect(api.createSchedule).toHaveBeenCalledWith({ kind: 'interval', intervalMinutes: 180, payload: '站起来走走' })
+    expect(api.createSchedule).toHaveBeenCalledWith({ kind: 'interval', intervalMinutes: 180, payload: '站起来走走', catchUp: 'once' })
     wrapper.unmount()
   })
 
@@ -198,6 +204,57 @@ describe('schedules view', () => {
     await button.trigger('click')
     await flushPromises()
     expect(api.deleteSchedule).toHaveBeenCalledWith('sch-1')
+    wrapper.unmount()
+  })
+
+  it('sends the catch-up policy that was picked', async () => {
+    const { wrapper, api } = await mountView()
+
+    await wrapper.get('[data-test="schedule-cron"]').setValue('0 9 * * *')
+    await wrapper.get('[data-test="schedule-payload"]').setValue('早报')
+    const options = wrapper.get('[data-test="schedule-catchup"]').findAll('button, [role="radio"], input')
+    const skip = options.find((option) => /不补/.test(option.text()) || option.attributes('value') === 'skip')
+    expect(skip).toBeDefined()
+    await skip!.trigger('click')
+    await wrapper.get('[data-test="schedule-add"]').trigger('click')
+    await flushPromises()
+
+    expect(api.createSchedule).toHaveBeenCalledWith({ kind: 'cron', cron: '0 9 * * *', payload: '早报', catchUp: 'skip' })
+    wrapper.unmount()
+  })
+
+  it('shows how the last run ended and how many were missed', async () => {
+    const { wrapper } = await mountView({
+      schedules: vi.fn(async () => [
+        task({ lastRunAt: '2030-01-01T01:00:00Z', lastRunOk: false, lastRunError: '模型返回 500', missed: 2, lastMissedAt: '2029-12-31T01:00:00Z' }),
+      ]),
+    })
+
+    expect(wrapper.get('[data-test="schedule-run-error"]').text()).toContain('模型返回 500')
+    expect(wrapper.get('[data-test="schedule-missed"]').text()).toContain('错过了 2 次')
+    wrapper.unmount()
+  })
+
+  it('says so once when a run that finished since the last look failed', async () => {
+    const { toasts } = await import('../src/toast')
+    toasts.splice(0, toasts.length)
+
+    let list = [task({ lastRunAt: '2030-01-01T01:00:00Z', lastRunOk: true })]
+    const { wrapper } = await mountView({ schedules: vi.fn(async () => list) })
+    expect(toasts).toHaveLength(0) // the first look only learns what is there
+
+    list = [task({ lastRunAt: '2030-01-01T02:00:00Z', lastRunOk: false, lastRunError: '模型返回 500' })]
+    await wrapper.get('[data-test="schedule-refresh"]').trigger('click')
+    await flushPromises()
+
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].tone).toBe('error')
+    expect(toasts[0].text).toContain('模型返回 500')
+
+    // Looking again at the same run does not repeat it.
+    await wrapper.get('[data-test="schedule-refresh"]').trigger('click')
+    await flushPromises()
+    expect(toasts).toHaveLength(1)
     wrapper.unmount()
   })
 })

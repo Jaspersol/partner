@@ -44,6 +44,7 @@ const form = reactive<RuntimeSettings>({
     asrStream: false,
     maxSplitChars: 40,
     wakeTone: true,
+    bargeIn: false,
   },
   output: {
     enabled: false,
@@ -845,6 +846,10 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
               <SettingRow label="唤醒时叮一声" hint="听到唤醒词时响一下。需要同时开启语音输出。" data-test="wake-tone">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.input.wakeTone" />
+              </SettingRow>
+
+              <SettingRow label="说话时打断助手" hint="助手正在说话时，你开口说一段话（持续约半秒）就让它停下。没有回声消除，外放时助手自己的声音会被麦克风听见而打断自己，建议只在戴耳机时打开。">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.bargeIn" data-test="barge-in" />
               </SettingRow>
             </div>
 

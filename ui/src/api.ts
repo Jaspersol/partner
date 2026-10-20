@@ -219,6 +219,8 @@ export interface InputSettings {
   silenceThreshold: number
   /** Ding when the wake word hits; only meaningful while a wake gate is active. */
   wakeTone: boolean
+  /** Speaking over the assistant stops it. Off by default; meant for headphones (a speaker is heard by the mic). */
+  bargeIn: boolean
   utteranceGapMs: number
   /** Grace period after a wake hit, before the user speaks. Not the sentence gap: thinking time is not "done talking". */
   wakeTimeoutMs: number
@@ -772,6 +774,9 @@ export class ApiError extends Error {
 /** How a timed task decides when to fire. */
 export type ScheduleKind = 'cron' | 'interval' | 'once'
 
+/** once: deliver the one overdue run; skip: do not run late, count it; all: run every missed one (the newest few). */
+export type ScheduleCatchUp = 'once' | 'skip' | 'all'
+
 /** A timed task as the server keeps it. `inactive` is both "paused" and "a one-off that already ran". */
 export interface ScheduleTaskView {
   id: string
@@ -789,6 +794,15 @@ export interface ScheduleTaskView {
   lastAt: string | null
   attempt: number
   lastError: string | null
+  /** What to do with occurrences missed while the app was not running. */
+  catchUp: ScheduleCatchUp
+  /** How many occurrences were skipped as missed under the `skip` policy. */
+  missed: number
+  lastMissedAt: string | null
+  /** When the assistant finished the turn this task last started, and how it ended. Null before the first. */
+  lastRunAt: string | null
+  lastRunOk: boolean | null
+  lastRunError: string | null
 }
 
 /** What creating a task takes: the rule's field depends on `kind`, the others are ignored. */
@@ -799,6 +813,7 @@ export interface ScheduleInput {
   /** ISO 8601 with an offset; a one-off in the past is refused. */
   at?: string
   payload: string
+  catchUp?: ScheduleCatchUp
 }
 
 export interface ApiOptions {

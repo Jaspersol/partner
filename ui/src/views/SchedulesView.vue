@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ApiError, type PartnerApiSurface, type ScheduleInput, type ScheduleKind, type ScheduleTaskView } from '../api'
+import {
+  ApiError,
+  type PartnerApiSurface,
+  type ScheduleCatchUp,
+  type ScheduleInput,
+  type ScheduleKind,
+  type ScheduleTaskView,
+} from '../api'
+import { showToast } from '../toast'
 import DateTimePicker from '../components/DateTimePicker.vue'
 import HintTip from '../components/HintTip.vue'
 import Icon from '../components/Icon.vue'
@@ -36,6 +44,7 @@ const intervalValue = ref(30)
 const intervalUnit = ref<'minutes' | 'hours' | 'days'>('minutes')
 const at = ref('')
 const payload = ref('')
+const catchUp = ref<ScheduleCatchUp>('once')
 const adding = ref(false)
 const formError = ref('')
 
@@ -46,6 +55,12 @@ const KINDS = [
   { value: 'cron', label: '按时刻', title: '例如每天 9 点、每周一 8 点' },
   { value: 'interval', label: '每隔一段时间', title: '例如每 30 分钟' },
   { value: 'once', label: '只一次', title: '到点执行一次就结束' },
+] as const
+
+const CATCH_UPS = [
+  { value: 'once', label: '补一次', title: '错过之后，下次打开时补跑最近错过的那一次' },
+  { value: 'skip', label: '不补', title: '错过就算了，只记一笔' },
+  { value: 'all', label: '全补', title: '每个错过的都补上（最多最近 5 个）' },
 ] as const
 
 const UNIT_MINUTES = { minutes: 1, hours: 60, days: 1440 } as const
@@ -98,9 +113,26 @@ function canToggle(task: ScheduleTaskView): boolean {
   return !(task.kind === 'once' && task.status === 'inactive' && task.lastAt !== null)
 }
 
+/** The last run time each task had when last looked at, so a run that ended since is noticed once. */
+const seenRun = new Map<string, string | null>()
+
+/** Tells the person about a run that has failed since the page last looked; a success is not worth interrupting for. */
+function noticeRuns(list: ScheduleTaskView[]) {
+  for (const task of list) {
+    const known = seenRun.has(task.id)
+    const before = seenRun.get(task.id) ?? null
+    seenRun.set(task.id, task.lastRunAt)
+    if (known && task.lastRunAt !== null && task.lastRunAt !== before && task.lastRunOk === false) {
+      showToast(`定时任务没做成：${task.payload.slice(0, 24)}${task.lastRunError ? '（' + task.lastRunError + '）' : ''}`, 'error')
+    }
+  }
+}
+
 async function refresh() {
   try {
-    tasks.value = await props.api.schedules()
+    const list = await props.api.schedules()
+    noticeRuns(list)
+    tasks.value = list
     error.value = ''
   } catch (failure) {
     error.value = reasonOf(failure)
@@ -114,20 +146,20 @@ function buildInput(): ScheduleInput | string {
   if (text === '') return '请填写到点要发给助手的内容'
 
   if (kind.value === 'cron') {
-    return cron.value.trim() === '' ? '请填写时刻规则，或点一个常用的' : { kind: 'cron', cron: cron.value.trim(), payload: text }
+    return cron.value.trim() === '' ? '请填写时刻规则，或点一个常用的' : { kind: 'cron', cron: cron.value.trim(), payload: text, catchUp: catchUp.value }
   }
 
   if (kind.value === 'interval') {
     const minutes = Math.round(Number(intervalValue.value) * UNIT_MINUTES[intervalUnit.value])
     return Number.isFinite(minutes) && minutes >= 1
-      ? { kind: 'interval', intervalMinutes: minutes, payload: text }
+      ? { kind: 'interval', intervalMinutes: minutes, payload: text, catchUp: catchUp.value }
       : '间隔至少 1 分钟'
   }
 
   const when = new Date(at.value)
   return at.value === '' || Number.isNaN(when.getTime())
     ? '请选择执行的日期和时间'
-    : { kind: 'once', at: when.toISOString(), payload: text }
+    : { kind: 'once', at: when.toISOString(), payload: text, catchUp: catchUp.value }
 }
 
 async function add() {
@@ -142,6 +174,7 @@ async function add() {
   try {
     await props.api.createSchedule(input)
     payload.value = ''
+    catchUp.value = 'once'
     cron.value = ''
     at.value = ''
     await refresh()
@@ -257,6 +290,10 @@ defineExpose({ refresh })
             <DateTimePicker v-model="at" data-test="schedule-at" />
           </SettingRow>
 
+          <SettingRow label="错过了怎么办" hint="程序没在运行、电脑睡着了，到点没发出去的任务，之后怎么处理。">
+            <Segmented v-model="catchUp" :options="CATCH_UPS" label="错过后" data-test="schedule-catchup" />
+          </SettingRow>
+
           <SettingRow label="发给助手的内容" stack>
             <textarea
               v-model="payload"
@@ -309,6 +346,15 @@ defineExpose({ refresh })
                 <span v-if="task.lastAt !== null" data-test="schedule-last">上次 {{ format(task.lastAt) }}</span>
               </p>
               <p v-if="task.lastError" class="field-error break" data-test="schedule-task-error">{{ task.lastError }}</p>
+              <p v-if="task.lastRunOk === false" class="field-error break" data-test="schedule-run-error">
+                上次执行失败（{{ format(task.lastRunAt) }}）：{{ task.lastRunError }}
+              </p>
+              <p v-else-if="task.lastRunOk === true" class="task-meta times" data-test="schedule-run-ok">
+                上次执行完成 {{ format(task.lastRunAt) }}
+              </p>
+              <p v-if="task.missed > 0" class="task-meta times" data-test="schedule-missed">
+                错过了 {{ task.missed }} 次（{{ format(task.lastMissedAt) }}）
+              </p>
             </div>
 
             <div class="task-actions">

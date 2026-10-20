@@ -24,6 +24,7 @@ const SETTINGS = {
     asrStream: false,
     maxSplitChars: 40,
     wakeTone: true,
+    bargeIn: false,
   },
   output: {
     enabled: false,
