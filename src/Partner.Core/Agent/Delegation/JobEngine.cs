@@ -33,9 +33,13 @@ public sealed partial class JobEngine(
     ISessionStore session,
     TaskReportTool report,
     Func<string, string?>? extraTerminal = null,
-    TimeProvider? clock = null)
+    TimeProvider? clock = null,
+    TimeSpan? cancelGrace = null)
 {
     private const int ErrorLimit = 400;
+
+    /// <summary>How long a round that overran is given to notice it was cancelled before it is abandoned.</summary>
+    private readonly TimeSpan _cancelGrace = cancelGrace ?? TimeSpan.FromSeconds(5);
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
@@ -159,15 +163,26 @@ public sealed partial class JobEngine(
 
     private async Task<TurnResult?> RunBoundedAsync(InputItem item, CancellationToken ct)
     {
-        var running = runner.RunAsync(item, ct);
+        // The round's own token, linked to the job's: the overrun below has to be able to stop *this* round
+        // without cancelling a job that is still entitled to its remaining time.
+        var roundToken = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var running = runner.RunAsync(item, roundToken.Token);
         var finished = await Task.WhenAny(running, Task.Delay(runner.TurnTimeout, CancellationToken.None)).ConfigureAwait(false);
         if (finished == running)
         {
+            roundToken.Dispose();
             return await running.ConfigureAwait(false);
         }
 
-        // The turn is not listening (it is parked on something that ignores its token). Let it go, as the
-        // consumer loop does for the main agent: a job that waits forever on one round is a hung job.
+        // Asked to stop first. Abandoning a turn that is still running leaves it calling the model and the
+        // tools and writing to the job's session after the job has already reported; a turn that listens exits
+        // within the grace period and the session is quiet before the job says it timed out.
+        roundToken.Cancel();
+        await Task.WhenAny(running, Task.Delay(_cancelGrace, CancellationToken.None)).ConfigureAwait(false);
+
+        // Still not done: the turn is not listening (it is parked on something that ignores its token). Let it
+        // go, as the consumer loop does for the main agent: a job that waits forever on one round is a hung
+        // job. The token source is deliberately not disposed — the abandoned turn may still be reading it.
         _ = running.ContinueWith(
             static faulted => _ = faulted.Exception,
             CancellationToken.None,

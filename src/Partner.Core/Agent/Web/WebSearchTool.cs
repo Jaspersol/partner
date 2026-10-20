@@ -13,8 +13,14 @@ namespace Partner.Core.Agent.Web;
 /// the result is read every time.
 /// </para>
 /// </summary>
-public sealed class WebSearchTool(WebSearchService service) : ITool
+public sealed class WebSearchTool(WebSearchService service) : ITimedTool
 {
+    /// <summary>Slack on top of the search budget: the fan-out ends itself at the budget and still has to format.</summary>
+    private static readonly TimeSpan BudgetSlack = TimeSpan.FromSeconds(5);
+
+    /// <summary>The search budget the settings allow (up to 60 s) plus slack, so a long budget is not cut at 30 s.</summary>
+    public TimeSpan Timeout => service.Budget + BudgetSlack;
+
     public const string Name = "web_search";
 
     public ToolSpec Spec { get; } = new(

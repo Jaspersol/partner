@@ -57,6 +57,9 @@ public sealed class WebSearchService : IDisposable
         _fanout = new WebFanout(_transport, new RateLimiter(), _clock);
     }
 
+    /// <summary>The time budget one search is allowed, read live from the settings.</summary>
+    public TimeSpan Budget => _options().Budget;
+
     /// <summary>Exposed for the settings page, which shows every engine's state and last failure.</summary>
     public EngineHealth Health => _health;
 

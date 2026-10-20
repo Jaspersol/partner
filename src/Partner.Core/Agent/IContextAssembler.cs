@@ -30,6 +30,7 @@ public interface IContextAssembler
     Task<IReadOnlyList<LlmMessage>> AssembleInitialAsync(
         InputItem item,
         IReadOnlyList<string> injectedPrompts,
+        IReadOnlyList<string?>? injectedLabels = null,
         CancellationToken ct = default);
 
     /// <summary>What the history costs right now, without a turn — the number a UI shows.</summary>
@@ -104,6 +105,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     public async Task<IReadOnlyList<LlmMessage>> AssembleInitialAsync(
         InputItem item,
         IReadOnlyList<string> injectedPrompts,
+        IReadOnlyList<string?>? injectedLabels = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(item);
@@ -115,20 +117,47 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct, images.Count)
             .ConfigureAwait(false);
 
+        // Split by how often a block changes. Stable blocks (the prompt, the skill list) stay in the system
+        // message; the recall block is different on nearly every turn, and anything that differs at the start of
+        // the prompt invalidates the prefix cache for the whole history behind it. So it goes after the history,
+        // in front of the current input, where a change costs only the tokens it adds.
+        var stable = new List<string>();
+        var volatileBlocks = new List<string>();
+        for (var i = 0; i < injectedPrompts.Count; i++)
+        {
+            var label = injectedLabels is not null && i < injectedLabels.Count ? injectedLabels[i] : null;
+            (string.Equals(label, VolatileLabel, StringComparison.Ordinal) ? volatileBlocks : stable).Add(injectedPrompts[i]);
+        }
+
         var messages = new List<LlmMessage>
         {
-            new("system", BuildSystem(BasePrompt, injectedPrompts, plan.Context)),
+            new("system", BuildSystem(BasePrompt, stable, plan.Context)),
         };
 
         messages.AddRange(plan.Turns);
 
         // The current input is the last user message; the window above is history only.
+        var body = MessageBody(item.Payload, attachments);
         messages.Add(new LlmMessage(
             "user",
-            MessageBody(item.Payload, attachments),
+            volatileBlocks.Count == 0 ? body : WithBackground(volatileBlocks, body),
             Images: images.Count > 0 ? images : null));
         return messages;
     }
+
+    /// <summary>The label of the injected block that changes every turn (set by the memory hook).</summary>
+    public const string VolatileLabel = "recall";
+
+    /// <summary>
+    /// The current input, led by background that is not part of it. Marked on both sides: it is reference
+    /// material for this turn, not something the person said, and the line between the two has to survive being
+    /// read as one message.
+    /// </summary>
+    private static string WithBackground(IReadOnlyList<string> blocks, string input) =>
+        "[背景资料，仅供本回合参考，不是用户说的话]\n"
+        + string.Join("\n\n", blocks)
+        + "\n[背景资料结束]\n\n[用户本条消息]\n"
+        + input;
 
     /// <summary>
     /// The text of the current input, followed by where its non-image attachments are.

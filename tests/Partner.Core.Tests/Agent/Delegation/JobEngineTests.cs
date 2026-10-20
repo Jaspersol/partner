@@ -302,4 +302,69 @@ public sealed class JobEngineTests : IAsyncLifetime
 
         Assert.Null(report.Latest);
     }
+
+    /// <summary>A model call that never returns on its own but stops when told to, and says that it was told.</summary>
+    private sealed class ListeningHangLlm : ILlmClient
+    {
+        public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                Cancelled.TrySetResult();
+                throw;
+            }
+
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
+    [Fact]
+    public async Task A_round_that_overruns_is_cancelled_and_has_stopped_writing_before_the_job_reports()
+    {
+        var llm = new ListeningHangLlm();
+        var (session, _) = JsonlSessionStore.Open(Path.Combine(_dir, Guid.NewGuid().ToString("n")));
+        _stores.Add(session);
+        var report = new TaskReportTool();
+        var tools = new InMemoryToolRegistry();
+        tools.Register(report);
+
+        var runner = new AgentTurnRunner(
+            session,
+            llm,
+            tools,
+            new AllowListGovernance(new[] { TaskReportTool.ToolName }),
+            new DenyAllApprovalHandler(),
+            new HookRegistry(),
+            options: new AgentTurnOptions { SessionId = "job-test", TurnTimeout = TimeSpan.FromMilliseconds(150) });
+        var engine = new JobEngine(runner, session, report, cancelGrace: TimeSpan.FromSeconds(5));
+
+        var outcome = await engine.RunAsync(Spec(), CancellationToken.None);
+
+        Assert.Equal(JobCategories.Timeout, outcome.Category);
+
+        // The abandoned round was told to stop — not merely left running behind the report.
+        Assert.True(llm.Cancelled.Task.IsCompleted, "the overrunning round was never cancelled");
+
+        // And it is quiet: nothing is appended to the job's session after the outcome was returned.
+        var before = await CountEventsAsync(session);
+        await Task.Delay(300);
+        Assert.Equal(before, await CountEventsAsync(session));
+    }
+
+    private static async Task<int> CountEventsAsync(ISessionStore store)
+    {
+        var count = 0;
+        await foreach (var _ in store.ReadAllAsync())
+        {
+            count++;
+        }
+
+        return count;
+    }
 }

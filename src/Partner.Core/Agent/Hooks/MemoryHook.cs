@@ -65,8 +65,10 @@ public sealed class MemoryRecallHook : AgentHookBase
             return HookOutcome.Continue;
         }
 
-        // Into the system block, not as a user turn: this is context the model should have had, not something
-        // the person said. It also keeps the history honest — a remembered fact is not a new message.
+        // Background, not a user turn: this is context the model should have had, not something the person said,
+        // and a remembered fact is not a new message. It is labelled "recall" so the assembler can place it after
+        // the history (in front of the current input) instead of in the system block: it changes every turn, and a
+        // system block that changes breaks the prefix cache for everything behind it.
         //
         // Each line carries its age, because a memory is not a fact the person just stated. "the user prefers
         // dark mode" from three months ago may since have changed, and the model can only treat it as

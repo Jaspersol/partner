@@ -42,8 +42,18 @@ public sealed class TurnLoop
     private int _canceled;
     private int _skipped;
 
-    public TurnLoop(IInputQueue queue, AgentTurnRunner runner, ISessionStore session)
+    /// <summary>
+    /// Work to run after a turn has ended, on this loop (auto-compaction is the one user today).
+    /// </summary>
+    private readonly Func<CancellationToken, Task>? _afterTurn;
+
+    public TurnLoop(
+        IInputQueue queue,
+        AgentTurnRunner runner,
+        ISessionStore session,
+        Func<CancellationToken, Task>? afterTurn = null)
     {
+        _afterTurn = afterTurn;
         _queue = queue ?? throw new ArgumentNullException(nameof(queue));
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -85,6 +95,27 @@ public sealed class TurnLoop
     public async Task ProcessAsync(InputItem item)
     {
         ArgumentNullException.ThrowIfNull(item);
+
+        await ProcessCoreAsync(item).ConfigureAwait(false);
+
+        // After the turn, on this same loop: the queue has a single reader, so nothing else is running a turn
+        // against this session now, and whatever the hook writes to it cannot interleave with one. A hook that
+        // fails must not fail the item it followed — that item is already settled.
+        if (_afterTurn is not null)
+        {
+            try
+            {
+                await _afterTurn(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Best effort by design; the next turn's pass tries again.
+            }
+        }
+    }
+
+    private async Task ProcessCoreAsync(InputItem item)
+    {
 
         if (await AlreadyTurnedAsync(item).ConfigureAwait(false))
         {

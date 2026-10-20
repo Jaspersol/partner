@@ -429,4 +429,46 @@ public sealed class ContextAssemblerTests : IDisposable
             Assert.Contains("报表.csv", user.Content!, StringComparison.Ordinal);
         }
     }
+
+    [Fact]
+    public async Task The_recall_block_rides_in_front_of_the_current_input_so_the_system_prefix_stays_put()
+    {
+        await using var store = await SessionAsync(
+            (SessionEventKind.User, "turn on the lamp"),
+            (SessionEventKind.Assistant, "done"));
+        var assembler = new SessionWindowContextAssembler(store);
+        var skills = new[] { "Skill: do the thing.", "Known from earlier: likes tea." };
+
+        var first = await assembler.AssembleInitialAsync(
+            Input("and the curtains"), skills, new string?[] { null, "recall" });
+        var second = await assembler.AssembleInitialAsync(
+            Input("and the curtains"),
+            new[] { "Skill: do the thing.", "Known from earlier: hates coffee." },
+            new string?[] { null, "recall" });
+
+        // The system message is byte-identical across turns whose recall differs...
+        Assert.Equal(first[0].Content, second[0].Content);
+        Assert.Contains("Skill: do the thing.", first[0].Content);
+        Assert.DoesNotContain("likes tea", first[0].Content);
+
+        // ...and the recall sits in the last user message, marked as background, ahead of what the person said.
+        var last = first[^1].Content!;
+        Assert.Equal("user", first[^1].Role);
+        Assert.Contains("likes tea", last);
+        Assert.True(last.IndexOf("likes tea", StringComparison.Ordinal) < last.IndexOf("and the curtains", StringComparison.Ordinal));
+        Assert.Contains("不是用户说的话", last);
+        Assert.EndsWith("and the curtains", last);
+    }
+
+    [Fact]
+    public async Task Without_a_recall_block_the_current_input_is_sent_unchanged()
+    {
+        await using var store = await SessionAsync((SessionEventKind.User, "hi"), (SessionEventKind.Assistant, "hello"));
+
+        var messages = await new SessionWindowContextAssembler(store)
+            .AssembleInitialAsync(Input("next"), new[] { "Be concise." }, new string?[] { null });
+
+        Assert.Equal("next", messages[^1].Content);
+        Assert.Contains("Be concise.", messages[0].Content);
+    }
 }

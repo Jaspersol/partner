@@ -960,6 +960,16 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     [Fact]
+    public void A_web_toolset_gets_room_for_a_search_then_several_reads()
+    {
+        // The web sub-agent runs search, fetch, fetch, … and used to be cut at the base 8 before it could report.
+        var options = new AgentTurnOptions();
+
+        Assert.Equal(24, options.StepsAllowedFor(new[] { "web_search", "web_fetch", "task_report" }));
+        Assert.Equal(8, options.StepsAllowedFor(new[] { "clock" }));
+    }
+
+    [Fact]
     public async Task Flush_failure_surfaces_and_the_turn_is_not_marked_successful()
     {
         // Buffered store: appends alone are not durable, so the runner's own end-of-turn barrier is what

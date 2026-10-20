@@ -16,3 +16,14 @@ public interface ITool
     /// <param name="ct">取消令牌。</param>
     Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default);
 }
+
+/// <summary>
+/// A tool that knows how long it legitimately needs. The runner's per-call timeout is one number for every
+/// tool; a tool with its own time budget (a search that is allowed to wait for slow engines) would otherwise be
+/// cancelled by that number and lose the results it had already collected.
+/// </summary>
+public interface ITimedTool : ITool
+{
+    /// <summary>The longest this call may run. Only ever extends the runner's default, never shortens it.</summary>
+    TimeSpan Timeout { get; }
+}

@@ -294,6 +294,21 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     }
 
     /// <summary>
+    /// Past this share of the prompt budget (or as soon as the assembler had to drop history), a finished turn is
+    /// followed by a compaction pass instead of letting the oldest entries fall out of the window silently.
+    /// </summary>
+    internal const double AutoCompactFraction = 0.8;
+
+    private async Task CompactIfNeededAsync(SessionWindowContextAssembler assembler, CancellationToken ct)
+    {
+        var usage = await assembler.MeasureAsync(ct).ConfigureAwait(false);
+        if (usage.Fraction > AutoCompactFraction || usage.FoldedItems > 0)
+        {
+            await CompactAsync(usage.BudgetTokens, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Folds history that no longer fits the window. Only possible while a model is configured, because the
     /// summary is produced by that model.
     /// </summary>
@@ -443,9 +458,14 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             options: turnOptions,
             stream: this,
             failures: _failures,
-            clock: _clock);
+            clock: _clock,
+            tokens: Tokens);
 
-        _loop = new TurnLoop(_context.Queue, runner, _context.Session);
+        _loop = new TurnLoop(
+            _context.Queue,
+            runner,
+            _context.Session,
+            afterTurn: ct => CompactIfNeededAsync(assembler, ct));
         _stop = new CancellationTokenSource();
         _running = _loop.RunAsync(_stop.Token);
         _llm = llm;

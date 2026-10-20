@@ -2,6 +2,7 @@ using Partner.Core.Agent.Hooks;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Contracts;
+using Partner.Core.Memory;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
 
@@ -24,7 +25,7 @@ public sealed record AgentTurnOptions
     /// </para>
     /// </summary>
     public IReadOnlyDictionary<string, int> ToolStepBudgets { get; init; } =
-        new Dictionary<string, int>(StringComparer.Ordinal) { ["desktop"] = 32, ["mcp_"] = 32, ["file_"] = 24 };
+        new Dictionary<string, int>(StringComparer.Ordinal) { ["desktop"] = 32, ["mcp_"] = 32, ["file_"] = 24, ["web_"] = 24 };
 
     /// <summary>
     /// The budget this turn runs under: the largest family budget among the tools <b>registered</b>, or
@@ -146,6 +147,7 @@ public sealed class AgentTurnRunner
     private readonly IAssistantStream? _stream;
     private readonly IToolFailureLog? _failures;
     private readonly TimeProvider _clock;
+    private readonly ITokenCounter _tokens;
 
     public AgentTurnRunner(
         ISessionStore session,
@@ -158,8 +160,10 @@ public sealed class AgentTurnRunner
         AgentTurnOptions? options = null,
         IAssistantStream? stream = null,
         IToolFailureLog? failures = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        ITokenCounter? tokens = null)
     {
+        _tokens = tokens ?? new ApproximateTokenCounter();
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _llm = llm ?? throw new ArgumentNullException(nameof(llm));
         _tools = tools ?? throw new ArgumentNullException(nameof(tools));
@@ -265,8 +269,16 @@ public sealed class AgentTurnRunner
             else
             {
                 var conversation = (await _assembler
-                    .AssembleInitialAsync(item, ctx.InjectedPrompts, ct)
+                    .AssembleInitialAsync(item, ctx.InjectedPrompts, ctx.InjectedLabels, ct)
                     .ConfigureAwait(false)).ToList();
+
+                // What the tool loop may grow the conversation to. The assembler only fitted the history the turn
+                // started from; from here every tool result is appended by this loop, so this loop prices them.
+                var promptBudget = ContextBudget.PromptBudget(_options.ContextWindowTokens, _options.MaxTokens);
+                var resultCap = ToolResultBudget.ResultCap(promptBudget);
+
+                // Where the newest step begins. Older tool results may be folded; this step's never are.
+                var protectFrom = conversation.Count;
 
                 // Empty means the message did not choose one, which leaves the configured default in place.
                 var gear = string.IsNullOrWhiteSpace(item.ReasoningEffort) ? null : item.ReasoningEffort;
@@ -320,6 +332,8 @@ public sealed class AgentTurnRunner
 
                     // Every step of this turn uses the gear the message carried, so a tool loop cannot
                     // silently drop back to the global default halfway through.
+                    ToolResultBudget.CollapseOlder(conversation, protectFrom, promptBudget, _tokens);
+
                     var request = new LlmRequest(
                         conversation,
                         _tools.Specs,
@@ -347,6 +361,8 @@ public sealed class AgentTurnRunner
                     }
 
                     _stream?.OnReasoningCompleted(item.ItemId);
+
+                    protectFrom = conversation.Count;
 
                     if (!string.IsNullOrEmpty(response.Text))
                     {
@@ -382,7 +398,12 @@ public sealed class AgentTurnRunner
                         for (var i = 0; i < response.ToolCalls.Count; i++)
                         {
                             var call = response.ToolCalls[i];
-                            var result = results[i];
+                            // Capped before it is logged as well as before it is sent: the next turn replays this log,
+                            // and one oversized entry would make the assembler drop everything older than it.
+                            var result = results[i] with
+                            {
+                                Content = ToolResultBudget.Clamp(results[i].Content, resultCap, _tokens),
+                            };
 
                             await _session.AppendAsync(
                                 Event(SessionEventKind.ToolResult, item.Source, result.Content, item, new Dictionary<string, string>
@@ -701,8 +722,12 @@ public sealed class AgentTurnRunner
                 break;
         }
 
+        // A tool with a time budget of its own is given that budget (never less than the default), so the runner
+        // does not cancel it a moment before it would have returned what it had.
+        var limit = tool is ITimedTool timed && timed.Timeout > _options.ToolTimeout ? timed.Timeout : _options.ToolTimeout;
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(_options.ToolTimeout);
+        timeout.CancelAfter(limit);
 
         try
         {
@@ -711,7 +736,7 @@ public sealed class AgentTurnRunner
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             // Per-tool timeout: fed back as a result, the turn continues.
-            return new ToolResult(false, $"timeout after {_options.ToolTimeout.TotalSeconds:0.#}s");
+            return new ToolResult(false, $"timeout after {limit.TotalSeconds:0.#}s");
         }
         catch (Exception ex)
         {
