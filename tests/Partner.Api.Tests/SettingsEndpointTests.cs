@@ -150,15 +150,18 @@ public sealed class SettingsEndpointTests : ApiFixture
                 {
                     Kind = SessionEventKind.User,
                     Source = InputSource.Text,
-                    Body = $"turn {i}",
+                    Body = $"turn {i} " + new string('x', 76),
                 });
             }
 
-            // Five short turns cost ~5 tokens each. A 20-token window with an 8-token reserve leaves 12, which
-            // holds two turns — so the three oldest are folded and the two newest stay.
+            // Each turn costs ~25 tokens. The window is sized from what the system block really takes, because
+            // the assembler pays for it first: system + an 8-token reserve + 60 tokens of room for history. A
+            // sixth of that (10) is kept back for the summary, so 50 remain — two turns. The three oldest are
+            // folded and the two newest stay.
+            var system = (await consumer.MeasureContextAsync(context.Settings.Load())).SystemTokens;
             var put = await http.PutAsJsonAsync("/api/settings", new
             {
-                model = new { contextTokens = 20, maxTokens = 8 },
+                model = new { contextTokens = system + 8 + 60, maxTokens = 8 },
             });
             var compaction = (await put.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
 
@@ -173,8 +176,8 @@ public sealed class SettingsEndpointTests : ApiFixture
 
             Assert.Equal(3, bodies.Count);
             Assert.Contains(bodies, b => b.Kind == "Summary" && b.Body == "前几条：用户依次打了招呼。");
-            Assert.Contains(bodies, b => b.Body == "turn 4");
-            Assert.Contains(bodies, b => b.Body == "turn 5");
+            Assert.Contains(bodies, b => b.Body!.StartsWith("turn 4 ", StringComparison.Ordinal));
+            Assert.Contains(bodies, b => b.Body!.StartsWith("turn 5 ", StringComparison.Ordinal));
         }
         finally
         {

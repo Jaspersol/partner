@@ -15,7 +15,8 @@ public sealed record ContextUsage(
     int ContextTokens,
     int MaxTokens,
     int KeptItems,
-    int FoldedItems)
+    int FoldedItems,
+    int SystemTokens = 0)
 {
     public double Fraction => BudgetTokens <= 0 ? 0 : (double)UsedTokens / BudgetTokens;
 }
@@ -99,7 +100,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             _contextTokens,
             _reserveForOutput,
             plan.Kept.Count,
-            plan.FoldedCount);
+            plan.FoldedCount,
+            plan.SystemTokens);
     }
 
     public async Task<IReadOnlyList<LlmMessage>> AssembleInitialAsync(
@@ -309,7 +311,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// told it is under way.
     /// </para>
     /// </summary>
-    private static bool IsHandoffTrace(SessionViewItem entry) =>
+    internal static bool IsHandoffTrace(SessionViewItem entry) =>
         entry.Kind is SessionEventKind.ToolCall or SessionEventKind.ToolResult
         && entry.Meta is { } meta
         && meta.TryGetValue("name", out var name)
@@ -319,8 +321,11 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     private static string Trim(string? text) =>
         text is null ? string.Empty : text.Length <= TraceChars ? text : text[..TraceChars] + "…";
 
+    /// <summary>Whether the window carries this entry as conversation. The compactor folds by the same rule.</summary>
+    internal static bool IsConversational(SessionViewItem entry) => entry.Kind.IsContent() || IsHandoffTrace(entry);
+
     /// <summary>What an entry costs in the window: its text, and for a hand-off call its arguments too.</summary>
-    private static string CostText(SessionViewItem entry) =>
+    internal static string CostText(SessionViewItem entry) =>
         entry.Kind == SessionEventKind.ToolCall && entry.Meta is { } meta
             ? entry.Body + Trim(meta.GetValueOrDefault("args"))
             : IsHandoffTrace(entry) ? Trim(entry.Body) : entry.Body;

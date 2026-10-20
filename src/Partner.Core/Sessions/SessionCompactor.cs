@@ -39,7 +39,20 @@ public sealed class SessionCompactor
     /// <summary>
     /// Summarises the history that no longer fits <paramref name="promptBudget"/> tokens. Does nothing when
     /// the history already fits, so calling it after every settings change is safe.
+    /// <para>
+    /// <paramref name="promptBudget"/> is the room for history: the assembler subtracts the system block (and
+    /// the current input) from the window before it fits anything, so a caller passing the whole prompt budget
+    /// would keep more than the assembler will send and the next turn would drop it again. Use
+    /// <see cref="HistoryBudget"/>.
+    /// </para>
     /// </summary>
+    /// <summary>How long the summary may be for a window with <paramref name="promptBudget"/> tokens of room: a sixth of it, at most 512 and (for a window big enough to afford it) at least 64.</summary>
+    public static int SummaryTokensFor(int promptBudget) =>
+        Math.Min(512, Math.Max(promptBudget / 6, Math.Min(64, promptBudget / 8)));
+
+    /// <summary>The room history has once the system block is paid for, never below one token.</summary>
+    public static int HistoryBudget(ContextUsage usage) => Math.Max(1, usage.BudgetTokens - usage.SystemTokens);
+
     public async Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(promptBudget);
@@ -50,16 +63,21 @@ public sealed class SessionCompactor
         // bounding the raw conversation. Previous summaries are folded into the new one — otherwise every
         // compaction would add another summary and the context would grow instead of shrinking.
         var conversation = view.Items
-            .Where(item => item.Kind != SessionEventKind.Summary && item.Kind.IsContent())
+            .Where(item => item.Kind != SessionEventKind.Summary && SessionWindowContextAssembler.IsConversational(item))
             .ToList();
         var summaries = view.Items.Where(item => item.Kind == SessionEventKind.Summary).ToList();
+
+        // The summary is about to join the system block, so its room comes out of the history's: fitting against
+        // the whole budget and then adding the summary on top is how a freshly compacted session still overflows.
+        // Its length scales with the window instead of being a fixed 512, which is most of a small model's history.
+        var summaryTokens = SummaryTokensFor(promptBudget);
 
         // The same rule the assembler uses: the newest suffix that fits stays, the rest is folded. A
         // disagreement between the two would either send more than the window allows or fold what fits.
         var fits = await ContextBudget.FitNewestFirstAsync(
             conversation,
-            (entry, token) => ContextBudget.CostAsync(_tokens, entry.Body, token),
-            promptBudget,
+            (entry, token) => ContextBudget.CostAsync(_tokens, SessionWindowContextAssembler.CostText(entry), token),
+            Math.Max(1, promptBudget - summaryTokens),
             ct).ConfigureAwait(false);
 
         var keepFrom = fits.Count > 0 ? fits[0].Seq : long.MaxValue;
@@ -72,7 +90,7 @@ public sealed class SessionCompactor
             var used = 0;
             foreach (var entry in fits)
             {
-                used += await ContextBudget.CostAsync(_tokens, entry.Body, ct).ConfigureAwait(false);
+                used += await ContextBudget.CostAsync(_tokens, SessionWindowContextAssembler.CostText(entry), ct).ConfigureAwait(false);
             }
             return new CompactionResult(0, null, $"无需压缩：历史约 {used} token ≤ 预算 {promptBudget}");
         }
@@ -95,12 +113,19 @@ public sealed class SessionCompactor
             {
                 new LlmMessage(
                     "system",
-                    "Summarise the conversation history below. Keep decisions, facts, names and open questions. "
-                    + "Reply with the summary only, in the same language as the history, and in a single paragraph."),
+                    "Summarise the conversation history below so that someone can carry on from it. Use these labelled "
+                    + "lines and leave out a line that has nothing in it: "
+                    + "Goal: what the person is trying to get done. "
+                    + "Decided: choices already made. "
+                    + "Facts: names, numbers, preferences, anything stated that must not be lost. "
+                    + "Open: questions still unanswered. "
+                    + "In progress: tasks started and not finished. "
+                    + "A line that comes from an earlier summary is history too: keep what still matters. "
+                    + $"Reply with the summary only, in the same language as the history, in at most {summaryTokens} tokens."),
                 new LlmMessage("user", transcript),
             },
             Array.Empty<ToolSpec>(),
-            MaxTokens: 512), ct).ConfigureAwait(false);
+            MaxTokens: summaryTokens), ct).ConfigureAwait(false);
 
         var text = (response.Text ?? string.Empty).Trim();
         if (text.Length == 0)

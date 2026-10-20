@@ -976,8 +976,10 @@ public static class ViewEndpoints
             CompactionResult? compaction = null;
             if (stored.Model.ContextTokens < before.Model.ContextTokens)
             {
-                var budget = ContextBudget.PromptBudget(stored.Model.ContextTokens, stored.Model.MaxTokens);
-                compaction = await consumer.CompactAsync(budget, ct).ConfigureAwait(false);
+                // Measured under the new window, so the room left for history is what the assembler will really allow
+                // (it pays for the system block first).
+                var usage = await consumer.MeasureContextAsync(stored, ct).ConfigureAwait(false);
+                compaction = await consumer.CompactAsync(SessionCompactor.HistoryBudget(usage), ct).ConfigureAwait(false);
             }
 
             // Voice halves are restarted only when their own sections changed: reopening a device mid-utterance

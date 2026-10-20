@@ -152,4 +152,28 @@ public sealed class SessionCompactorTests : IDisposable
         Assert.Equal(1, summaries);
         Assert.Equal("第二次摘要", view.Items.Single(i => i.Kind == SessionEventKind.Summary).Body);
     }
+
+    [Fact]
+    public async Task After_compacting_for_the_history_budget_the_assembler_has_nothing_left_to_drop()
+    {
+        // A system block that eats a good part of the window: compacting against the *whole* budget would keep
+        // more than the assembler sends, and the next turn would silently drop it again.
+        await using var store = await SeedAsync(
+            Enumerable.Range(0, 12).Select(i => $"message number {i} with some padding words to cost tokens").ToArray());
+        var assembler = new Partner.Core.Agent.SessionWindowContextAssembler(
+            store,
+            contextTokens: 240,
+            reserveForOutput: 20,
+            baseSystemPrompt: string.Join(' ', Enumerable.Repeat("system instruction", 30)));
+
+        var before = await assembler.MeasureAsync();
+        Assert.True(before.FoldedItems > 0, "the fixture should overflow the window");
+
+        var result = await new SessionCompactor(store, Summarizer("short summary"))
+            .CompactAsync(SessionCompactor.HistoryBudget(before));
+        Assert.True(result.Compacted, result.Reason);
+
+        var after = await assembler.MeasureAsync();
+        Assert.Equal(0, after.FoldedItems);
+    }
 }
