@@ -36,6 +36,28 @@
 - S2：`DeliverDueAsync` 不再整段持 `_gate`：锁内只取 due 快照，入队在锁外并有 `EnqueueTimeout`（默认 10s，超时按失败进退避），写回执与推进状态时再回锁；另加 `_deliverGate` 保证同一时刻只有一轮投递。入队期间任务被删除/暂停/改期，则只跳过记账。
 - C5：召回块（label=`recall`）从 system 移到当前输入之前，作为同一条 user 消息的"背景资料"前缀，system 消息只剩人设、技能列表等稳定内容；连续两回合 system 字节相同。选择并入最后一条 user 消息而不是新增一条 system/user 消息，是因为中途出现的 system 消息会被部分本地模型的聊天模板拒绝，连续两条 user 消息会被严格交替的模板拒绝。这改变了 `MemoryHook` 里"召回放进 system 块"的原有设计意图，需要真实模型观察一下行为。**未做**：`HttpLlmClient` 的 `cache_control` 断点（依赖 provider 支持，需要先确认实际使用的服务）、"记录响应里的 cached tokens"。
 
+第三批落地备注（已做的 P1 和各自的缺口；D3 / D4 / D5 / X1 未做）：
+
+- C3：压缩器与装配器用同一套"这条算对话"和计价文本（`IsConversational` / `CostText`），`SessionCompactor.HistoryBudget(usage)` 先扣掉 system 再给历史预算；`ContextUsage` 新增 `SystemTokens`。设置页缩小窗口触发的压缩也改成按这个预算。
+- C4：摘要改为分行结构（目标 / 已定 / 事实 / 未决 / 进行中），长度随预算：预算的 1/6，最多 512，窗口够大时至少 64，并从历史预算里先预留出来，压缩后不会又立刻溢出。覆盖范围本来就记在 Summary 的 `coveredFrom/To`。**未做**：把摘要里的稳定事实同步写进 Semantic 记忆。
+- M3：`MemoryScorer.Tokenize` 对中文 run 用二元组，改写过的句子也有 lexical 得分。
+- M4：`synchronous` 改为 NORMAL（WAL）；批量写入先算 embedding 再开事务；提升扫描限频为每 30 秒一次（`PromotionThrottle`），所以"紧接着的下一次写入就提升"的契约变成"超过限频窗口后的下一次写入"。
+- M5：召回只用一条 `UPDATE ... IN (...)` 标记已用；`DemoteIdle` 不再跟在召回后面，只留在维护通道。
+- M6：召回按归一化正文去重。**未做**：写入前按内容哈希去重（`MemoryLifecycle` 明确把"完全相同"当作不冲突，改它要先改这条约定）。
+- M7：`ApproximateTokenCounter` 中日文按一字一 token 计；`MemoryStoreOptions.MinScore`（应用里设为 0.3）；召回 query 取输入的前 300 字。**未做**：MMR 多样性。
+- W2：snippet 最多 300 字、命中列表约 6000 字后截断并说明省略了几条；`web_fetch` 本来就分段。
+- A1：同一子 agent 可排最多 2 个后续任务（状态 `queued`，工具结果里写"前面还有 N 个"），第 4 个才按 busy 拒绝；排队中的任务可取消。
+- A4：汇报给主 agent 的结论 ≤ 1500 字、证据 ≤ 2000 字，超出处写明原文字数和 `/api/agent-jobs/{id}/session`。
+- A5：委派时把最近 4 轮对话（共 ≤ 1500 字）作为"对话背景"附在子 agent 的补充信息里，标明只用来解析指代。**未做**：附件路径列表。
+- D6：CDP 页面列表按 (端口, 标题) 缓存 1.5 秒，页面不应答时清掉；`CdpRegistry` 的探测共用一个静态 `HttpClient`。`Forget` 的调用点（端口存活巡检）没做。
+- D7：`desktop_observe` 新增 `maxElements`（默认 40，上限 200）、`roles`、`nameContains`；被截掉的数量在 `elementsMore`；value 最多 80 字。**未做**：翻页游标、有 elementId 时省略 `clickAt`。
+- D8：截图标记清单改为 `号=名称(elementId)`，不再重复点击坐标。**未做**：JPEG/WebP、裁到变化区域、按剩余上下文自适应尺寸（这些需要在真机上看效果）。
+- V2：**默认关闭**的 `BargeIn`（`VoiceInputSetting` / `RuntimeSettings.Input`，设置页还没有开关，改 `runtime.json`）；播放期间持续 600ms 超过静音阈值 2 倍的声音才算打断，打断后停 sink、丢未合成的句子、丢弃这条回复后续到达的文字，直到用户下一次开口。没有回声消除，所以只适合耳机。**未做**：KWS 唤醒词打断、把"播到哪一句"写进会话。
+- V3：ASR 请求改为后台进行，tick 不再等它；进行中又来一块则按 `Busy` 保留欠的块，结果在下一个 tick 的开头取走。**未做**：interim 结果给 UI、流式模型。
+- S3：`TurnLoop.onSettled` 回调把回合结果写回任务（`LastRunAt/LastRunOk/LastRunError`），`/api/schedules` 和 `schedule_list` 都带上。**未做**：界面里弹 Toast、语音播报。
+- S4：`CatchUpPolicy`（once / skip / all）加在任务上并落盘，`schedule_create` 有 `catchUp` 参数；skip 超过 5 分钟宽限记为错过（`MissedCount`），all 最多补最近 5 个。**未做**：设置页的选项、Windows 计划任务开机拉起。
+- 未做的原因：D3（状态读取式校验）、D4（`RuntimeId` 稳定元素 id）、D5（CDP 的 shadow DOM / iframe / 截图）都要在真实桌面和浏览器里反复验证，不适合只靠单元测试推进；X1 的共用预算已由 `ToolResultBudget` 覆盖 C1，其余工具各自定了上限，没有再抽象。
+
 第三批：其余 P1，然后按模块挑 P2。
 
 每批完成前跑 `dotnet build Partner.sln` 和 `dotnet test`，涉及界面的改动用预览验证。
@@ -55,12 +77,12 @@
   - 方案：回合结束后若 `Fraction > 0.8` 或 `FoldedItems > 0`，在 TurnLoop 串行通道里触发后台压缩（不与回合并发）。
   - 验证：超预算后跑一回合，断言出现 Summary + Retract，下一回合 `FoldedItems == 0`。
 
-- [ ] **C3 [P1] 压缩器与装配器计价不一致**
+- [x] **C3 [P1] 压缩器与装配器计价不一致** — 已完成（见 §0 第三批备注）
   - 证据：`SessionCompactor.cs:59-63` 只用 `promptBudget`，没减 system/input（装配器在 `IContextAssembler.cs:236` 减了）；压缩器按 `entry.Body` 计价（`:61`），装配器按 `CostText`（含 handoff 参数，`:294-297`）。
   - 方案：抽一个共用计价函数（system、input、工具 schema、图片都算），两边共用。
   - 验证：`SessionCompactorTests` 加"压缩后 `MeasureAsync().FoldedItems == 0`"。
 
-- [ ] **C4 [P1] 摘要质量**
+- [x] **C4 [P1] 摘要质量** — 已完成（见 §0 第三批备注）
   - 证据：`SessionCompactor.cs:93-103` 单段 512 token、无结构；旧摘要被再次摘要（`:82`）；与记忆不联动。
   - 方案：结构化摘要（目标 / 已定决策 / 事实与人名 / 未决问题 / 进行中任务），长度按预算比例；记录覆盖的 seq 范围；摘要中的稳定事实同时写入 Semantic 记忆。
   - 验证：两轮压缩后关键实体仍在；脚本化 LLM 断言输入含上次摘要。
@@ -91,21 +113,21 @@
   - 方案：两个 FTS 表达式都建，两次查询按 `record_id` 并集，rank 各自归一后取较优。
   - 验证：`CjkRecallTests` 加混合查询用例（只靠英文词能命中）。
 
-- [ ] **M3 [P1] CJK 词面相似度退化**：`MemoryScorer.cs:173-195` 把一整段中文当一个 token，0.30 权重的 lexical 只有整句相同才命中。改为复用 `CjkText.Bigrams`。验证：改写句（共享 bigram）lexical > 0。
+- [x] **M3 [P1] CJK 词面相似度退化**：`MemoryScorer.cs:173-195` 把一整段中文当一个 token，0.30 权重的 lexical 只有整句相同才命中。改为复用 `CjkText.Bigrams`。验证：改写句（共享 bigram）lexical > 0。 — 已完成（见 §0 第三批备注）
 
-- [ ] **M4 [P1] 写入路径放大**
+- [x] **M4 [P1] 写入路径放大** — 已完成（见 §0 第三批备注）
   - 证据：每次 `WriteAsync` 先 `PromoteEligibleAsync`（`MemoryStore.cs:141`），逐 id `GetAsync`（`:575`）再插入，插入内嵌 embedding（`:791-798`）；语句各自自动提交且 `synchronous=FULL`（`MemorySchema.cs:26`）；`WriteBatchAsync` 在事务内算 embedding（`:279-285`）。
   - 方案：单事务批量写；WAL 下 `synchronous=NORMAL`；embedding 移出事务（先算后写，或后台补算）；提升改为定时/阈值触发。
   - 验证：语句计数测试（参照 `:349` 的 `SourceQueries`）；1000 条写入基准。
 
-- [ ] **M5 [P1] 读路径带写**
+- [x] **M5 [P1] 读路径带写** — 已完成（见 §0 第三批备注）
   - 证据：每次召回对每条命中单独 `UPDATE last_recalled_at`（`:213-220`），再全表扫描 `DemoteIdle`（`:222,245-256`，该列无索引）；维护定时器每天已跑同一步（`MemoryMaintenance.cs:51`）。
   - 方案：一条 `UPDATE ... WHERE id IN (...)`；降级只留在维护通道；必要时给 `last_recalled_at` 建索引。
   - 验证：召回前后语句数与耗时断言；1 万行基准。
 
-- [ ] **M6 [P1] 同一句重复注入**：提升生成 episodic 副本但 working 行保留（`:583-592,611`），召回不按正文去重（`:434-453`）；内容完全相同也不算冲突（`MemoryLifecycle.cs:50-53`）。方案：召回按归一化正文去重并合并证据；写入前按内容哈希去重。验证：提升后召回同一正文只出现一次。
+- [x] **M6 [P1] 同一句重复注入**：提升生成 episodic 副本但 working 行保留（`:583-592,611`），召回不按正文去重（`:434-453`）；内容完全相同也不算冲突（`MemoryLifecycle.cs:50-53`）。方案：召回按归一化正文去重并合并证据；写入前按内容哈希去重。验证：提升后召回同一正文只出现一次。 — 已完成（见 §0 第三批备注）
 
-- [ ] **M7 [P1] 注入预算单位与相关性门槛**
+- [x] **M7 [P1] 注入预算单位与相关性门槛** — 已完成（见 §0 第三批备注）
   - 证据：`InjectionTokenLimit=5000` 用默认 `ApproximateTokenCounter`（`IMemoryStore.cs:9,24`；`ApiContext.cs:164-168` 未覆盖），中文实际约 4 倍；query 是整段 payload（`MemoryHook.cs:54`）；无最低分阈值（`MemoryStore.cs:434-453`）。
   - 方案：注入计价统一用 DualArm；加 `minScore` 与 MMR 多样性；query 截长（取用户原话 + 关键词）。
   - 验证：中文长正文注入后用真实 tokenize 计数 ≤ 上限；低分记录不注入。
@@ -128,7 +150,7 @@
   - 方案：工具支持按名覆盖超时（`web_search` 取预算 + 5s），或把预算 clamp 到 `ToolTimeout - 2s` 并在设置页提示；Fanout 在取消前返回已到结果。
   - 验证：预算 60s + 假传输 35s 延迟，断言返回部分结果而不是 timeout。
 
-- [ ] **W2 [P1] 返回体积无上限**：`ResultFormatter.cs:37` 只按条数截断，snippet 原样输出（`:79-82`），arXiv/Wikipedia 摘要不截（`ArxivEngine.cs:133`、`WikipediaEngine.cs:100`）。方案：单条 snippet ≤ 300 字 + 总字符预算；`web_fetch` 同样按预算分段返回。验证：回放 fixture 断言输出长度上限。
+- [x] **W2 [P1] 返回体积无上限**：`ResultFormatter.cs:37` 只按条数截断，snippet 原样输出（`:79-82`），arXiv/Wikipedia 摘要不截（`ArxivEngine.cs:133`、`WikipediaEngine.cs:100`）。方案：单条 snippet ≤ 300 字 + 总字符预算；`web_fetch` 同样按预算分段返回。验证：回放 fixture 断言输出长度上限。 — 已完成（见 §0 第三批备注）
 
 - [ ] **W3 [P2] 熔断落盘在热路径**：`EngineHealth.Record` 每次变更同步 `Save()`（`EngineHealth.cs:195-198,235-267`），一次搜索最多 7 次原子写。改为标脏、搜索结束合并写一次。验证：7 引擎全失败时 `File.Replace` 计数为 1。
 
@@ -146,7 +168,7 @@
 
 已落地：3 个封闭场景与能力唯一持有者（`AgentScenarios.cs:30-47`、`AgentRouting.cs:33-70`）、`agent_delegate` 立即返回、同目标 10 分钟防重、JobEngine 轮次判定、`task_report` 强证据、journal 启动恢复、取消、UI 卡片轮询。默认路径未见必坏项。
 
-- [ ] **A1 [P1] 同一子 agent 不能排队**：`SubAgentHost.cs:87-91` 一个 agent 同时只允许一个 job，第二次委派直接 busy 拒绝。方案：每 agent 有界队列（默认 2，可配置），排队时立即返回 jobId 与"排在第 N 位"。验证：连续两次委派，两份汇报都到达且顺序正确。
+- [x] **A1 [P1] 同一子 agent 不能排队**：`SubAgentHost.cs:87-91` 一个 agent 同时只允许一个 job，第二次委派直接 busy 拒绝。方案：每 agent 有界队列（默认 2，可配置），排队时立即返回 jobId 与"排在第 N 位"。验证：连续两次委派，两份汇报都到达且顺序正确。 — 已完成（见 §0 第三批备注）
 
 - [x] **A2 [P1] web 子 agent 步数预算只有 8**：子 agent 没设 `ToolStepBudgets`（`SubAgentHost.Run.cs:51-57`），默认 `MaxSteps=8`，前缀表只有 desktop/mcp_/file_（`AgentTurnRunner.cs:14,22-23`）。方案：加 `["web_"] = 24`，并允许按场景配置。验证：脚本化 5 次 `web_fetch` 后仍能 `task_report`。 — 已完成
 
@@ -155,9 +177,9 @@
   - 方案：每轮建专用 linked CTS，超时先 Cancel，再限时等待其退出；仍不退出则标记该会话为脏、终止 job，而不是开下一轮。
   - 验证：注入永不返回的回合，断言取消被观察且没有并发写入的事件。
 
-- [ ] **A4 [P1] 回传主 agent 无界**：`JobOutcome.ToMessage` 原样拼 Summary/Evidence（`JobOutcome.cs:64-92`），只有 Error 截 400 字（`JobEngine.cs:38`）。方案：Summary ≤ 1.5k、Evidence ≤ 2k 字，超出部分给 jobId 指向 `/api/agent-jobs/{id}/session`（`AgentEndpoints.cs:59-86`），主 agent 需要时用工具读取。验证：5k evidence 断言截断 + 指引。
+- [x] **A4 [P1] 回传主 agent 无界**：`JobOutcome.ToMessage` 原样拼 Summary/Evidence（`JobOutcome.cs:64-92`），只有 Error 截 400 字（`JobEngine.cs:38`）。方案：Summary ≤ 1.5k、Evidence ≤ 2k 字，超出部分给 jobId 指向 `/api/agent-jobs/{id}/session`（`AgentEndpoints.cs:59-86`），主 agent 需要时用工具读取。验证：5k evidence 断言截断 + 指引。 — 已完成（见 §0 第三批备注）
 
-- [ ] **A5 [P1] 交给子 agent 的上下文过薄**：`agent_delegate` 只有 goal/context 两个字符串（`DelegateTools.cs:29-35`），`FirstMessage` 直接拼（`JobEngine.cs:186-189`）。方案：默认附带用户原话与最近 1-2 轮摘要（限长），可选附件路径列表。验证："把刚才那个文件读完"这类指代能在子会话里解析。
+- [x] **A5 [P1] 交给子 agent 的上下文过薄**：`agent_delegate` 只有 goal/context 两个字符串（`DelegateTools.cs:29-35`），`FirstMessage` 直接拼（`JobEngine.cs:186-189`）。方案：默认附带用户原话与最近 1-2 轮摘要（限长），可选附件路径列表。验证："把刚才那个文件读完"这类指代能在子会话里解析。 — 已完成（见 §0 第三批备注）
 
 - [ ] **A6 [P2] 运行中没有过程流**：子回合 `stream: null`（`SubAgentHost.Run.cs:76`），状态只有轮数（`DelegateTools.cs:87-103`，`AgentJob.cs:104-118`）。方案：job 接 `IAssistantStream`，把当前步、工具名推给 `/api/agent-jobs`，UI 卡片显示"正在 web_fetch …"；语音场景可据此播报进度。验证：运行中读取含当前工具名。
 
@@ -192,11 +214,11 @@
 
 - [ ] **D5 [P1] CDP 能力缺口**：`CdpDomSource.cs:67-147` 只 `querySelectorAll`，不穿 shadow DOM、不进 iframe；没有 `Page.captureScreenshot`/`Page.navigate`；`CdpRegistry.cs:9-21,50-53` 只登记本进程启动的端口，`Forget`（`:56`）无调用点。方案：递归 shadowRoot + iframe；`Accessibility.getFullAXTree` 作为结构化来源；后台窗口用 `Page.captureScreenshot`；可选接入用户已开的调试端口；端口存活巡检调用 `Forget`。验证：`CdpDomTests` 与 `CdpDomLiveTests` 加 shadow/iframe 用例。
 
-- [ ] **D6 [P1] CDP 每次动作重复探测**：`CdpDomSource.cs:285,337,575` 每次都请求 `/json/list`；`CdpRegistry.cs:98` 每次轮询 `new HttpClient`（最多 30 个）。方案：页面列表按端口缓存 1-2s；共享静态 `HttpClient`。验证：注入 connect 计数，断言一次 act 只探测一次。
+- [x] **D6 [P1] CDP 每次动作重复探测**：`CdpDomSource.cs:285,337,575` 每次都请求 `/json/list`；`CdpRegistry.cs:98` 每次轮询 `new HttpClient`（最多 30 个）。方案：页面列表按端口缓存 1-2s；共享静态 `HttpClient`。验证：注入 connect 计数，断言一次 act 只探测一次。 — 已完成（见 §0 第三批备注）
 
-- [ ] **D7 [P1] observe 返回体积无上限**：`DesktopTools.cs:116-160` 序列化全部窗口全部元素，每窗口 40 个（`UiaTree.cs:54-55`），value 最长 200 字（`:234`），每条带 clickAt。方案：加 `maxElements`/`roles`/`nameContains` 与分页游标；默认只返回前台窗口元素；有 elementId 时省略 clickAt。验证：`DesktopScopeTests` 加元素数与字符数上限断言。
+- [x] **D7 [P1] observe 返回体积无上限**：`DesktopTools.cs:116-160` 序列化全部窗口全部元素，每窗口 40 个（`UiaTree.cs:54-55`），value 最长 200 字（`:234`），每条带 clickAt。方案：加 `maxElements`/`roles`/`nameContains` 与分页游标；默认只返回前台窗口元素；有 elementId 时省略 clickAt。验证：`DesktopScopeTests` 加元素数与字符数上限断言。 — 已完成（见 §0 第三批备注）
 
-- [ ] **D8 [P1] 截图 token 与编码成本**：默认 1280（`DesktopScreenshotTool.cs:31`），全帧 PNG（`:530-566`），标记清单最多 24 条且与图上数字重复（`:502-513`）。方案：JPEG/WebP 可选；标记文本只列 name + elementId；动作后截图裁到变化区域；`maxDimension` 随剩余上下文自适应。验证：媒体字节数上限断言；`ScreenshotMarksTests` 断言格式。
+- [x] **D8 [P1] 截图 token 与编码成本**：默认 1280（`DesktopScreenshotTool.cs:31`），全帧 PNG（`:530-566`），标记清单最多 24 条且与图上数字重复（`:502-513`）。方案：JPEG/WebP 可选；标记文本只列 name + elementId；动作后截图裁到变化区域；`maxDimension` 随剩余上下文自适应。验证：媒体字节数上限断言；`ScreenshotMarksTests` 断言格式。 — 已完成（见 §0 第三批备注）
 
 - [ ] **D9 [P2] 观察对象被并发原地修改**：`DesktopEntities.cs:127` `Elements` 可写，`DesktopAutomation.cs:884-887` 无锁替换 `_lastObservation.Elements`，而工具允许并行调用（`:180-183`）。改为每次生成不可变新 observation（`with`），读取方取局部引用。验证：`ObservationConcurrencyTests` 加并行 observe + AddDomElements。
 
@@ -218,9 +240,9 @@
   - 方案：RunOutputAsync 订阅已有的流式 delta（`IAssistantStream.OnAssistantDelta`，`ConsumerHost.cs:224`），增量 Push 进 Segmenter；第一句合成完就 Release，后续句子保持"合成领先播放 1-2 句"的流水线，句间无缝的目标不变；回合结束时 Flush 尾句并按已播文本去重。
   - 验证：打点"首个 delta → 首次出声"，目标 < 1.2s；扩 `VoiceHostTests.cs` 断言首句在回合结束前开始播放、句间无空洞。
 
-- [ ] **V2 [P1] 没有 barge-in，播放期间用户说话全部丢弃**：`VoiceInputHalf.cs:193-204` 闸门内直接 return，只累计 `_skippedHadSpeech`；`DetectedSpeechWhileGated`（`:118`）除 smoke 外无人消费；闸门只在 `VoiceOutputHalf.cs:157` 上。方案：播放期继续跑能量检测 + KWS（复用 `:390` 的回灌屏蔽窗），命中唤醒词或持续语音即 `_sink.Stop()`、清空未播 TTS 队列、放闸；记录"被打断时已播到哪一句"写入会话，供下回合上下文使用。验证：smoke 注入"播放中说话"，断言 sink 停止、utterance 入队。
+- [x] **V2 [P1] 没有 barge-in，播放期间用户说话全部丢弃**：`VoiceInputHalf.cs:193-204` 闸门内直接 return，只累计 `_skippedHadSpeech`；`DetectedSpeechWhileGated`（`:118`）除 smoke 外无人消费；闸门只在 `VoiceOutputHalf.cs:157` 上。方案：播放期继续跑能量检测 + KWS（复用 `:390` 的回灌屏蔽窗），命中唤醒词或持续语音即 `_sink.Stop()`、清空未播 TTS 队列、放闸；记录"被打断时已播到哪一句"写入会话，供下回合上下文使用。验证：smoke 注入"播放中说话"，断言 sink 停止、utterance 入队。 — 已完成（见 §0 第三批备注）
 
-- [ ] **V3 [P1] ASR 阻塞 tick，流式 ASR 未接线**：`VoiceInputHalf.cs:152-157` 每 tick 顺序执行，`:506` await `TranscribeAsync`（最长 3s，`AsrOptions.cs:42`），期间端点判定与唤醒探针停摆；`HttpAsrClient.TranscribeStreamAsync`（`HttpAsrClient.cs:58`）零调用者。方案：ASR 提交改后台 Task，tick 继续 Step（复用 `SubmissionOutcome.Busy`/`_heldPause`）；接 interim 结果给 UI；长期换流式模型。验证：连读 5 句时 tick 间隔 p99 < 50ms。
+- [x] **V3 [P1] ASR 阻塞 tick，流式 ASR 未接线**：`VoiceInputHalf.cs:152-157` 每 tick 顺序执行，`:506` await `TranscribeAsync`（最长 3s，`AsrOptions.cs:42`），期间端点判定与唤醒探针停摆；`HttpAsrClient.TranscribeStreamAsync`（`HttpAsrClient.cs:58`）零调用者。方案：ASR 提交改后台 Task，tick 继续 Step（复用 `SubmissionOutcome.Busy`/`_heldPause`）；接 interim 结果给 UI；长期换流式模型。验证：连读 5 句时 tick 间隔 p99 < 50ms。 — 已完成（见 §0 第三批备注）
 
 - [ ] **V4 [P2] 唤醒延迟 320-440ms**：`VoiceInputHalf.cs:268-302` 攒满 0.1s 才发、每 100ms 一次同步 HTTP；`:418`、`:432` 的 lead/catch-up 是为此打的补丁；引擎已有 `/wake?seq=` 长轮询（`engines/kws-asr/asr-server.py:76-86`）宿主未用。方案：增量降到 50ms，宿主改长轮询，优先 chunk-8 模型。验证：喊词 → `_awake=true` < 250ms。
 
@@ -242,9 +264,9 @@
 
 - [x] **S2 [P1] 投递全程持锁且入队可阻塞**：`JsonlScheduler.cs:248-322` 整个 pass 在 `_gate` 内，`:282-288` 调 `EnqueueAsync`，队列满时等 `_slots.WaitAsync`（`JsonlInputQueue.cs:160`）；`ListAsync`（`:224-242`）与 `/api/schedules` 同锁。方案：锁内只取 due 快照，锁外投递再回锁写结果；`EnqueueAsync` 加超时，超时进退避。验证：满队列下 `GET /api/schedules` p99 < 100ms。 — 已完成
 
-- [ ] **S3 [P1] 到点后没有通知，也看不到执行结果**：只 `EnqueueAsync(InputSource.Schedule)`（`:282-288`），执行在 `TurnLoop.ProcessAsync`（`TurnLoop.cs:85-149`），失败只标 queue item；`ScheduleTools.cs:153-158` 的 `LastError` 只反映投递错误。方案：回合完成/失败按 itemId 回写任务的 `LastRunResult/LastError`；UI 接入已有 ToastHost 弹通知；语音开启时可选播报结果。验证：模型返回 500 时页面出现失败提示、lastError 更新。
+- [x] **S3 [P1] 到点后没有通知，也看不到执行结果**：只 `EnqueueAsync(InputSource.Schedule)`（`:282-288`），执行在 `TurnLoop.ProcessAsync`（`TurnLoop.cs:85-149`），失败只标 queue item；`ScheduleTools.cs:153-158` 的 `LastError` 只反映投递错误。方案：回合完成/失败按 itemId 回写任务的 `LastRunResult/LastError`；UI 接入已有 ToastHost 弹通知；语音开启时可选播报结果。验证：模型返回 500 时页面出现失败提示、lastError 更新。 — 已完成（见 §0 第三批备注）
 
-- [ ] **S4 [P1] 错过的运行只补一次，无策略**：`JsonlScheduler.cs:397-405` 跳过所有过去时刻（`JsonlSchedulerTests.cs:293` 固化"睡 1 小时只补 1 次"）；应用不运行就不触发（`ApiContext.StartScheduler`，`:87`）。方案：每任务 `catchUp: skip | once | all(cap)`，过期超过宽限期的标记为"已错过"并显示；可选注册 Windows 计划任务在开机时拉起应用。验证：时钟前跳 3 天，按三种策略断言投递次数。
+- [x] **S4 [P1] 错过的运行只补一次，无策略**：`JsonlScheduler.cs:397-405` 跳过所有过去时刻（`JsonlSchedulerTests.cs:293` 固化"睡 1 小时只补 1 次"）；应用不运行就不触发（`ApiContext.StartScheduler`，`:87`）。方案：每任务 `catchUp: skip | once | all(cap)`，过期超过宽限期的标记为"已错过"并显示；可选注册 Windows 计划任务在开机时拉起应用。验证：时钟前跳 3 天，按三种策略断言投递次数。 — 已完成（见 §0 第三批备注）
 
 - [ ] **S5 [P2] 日志只追加不压缩**：每次变更写整条快照（`:438`），启动全量重放（`:472-498`），`FileAppendOnlySink.Rewrite`（`:164`）未用。方案：行数超阈值时 Rewrite 成每任务一条；回执按保留窗裁剪。验证：模拟 1 万次投递后的文件行数与启动耗时。
 
