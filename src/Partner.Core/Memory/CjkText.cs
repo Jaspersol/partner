@@ -19,8 +19,6 @@ namespace Partner.Core.Memory;
 /// </summary>
 internal static class CjkText
 {
-    public static bool ContainsCjk(string text) => text.Any(IsCjk);
-
     /// <summary>
     /// CJK ideographs (一..鿿) and kana (぀..ヿ). Both are written without spaces, which is the whole problem.
     /// </summary>

@@ -165,10 +165,11 @@ public sealed class MemoryStore : IMemoryStore
         // leaves both halves of the disagreement in the store.
         //
         // Bigrams for CJK, and the FTS expression for Latin, which has no bigrams to cut but a real
-        // tokenizer. Whichever this body can use, the decision is still made by word overlap below.
-        var cjk = CjkText.ContainsCjk(incoming.Body);
-        var match = cjk ? null : BuildMatchExpression(incoming.Body);
-        var cjkMatch = cjk ? CjkText.MatchExpression(incoming.Body) : null;
+        // tokenizer. Both are built even for a body that is mostly one script: a mixed body's English half is
+        // invisible to the bigram index and its Chinese half to the Latin one, so dropping either would leave
+        // half of it unsearchable. The decision is still made by word overlap below.
+        var match = BuildMatchExpression(incoming.Body);
+        var cjkMatch = CjkText.MatchExpression(incoming.Body);
 
         var candidates = await LoadCandidatesAsync(match, cjkMatch, ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
@@ -399,10 +400,11 @@ public sealed class MemoryStore : IMemoryStore
         // Two coarse filters, because one index cannot serve both scripts. unicode61 has no Chinese word
         // segmentation, so a CJK question is matched against the bigrams in the second index instead (CjkText):
         // 我不太喜欢被打断 and 用户不喜欢被反复确认 share 喜欢/欢被, and that overlap is enough to bring the
-        // record in. The scorer still decides relevance; this is only a coarse filter.
-        var cjk = CjkText.ContainsCjk(query);
-        var match = cjk ? null : BuildMatchExpression(query);
-        var cjkMatch = cjk ? CjkText.MatchExpression(query) : null;
+        // record in. Both expressions are built for every query — a mixed query like 部署 deployment carries
+        // words only one of the indexes can see, and choosing by "does it contain CJK" dropped the other half.
+        // The scorer still decides relevance; this is only a coarse filter.
+        var match = BuildMatchExpression(query);
+        var cjkMatch = CjkText.MatchExpression(query);
 
         if (match is null && cjkMatch is null)
         {
@@ -934,8 +936,13 @@ public sealed class MemoryStore : IMemoryStore
 
     /// <summary>
     /// The rows a query could plausibly want: one index for Latin, another for CJK, both bm25-ranked and both
-    /// bounded by the same candidate limit — so this stays a coarse filter and the scorer still decides what is
-    /// actually relevant.
+    /// bounded by the same candidate limit, then merged by record id — so a mixed query reaches a record through
+    /// either half of it, and this stays a coarse filter the scorer still decides on.
+    /// <para>
+    /// The two indexes are not on a common scale: bm25 is computed over the corpus behind each, and the CJK
+    /// index's terms are bigrams rather than words. Each index's ranks are therefore scaled against its own best
+    /// hit before the union, and a record both indexes found keeps the better of the two.
+    /// </para>
     /// <para>
     /// The CJK branch used to be a scan of the whole table with a LIKE per bigram, which is the cost this
     /// replaced: the same overlap, answered from an index instead of by reading every body.
@@ -946,56 +953,86 @@ public sealed class MemoryStore : IMemoryStore
         string? cjkMatch,
         CancellationToken ct)
     {
-        await using var cmd = _db.CreateCommand();
+        var found = new Dictionary<string, (MemoryCandidate Candidate, double Quality)>(StringComparer.Ordinal);
 
         if (match is not null)
         {
-            cmd.CommandText = """
-              SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                     bm25(memory_fts) AS rank, m.source_event_seq
-              FROM memory_fts
-              JOIN memories m ON m.rowid = memory_fts.rowid
-              WHERE memory_fts MATCH $q AND m.valid_to IS NULL
-              ORDER BY rank
-              LIMIT $candidates
-              """;
-            cmd.Parameters.AddWithValue("$q", match);
-        }
-        else
-        {
-            cmd.CommandText = """
-              SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                     bm25(memory_fts_cjk) AS rank, m.source_event_seq
-              FROM memory_fts_cjk
-              JOIN memories m ON m.rowid = memory_fts_cjk.rowid
-              WHERE memory_fts_cjk MATCH $q AND m.valid_to IS NULL
-              ORDER BY rank
-              LIMIT $candidates
-              """;
-            cmd.Parameters.AddWithValue("$q", cjkMatch!);
+            await LoadFromIndexAsync("memory_fts", match, found, ct).ConfigureAwait(false);
         }
 
+        if (cjkMatch is not null)
+        {
+            await LoadFromIndexAsync("memory_fts_cjk", cjkMatch, found, ct).ConfigureAwait(false);
+        }
+
+        return found.Values
+            .OrderByDescending(v => v.Quality)
+            .ThenBy(v => v.Candidate.RecordId, StringComparer.Ordinal)
+            .Select(v => v.Candidate)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Runs one index's query and folds its rows into <paramref name="found"/>, keeping the better of two hits
+    /// for the same record. The index name is one of the two constants in <see cref="LoadCandidatesAsync"/>,
+    /// never user text.
+    /// </summary>
+    private async Task LoadFromIndexAsync(
+        string index,
+        string match,
+        Dictionary<string, (MemoryCandidate Candidate, double Quality)> found,
+        CancellationToken ct)
+    {
+        await using var cmd = _db.CreateCommand();
+        cmd.CommandText = $"""
+          SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
+                 bm25({index}) AS rank, m.source_event_seq
+          FROM {index}
+          JOIN memories m ON m.rowid = {index}.rowid
+          WHERE {index} MATCH $q AND m.valid_to IS NULL
+          ORDER BY rank
+          LIMIT $candidates
+          """;
+        cmd.Parameters.AddWithValue("$q", match);
         cmd.Parameters.AddWithValue("$candidates", _options.CandidateLimit);
 
-        var candidates = new List<MemoryCandidate>();
-        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        var rows = new List<(MemoryCandidate Candidate, double Magnitude)>();
+        await using (var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
         {
-            candidates.Add(new MemoryCandidate(
-                reader.GetString(0),
-                reader.GetString(1),
-                Enum.Parse<MemoryTier>(reader.GetString(2)),
-                ParseScope(reader.GetString(3)),
-                ParseTime(reader.GetString(4)),
-                reader.GetDouble(5),
-                reader.GetDouble(6),
-                reader.GetDouble(7),
-                reader.GetDouble(8),
-                reader.IsDBNull(9) ? null : reader.GetInt64(9)));
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                // bm25 is negative and lower is better, so the magnitude is the strength of the match.
+                rows.Add((ReadCandidate(reader), Math.Abs(reader.GetDouble(8))));
+            }
         }
 
-        return candidates;
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        var best = rows.Max(r => r.Magnitude);
+        foreach (var (candidate, magnitude) in rows)
+        {
+            var quality = best > 0.0 ? magnitude / best : 0.0;
+            if (!found.TryGetValue(candidate.RecordId, out var existing) || quality > existing.Quality)
+            {
+                found[candidate.RecordId] = (candidate with { FtsRank = -quality }, quality);
+            }
+        }
     }
+
+    private MemoryCandidate ReadCandidate(SqliteDataReader reader) => new(
+        reader.GetString(0),
+        reader.GetString(1),
+        Enum.Parse<MemoryTier>(reader.GetString(2)),
+        ParseScope(reader.GetString(3)),
+        ParseTime(reader.GetString(4)),
+        reader.GetDouble(5),
+        reader.GetDouble(6),
+        reader.GetDouble(7),
+        FtsRank: null,
+        SourceEventSeq: reader.IsDBNull(9) ? null : reader.GetInt64(9));
 
     /// <summary>
     /// Reads a stored scope, falling back to <see cref="MemoryScope.Recall"/> for a value this build no longer
@@ -1114,6 +1151,11 @@ public sealed class MemoryStore : IMemoryStore
     /// the cheapest thing that makes the two overlap. A real segmenter is better and is a separate decision,
     /// but without this the recall path is dead for the language this project is written in.
     /// </para>
+    /// <para>
+    /// This is only the Latin half of a query. A mixed query also gets a CJK expression from
+    /// <see cref="CjkText.MatchExpression"/>, and the store unions the two — a CJK run reaching here is a
+    /// leftover the bigram index cannot serve (a single character), not the only way the query is searched.
+    /// </para>
     /// </summary>
     internal static string? BuildMatchExpression(string query)
     {
@@ -1158,8 +1200,8 @@ public sealed class MemoryStore : IMemoryStore
     /// <para>
     /// A single CJK character is kept as itself, because it is a word often enough (「钱」「好」) and dropping it
     /// would throw away the shortest queries. Kept for the <c>internal</c> expression builder's own sake: the
-    /// recall path never reaches here with CJK, because a CJK query is served by the bigram index
-    /// (<see cref="CjkText"/>) instead.
+    /// bigram index (<see cref="CjkText"/>) covers runs of two or more, so this is what is left for the Latin
+    /// index to find.
     /// </para>
     /// </summary>
     private static IEnumerable<string> SplitRun(string run)

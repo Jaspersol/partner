@@ -43,7 +43,7 @@ public sealed record MemoryCandidate(
     double Importance,      // 0..1
     double Veracity,        // 0..1
     double Confidence,      // 0..1
-    double FtsRank,         // lower = better, as returned by SQLite bm25(); may be 0 when unused
+    double? FtsRank = null, // bm25 magnitude, normalised per index: -1 is this index's best hit, null when unused
     long? SourceEventSeq = null);
 
 /// <summary>

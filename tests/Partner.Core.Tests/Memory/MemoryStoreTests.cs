@@ -96,6 +96,24 @@ public sealed class MemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Recall_reports_fts_and_scores_a_better_match_higher()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("strong", "deploy pipeline blue green releases"));
+        await store.WriteAsync(Rec("weak", "deploy pipeline and an unrelated tail about cats"));
+
+        var hits = await store.RecallAsync("deploy pipeline blue green");
+
+        // bm25 is negative, and the old mapping read it as "no match", so the component never showed up at all.
+        Assert.All(hits, h => Assert.Contains(h.Reasons, r => r.StartsWith("fts", StringComparison.Ordinal)));
+        Assert.All(hits, h => Assert.True(h.Score.Fts > 0.0));
+
+        var strong = hits.Single(h => h.RecordId == "strong");
+        var weak = hits.Single(h => h.RecordId == "weak");
+        Assert.True(strong.Score.Fts > weak.Score.Fts, "the record matching more of the query should score higher");
+    }
+
+    [Fact]
     public async Task Recall_ignores_queries_without_usable_tokens()
     {
         await using var store = Open();

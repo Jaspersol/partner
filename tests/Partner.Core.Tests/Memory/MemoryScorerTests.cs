@@ -15,7 +15,7 @@ public sealed class MemoryScorerTests
         MemoryTier tier = MemoryTier.Semantic,
         double importance = 0.5,
         double veracity = 1.0,
-        double ftsRank = 0.0,
+        double? ftsRank = null,
         DateTimeOffset? createdAt = null) =>
         new("rec-1", body, tier, MemoryScope.Recall, createdAt ?? Now, importance, veracity, 1.0, ftsRank);
 
@@ -106,12 +106,42 @@ public sealed class MemoryScorerTests
     }
 
     [Fact]
-    public void Fts_mapping_is_zero_for_non_positive_ranks()
+    public void Fts_is_zero_without_an_index_and_grows_with_the_bm25_magnitude()
     {
+        // null is "this row did not come from an index"; zero is a real match that weighs nothing. Both score
+        // zero, and neither is the same thing as a negative rank — those are the actual bm25 output.
+        Assert.Equal(0.0, Score(Candidate("abcdefgh", ftsRank: null)).Fts, 10);
         Assert.Equal(0.0, Score(Candidate("abcdefgh", ftsRank: 0.0)).Fts, 10);
-        Assert.Equal(0.5, Score(Candidate("abcdefgh", ftsRank: 1.0)).Fts, 10);
-        Assert.Equal(1.0 / 3.0, Score(Candidate("abcdefgh", ftsRank: 2.0)).Fts, 10);
-        Assert.Equal(0.0, Score(Candidate("abcdefgh", ftsRank: -3.5)).Fts, 10);
+        Assert.Equal(0.5, Score(Candidate("abcdefgh", ftsRank: -1.0)).Fts, 10);
+        Assert.Equal(2.0 / 3.0, Score(Candidate("abcdefgh", ftsRank: -2.0)).Fts, 10);
+        Assert.Equal(3.5 / 4.5, Score(Candidate("abcdefgh", ftsRank: -3.5)).Fts, 10);
+    }
+
+    [Fact]
+    public void Fts_grows_monotonically_with_the_strength_of_the_match()
+    {
+        double weak = Score(Candidate("abcdefgh", ftsRank: -0.2)).Fts;
+        double middle = Score(Candidate("abcdefgh", ftsRank: -1.0)).Fts;
+        double strong = Score(Candidate("abcdefgh", ftsRank: -4.0)).Fts;
+
+        Assert.True(weak > 0.0);
+        Assert.True(weak < middle);
+        Assert.True(middle < strong);
+        Assert.True(strong < 1.0);
+    }
+
+    [Fact]
+    public void Explain_reports_fts_as_a_reason()
+    {
+        var scorer = new MemoryScorer();
+        MemoryScore score = scorer.Score(
+            Candidate("alpha beta gamma", importance: 0.0, veracity: 0.0, ftsRank: -1.0),
+            "alpha beta",
+            null,
+            null,
+            Now);
+
+        Assert.Equal(new[] { "lexical 1.00", "fts 0.50", "temporal 1.00", "tier 1.00" }, scorer.Explain(score));
     }
 
     [Fact]
@@ -144,7 +174,7 @@ public sealed class MemoryScorerTests
     {
         var options = new MemoryScorerOptions { TemporalHalfLife = TimeSpan.FromDays(30) };
         MemoryScore score = Score(
-            Candidate("alpha beta gamma", MemoryTier.Episodic, importance: 0.5, veracity: 0.8, ftsRank: 1.0),
+            Candidate("alpha beta gamma", MemoryTier.Episodic, importance: 0.5, veracity: 0.8, ftsRank: -1.0),
             "alpha beta",
             [1f, 0f],
             [1f, 0f],

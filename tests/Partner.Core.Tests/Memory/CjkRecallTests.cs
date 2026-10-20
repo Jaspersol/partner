@@ -72,6 +72,41 @@ public sealed class CjkRecallTests : IDisposable
     }
 
     [Fact]
+    public async Task A_mixed_query_reaches_a_record_through_its_english_half()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("m1", "the deployment pipeline runs nightly"));
+        await store.WriteAsync(Rec("m2", "蓝绿部署流程"));
+
+        // The query has Chinese in it, but the only thing it shares with m1 is the English word. Choosing the
+        // index by "does the query contain CJK" sent this to the bigram table alone, where m1 has no entry.
+        var hits = await store.RecallAsync("部署 deployment");
+
+        Assert.Contains(hits, h => h.RecordId == "m1");
+        // And the union keeps the half the bigram index can serve.
+        Assert.Contains(hits, h => h.RecordId == "m2");
+    }
+
+    [Fact]
+    public async Task A_mixed_record_supersedes_an_english_one_through_its_english_half()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec(
+            "old",
+            "stage the staging cluster with terraform and then restart the gateway service"));
+
+        // The newcomer is mostly the same claim plus a Chinese word. With the index chosen by script, the
+        // candidate lookup only saw bigrams and found nothing to retire.
+        await store.WriteAsync(Rec(
+            "new",
+            "部署 stage the staging cluster with terraform and then restart the gateway daemon"));
+
+        var superseded = await store.GetAsync("old");
+        Assert.NotNull(superseded!.ValidTo);
+        Assert.Equal("new", superseded.SupersededBy);
+    }
+
+    [Fact]
     public async Task The_index_follows_a_revision()
     {
         await using var store = Open();

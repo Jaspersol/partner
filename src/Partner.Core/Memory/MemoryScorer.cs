@@ -107,15 +107,20 @@ public sealed class MemoryScorer : IMemoryScorer
         return (CosineSimilarity.Compute(queryEmbedding, candidateEmbedding) + 1.0) / 2.0;
     }
 
-    /// <summary>bm25 rank is lower-is-better; non-positive ranks mean "unused/no match" and score zero.</summary>
-    private static double ComputeFts(double ftsRank)
+    /// <summary>
+    /// bm25() is negative, and the more negative it is the better the match — so the component grows with the
+    /// rank's magnitude. A null rank means the row did not come from an index and scores zero; a zero rank is a
+    /// real match that happens to weigh nothing, which is why "unused" is not spelled as zero.
+    /// </summary>
+    private static double ComputeFts(double? ftsRank)
     {
-        if (!(ftsRank > 0.0))
+        if (ftsRank is not { } rank || double.IsNaN(rank))
         {
             return 0.0;
         }
 
-        return 1.0 / (1.0 + ftsRank);
+        var magnitude = Math.Abs(rank);
+        return magnitude / (1.0 + magnitude);
     }
 
     /// <summary>Exponential decay with the configured half-life; future timestamps do not decay.</summary>
