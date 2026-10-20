@@ -165,8 +165,10 @@ public sealed record DesktopObservation
     /// The value is excluded as before — typing into a field must not make the field look like a different one.
     /// </para>
     /// </summary>
-    public static string ElementIdentity(string windowId, string name, string role) =>
-        Hash($"{windowId}\u001f{name}\u001f{role}");
+    public static string ElementIdentity(string windowId, string name, string role, string? stable = null) =>
+        Hash(stable is null
+            ? $"{windowId}\u001f{name}\u001f{role}"
+            : $"{windowId}\u001f{name}\u001f{role}\u001f{stable}");
 
     private static string Hash(string payload)
     {

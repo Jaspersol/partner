@@ -35,6 +35,7 @@ public static class DesktopToolCatalog
         "desktop_observe",
         "desktop_screenshot",
         "desktop_act",
+        "desktop_window",
         "desktop_wait",
         "desktop_launch",
         "desktop_exec",

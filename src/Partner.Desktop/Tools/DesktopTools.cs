@@ -66,7 +66,9 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
           "all":{"type":"boolean","description":"读取所有窗口的控件（慢）；默认只读前台与刚操作过的窗口"},
           "maxElements":{"type":"integer","description":"每个窗口最多列出多少个控件，默认 40，上限 200；被截掉的数量在 elementsMore 里"},
           "roles":{"type":"array","items":{"type":"string"},"description":"只列这些类型的控件，如 [\"Button\",\"Edit\"]"},
-          "nameContains":{"type":"string","description":"只列名称包含这个文字的控件"}
+          "nameContains":{"type":"string","description":"只列名称包含这个文字的控件"},
+          "offset":{"type":"integer","description":"每个窗口跳过前多少个匹配的控件，用来翻页；上一次结果里的 nextOffset 就是下一页的起点"},
+          "compact":{"type":"boolean","description":"true 时不返回每个控件的 clickAt（按 elementId 操作不需要坐标），结果更短"}
         },"additionalProperties":false}
         """);
 
@@ -144,10 +146,15 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                 // A window that was not looked into says so, instead of looking like a window with no controls.
                 elementsOmitted = observation.WalkedWindows is { } walked && !walked.Contains(entity.EntityId) ? true : (bool?)null,
                 // How many matching controls the cap left out, so a short list is not mistaken for a whole one.
-                elementsMore = Matching(observation, entity.EntityId, filter).Count is var total && total > filter.Limit
-                    ? total - filter.Limit
+                elementsMore = Matching(observation, entity.EntityId, filter).Count is var total && total > filter.Skip + filter.Limit
+                    ? total - filter.Skip - filter.Limit
+                    : (int?)null,
+                // Where to continue: pass this as offset to read the next page of this window.
+                nextOffset = Matching(observation, entity.EntityId, filter).Count > filter.Skip + filter.Limit
+                    ? filter.Skip + filter.Limit
                     : (int?)null,
                 elements = Matching(observation, entity.EntityId, filter)
+                    .Skip(filter.Skip)
                     .Take(filter.Limit)
                     .Select(element => new
                     {
@@ -158,7 +165,8 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                         // Its click point is outside the window, so it is not somewhere to click yet — it is
                         // somewhere to scroll to first.
                         offscreen = element.IsOffscreen ? true : (bool?)null,
-                        clickAt = new { x = element.Centre.X, y = element.Centre.Y },
+                        // Omitted in compact mode: an action given the elementId works the click point out itself.
+                        clickAt = filter.Compact ? null : new { x = element.Centre.X, y = element.Centre.Y },
                     })
                     .ToList(),
             })
@@ -227,8 +235,13 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         bool All = false,
         int? MaxElements = null,
         IReadOnlyList<string>? Roles = null,
-        string? NameContains = null)
+        string? NameContains = null,
+        int? Offset = null,
+        bool Compact = false)
     {
+        /// <summary>How many matching controls to skip per window: the cursor for reading a long list in pages.</summary>
+        public int Skip => Math.Max(0, Offset ?? 0);
+
         /// <summary>The most controls listed per window unless asked for fewer or more.</summary>
         public const int DefaultMaxElements = 40;
 
@@ -291,7 +304,9 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                     arguments?.All ?? false,
                     arguments?.MaxElements,
                     arguments?.Roles,
-                    arguments?.NameContains);
+                    arguments?.NameContains,
+                    arguments?.Offset,
+                    arguments?.Compact ?? false);
             }
             catch (JsonException)
             {
@@ -306,7 +321,9 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         bool? All,
         int? MaxElements,
         List<string>? Roles,
-        string? NameContains);
+        string? NameContains,
+        int? Offset,
+        bool? Compact);
 }
 
 /// <summary>
@@ -357,6 +374,8 @@ public sealed class DesktopActTool(
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id；给了 elementId 或 x/y 时可省略"},
           "elementId":{"type":"string","description":"控件 id，来自 desktop_observe"},
+          "target":{"type":"object","properties":{"name":{"type":"string"},"role":{"type":"string"}},"description":"不给 elementId 时，按名字（和可选的类型）找控件；同名不止一个时会拒绝并列出候选，不会猜"},
+          "toElementId":{"type":"string","description":"拖拽终点控件 id（与 toX/toY 二选一）"},
           "kind":{"type":"string","enum":["Focus","MovePointer","LeftClick","RightClick","DoubleClick","KeyPress","TypeText","Scroll","ScrollIntoView","Drag"]},
           "x":{"type":"integer","description":"屏幕坐标 x"},
           "y":{"type":"integer","description":"屏幕坐标 y"},
@@ -393,6 +412,19 @@ public sealed class DesktopActTool(
         if (before is null)
         {
             return new ToolResult(false, "还没有观察过：先调用 desktop_observe");
+        }
+
+        // A control named instead of numbered. Exactly one match is the control; none or several is a refusal that
+        // says what there is, because guessing between two "确定" buttons is how the wrong one gets pressed.
+        if (arguments.ElementId is not { Length: > 0 } && arguments.Target is { } wanted)
+        {
+            var found = ResolveByName(before, arguments.EntityId, wanted);
+            if (found.Error is not null)
+            {
+                return new ToolResult(false, found.Error);
+            }
+
+            arguments = arguments with { ElementId = found.Element!.ElementId };
         }
 
         var seenElement = arguments.ElementId is { Length: > 0 } elementId ? before.FindElement(elementId) : null;
@@ -551,6 +583,13 @@ public sealed class DesktopActTool(
             snapped = seenElement is not null;
         }
 
+        // The tree may have shifted since the observation (a control inserted above it): the id then names some
+        // other control. The control itself is found again by what it is, and only when exactly one matches.
+        if (seenElement is not null)
+        {
+            seenElement = Reresolve(seenElement, fresh);
+        }
+
         if (seenElement is not null && RevalidateElement(seenElement, fresh) is { } staleElement)
         {
             return new ToolResult(false, staleElement);
@@ -576,6 +615,17 @@ public sealed class DesktopActTool(
         if (kind is ActionKind.Scroll && resolved is null)
         {
             resolved = (target.Rect.X + target.Rect.Width / 2, target.Rect.Y + target.Rect.Height / 2);
+        }
+
+        // A drag's end named as a control: its centre in the same fresh observation the start came from.
+        if (kind == ActionKind.Drag && arguments.ToElementId is { Length: > 0 } toId)
+        {
+            if (fresh.FindElement(toId) is not { } destination)
+            {
+                return new ToolResult(false, $"未知的终点控件 '{toId}'：先 desktop_observe");
+            }
+
+            arguments = arguments with { ToX = destination.Centre.X, ToY = destination.Centre.Y };
         }
 
         if (Guard(kind, target, resolved, arguments, automation.DeliversInBackground(entityId)) is { } blocked)
@@ -765,7 +815,31 @@ public sealed class DesktopActTool(
     }
 
     /// <summary>
-    /// The same check for a named control. Identity is name + role, not the rectangle: a layout shift moves a
+    /// The control the model meant, in the fresh observation. If the element id still names the same control it is
+    /// returned unchanged; if it now names a different one, the control with the same identity is looked up in the
+    /// same window and returned when there is exactly one. Otherwise the original comes back and the revalidation
+    /// refuses it, which is the right answer for a control that is gone or cannot be told from its twin.
+    /// </summary>
+    public static UiElement Reresolve(UiElement seen, DesktopObservation fresh)
+    {
+        ArgumentNullException.ThrowIfNull(seen);
+        ArgumentNullException.ThrowIfNull(fresh);
+
+        if (fresh.FindElement(seen.ElementId) is { } at && at.IdentityDigest == seen.IdentityDigest)
+        {
+            return seen;
+        }
+
+        var same = fresh.Elements
+            .Where(candidate => candidate.WindowId == seen.WindowId && candidate.IdentityDigest == seen.IdentityDigest)
+            .Take(2)
+            .ToList();
+
+        return same.Count == 1 ? same[0] : seen;
+    }
+
+    /// <summary>
+    /// The same check for a named control. Identity is name, role and what the control says it is (see ElementIdentity), not the rectangle: a layout shift moves a
     /// control without replacing it, and the click point is recomputed from the fresh rectangle anyway.
     /// </summary>
     public static string? RevalidateElement(UiElement seen, DesktopObservation fresh)
@@ -1041,6 +1115,45 @@ public sealed class DesktopActTool(
     }
 
     /// <summary>
+    /// The one control called <paramref name="wanted"/>, in <paramref name="entityId"/> (or anywhere when no window
+    /// was named). Name matching is exact first, containment second; a role narrows both.
+    /// </summary>
+    internal static (UiElement? Element, string? Error) ResolveByName(DesktopObservation observation, string? entityId, ElementTarget wanted)
+    {
+        if (wanted.Name is not { Length: > 0 } name)
+        {
+            return (null, "target 需要 name（控件的名字）");
+        }
+
+        bool Role(UiElement element) =>
+            wanted.Role is not { Length: > 0 } role || string.Equals(role, element.Role, StringComparison.OrdinalIgnoreCase);
+
+        var pool = observation.Elements
+            .Where(element => entityId is not { Length: > 0 } || element.WindowId == entityId)
+            .Where(Role)
+            .ToList();
+
+        var exact = pool.Where(element => string.Equals(element.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+        var matches = exact.Count > 0
+            ? exact
+            : pool.Where(element => (element.Name ?? string.Empty).Contains(name, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        if (matches.Count == 1)
+        {
+            return (matches[0], null);
+        }
+
+        if (matches.Count == 0)
+        {
+            return (null, $"没有叫 '{name}' 的控件" + (entityId is { Length: > 0 } ? $"（窗口 {entityId}）" : string.Empty)
+                + "：重新 desktop_observe 看现在有什么");
+        }
+
+        var listed = string.Join("；", matches.Take(6).Select(element => $"'{element.Name}' [{element.Role}] elementId {element.ElementId}"));
+        return (null, $"叫 '{name}' 的控件不止一个（共 {matches.Count} 个），按 elementId 指定：{listed}");
+    }
+
+    /// <summary>
     /// Whether this action's answer carries the post-action picture, and why not when it does not: a refusal
     /// injected nothing, so there is nothing new to see; kinds without a visual consequence walk the pointer
     /// or prepare an aim without changing anything; a caller who said off, or a model that cannot take
@@ -1134,5 +1247,10 @@ public sealed class DesktopActTool(
         int? Px = null,
         int? Py = null,
         string? MediaId = null,
-        string? Feedback = null);
+        string? Feedback = null,
+        string? ToElementId = null,
+        ElementTarget? Target = null);
+
+    /// <summary>A control named by what it is called rather than by an id: for a model that remembers a button's name better than its number.</summary>
+    public sealed record ElementTarget(string? Name, string? Role);
 }

@@ -73,6 +73,40 @@ public sealed class CdpDomSource
             '[contenteditable="true"]', '[role]', '[tabindex]:not([tabindex="-1"])'
           ].join(',');
 
+          // The places controls can live: the document, every open shadow root in it, and every same-origin
+          // frame, each with the offset that turns its own coordinates into the top viewport's. A cross-origin
+          // frame refuses to be read from here and is skipped, which is all a script can honestly do about it.
+          const contexts = [];
+          const visit = (root, win, ox, oy, depth) => {
+            if (depth > 5 || contexts.length >= 60) return;
+            contexts.push({ root, win, ox, oy });
+            let all;
+            try { all = root.querySelectorAll('*'); } catch (e) { return; }
+            for (const el of all) {
+              if (el.shadowRoot) visit(el.shadowRoot, win, ox, oy, depth + 1);
+              if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+                let doc = null;
+                try { doc = el.contentDocument; } catch (e) { doc = null; }
+                if (doc && doc.documentElement) {
+                  const r = el.getBoundingClientRect();
+                  const cs = win.getComputedStyle(el);
+                  visit(
+                    doc, el.contentWindow,
+                    ox + r.left + (parseFloat(cs.borderLeftWidth) || 0),
+                    oy + r.top + (parseFloat(cs.borderTopWidth) || 0),
+                    depth + 1);
+                }
+              }
+            }
+          };
+          visit(document, window, 0, 0, 0);
+
+          // Stamps from an earlier read are removed first: markers are numbered from zero each time, and a stale
+          // one left on an element that is no longer reported would answer a lookup for the new element's number.
+          for (const c of contexts) {
+            try { for (const old of c.root.querySelectorAll('[' + attr + ']')) old.removeAttribute(attr); } catch (e) {}
+          }
+
           const roleOf = (el) => {
             const explicit = (el.getAttribute('role') || '').toLowerCase();
             if (explicit) return explicit;
@@ -93,10 +127,10 @@ public sealed class CdpDomSource
           };
 
           // "generic" is what a div is to a browser and never what a person means by clickable.
-          const worth = (el) => {
+          const worth = (el, win) => {
             const role = roleOf(el);
             if (role === 'generic') return false;
-            const style = getComputedStyle(el);
+            const style = win.getComputedStyle(el);
             if (style.visibility === 'hidden' || style.display === 'none') return false;
             if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
             return true;
@@ -114,28 +148,34 @@ public sealed class CdpDomSource
 
           const found = [];
           const seen = new Set();
-          for (const el of document.querySelectorAll(selector)) {
-            if (seen.has(el)) continue;
-            if (!worth(el)) continue;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 2 || rect.height < 2) continue;
+          for (const c of contexts) {
+            let list;
+            try { list = c.root.querySelectorAll(selector); } catch (e) { continue; }
+            for (const el of list) {
+              if (seen.has(el)) continue;
+              if (!worth(el, c.win)) continue;
+              const rect = el.getBoundingClientRect();
+              if (rect.width < 2 || rect.height < 2) continue;
 
-            // Stamped before it is reported, so the id in the answer and the node clicked later are one node.
-            el.setAttribute(attr, String(found.length));
-            seen.add(el);
+              // Stamped before it is reported, so the id in the answer and the node clicked later are one node.
+              el.setAttribute(attr, String(found.length));
+              seen.add(el);
 
-            found.push({
-              marker: String(found.length),
-              name: nameOf(el),
-              role: roleOf(el),
-              x: rect.left + window.scrollX,
-              y: rect.top + window.scrollY,
-              width: rect.width,
-              height: rect.height,
-              value: typeof el.value === 'string' ? el.value.slice(0, 200) : null,
-              offscreen: rect.bottom < 0 || rect.right < 0
-                || rect.top > window.innerHeight || rect.left > window.innerWidth
-            });
+              const left = c.ox + rect.left;
+              const top = c.oy + rect.top;
+              found.push({
+                marker: String(found.length),
+                name: nameOf(el),
+                role: roleOf(el),
+                x: left + window.scrollX,
+                y: top + window.scrollY,
+                width: rect.width,
+                height: rect.height,
+                value: typeof el.value === 'string' ? el.value.slice(0, 200) : null,
+                offscreen: top + rect.height < 0 || left + rect.width < 0
+                  || top > window.innerHeight || left > window.innerWidth
+              });
+            }
           }
 
           return {
@@ -159,7 +199,35 @@ public sealed class CdpDomSource
     /// </summary>
     internal const string ActScript = """
         (() => {
-          const el = document.querySelector('[data-partner-cdp="%MARKER%"]');
+          const attr = 'data-partner-cdp';
+          const marker = '%MARKER%';
+
+          // The marker may sit in a shadow root or a same-origin frame, where document.querySelector cannot see.
+          const find = (root, depth) => {
+            if (depth > 5) return null;
+            let hit = null;
+            try { hit = root.querySelector('[' + attr + '="' + marker + '"]'); } catch (e) {}
+            if (hit) return hit;
+            let all;
+            try { all = root.querySelectorAll('*'); } catch (e) { return null; }
+            for (const el of all) {
+              if (el.shadowRoot) {
+                hit = find(el.shadowRoot, depth + 1);
+                if (hit) return hit;
+              }
+              if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+                let doc = null;
+                try { doc = el.contentDocument; } catch (e) { doc = null; }
+                if (doc) {
+                  hit = find(doc, depth + 1);
+                  if (hit) return hit;
+                }
+              }
+            }
+            return null;
+          };
+
+          const el = find(document, 0);
           if (!el) return { ok: false, detail: '这个元素已经不在页面上了（重新 desktop_observe）' };
           if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
             return { ok: false, detail: '该元素当前不可用（disabled）' };
@@ -521,6 +589,41 @@ public sealed class CdpDomSource
             : SendInputAsync(port, windowTitle, commands, "cdp.key", $"已按键{Quiet}", ct);
     }
 
+    /// <summary>
+    /// The page of the tab a window shows, rendered by the browser. Works for a window that is behind others,
+    /// minimized, or whose content the window system cannot capture (a GPU-composited surface prints as flat grey).
+    /// Null when there is no page, no port, or the browser declined.
+    /// </summary>
+    public async Task<byte[]?> ScreenshotAsync(int port, string? windowTitle = null, CancellationToken ct = default)
+    {
+        try
+        {
+            var connection = await ConnectionAsync(port, windowTitle, ct).ConfigureAwait(false);
+            if (connection is null)
+            {
+                return null;
+            }
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+
+            var png = await connection.CaptureScreenshotAsync(timeout.Token).ConfigureAwait(false);
+            if (png is null)
+            {
+                ForgetPages(port);
+            }
+
+            return png;
+        }
+        catch (Exception error) when (
+            error is WebSocketException or OperationCanceledException or UriFormatException
+                or InvalidOperationException or ObjectDisposedException)
+        {
+            ForgetPages(port);
+            return null;
+        }
+    }
+
     /// <summary>Types text into whatever the page has focused.</summary>
     public Task<UiaInvocation?> TypeAsync(int port, string? windowTitle, string text, CancellationToken ct = default) =>
         SendInputAsync(port, windowTitle, CdpInput.TextCommands(text), "cdp.type", $"已输入 {text.Length} 个字符{Quiet}", ct);
@@ -773,6 +876,40 @@ public sealed class CdpDomSource
             }
         }
 
+        /// <summary>The page as the browser renders it, as PNG bytes, or null when the browser would not.</summary>
+        public async Task<byte[]?> CaptureScreenshotAsync(CancellationToken ct)
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+
+            try
+            {
+                var reply = await RoundTripAsync(
+                    "Page.captureScreenshot",
+                    new { format = "png", fromSurface = true, captureBeyondViewport = false },
+                    ct).ConfigureAwait(false);
+
+                if (reply is null || ErrorOf(reply) is not null)
+                {
+                    return null;
+                }
+
+                using var document = JsonDocument.Parse(reply);
+                return document.RootElement.TryGetProperty("result", out var result)
+                    && result.TryGetProperty("data", out var data)
+                    && data.GetString() is { Length: > 0 } base64
+                        ? Convert.FromBase64String(base64)
+                        : null;
+            }
+            catch (Exception error) when (error is WebSocketException or JsonException or FormatException)
+            {
+                return null;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
         /// <summary>Whether the page has been told to behave as the focused one. Per connection: it dies with the socket.</summary>
         private bool _focusEmulated;
 
@@ -850,14 +987,16 @@ public sealed class CdpDomSource
                 .SendAsync(Encoding.UTF8.GetBytes(request), WebSocketMessageType.Text, true, ct)
                 .ConfigureAwait(false);
 
-            var buffer = new byte[64 * 1024];
+            var buffer = new byte[256 * 1024];
             var message = new StringBuilder();
 
             // A websocket *message* is one protocol message, and that is the framing that matters here: two
             // replies read into one string are not parseable as a single document, so a buffer that kept
             // accumulating them would fail every read after the first — which is exactly a walk followed by
             // a press, the sequence this whole mechanism exists for.
-            for (var received = 0; received < 64; received++)
+            // A screenshot is megabytes of base64 in one message, which is dozens of frames; the bound is on frames,
+            // and has to leave room for that.
+            for (var received = 0; received < 4096; received++)
             {
                 var result = await _socket.ReceiveAsync(buffer, ct).ConfigureAwait(false);
 

@@ -89,4 +89,45 @@ public sealed class ObserveVolumeTests
             answer.GetProperty("entities").EnumerateArray(),
             window => Assert.Equal(DesktopObserveTool.DesktopObserveFilter.DefaultMaxElements, window.GetProperty("elements").GetArrayLength()));
     }
+
+    [Fact]
+    public async Task A_long_list_is_read_in_pages_by_following_next_offset()
+    {
+        using var automation = Crowded();
+
+        var first = await ObserveAsync(automation, """{"all":true,"maxElements":25}""");
+        var window = first.GetProperty("entities")[0];
+        Assert.Equal(25, window.GetProperty("nextOffset").GetInt32());
+        Assert.Equal(35, window.GetProperty("elementsMore").GetInt32());
+
+        var second = await ObserveAsync(
+            automation, $$"""{"all":true,"maxElements":25,"offset":{{window.GetProperty("nextOffset").GetInt32()}}}""");
+        var page = second.GetProperty("entities")[0];
+        Assert.Equal(25, page.GetProperty("elements").GetArrayLength());
+        Assert.Equal(50, page.GetProperty("nextOffset").GetInt32());
+
+        var last = await ObserveAsync(automation, """{"all":true,"maxElements":25,"offset":50}""");
+        var tail = last.GetProperty("entities")[0];
+        Assert.Equal(10, tail.GetProperty("elements").GetArrayLength());
+        Assert.False(tail.TryGetProperty("nextOffset", out _), "the last page has nowhere further to go");
+
+        // Pages do not overlap: the first control of page two is not the last of page one.
+        Assert.NotEqual(
+            window.GetProperty("elements")[24].GetProperty("elementId").GetString(),
+            page.GetProperty("elements")[0].GetProperty("elementId").GetString());
+    }
+
+    [Fact]
+    public async Task Compact_mode_leaves_out_the_click_points()
+    {
+        using var automation = Crowded();
+
+        var compact = await ObserveAsync(automation, """{"all":true,"compact":true,"maxElements":5}""");
+        var normal = await ObserveAsync(automation, """{"all":true,"maxElements":5}""");
+
+        Assert.All(
+            compact.GetProperty("entities")[0].GetProperty("elements").EnumerateArray(),
+            element => Assert.False(element.TryGetProperty("clickAt", out _)));
+        Assert.True(normal.GetProperty("entities")[0].GetProperty("elements")[0].TryGetProperty("clickAt", out _));
+    }
 }

@@ -364,6 +364,8 @@ public sealed class DesktopActGuardTests
         Assert.Contains("desktop_act", DesktopToolCatalog.All);
         Assert.Contains("desktop_wait", DesktopToolCatalog.All);
         Assert.Contains("desktop_exec", DesktopToolCatalog.All);
-        Assert.Equal(8, DesktopToolCatalog.All.Count);
+        Assert.Contains("desktop_window", DesktopToolCatalog.All);
+        Assert.False(DesktopToolCatalog.IsDangerous("desktop_window"));
+        Assert.Equal(9, DesktopToolCatalog.All.Count);
     }
 }

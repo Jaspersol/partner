@@ -167,7 +167,16 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>The mode in force now.</summary>
     public InputMode Mode => _inputMode();
-    private readonly List<double> _actionLatenciesMs = new();
+    /// <summary>
+    /// The latest action latencies, newest overwriting oldest. Unbounded it grew for the life of the process, and
+    /// parallel actions appended to a plain list at the same time.
+    /// </summary>
+    private readonly double[] _actionLatenciesMs = new double[LatencySamples];
+
+    private const int LatencySamples = 512;
+    private readonly object _latencyGate = new();
+    private int _latencyCount;
+    private int _latencyNext;
 
     /// <summary>
     /// The last walk of each window: its numbered elements and the live controls behind them.
@@ -220,6 +229,7 @@ public sealed class DesktopAutomation : IDisposable
     };
 
     private volatile DesktopObservation? _lastObservation;
+    private readonly object _domGate = new();
     private int _observationSequence;
 
     public DesktopAutomation(
@@ -276,6 +286,23 @@ public sealed class DesktopAutomation : IDisposable
 
         _cdp = cdp;
         _cdpPorts = cdpPorts;
+
+        // A window with a debug port can be photographed by its browser when the window system only sees grey. Only
+        // the default capture is wrapped: a caller who supplied its own (a test double) gets exactly that.
+        if (capture is null && cdp is not null && cdpPorts is not null)
+        {
+            _capture = new CdpAssistedCapture(
+                _capture,
+                handle =>
+                {
+                    NativeMethods.GetWindowThreadProcessId(handle, out var pid);
+                    return pid == 0 ? null : cdpPorts.PortOf((int)pid);
+                },
+                (port, title, token) => cdp.ScreenshotAsync(port, title, token),
+                _clientRect,
+                handle => _lastObservation?.Find(handle.ToString("x"))?.Label);
+            _verifier = new PostActionVerifier(_capture, verifyBudget);
+        }
         _launch = desktopLaunch;
 
         // The page reports viewport coordinates; the client area's screen origin is the only thing that turns
@@ -428,6 +455,20 @@ public sealed class DesktopAutomation : IDisposable
         }
 
         return Observe(elementsFor: entityId);
+    }
+
+    /// <summary>
+    /// Reads one window's controls and nothing else: no window listing, no new generation, no leases. For a caller
+    /// that is only waiting to see whether something has appeared — it would otherwise re-enumerate the desktop and
+    /// re-issue every lease several times a second. Numbered by the same walk an observation uses, so an id found
+    /// here is the id that observation would give.
+    /// </summary>
+    public IReadOnlyList<UiElement> ProbeElements(string entityId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityId);
+
+        var (elements, _, _) = _walk(ParseHandle(entityId), entityId);
+        return elements;
     }
 
     /// <summary>Observes the current windows and issues a fresh generation.</summary>
@@ -692,9 +733,24 @@ public sealed class DesktopAutomation : IDisposable
         // "校验：画面无变化" on actions that never promised a visual effect — and a real session read that
         // sentence as its click having failed.
         var verifiesAfterwards = NeedsVerification(kind);
-        var before = verifiesAfterwards
+
+        // A control that reports its own state (checked, selected, expanded, its value) is verified by asking it,
+        // which is exact where a pixel diff over a small control is not, and needs no before-frame at all, so a
+        // whole window capture is saved too. Only for the two kinds a pattern carries.
+        (System.Windows.Automation.AutomationElement Node, string State)? watched = null;
+        if (verifiesAfterwards
+            && kind is ActionKind.LeftClick or ActionKind.TypeText
+            && parameters.ElementId is { Length: > 0 } watchedId
+            && WalkOf(entityId) is { } walked
+            && UiaTree.NodeOf(entityId, watchedId, walked) is { } watchedNode
+            && UiaState.Read(watchedNode) is { } watchedState)
+        {
+            watched = (watchedNode, watchedState);
+        }
+
+        var before = verifiesAfterwards && watched is null
             ? await _capture.CaptureWindowAsync(handle, ct).ConfigureAwait(false)
-            : CaptureResult.Failed("skipped", "aim-only kind does not need a before-frame");
+            : CaptureResult.Failed("skipped", watched is null ? "aim-only kind does not need a before-frame" : "verified by control state");
 
         // A control the model named is acted on through UI Automation when the control supports a pattern for
         // it: that reaches the control itself, needs no foreground window, and does not depend on its screen
@@ -766,13 +822,28 @@ public sealed class DesktopAutomation : IDisposable
             injection = Inject(kind, handle, parameters);
         }
 
-        var verify = verifiesAfterwards
-            ? await VerifyAsync(handle, injection, parameters, before, observation, ct)
-                .ConfigureAwait(false)
-            : null;
+        VerifyResult? verify;
+        if (!verifiesAfterwards)
+        {
+            verify = null;
+        }
+        else if (watched is { } control)
+        {
+            verify = await VerifyByStateAsync(control.Node, control.State, injection, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            verify = await VerifyAsync(handle, injection, parameters, before, observation, ct).ConfigureAwait(false);
+        }
 
         watch.Stop();
-        _actionLatenciesMs.Add(watch.Elapsed.TotalMilliseconds);
+        lock (_latencyGate)
+        {
+            _actionLatenciesMs[_latencyNext] = watch.Elapsed.TotalMilliseconds;
+            _latencyNext = (_latencyNext + 1) % LatencySamples;
+            _latencyCount = Math.Min(_latencyCount + 1, LatencySamples);
+        }
+        Partner.Core.Diagnostics.LatencyTracker.Record("desktop_act", watch.Elapsed);
 
         return new DesktopAction
         {
@@ -828,6 +899,39 @@ public sealed class DesktopAutomation : IDisposable
     }
 
     /// <summary>
+    /// Verifies by the control's own state. Changed is a fact, not a guess; unchanged is also a fact. If the click
+    /// did not go through a pattern at all there is no before-frame to fall back on, which is said plainly rather
+    /// than read as "nothing happened".
+    /// </summary>
+    internal static async Task<VerifyResult> VerifyByStateAsync(
+        System.Windows.Automation.AutomationElement node,
+        string before,
+        InjectionResult injection,
+        CancellationToken ct)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        if (!injection.Detail.StartsWith("uia.", StringComparison.Ordinal))
+        {
+            return VerifyResult.Indeterminate(
+                "动作没有走控件模式，而这个控件靠状态校验、没有动作前画面可比：请再 desktop_observe 看控件状态",
+                watch.Elapsed.TotalMilliseconds,
+                "uia.state");
+        }
+
+        var (changed, after) = await UiaState
+            .WaitForChangeAsync(() => UiaState.Read(node), before, attempts: 5, TimeSpan.FromMilliseconds(80), ct)
+            .ConfigureAwait(false);
+
+        watch.Stop();
+        return changed
+            ? new VerifyResult(VerifyDecision.AnyChange, 1.0, "uia.state", $"控件状态 {before} → {after}", watch.Elapsed.TotalMilliseconds)
+            : after is null
+                ? VerifyResult.Indeterminate("控件已不在或读不到状态", watch.Elapsed.TotalMilliseconds, "uia.state")
+                : new VerifyResult(VerifyDecision.NoChange, 0, "uia.state", $"控件状态没有变化：{before}", watch.Elapsed.TotalMilliseconds);
+    }
+
+    /// <summary>
     /// Whether the region's pixels can be copied off the screen instead of re-rendering the whole window.
     /// <para>
     /// Only when the target is the foreground window. A screen BitBlt copies whatever is actually at those
@@ -878,7 +982,10 @@ public sealed class DesktopAutomation : IDisposable
         CancellationToken ct = default,
         IReadOnlySet<string>? onlyWindows = null)
     {
-        if (_cdp is null || _cdpPorts is null || _lastObservation is null)
+        // The observation this call was asked about, held for the whole call. Re-reading the field after each await
+        // would let a newer observation (another tool call is allowed to observe meanwhile) receive this one's controls.
+        var observation = _lastObservation;
+        if (_cdp is null || _cdpPorts is null || observation is null)
         {
             return 0;
         }
@@ -886,7 +993,7 @@ public sealed class DesktopAutomation : IDisposable
         var added = 0;
         var claimed = new HashSet<int>();
 
-        foreach (var entity in _lastObservation.Entities)
+        foreach (var entity in observation.Entities)
         {
             if (entityId is not null && !string.Equals(entityId, entity.EntityId, StringComparison.Ordinal))
             {
@@ -907,7 +1014,10 @@ public sealed class DesktopAutomation : IDisposable
                 continue;
             }
 
-            var port = _cdpPorts.PortOf(entity.ProcessId);
+            // A port this agent opened, or failing that one the person opened on a Chromium-family window (found from
+            // the system's listener table, at most once in a while per process).
+            var port = _cdpPorts.PortOf(entity.ProcessId)
+                ?? await _cdpPorts.DiscoverAsync(entity.ProcessId, entity.Value, ct).ConfigureAwait(false);
             if (port is not { } debugPort)
             {
                 continue;
@@ -941,10 +1051,21 @@ public sealed class DesktopAutomation : IDisposable
 
             // Only this window's own DOM elements are replaced: a fresh UI Automation walk already cleared
             // them, and adding again has to leave exactly one copy rather than accumulate.
-            _lastObservation.Elements = _lastObservation.Elements
-                .Where(existing => !IsDomElementOf(existing, entity.EntityId))
-                .Concat(elements)
-                .ToList();
+            // Read-modify-write under a lock: two page reads finishing together would each start from the same
+            // list and one of them would lose its controls. And only while this is still the current observation —
+            // one that has been replaced is somebody else\x27s past, and adding to it is wasted at best.
+            lock (_domGate)
+            {
+                if (!ReferenceEquals(_lastObservation, observation))
+                {
+                    break;
+                }
+
+                observation.Elements = observation.Elements
+                    .Where(existing => !IsDomElementOf(existing, entity.EntityId))
+                    .Concat(elements)
+                    .ToList();
+            }
 
             added += elements.Count;
         }
@@ -1379,12 +1500,17 @@ public sealed class DesktopAutomation : IDisposable
     /// <summary>Action latency statistics (design doc: latency must be measured, never assumed).</summary>
     public DesktopLatency Latency()
     {
-        if (_actionLatenciesMs.Count == 0)
+        List<double> sorted;
+        lock (_latencyGate)
         {
-            return new DesktopLatency(0, 0, 0);
+            if (_latencyCount == 0)
+            {
+                return new DesktopLatency(0, 0, 0);
+            }
+
+            sorted = _actionLatenciesMs.Take(_latencyCount).OrderBy(v => v).ToList();
         }
 
-        var sorted = _actionLatenciesMs.OrderBy(v => v).ToList();
         return new DesktopLatency(
             sorted[sorted.Count / 2],
             sorted[(int)Math.Ceiling(sorted.Count * 0.99) - 1],

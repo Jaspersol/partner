@@ -462,6 +462,31 @@ public static class UiaTree
         }
     }
 
+    /// <summary>
+    /// What distinguishes this control from every other one of the same name and kind: its automation id, its class
+    /// and its runtime id. The runtime id is unique among live controls and lasts as long as the control does, which
+    /// is exactly the span between an observation and the action on it. Null when none of them can be read.
+    /// </summary>
+    private static string? StableKey(AutomationElement node, AutomationElement.AutomationElementInformation current)
+    {
+        string runtime;
+        try
+        {
+            runtime = string.Join('.', node.GetRuntimeId());
+        }
+        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
+        {
+            runtime = string.Empty;
+        }
+
+        var automationId = current.AutomationId ?? string.Empty;
+        var className = current.ClassName ?? string.Empty;
+
+        return automationId.Length == 0 && className.Length == 0 && runtime.Length == 0
+            ? null
+            : $"{automationId}|{className}|{runtime}";
+    }
+
     /// <summary>The element as the model sees it, or null when it is not something to act on.</summary>
     private static UiElement? Describe(AutomationElement node, string windowId)
     {
@@ -514,9 +539,19 @@ public static class UiaTree
             Name: name,
             Role: role,
             Rect: rect,
-            IdentityDigest: DesktopObservation.ElementIdentity(windowId, name, role),
+            IdentityDigest: DesktopObservation.ElementIdentity(windowId, name, role, StableKey(node, current)),
             Value: ReadValue(node, role),
             IsOffscreen: current.IsOffscreen);
+    }
+
+    /// <summary>The live control behind an element id, when the walk that numbered it is still the one in hand.</summary>
+    public static AutomationElement? NodeOf(
+        string windowId,
+        string elementId,
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes) known)
+    {
+        var index = ParseIndex(windowId, elementId);
+        return index >= 0 && index < known.Nodes.Count ? known.Nodes[index] : null;
     }
 
     /// <summary>Index of an element id inside its window's element list, or -1 when it is not one.</summary>

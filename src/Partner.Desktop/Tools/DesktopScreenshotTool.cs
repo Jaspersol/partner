@@ -59,6 +59,7 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
           "entityId":{"type":"string","description":"窗口 id，来自 desktop_observe；省略则截前台窗口"},
           "scope":{"type":"string","enum":["window","desktop"],"default":"window","description":"desktop = 截**整个虚拟桌面**（任务栏、托盘、通知、桌面图标这些不属于任何顶层窗口的东西）。带窗口编号标记：图上的数字对应结果里的 entityId，可直接给 desktop_act；不需要先 desktop_observe"},
           "maxDimension":{"type":"integer","description":"最长边像素上限，默认 1280"},
+          "format":{"type":"string","enum":["png","jpeg"],"description":"图片编码：png（默认，无损）或 jpeg（有损，体积小得多，省 token 和上传时间；网格和标记依然看得清）"},
           "marks":{"type":"boolean","description":"是否叠网格与控件标记，默认 true；只有想看不带标注的原图时才设 false"},
           "zoomAt":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"description":"放大复查：屏幕上的一个粗略点位（从整窗网格读出）。返回以它为中心的一小片原图（约 192×192 屏幕 px，放大 3 倍显示，网格 20 px 一格），图上刻度仍是屏幕坐标，另带 mediaId 供 desktop_act 用 px/py 精确点击"}
         },"additionalProperties":false}
@@ -165,12 +166,28 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
             return new ToolResult(false, $"编码截图失败：{error.Message}");
         }
 
+        // JPEG when asked: a picture with grid lines and number marks survives the loss, and is a fraction of the
+        // size — which is what the model pays for in tokens and the upload in time.
+        var contentType = "image/png";
+        if (string.Equals(arguments.Format, "jpeg", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                png = RecodeAsJpeg(png);
+                contentType = "image/jpeg";
+            }
+            catch (Exception error) when (error is IOException or NotSupportedException or InvalidOperationException)
+            {
+                // Falls back to the PNG it already has: a bigger picture is better than none.
+            }
+        }
+
         // Stored like any other attachment, so the log keeps an id and the bytes live in the media directory.
         string mediaId;
         try
         {
             using var stream = new MemoryStream(png);
-            mediaId = await media.SaveAsync("image/png", stream, ct).ConfigureAwait(false);
+            mediaId = await media.SaveAsync(contentType, stream, ct).ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -686,10 +703,30 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     }
 
     /// <summary>The window handle behind an entity id, which the observation wrote as hex.</summary>
+    /// <summary>The same picture as a JPEG (quality 82).</summary>
+    internal static byte[] RecodeAsJpeg(byte[] png)
+    {
+        using var input = new MemoryStream(png);
+        var decoder = new PngBitmapDecoder(input, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+
+        var encoder = new JpegBitmapEncoder { QualityLevel = 82 };
+        encoder.Frames.Add(BitmapFrame.Create(decoder.Frames[0]));
+
+        using var output = new MemoryStream();
+        encoder.Save(output);
+        return output.ToArray();
+    }
+
     private static nint ParseHandle(string entityId) =>
         nint.Parse(entityId, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
 
-    private sealed record ScreenshotArguments(string? EntityId, int? MaxDimension, bool? Marks, ZoomAt? ZoomAt, string? Scope = null);
+    private sealed record ScreenshotArguments(
+        string? EntityId,
+        int? MaxDimension,
+        bool? Marks,
+        ZoomAt? ZoomAt,
+        string? Scope = null,
+        string? Format = null);
 
     public sealed record ZoomAt(int X, int Y);
 }

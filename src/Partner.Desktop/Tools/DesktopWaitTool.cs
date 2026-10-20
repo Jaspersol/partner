@@ -96,8 +96,32 @@ public sealed class DesktopWaitTool(DesktopAutomation automation) : ITool
 
         var startActivity = Environment.TickCount64;
         var deadline = startActivity + (long)timeout.TotalMilliseconds;
+        var pause = ElementPollInterval;
         while (true)
         {
+            // Polling only reads the one window's tree. The full observation (window list, a new generation, leases)
+            // is made once, when the control has shown up or the time is up.
+            bool appeared;
+            try
+            {
+                appeared = automation.ProbeElements(entityId).Any(candidate => candidate.ElementId == elementId);
+            }
+            catch (Exception error)
+            {
+                return new ToolResult(false, $"重新观察失败：{error.Message}");
+            }
+
+            var due = Environment.TickCount64 >= deadline;
+            if (!appeared && !due)
+            {
+                await Task.Delay(pause, ct).ConfigureAwait(false);
+
+                // Backing off: a control that has not appeared after a second is not about to appear in the next
+                // 250 ms, and each probe is a walk of a window's whole tree.
+                pause = TimeSpan.FromMilliseconds(Math.Min(pause.TotalMilliseconds * 2, 1000));
+                continue;
+            }
+
             DesktopObservation fresh;
             try
             {
@@ -126,7 +150,8 @@ public sealed class DesktopWaitTool(DesktopAutomation automation) : ITool
                     + "不是还没渲染，就是要等的 id 属于上一轮观察（id 是每次观察的新编号，重新 desktop_observe 拿新的）。");
             }
 
-            await Task.Delay(ElementPollInterval, ct).ConfigureAwait(false);
+            // It showed up in the probe but not in the observation (the window changed in between): look again.
+            await Task.Delay(pause, ct).ConfigureAwait(false);
         }
     }
 

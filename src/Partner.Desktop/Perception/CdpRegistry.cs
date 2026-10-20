@@ -49,11 +49,106 @@ public sealed class CdpRegistry
     /// <summary>Shared by every poll: a client per probe is a socket per probe, up to thirty of them per launch.</summary>
     private static readonly System.Net.Http.HttpClient Probe = new() { Timeout = TimeSpan.FromMilliseconds(500) };
 
+    private readonly ConcurrentDictionary<int, long> _discoveryTried = new();
+
+    /// <summary>How long a process that had no debug port is left alone before it is looked at again.</summary>
+    internal const long DiscoveryRetryMs = 30_000;
+
+    /// <summary>
+    /// Finds a debug port the <i>user</i> opened: a Chromium-family process started with
+    /// <c>--remote-debugging-port</c> by hand or by a shortcut. Its listening loopback ports are read from the
+    /// system's TCP table and each is asked for <c>/json/version</c>; one that answers like DevTools is recorded.
+    /// <para>
+    /// Not a way to reach a browser that was not opened for it — a process with no such port stays out of
+    /// reach — and a process that was looked at and had none is not looked at again for
+    /// <see cref="DiscoveryRetryMs"/>, so this costs nothing on the common path.
+    /// </para>
+    /// </summary>
+    public async Task<int?> DiscoverAsync(int processId, string? executableName, CancellationToken ct = default)
+    {
+        if (PortOf(processId) is { } known)
+        {
+            return known;
+        }
+
+        if (!IsChromiumFamily(executableName))
+        {
+            return null;
+        }
+
+        var now = Environment.TickCount64;
+        if (_discoveryTried.TryGetValue(processId, out var last) && now - last < DiscoveryRetryMs)
+        {
+            return null;
+        }
+
+        _discoveryTried[processId] = now;
+
+        foreach (var port in TcpListeners.LoopbackPortsOf(processId))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var response = await Probe.GetAsync($"http://127.0.0.1:{port}/json/version", ct).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    continue;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                if (!body.Contains("webSocketDebuggerUrl", StringComparison.Ordinal) && !body.Contains("Browser", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                Register(processId, port);
+                return port;
+            }
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+            {
+                // Not a DevTools endpoint (or not answering): the next listener.
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Records the port a launched process opened.</summary>
     public void Register(int processId, int port) => _ports[processId] = port;
 
-    /// <summary>The port a process opened, when it is one this agent started.</summary>
-    public int? PortOf(int processId) => _ports.TryGetValue(processId, out var port) ? port : null;
+    /// <summary>
+    /// The port a process opened, when this agent knows one. A process that has exited takes its entry with it:
+    /// the table used to keep every port it had ever been told about, and a recycled pid would inherit a dead port.
+    /// </summary>
+    public int? PortOf(int processId)
+    {
+        if (!_ports.TryGetValue(processId, out var port))
+        {
+            return null;
+        }
+
+        if (!IsAlive(processId))
+        {
+            Forget(processId);
+            return null;
+        }
+
+        return port;
+    }
+
+    private static bool IsAlive(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Drops a process that is gone, so the map does not outlive what it describes.</summary>
     public void Forget(int processId) => _ports.TryRemove(processId, out _);
@@ -91,17 +186,16 @@ public sealed class CdpRegistry
                 return false;
             }
 
-            if (Process.GetProcessById(processId).HasExited)
-            {
-                return false;
-            }
-
+            // The process that was started may be gone already and that is not a failure: a Chromium launcher
+            // that hands its window to the real browser process exits at once. What counts is whether the port
+            // answers, and who owns it.
             try
             {
-                using var response = await Probe.GetAsync($"http://127.0.0.1:{port}/json/version").ConfigureAwait(false);
+                using var response = await Probe.GetAsync($"http://127.0.0.1:{port}/json/version", ct).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
-                    Register(processId, port);
+                    // Windows belong to the process that listens, which may not be the one that was launched.
+                    Register(TcpListeners.OwnerOf(port) ?? processId, port);
                     return true;
                 }
             }

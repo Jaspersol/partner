@@ -174,6 +174,11 @@ public sealed class DesktopBackgroundLiveTests
 
             var target = (X: frame.ScreenRect!.X + button!.Value.X, Y: frame.ScreenRect.Y + button.Value.Y);
 
+            Assert.True(
+                ports.PortOf(window.ProcessId) is not null,
+                $"the window's process {window.ProcessId} has no registered port; the port's owner is {TcpListeners.OwnerOf(port)}, "
+                + $"the launched pid was {processId}");
+
             var click = await ActAsync(ActionKind.LeftClick, new ActionParams { X = target.X, Y = target.Y });
             Assert.True(click.GuardPassed, click.GuardReason);
             Assert.True(click.Injection!.Ok, click.Injection.Detail);
@@ -242,11 +247,14 @@ public sealed class DesktopBackgroundLiveTests
         }
         finally
         {
-            if (processId != 0)
+            // The launched process may be a launcher that handed over and exited; the browser that has to go is the
+            // one listening on the port. Left running, it keeps a window with this test's title on the desktop for
+            // the next run to find first.
+            foreach (var pid in new[] { processId, TcpListeners.OwnerOf(port) ?? 0 }.Where(pid => pid != 0).Distinct())
             {
                 try
                 {
-                    Process.GetProcessById(processId).Kill(entireProcessTree: true);
+                    Process.GetProcessById(pid).Kill(entireProcessTree: true);
                 }
                 catch (Exception error) when (error is ArgumentException or InvalidOperationException)
                 {

@@ -287,10 +287,13 @@ public sealed class CdpRegistryTests
     {
         var registry = new CdpRegistry();
 
-        Assert.Null(registry.PortOf(42));
-        registry.Register(42, 9222);
-        Assert.Equal(9222, registry.PortOf(42));
-        Assert.Null(registry.PortOf(43));
+        // Real pids: an entry for a process that does not exist is dropped on read, by design.
+        var mine = Environment.ProcessId;
+
+        Assert.Null(registry.PortOf(mine));
+        registry.Register(mine, 9222);
+        Assert.Equal(9222, registry.PortOf(mine));
+        Assert.Null(registry.PortOf(mine + 100_000));
     }
 
     [Fact]
