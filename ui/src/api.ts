@@ -769,6 +769,38 @@ export class ApiError extends Error {
   }
 }
 
+/** How a timed task decides when to fire. */
+export type ScheduleKind = 'cron' | 'interval' | 'once'
+
+/** A timed task as the server keeps it. `inactive` is both "paused" and "a one-off that already ran". */
+export interface ScheduleTaskView {
+  id: string
+  kind: ScheduleKind | 'unknown'
+  /** A short machine-ish description of the rule, for a row that has no better words. */
+  describe: string
+  cron: string | null
+  intervalMinutes: number | null
+  at: string | null
+  /** What is sent to the assistant when the task fires. */
+  payload: string
+  status: 'active' | 'inactive' | 'failed'
+  /** Null when there is no upcoming run (paused, or a one-off that already ran). */
+  nextAt: string | null
+  lastAt: string | null
+  attempt: number
+  lastError: string | null
+}
+
+/** What creating a task takes: the rule's field depends on `kind`, the others are ignored. */
+export interface ScheduleInput {
+  kind: ScheduleKind
+  cron?: string
+  intervalMinutes?: number
+  /** ISO 8601 with an offset; a one-off in the past is refused. */
+  at?: string
+  payload: string
+}
+
 export interface ApiOptions {
   port: number
   token: string
@@ -850,6 +882,14 @@ export interface PartnerApiSurface {
   agentJobs(): Promise<AgentJobView[]>
   /** Stops a running job. False when it already finished — nothing to cancel, not an error. */
   cancelAgentJob(jobId: string): Promise<boolean>
+  /** Every timed task, soonest first. */
+  schedules(): Promise<ScheduleTaskView[]>
+  /** Rejects with an `ApiError` carrying the server's reason when the rule or the message is not acceptable. */
+  createSchedule(input: ScheduleInput): Promise<ScheduleTaskView>
+  pauseSchedule(id: string): Promise<ScheduleTaskView>
+  resumeSchedule(id: string): Promise<ScheduleTaskView>
+  /** False when the task was already gone — nothing to delete, not an error. */
+  deleteSchedule(id: string): Promise<boolean>
   testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult>
   approvals(): Promise<ApprovalQueue>
   answerApproval(approvalId: string, approved: boolean): Promise<void>
@@ -1137,6 +1177,37 @@ export class PartnerApi implements PartnerApiSurface {
   /** 404 means the job is already over: the same rule the queue's cancel follows. */
   async cancelAgentJob(jobId: string): Promise<boolean> {
     const response = await this.send('POST', `/api/agent-jobs/${encodeURIComponent(jobId)}/cancel`)
+
+    if (response.status === 404) {
+      return false
+    }
+
+    await this.assertOk(response)
+    return true
+  }
+
+  // ---- schedules -------------------------------------------------------------------------------
+
+  async schedules(): Promise<ScheduleTaskView[]> {
+    const answer = await this.request<{ tasks?: ScheduleTaskView[] }>('GET', '/api/schedules')
+    // An older build answers `{}`; "no tasks" is the honest reading of that.
+    return Array.isArray(answer.tasks) ? answer.tasks : []
+  }
+
+  createSchedule(input: ScheduleInput): Promise<ScheduleTaskView> {
+    return this.request<ScheduleTaskView>('POST', '/api/schedules', input)
+  }
+
+  pauseSchedule(id: string): Promise<ScheduleTaskView> {
+    return this.request<ScheduleTaskView>('POST', `/api/schedules/${encodeURIComponent(id)}/pause`)
+  }
+
+  resumeSchedule(id: string): Promise<ScheduleTaskView> {
+    return this.request<ScheduleTaskView>('POST', `/api/schedules/${encodeURIComponent(id)}/resume`)
+  }
+
+  async deleteSchedule(id: string): Promise<boolean> {
+    const response = await this.send('DELETE', `/api/schedules/${encodeURIComponent(id)}`)
 
     if (response.status === 404) {
       return false

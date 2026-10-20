@@ -34,6 +34,9 @@ public interface IScheduler : IAsyncDisposable
     /// <summary>Pauses or resumes a task without losing its next occurrence.</summary>
     Task<ScheduleTask> SetStatusAsync(string taskId, ScheduleTaskStatus status, CancellationToken ct = default);
 
+    /// <summary>Forgets a task for good. False when there was no such task. Receipts stay: they are the dedup record.</summary>
+    Task<bool> RemoveAsync(string taskId, CancellationToken ct = default);
+
     Task<IReadOnlyList<ScheduleTask>> ListAsync(CancellationToken ct = default);
 
     /// <summary>Earliest instant among schedulable tasks, or null when none are pending.</summary>

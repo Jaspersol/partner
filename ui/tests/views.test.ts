@@ -276,6 +276,11 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     agentJobs: vi.fn(async () => []),
     cancelAgentJob: vi.fn(async () => true),
+    schedules: vi.fn(async () => []),
+    createSchedule: vi.fn(),
+    pauseSchedule: vi.fn(),
+    resumeSchedule: vi.fn(),
+    deleteSchedule: vi.fn(async () => true),
     testVoice: vi.fn(async (kind: 'asr' | 'tts' | 'kws' | 'model') => {
       calls.probes.push(kind)
       return kind === 'model'

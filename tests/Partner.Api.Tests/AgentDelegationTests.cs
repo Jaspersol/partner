@@ -304,10 +304,12 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
             return (main, sub);
         }
 
-        // Nothing but the web capability, which ships enabled and which no sub-agent has claimed: the main agent
-        // holds its two tools and nothing else.
+        // The web capability ships enabled and no sub-agent has claimed it, so the main agent holds its two tools;
+        // the timed-task tools are always the main agent's. Nothing else.
         var (fresh, _) = await ToolsAsync();
-        Assert.Equal(new[] { "web_fetch", "web_search" }, fresh.OrderBy(name => name, StringComparer.Ordinal));
+        Assert.Equal(
+            new[] { "schedule_create", "schedule_delete", "schedule_list", "web_fetch", "web_search" },
+            fresh.OrderBy(name => name, StringComparer.Ordinal));
 
         // Files on, no file-read agent: "no scenario configured" means the main agent reads. The web tools are
         // untouched, because each scenario has its own holder rather than one shared pool.

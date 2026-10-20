@@ -36,6 +36,9 @@ public sealed record SchedulerOptions
 /// </summary>
 public sealed class JsonlScheduler : IScheduler
 {
+    /// <summary>Status text of the record that deletes a task. Not a <see cref="ScheduleTaskStatus"/> on purpose.</summary>
+    private const string TombstoneStatus = "Removed";
+
     private static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -118,6 +121,7 @@ public sealed class JsonlScheduler : IScheduler
             throw new ArgumentException("Payload must not be empty.", nameof(task));
         }
 
+        ScheduleTask result;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -133,6 +137,7 @@ public sealed class JsonlScheduler : IScheduler
 
             await PersistTaskAsync(stored, ct).ConfigureAwait(false);
             RecomputeNextDue();
+            result = stored;
         }
         finally
         {
@@ -140,7 +145,7 @@ public sealed class JsonlScheduler : IScheduler
         }
 
         await RequestDriveAsync(ct).ConfigureAwait(false);
-        return _byId[task.TaskId];
+        return result;
     }
 
     public async Task<ScheduleTask> SetStatusAsync(string taskId, ScheduleTaskStatus status, CancellationToken ct = default)
@@ -148,6 +153,7 @@ public sealed class JsonlScheduler : IScheduler
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         ThrowIfDisposed();
 
+        ScheduleTask result;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -157,8 +163,27 @@ public sealed class JsonlScheduler : IScheduler
             }
 
             var updated = task with { Status = status };
+
+            // Resuming a paused task: the occurrences that passed while it was paused are skipped rather than
+            // fired as one late burst (the same rule a restart follows). A Failed task is different — it keeps
+            // its obligation, so resuming it retries the delivery it owes, with a fresh attempt count.
+            if (status == ScheduleTaskStatus.Active && task.Status == ScheduleTaskStatus.Inactive)
+            {
+                var now = _clock.GetUtcNow();
+                if (task.NextScheduledAt < now)
+                {
+                    var next = task.Trigger.NextAfter(now, _options.TimeZone);
+                    updated = next is null ? task : updated with { NextScheduledAt = next.Value, Attempt = 0, LastError = null };
+                }
+            }
+            else if (status == ScheduleTaskStatus.Active)
+            {
+                updated = updated with { Attempt = 0, LastError = null };
+            }
+
             await PersistTaskAsync(updated, ct).ConfigureAwait(false);
             RecomputeNextDue();
+            result = updated;
         }
         finally
         {
@@ -166,20 +191,54 @@ public sealed class JsonlScheduler : IScheduler
         }
 
         await RequestDriveAsync(ct).ConfigureAwait(false);
-        return _byId[taskId];
+        return result;
     }
 
-    public Task<IReadOnlyList<ScheduleTask>> ListAsync(CancellationToken ct = default)
+    public async Task<bool> RemoveAsync(string taskId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ThrowIfDisposed();
+
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!_byId.ContainsKey(taskId))
+            {
+                return false;
+            }
+
+            // A tombstone, not a rewrite: the log stays append-only, and replay drops the task when it meets it.
+            ct.ThrowIfCancellationRequested();
+            _tasks.Append(JsonSerializer.Serialize(TaskRecord.Tombstone(taskId), Json));
+            _tasks.FlushToDisk();
+            _byId.Remove(taskId);
+            RecomputeNextDue();
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<ScheduleTask>> ListAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        ct.ThrowIfCancellationRequested();
 
-        IReadOnlyList<ScheduleTask> snapshot = _byId.Values
-            .OrderBy(t => t.NextScheduledAt)
-            .ThenBy(t => t.TaskId, StringComparer.Ordinal)
-            .ToList();
-
-        return Task.FromResult(snapshot);
+        // Under the gate: the dictionary is mutated by delivery and by the HTTP-driven writes, and enumerating it
+        // while one of them runs throws.
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _byId.Values
+                .OrderBy(t => t.NextScheduledAt)
+                .ThenBy(t => t.TaskId, StringComparer.Ordinal)
+                .ToList();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<DeliveryOutcome> DeliverDueAsync(CancellationToken ct = default)
@@ -415,6 +474,12 @@ public sealed class JsonlScheduler : IScheduler
         foreach (var line in _tasks.ReadLines())
         {
             var record = TryDeserialize<TaskRecord>(line);
+            if (record is { Status: TombstoneStatus })
+            {
+                _byId.Remove(record.TaskId);
+                continue;
+            }
+
             var task = record?.ToTask();
             if (task is not null)
             {
@@ -470,8 +535,15 @@ public sealed class JsonlScheduler : IScheduler
         int Attempt,
         string? LastError)
     {
+        public static TaskRecord Tombstone(string taskId) =>
+            new(taskId, "none", string.Empty, string.Empty, TombstoneStatus, default, null, 0, null);
+
         public static TaskRecord From(ScheduleTask task) => task.Trigger switch
         {
+            OnceTrigger once => new TaskRecord(
+                task.TaskId, "once", once.At.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
+                task.Payload, task.Status.ToString(),
+                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError),
             CronTrigger cron => new TaskRecord(
                 task.TaskId, "cron", cron.Expression, task.Payload, task.Status.ToString(),
                 task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError),
@@ -487,6 +559,10 @@ public sealed class JsonlScheduler : IScheduler
             ScheduleTrigger? trigger = TriggerKind switch
             {
                 "cron" => new CronTrigger(TriggerSpec),
+                "once" when DateTimeOffset.TryParse(
+                    TriggerSpec, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var at)
+                    => new OnceTrigger(at),
                 "interval" when long.TryParse(
                     TriggerSpec, System.Globalization.NumberStyles.Integer,
                     System.Globalization.CultureInfo.InvariantCulture, out var ticks)

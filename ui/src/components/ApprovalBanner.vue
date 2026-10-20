@@ -29,7 +29,51 @@ const target = computed(() => {
   return entity ? `『${entity.title}』${entity.foreground ? '（当前前台）' : ''}` : `#${id}`
 })
 
-const kind = computed(() => /"kind"\s*:\s*"([^"]+)"/.exec(current.value?.arguments ?? '')?.[1] ?? '')
+/**
+ * A timed-task request, read out in words. The generic wording below is about a desktop window ("keep acting on
+ * it for N steps") and shows the raw `kind`; for a task that is both wrong and unhelpful — what the person has to
+ * judge is *when* it will fire and *what it will say to the assistant*, which sit inside the arguments.
+ */
+const schedule = computed(() => {
+  const name = current.value?.toolName ?? ''
+  if (name !== 'schedule_create' && name !== 'schedule_delete') {
+    return null
+  }
+
+  let args: Record<string, unknown> = {}
+  try {
+    args = JSON.parse(current.value?.arguments ?? '{}') as Record<string, unknown>
+  } catch {
+    // Unreadable arguments still get asked about; the raw text below is what the person sees.
+  }
+
+  if (name === 'schedule_delete') {
+    return { verb: '删除', rule: '', message: '', id: String(args.id ?? '') }
+  }
+
+  const minutes = (value: unknown) => {
+    const count = Number(value)
+    if (!Number.isFinite(count) || count < 1) return '？'
+    if (count % 1440 === 0) return `${count / 1440} 天`
+    if (count % 60 === 0) return `${count / 60} 小时`
+    return `${count} 分钟`
+  }
+
+  const rule =
+    args.kind === 'cron'
+      ? `按时刻 ${String(args.cron ?? '？')}`
+      : args.kind === 'interval'
+        ? `每 ${minutes(args.intervalMinutes)}`
+        : args.delayMinutes !== undefined
+          ? `${minutes(args.delayMinutes)}后，只一次`
+          : `${String(args.at ?? '？')}，只一次`
+
+  return { verb: '创建', rule, message: String(args.message ?? ''), id: '' }
+})
+
+const kind = computed(() =>
+  schedule.value ? '' : (/"kind"\s*:\s*"([^"]+)"/.exec(current.value?.arguments ?? '')?.[1] ?? ''),
+)
 
 /**
  * Grant's size comes from the server — it is the server's semantics, not the banner's. A null desktop
@@ -43,7 +87,7 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
     <div class="approval-body">
       <div class="approval-head">
         <Icon name="shield" :size="16" class="approval-icon" />
-        <span class="title">模型请求执行动作</span>
+        <span class="title">{{ schedule ? `模型请求${schedule.verb}定时任务` : '模型请求执行动作' }}</span>
         <!--
           Whose question this is. A sub-agent's approval arrives while the person may be looking at something
           else entirely; without the origin it reads as the main agent acting, which is a different thing to allow.
@@ -55,10 +99,18 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
         <span v-if="kind" class="kind">{{ kind }}</span>
         <span v-if="target" class="target" data-test="approval-target">目标 {{ target }}</span>
       </div>
-      <code class="break args">{{ current.arguments }}</code>
+      <p v-if="schedule?.verb === '创建'" class="schedule-what break" data-test="approval-schedule">
+        <span class="schedule-rule">{{ schedule.rule }}</span>
+        到点会把这句话当作你发的消息交给助手：<q>{{ schedule.message }}</q>
+      </p>
+      <p v-else-if="schedule" class="schedule-what break" data-test="approval-schedule">任务 {{ schedule.id }}，删除后不可恢复。</p>
+      <code v-else class="break args">{{ current.arguments }}</code>
     </div>
     <div class="approval-actions">
-      <HintTip align="end" data-test="approval-hint">
+      <HintTip v-if="schedule" align="end" data-test="approval-hint">
+        无人应答即拒绝。定时任务到点后，助手会照这句话去做，可以随时在「定时」页删除。
+      </HintTip>
+      <HintTip v-else align="end" data-test="approval-hint">
         无人应答即拒绝。允许后，助手可以在这个窗口上继续操作 {{ grantSteps }} 步；危险类的动作仍然逐次询问。
       </HintTip>
       <button class="ghost" data-test="approval-deny" @click="emit('answer', current.approvalId, false)">拒绝</button>
@@ -125,6 +177,17 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
   font-size: var(--fs-meta);
   max-block-size: 3rem;
   overflow: hidden;
+}
+
+/* Unlike the raw arguments this is the thing being judged, so it is not greyed and not cut to a line. */
+.schedule-what {
+  margin: 0;
+  font-size: var(--fs-ui);
+}
+
+.schedule-rule {
+  font-weight: 600;
+  margin-inline-end: var(--space-2);
 }
 
 .approval-actions {

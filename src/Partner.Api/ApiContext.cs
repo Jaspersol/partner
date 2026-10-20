@@ -3,6 +3,7 @@ using Partner.Core.Agent.Tools;
 using Partner.Core.Media;
 using Partner.Core.Memory;
 using Partner.Core.Queue;
+using Partner.Core.Scheduler;
 using Partner.Core.Sessions;
 using Partner.Desktop;
 using Partner.Desktop.Perception;
@@ -24,6 +25,7 @@ public sealed class ApiContext : IAsyncDisposable
         IMemoryStore memory,
         SettingsStore settings,
         IMediaStore media,
+        IScheduler scheduler,
         DesktopAutomation desktop,
         QueuedApprovalHandler approvals,
         TaskLeaseStore taskLeases,
@@ -38,6 +40,7 @@ public sealed class ApiContext : IAsyncDisposable
         Memory = memory;
         Settings = settings;
         Media = media;
+        Scheduler = scheduler;
         Desktop = desktop;
         Approvals = approvals;
         TaskLeases = taskLeases;
@@ -67,6 +70,46 @@ public sealed class ApiContext : IAsyncDisposable
 
     /// <summary>Attachments live here, not in the log: the bytes are files, the events carry only their ids.</summary>
     public IMediaStore Media { get; }
+
+    /// <summary>
+    /// Timed tasks. Firing one only enqueues an <c>InputSource.Schedule</c> item on <see cref="Queue"/>, so a
+    /// scheduled message waits its turn behind whatever the person typed, like any other input.
+    /// </summary>
+    public IScheduler Scheduler { get; }
+
+    private CancellationTokenSource? _schedulerStop;
+    private Task? _schedulerRun;
+
+    /// <summary>
+    /// Starts the delivery loop. Separate from <see cref="OpenAsync"/> because the host decides when the runtime
+    /// is up, the same way it starts memory maintenance; calling it twice is a no-op.
+    /// </summary>
+    public void StartScheduler()
+    {
+        if (_schedulerRun is not null)
+        {
+            return;
+        }
+
+        _schedulerStop = new CancellationTokenSource();
+        _schedulerRun = Task.Run(async () =>
+        {
+            // The loop only ends by cancellation. A failure inside one pass must not end it for good, or every
+            // timed task would silently stop firing until the next restart.
+            while (!_schedulerStop.IsCancellationRequested)
+            {
+                try
+                {
+                    await Scheduler.RunAsync(_schedulerStop.Token).ConfigureAwait(false);
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    Console.Error.WriteLine($"scheduler pass failed: {error.Message}");
+                    await Task.Delay(TimeSpan.FromSeconds(5), _schedulerStop.Token).ConfigureAwait(false);
+                }
+            }
+        });
+    }
 
     /// <summary>
     /// The desktop facade, shared by the tools and the endpoints so a lease issued by one is visible to the
@@ -129,6 +172,11 @@ public sealed class ApiContext : IAsyncDisposable
         // Holds the whole runtime configuration now, not just the voice halves.
         var media = FileMediaStore.Open(workspace);
 
+        // The machine's own zone: "every day at 9" means 9 on the wall clock of whoever wrote it, and a cron
+        // expression read in UTC would be off by their offset.
+        var scheduler = new JsonlScheduler(
+            workspace, queue, clock, new SchedulerOptions { TimeZone = TimeZoneInfo.Local });
+
         // The TTL comes from the settings at call time rather than at construction: a lease policy is a
         // per-observation decision, and the settings can change while the process runs.
         //
@@ -159,6 +207,7 @@ public sealed class ApiContext : IAsyncDisposable
             memory,
             settings,
             media,
+            scheduler,
             desktop,
             new QueuedApprovalHandler(),
             new TaskLeaseStore(clock: clock),
@@ -177,6 +226,15 @@ public sealed class ApiContext : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Web.Dispose();
+
+        if (_schedulerStop is not null && _schedulerRun is not null)
+        {
+            await _schedulerStop.CancelAsync().ConfigureAwait(false);
+            await Task.WhenAny(_schedulerRun, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+            _schedulerStop.Dispose();
+        }
+
+        await Scheduler.DisposeAsync().ConfigureAwait(false);
         await Queue.DisposeAsync().ConfigureAwait(false);
         await Session.DisposeAsync().ConfigureAwait(false);
         await Memory.DisposeAsync().ConfigureAwait(false);

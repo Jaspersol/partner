@@ -51,6 +51,23 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
             return new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 只传递信息");
         }
 
+        // Timed tasks. Reading them is harmless. Creating or deleting one is not: a task's message comes back later
+        // as if the person had typed it, so it is a standing instruction — and one the assistant could be talked
+        // into leaving behind by something it read. A human sees the rule and the message before it exists.
+        if (toolName == Agents.ScheduleListTool.ToolName)
+        {
+            return new GovernanceDecision(ToolDecision.Allow, "'schedule_list' 只读");
+        }
+
+        if (toolName is Agents.ScheduleCreateTool.ToolName or Agents.ScheduleDeleteTool.ToolName)
+        {
+            return new GovernanceDecision(
+                ToolDecision.Ask,
+                toolName == Agents.ScheduleCreateTool.ToolName
+                    ? "'schedule_create' 会让助手之后按时收到一条消息并照做，需要你批准"
+                    : "'schedule_delete' 会删除一个定时任务，需要你批准");
+        }
+
         // Reading is read-only and never asks, like the desktop's own reads; what bounds it is the directory
         // whitelist inside the tool. The switch is checked live so turning files off takes effect at once.
         if (toolName is "file_list" or "file_read")

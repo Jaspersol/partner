@@ -24,6 +24,7 @@ import TopBar from './components/TopBar.vue'
 import MemoryView from './views/MemoryView.vue'
 import SessionView from './views/SessionView.vue'
 import McpView from './views/McpView.vue'
+import SchedulesView from './views/SchedulesView.vue'
 import SkillsView from './views/SkillsView.vue'
 import PromptsView from './views/PromptsView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -37,6 +38,9 @@ import { version } from '../package.json'
 
 const NAV: NavItem[] = [
   { key: 'session', label: '会话', icon: 'chat' },
+  // Right under the conversation: what a timed task produces lands there, and it is the page one reaches for
+  // right after typing "remind me at nine".
+  { key: 'schedules', label: '定时', icon: 'clock' },
   { key: 'memory', label: '记忆', icon: 'memory' },
 
   // Two capability pages of their own rather than cards inside settings: both are lists a person reads and
@@ -316,18 +320,18 @@ async function refreshGears() {
  *
  * <para>
  * Three, and each one has to be understood as *the* way to do something rather than a faster way: Ctrl+K to
- * search, `1`–`6` to switch view, Ctrl+B for the rail. The arrow keys already proved this app can be driven
+ * search, `1`–`7` to switch view, Ctrl+B for the rail. The arrow keys already proved this app can be driven
  * from the keyboard; these are the three that were missing to finish the set.
  * </para>
  *
  * <para>
- * The rule that matters is what they must <b>not</b> steal. `1`–`6` are the digits a person types into the
+ * The rule that matters is what they must <b>not</b> steal. `1`–`7` are the digits a person types into the
  * composer, so they are inert while the caret is in a field — a shortcut that swallows half the characters of
  * a message is worse than no shortcut at all. Ctrl chords are left alone entirely unless they are one of ours,
  * so Ctrl+Tab and Ctrl+W still belong to the browser.
  * </para>
  */
-const VIEW_KEYS = ['1', '2', '3', '4', '5', '6'] as const
+const VIEW_KEYS = ['1', '2', '3', '4', '5', '6', '7'] as const
 
 /** True when the keystroke is going into a field rather than into the app. */
 function isTyping(target: EventTarget | null): boolean {
@@ -509,6 +513,12 @@ onUnmounted(() => {
           />
           <MemoryView
             v-else-if="active === 'memory'"
+            ref="activeView"
+            :api="api"
+            @changed="refreshSummary"
+          />
+          <SchedulesView
+            v-else-if="active === 'schedules'"
             ref="activeView"
             :api="api"
             @changed="refreshSummary"

@@ -428,4 +428,91 @@ public sealed class JsonlSchedulerTests : IDisposable
 
         Assert.True(delivered, "RequestDriveAsync should have woken the driver well before the 30s idle wait");
     }
+
+    [Fact]
+    public async Task Once_task_fires_once_then_goes_inactive_and_survives_a_restart()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue();
+        var at = clock.GetUtcNow().AddMinutes(5);
+
+        await using (var scheduler = new JsonlScheduler(_dir, queue, clock))
+        {
+            await scheduler.ScheduleAsync(new ScheduleTask { TaskId = "once", Trigger = new OnceTrigger(at), Payload = "once" });
+            Assert.Equal(at, scheduler.NextDueAt);
+
+            clock.Advance(TimeSpan.FromMinutes(5));
+            Assert.Equal(1, (await scheduler.DeliverDueAsync()).Delivered);
+            Assert.Equal(ScheduleTaskStatus.Inactive, (await scheduler.ListAsync()).Single().Status);
+            Assert.Null(scheduler.NextDueAt);
+        }
+
+        await using var restarted = new JsonlScheduler(_dir, queue, clock);
+        var task = (await restarted.ListAsync()).Single();
+        Assert.Equal(new OnceTrigger(at), task.Trigger);
+        Assert.Equal(ScheduleTaskStatus.Inactive, task.Status);
+
+        clock.Advance(TimeSpan.FromHours(1));
+        Assert.Equal(0, (await restarted.DeliverDueAsync()).Delivered);
+        Assert.Single(queue.Items);
+    }
+
+    [Fact]
+    public async Task Removed_task_stays_removed_after_a_restart_and_never_fires()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue();
+
+        await using (var scheduler = new JsonlScheduler(_dir, queue, clock))
+        {
+            await scheduler.ScheduleAsync(Every("keep", TimeSpan.FromMinutes(10), clock.GetUtcNow().AddMinutes(10)));
+            await scheduler.ScheduleAsync(Every("drop", TimeSpan.FromMinutes(1), clock.GetUtcNow().AddMinutes(1)));
+
+            Assert.True(await scheduler.RemoveAsync("drop"));
+            Assert.False(await scheduler.RemoveAsync("drop"));
+            Assert.Equal(clock.GetUtcNow().AddMinutes(10), scheduler.NextDueAt);
+        }
+
+        await using var restarted = new JsonlScheduler(_dir, queue, clock);
+        Assert.Equal(["keep"], (await restarted.ListAsync()).Select(t => t.TaskId).ToArray());
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Equal(0, (await restarted.DeliverDueAsync()).Delivered);
+    }
+
+    [Fact]
+    public async Task Resuming_a_paused_task_skips_the_occurrences_that_passed_while_it_was_paused()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue();
+        await using var scheduler = new JsonlScheduler(_dir, queue, clock);
+
+        await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromMinutes(10), clock.GetUtcNow().AddMinutes(10)));
+        await scheduler.SetStatusAsync("t1", ScheduleTaskStatus.Inactive);
+
+        clock.Advance(TimeSpan.FromMinutes(25));
+        var resumed = await scheduler.SetStatusAsync("t1", ScheduleTaskStatus.Active);
+
+        Assert.Equal(clock.GetUtcNow().AddMinutes(10), resumed.NextScheduledAt);
+        Assert.Equal(0, (await scheduler.DeliverDueAsync()).Delivered);
+    }
+
+    [Fact]
+    public async Task Resuming_a_failed_task_retries_the_delivery_it_owes()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue { FailuresRemaining = 2 };
+        await using var scheduler = new JsonlScheduler(
+            _dir, queue, clock, new SchedulerOptions { MaxAttempts = 2 });
+
+        await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromMinutes(10), clock.GetUtcNow()));
+        await scheduler.DeliverDueAsync();
+        await scheduler.DeliverDueAsync();
+        Assert.Equal(ScheduleTaskStatus.Failed, (await scheduler.ListAsync()).Single().Status);
+
+        var resumed = await scheduler.SetStatusAsync("t1", ScheduleTaskStatus.Active);
+        Assert.Equal(0, resumed.Attempt);
+        Assert.Equal(clock.GetUtcNow(), resumed.NextScheduledAt);
+        Assert.Equal(1, (await scheduler.DeliverDueAsync()).Delivered);
+    }
 }

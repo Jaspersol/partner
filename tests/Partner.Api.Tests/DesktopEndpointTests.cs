@@ -132,14 +132,15 @@ public sealed partial class ViewEndpointsTests
         });
 
         // Switching it off takes the desktop tools away and leaves exactly the other capability this build ships
-        // enabled — web access, which no sub-agent has claimed. The switch is read live, so this is the desktop
+        // enabled — web access, which no sub-agent has claimed — plus the timed-task tools, which are always the main
+        // agent's. The switch is read live, so this is the desktop
         // family leaving the table rather than the table emptying.
         var offAgain = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         var left = offAgain.GetProperty("tools").EnumerateArray()
             .Select(tool => tool.GetProperty("name").GetString()!)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
-        Assert.Equal(new[] { "web_fetch", "web_search" }, left);
+        Assert.Equal(new[] { "schedule_create", "schedule_delete", "schedule_list", "web_fetch", "web_search" }, left);
         Assert.Empty(await DesktopToolsAsync());
     }
 

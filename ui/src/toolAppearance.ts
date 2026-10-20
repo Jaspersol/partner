@@ -67,6 +67,10 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
   ['file_list', { icon: 'file', family: 'read', label: '列目录' }],
   ['file_read', { icon: 'file', family: 'read', label: '读文件' }],
 
+  // The assistant's own timed-task tools, named before the generic prefix so a card says what was done.
+  ['schedule_create', { icon: 'clock', family: 'schedule', label: '创建定时' }],
+  ['schedule_list', { icon: 'clock', family: 'schedule', label: '定时列表' }],
+  ['schedule_delete', { icon: 'clock', family: 'schedule', label: '删除定时' }],
   ['schedule', { icon: 'flag', family: 'schedule', label: '调度' }],
   ['cron', { icon: 'flag', family: 'schedule', label: '调度' }],
 

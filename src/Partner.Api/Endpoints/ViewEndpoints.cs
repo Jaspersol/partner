@@ -30,6 +30,7 @@ public static class ViewEndpoints
         MapSettings(app);
         WebEndpoints.Map(app);
         AgentEndpoints.Map(app);
+        ScheduleEndpoints.Map(app);
         MapSkills(app, ctx, workspace);
         MapProjections(app);
         MapDiscovery(app);

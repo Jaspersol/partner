@@ -408,6 +408,12 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
 
         RegisterMcpTools(tools, settings.Mcp);
 
+        // Always the main agent's, and not behind a switch: timed tasks are part of the product, not a capability
+        // that reaches outside it. What guards them is governance (creating and deleting ask a human).
+        tools.Register(new ScheduleCreateTool(_context));
+        tools.Register(new ScheduleListTool(_context));
+        tools.Register(new ScheduleDeleteTool(_context));
+
         var routes = AgentRouting.Effective(settings);
         if (routes.Count > 0)
         {

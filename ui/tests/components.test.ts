@@ -57,6 +57,44 @@ describe('approval banner', () => {
     expect(wrapper.find('[data-test="approval-hint"]').text()).toContain('无人应答即拒绝')
   })
 
+  it('reads a timed-task request as when and what, not as a desktop action', async () => {
+    const create = {
+      ...pending,
+      toolName: 'schedule_create',
+      arguments: '{"message":"提醒我喝水","kind":"interval","intervalMinutes":120}',
+    }
+    const wrapper = mount(ApprovalBanner, { props: { pending: [create], desktop } })
+
+    expect(wrapper.find('.title').text()).toBe('模型请求创建定时任务')
+    const what = wrapper.find('[data-test="approval-schedule"]').text()
+    expect(what).toContain('每 2 小时')
+    expect(what).toContain('提醒我喝水')
+
+    // None of the desktop wording: no window to keep acting on, and the interval's `kind` is not an action.
+    expect(wrapper.find('[data-test="approval-hint"]').text()).not.toContain('窗口')
+    expect(wrapper.find('.kind').exists()).toBe(false)
+  })
+
+  it('says a one-off given as minutes from now, and what a delete removes', async () => {
+    const once = { ...pending, toolName: 'schedule_create', arguments: '{"message":"站起来","kind":"once","delayMinutes":90}' }
+    expect(
+      mount(ApprovalBanner, { props: { pending: [once], desktop } }).find('[data-test="approval-schedule"]').text(),
+    ).toContain('90 分钟后，只一次')
+
+    const remove = { ...pending, toolName: 'schedule_delete', arguments: '{"id":"sch-1a2b3c4d"}' }
+    const wrapper = mount(ApprovalBanner, { props: { pending: [remove], desktop } })
+    expect(wrapper.find('.title').text()).toBe('模型请求删除定时任务')
+    expect(wrapper.find('[data-test="approval-schedule"]').text()).toContain('sch-1a2b3c4d')
+  })
+
+  it('still shows unreadable timed-task arguments rather than hiding the question', async () => {
+    const broken = { ...pending, toolName: 'schedule_create', arguments: 'not json' }
+    const wrapper = mount(ApprovalBanner, { props: { pending: [broken], desktop } })
+
+    expect(wrapper.find('[data-test="approval-schedule"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="approval-allow"]').exists()).toBe(true)
+  })
+
   it('falls back to the id when the window is no longer in the observation', async () => {
     const wrapper = mount(ApprovalBanner, {
       props: { pending: [pending], desktop: { ...desktop, entities: [] } },
@@ -928,6 +966,11 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     })),
     agentJobs: vi.fn(async () => []),
     cancelAgentJob: vi.fn(async () => true),
+    schedules: vi.fn(async () => []),
+    createSchedule: vi.fn(),
+    pauseSchedule: vi.fn(),
+    resumeSchedule: vi.fn(),
+    deleteSchedule: vi.fn(async () => true),
     saveSettings: vi.fn(async (patch: RuntimeSettings) => {
       // The settings response carries the agents section with sub-agent keys masked, so the stub mirrors the
       // server's shape rather than handing the stored one back verbatim.

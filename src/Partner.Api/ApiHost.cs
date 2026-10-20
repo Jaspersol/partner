@@ -51,6 +51,9 @@ public static class ApiHost
 
         maintenance.Start();
 
+        // After the consumer is configured, so the first item a due task enqueues has somewhere to go.
+        context.StartScheduler();
+
         await localEngines.ReconfigureAsync(context.Settings.Load().Local).ConfigureAwait(false);
 
         await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);

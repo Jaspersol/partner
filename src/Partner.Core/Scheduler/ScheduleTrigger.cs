@@ -32,6 +32,17 @@ public sealed record IntervalTrigger(TimeSpan Interval) : ScheduleTrigger
     public override string Describe() => $"every {Interval}";
 }
 
+/// <summary>
+/// Fires once at <paramref name="At"/>, then the task goes inactive (the scheduler marks a task whose trigger has
+/// no further occurrence as exhausted).
+/// </summary>
+public sealed record OnceTrigger(DateTimeOffset At) : ScheduleTrigger
+{
+    public override DateTimeOffset? NextAfter(DateTimeOffset after, TimeZoneInfo tz) => At > after ? At : null;
+
+    public override string Describe() => $"once at {At:O}";
+}
+
 /// <summary>Standard 5-field cron (<c>m h dom mon dow</c>), evaluated in the scheduler's time zone.</summary>
 public sealed record CronTrigger : ScheduleTrigger
 {
