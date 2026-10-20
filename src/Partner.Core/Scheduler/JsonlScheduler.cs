@@ -33,6 +33,12 @@ public sealed record SchedulerOptions
 
     /// <summary>How long one delivery may wait for the input queue to take an item before it counts as a failed attempt.</summary>
     public TimeSpan EnqueueTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>How late an occurrence may be before <see cref="CatchUpPolicy.Skip"/> treats it as missed.</summary>
+    public TimeSpan MissedGrace { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>The most missed occurrences <see cref="CatchUpPolicy.All"/> delivers; older ones are dropped.</summary>
+    public int CatchUpAllCap { get; init; } = 5;
 }
 
 /// <summary>
@@ -256,6 +262,28 @@ public sealed class JsonlScheduler : IScheduler
         }
     }
 
+    public async Task RecordRunAsync(string taskId, bool ok, string? error, DateTimeOffset at, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        ThrowIfDisposed();
+
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_byId.TryGetValue(taskId, out var task))
+            {
+                // Only the run fields move: this is a note about a finished turn, not a change to the schedule.
+                await PersistTaskAsync(
+                    task with { LastRunAt = at, LastRunOk = ok, LastRunError = ok ? null : error },
+                    ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<DeliveryOutcome> DeliverDueAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -316,6 +344,38 @@ public sealed class JsonlScheduler : IScheduler
 
                 if (alreadyReceipted)
                 {
+                    continue;
+                }
+
+                if (task.CatchUp == CatchUpPolicy.Skip && now - occurrence > _options.MissedGrace)
+                {
+                    // Too late to be useful, and the task asked not to be run late: say so instead of firing it.
+                    await _gate.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        if (_byId.TryGetValue(task.TaskId, out var late) && late.NextScheduledAt == occurrence)
+                        {
+                            skipped++;
+                            await AdvanceAsync(
+                                late with { MissedCount = late.MissedCount + 1, LastMissedAt = occurrence },
+                                occurrence,
+                                now,
+                                ct,
+                                delivered: false).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        _gate.Release();
+                    }
+
+                    continue;
+                }
+
+                if (task.CatchUp == CatchUpPolicy.All && await DropBeyondCapAsync(task, occurrence, now, ct).ConfigureAwait(false))
+                {
+                    // The oldest occurrences were dropped to honour the cap; the task is due again at the first kept one.
+                    skipped++;
                     continue;
                 }
 
@@ -493,22 +553,36 @@ public sealed class JsonlScheduler : IScheduler
         return wait;
     }
 
-    private async Task AdvanceAsync(ScheduleTask task, DateTimeOffset occurrence, DateTimeOffset now, CancellationToken ct)
+    private async Task AdvanceAsync(
+        ScheduleTask task,
+        DateTimeOffset occurrence,
+        DateTimeOffset now,
+        CancellationToken ct,
+        bool delivered = true)
     {
         _retryAt.Remove(task.TaskId);
         var next = task.Trigger.NextAfter(occurrence, _options.TimeZone);
 
-        // Occurrences missed while the process was down are skipped, never replayed as a burst.
+        // Occurrences missed while the process was down are skipped, never replayed as a burst — unless the task
+        // asked for them: All keeps the newest few and delivers them one pass at a time.
+        var missed = new List<DateTimeOffset>();
         while (next is not null && next <= now)
         {
+            missed.Add(next.Value);
             next = task.Trigger.NextAfter(next.Value, _options.TimeZone);
+        }
+
+        if (task.CatchUp == CatchUpPolicy.All && missed.Count > 0)
+        {
+            var kept = missed.Count > _options.CatchUpAllCap ? missed.GetRange(missed.Count - _options.CatchUpAllCap, _options.CatchUpAllCap) : missed;
+            next = kept[0];
         }
 
         var updated = task with
         {
             NextScheduledAt = next ?? occurrence,
             Status = next is null ? ScheduleTaskStatus.Inactive : ScheduleTaskStatus.Active,
-            LastDeliveryAt = occurrence,
+            LastDeliveryAt = delivered ? occurrence : task.LastDeliveryAt,
             Attempt = 0,
             LastError = null,
         };
@@ -549,6 +623,50 @@ public sealed class JsonlScheduler : IScheduler
         _receipts.Append(JsonSerializer.Serialize(receipt, Json));
         _receipts.FlushToDisk();
         await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Under <see cref="CatchUpPolicy.All"/>, more occurrences can be overdue than the cap allows. The oldest are
+    /// dropped (counted as missed) by moving the task to the first one that is kept. True when it moved.
+    /// </summary>
+    private async Task<bool> DropBeyondCapAsync(ScheduleTask task, DateTimeOffset occurrence, DateTimeOffset now, CancellationToken ct)
+    {
+        var overdue = new List<DateTimeOffset> { occurrence };
+        var next = task.Trigger.NextAfter(occurrence, _options.TimeZone);
+        while (next is not null && next <= now)
+        {
+            overdue.Add(next.Value);
+            next = task.Trigger.NextAfter(next.Value, _options.TimeZone);
+        }
+
+        if (overdue.Count <= _options.CatchUpAllCap)
+        {
+            return false;
+        }
+
+        var dropped = overdue.Count - _options.CatchUpAllCap;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!_byId.TryGetValue(task.TaskId, out var current) || current.NextScheduledAt != occurrence)
+            {
+                return true; // changed under us; the next pass looks again
+            }
+
+            await PersistTaskAsync(
+                current with
+                {
+                    NextScheduledAt = overdue[dropped],
+                    MissedCount = current.MissedCount + dropped,
+                    LastMissedAt = overdue[dropped - 1],
+                },
+                ct).ConfigureAwait(false);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     private DateTimeOffset EffectiveDueAt(ScheduleTask task) =>
@@ -645,7 +763,13 @@ public sealed class JsonlScheduler : IScheduler
         DateTimeOffset NextScheduledAt,
         DateTimeOffset? LastDeliveryAt,
         int Attempt,
-        string? LastError)
+        string? LastError,
+        string? CatchUp = null,
+        int MissedCount = 0,
+        DateTimeOffset? LastMissedAt = null,
+        DateTimeOffset? LastRunAt = null,
+        bool? LastRunOk = null,
+        string? LastRunError = null)
     {
         public static TaskRecord Tombstone(string taskId) =>
             new(taskId, "none", string.Empty, string.Empty, TombstoneStatus, default, null, 0, null);
@@ -655,14 +779,20 @@ public sealed class JsonlScheduler : IScheduler
             OnceTrigger once => new TaskRecord(
                 task.TaskId, "once", once.At.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
                 task.Payload, task.Status.ToString(),
-                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError),
+                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError,
+                task.CatchUp.ToString(), task.MissedCount, task.LastMissedAt,
+                task.LastRunAt, task.LastRunOk, task.LastRunError),
             CronTrigger cron => new TaskRecord(
                 task.TaskId, "cron", cron.Expression, task.Payload, task.Status.ToString(),
-                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError),
+                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError,
+                task.CatchUp.ToString(), task.MissedCount, task.LastMissedAt,
+                task.LastRunAt, task.LastRunOk, task.LastRunError),
             IntervalTrigger interval => new TaskRecord(
                 task.TaskId, "interval", interval.Interval.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 task.Payload, task.Status.ToString(),
-                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError),
+                task.NextScheduledAt, task.LastDeliveryAt, task.Attempt, task.LastError,
+                task.CatchUp.ToString(), task.MissedCount, task.LastMissedAt,
+                task.LastRunAt, task.LastRunOk, task.LastRunError),
             _ => throw new NotSupportedException($"Unsupported trigger type {task.Trigger.GetType().Name}."),
         };
 
@@ -697,6 +827,12 @@ public sealed class JsonlScheduler : IScheduler
                 LastDeliveryAt = LastDeliveryAt,
                 Attempt = Attempt,
                 LastError = LastError,
+                CatchUp = Enum.TryParse<CatchUpPolicy>(CatchUp, out var policy) ? policy : CatchUpPolicy.Once,
+                MissedCount = MissedCount,
+                LastMissedAt = LastMissedAt,
+                LastRunAt = LastRunAt,
+                LastRunOk = LastRunOk,
+                LastRunError = LastRunError,
             };
         }
     }

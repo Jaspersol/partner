@@ -57,6 +57,7 @@ public static class ScheduleRules
                 TaskId = "sch-" + Guid.NewGuid().ToString("n")[..8],
                 Trigger = trigger!,
                 Payload = payload,
+                CatchUp = ParseCatchUp(request.CatchUp),
             }, ct).ConfigureAwait(false);
 
             return (created, null);
@@ -119,6 +120,10 @@ public static class ScheduleRules
                 return false;
         }
     }
+
+    /// <summary>The words the page and the model use for a catch-up policy; anything unknown is the default.</summary>
+    public static CatchUpPolicy ParseCatchUp(string? text) =>
+        Enum.TryParse<CatchUpPolicy>(text, ignoreCase: true, out var policy) ? policy : CatchUpPolicy.Once;
 
     /// <summary>The rule in words. Cron stays as the expression: translating it would be a second source of truth.</summary>
     public static string Describe(ScheduleTask task) => task.Trigger switch

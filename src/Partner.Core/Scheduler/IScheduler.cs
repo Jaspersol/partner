@@ -39,6 +39,12 @@ public interface IScheduler : IAsyncDisposable
 
     Task<IReadOnlyList<ScheduleTask>> ListAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Records how the turn a task started ended. Delivery only says the message reached the queue; whether the
+    /// assistant then did the work is known later, by whoever ran the turn. A removed task is ignored.
+    /// </summary>
+    Task RecordRunAsync(string taskId, bool ok, string? error, DateTimeOffset at, CancellationToken ct = default);
+
     /// <summary>Earliest instant among schedulable tasks, or null when none are pending.</summary>
     DateTimeOffset? NextDueAt { get; }
 

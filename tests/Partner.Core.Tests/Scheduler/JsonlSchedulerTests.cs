@@ -626,4 +626,97 @@ public sealed class JsonlSchedulerTests : IDisposable
 
         return condition();
     }
+
+    private async Task<(JsonlScheduler Scheduler, RecordingQueue Queue, ScheduleTask Task)> AfterThreeDaysAsync(CatchUpPolicy policy)
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue();
+        var scheduler = new JsonlScheduler(_dir, queue, clock, new SchedulerOptions { CatchUpAllCap = 2 });
+
+        await scheduler.ScheduleAsync(Every("daily", TimeSpan.FromDays(1), clock.GetUtcNow().AddDays(1)) with { CatchUp = policy });
+
+        // The app was not running for three days: occurrences at +1d, +2d and +3d are all behind us.
+        clock.Advance(TimeSpan.FromDays(3).Add(TimeSpan.FromHours(1)));
+        for (var pass = 0; pass < 6; pass++)
+        {
+            await scheduler.DeliverDueAsync();
+        }
+
+        return (scheduler, queue, Assert.Single(await scheduler.ListAsync()));
+    }
+
+    [Fact]
+    public async Task Once_delivers_the_overdue_occurrence_a_single_time()
+    {
+        var (scheduler, queue, task) = await AfterThreeDaysAsync(CatchUpPolicy.Once);
+        await using var _ = scheduler;
+
+        Assert.Single(queue.Items);
+        Assert.Equal(0, task.MissedCount);
+    }
+
+    [Fact]
+    public async Task Skip_delivers_nothing_late_and_counts_what_it_missed()
+    {
+        var (scheduler, queue, task) = await AfterThreeDaysAsync(CatchUpPolicy.Skip);
+        await using var _ = scheduler;
+
+        Assert.Empty(queue.Items);
+        Assert.True(task.MissedCount >= 1);
+        Assert.NotNull(task.LastMissedAt);
+
+        // It is not dead: the next on-time occurrence is still ahead of the clock.
+        Assert.Equal(ScheduleTaskStatus.Active, task.Status);
+    }
+
+    [Fact]
+    public async Task All_delivers_the_newest_missed_occurrences_up_to_the_cap()
+    {
+        var (scheduler, queue, task) = await AfterThreeDaysAsync(CatchUpPolicy.All);
+        await using var _ = scheduler;
+
+        // Three were missed, the cap is two: the newest two arrive, in order.
+        Assert.Equal(2, queue.Items.Count);
+        Assert.Equal(CatchUpPolicy.All, task.CatchUp);
+    }
+
+    [Fact]
+    public async Task The_policy_survives_a_restart()
+    {
+        var (first, _, _) = await AfterThreeDaysAsync(CatchUpPolicy.Skip);
+        await first.DisposeAsync();
+
+        await using var reopened = new JsonlScheduler(_dir, new RecordingQueue(), new FixedClock(DateTimeOffset.UtcNow));
+        var task = Assert.Single(await reopened.ListAsync());
+
+        Assert.Equal(CatchUpPolicy.Skip, task.CatchUp);
+        Assert.True(task.MissedCount >= 1);
+    }
+
+    [Fact]
+    public async Task How_the_last_run_ended_is_recorded_on_the_task_and_survives_a_restart()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        await using (var scheduler = new JsonlScheduler(_dir, new RecordingQueue(), clock))
+        {
+            await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromHours(1), clock.GetUtcNow().AddHours(1)));
+
+            await scheduler.RecordRunAsync("t1", ok: false, "模型返回 500", clock.GetUtcNow());
+            var failed = Assert.Single(await scheduler.ListAsync());
+            Assert.False(failed.LastRunOk);
+            Assert.Equal("模型返回 500", failed.LastRunError);
+
+            // A good run clears the error rather than leaving the old one next to a success.
+            await scheduler.RecordRunAsync("t1", ok: true, null, clock.GetUtcNow());
+            Assert.Null(Assert.Single(await scheduler.ListAsync()).LastRunError);
+
+            // A task that is gone is ignored, not an error.
+            await scheduler.RecordRunAsync("nope", ok: true, null, clock.GetUtcNow());
+        }
+
+        await using var reopened = new JsonlScheduler(_dir, new RecordingQueue(), clock);
+        var task = Assert.Single(await reopened.ListAsync());
+        Assert.True(task.LastRunOk);
+        Assert.NotNull(task.LastRunAt);
+    }
 }

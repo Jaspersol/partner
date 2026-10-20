@@ -198,6 +198,52 @@ public sealed class ToolResultBudgetTests : IDisposable
     }
 
     [Fact]
+    public async Task The_settled_callback_hears_how_the_item_ended()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        await using (var queue = new JsonlInputQueue(_dir))
+        {
+            await queue.EnqueueAsync(new InputItem { ItemId = "ok", Seq = 1, Source = InputSource.Schedule, Payload = "hi", IdempotencyKey = "schedule:t1:x" });
+            await queue.EnqueueAsync(new InputItem { ItemId = "bad", Seq = 2, Source = InputSource.Schedule, Payload = "hi", IdempotencyKey = "schedule:t2:x" });
+
+            var settled = new List<(string Id, InputItemStatus Status, string? Error)>();
+            var good = new TurnLoop(
+                queue,
+                Runner(store, new SnapshotLlm(Done()), new AgentTurnOptions(), "x"),
+                store,
+                onSettled: (item, status, error) =>
+                {
+                    settled.Add((item.ItemId, status, error));
+                    return Task.CompletedTask;
+                });
+            await good.ProcessAsync((await queue.TakeAsync())!);
+
+            var broken = new TurnLoop(
+                queue,
+                Runner(store, new ThrowingLlm(), new AgentTurnOptions(), "x"),
+                store,
+                onSettled: (item, status, error) =>
+                {
+                    settled.Add((item.ItemId, status, error));
+                    return Task.CompletedTask;
+                });
+            await broken.ProcessAsync((await queue.TakeAsync())!);
+
+            Assert.Equal(("ok", InputItemStatus.Done, (string?)null), settled[0]);
+            Assert.Equal("bad", settled[1].Id);
+            Assert.Equal(InputItemStatus.Failed, settled[1].Status);
+            Assert.Contains("model exploded", settled[1].Error);
+        }
+    }
+
+    private sealed class ThrowingLlm : ILlmClient
+    {
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default) =>
+            throw new InvalidOperationException("model exploded");
+    }
+
+    [Fact]
     public async Task A_failing_after_turn_hook_does_not_fail_the_item()
     {
         var (store, _) = JsonlSessionStore.Open(_dir);

@@ -15,6 +15,19 @@ public enum ScheduleTaskStatus
     Failed,
 }
 
+/// <summary>What to do with occurrences that were missed because the app was not running (or the machine slept).</summary>
+public enum CatchUpPolicy
+{
+    /// <summary>Deliver the one overdue occurrence once and skip the rest. The behaviour before this was a choice.</summary>
+    Once,
+
+    /// <summary>Do not deliver an occurrence that is past its grace period; record it as missed.</summary>
+    Skip,
+
+    /// <summary>Deliver every missed occurrence, newest few only (see <see cref="SchedulerOptions.CatchUpAllCap"/>).</summary>
+    All,
+}
+
 /// <summary>
 /// A durable scheduled task (design doc §2.2). It carries no session id: firing it only enqueues an
 /// <see cref="Partner.Core.Queue.InputItem"/> with <see cref="InputSource.Schedule"/>.
@@ -39,6 +52,21 @@ public sealed record ScheduleTask
     public int Attempt { get; init; }
 
     public string? LastError { get; init; }
+
+    public CatchUpPolicy CatchUp { get; init; } = CatchUpPolicy.Once;
+
+    /// <summary>How many occurrences were skipped as missed under <see cref="CatchUpPolicy.Skip"/>.</summary>
+    public int MissedCount { get; init; }
+
+    public DateTimeOffset? LastMissedAt { get; init; }
+
+    /// <summary>When the assistant finished the turn this task last started. Delivery is not the same as it being done.</summary>
+    public DateTimeOffset? LastRunAt { get; init; }
+
+    /// <summary>Whether that turn ended well; null before the first one has ended.</summary>
+    public bool? LastRunOk { get; init; }
+
+    public string? LastRunError { get; init; }
 }
 
 /// <summary>

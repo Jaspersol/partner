@@ -37,6 +37,17 @@ public sealed class ScheduleToolTests : ApiFixture
     }
 
     [Fact]
+    public async Task A_catch_up_policy_given_to_the_tool_is_stored_and_the_default_is_once()
+    {
+        await Create.InvokeAsync("""{"message":"日报","kind":"cron","cron":"0 9 * * *","catchUp":"skip"}""");
+        await Create.InvokeAsync("""{"message":"体检","kind":"cron","cron":"0 8 * * *"}""");
+
+        var tasks = await TasksAsync();
+        Assert.Equal(CatchUpPolicy.Skip, tasks.Single(t => t.Payload == "日报").CatchUp);
+        Assert.Equal(CatchUpPolicy.Once, tasks.Single(t => t.Payload == "体检").CatchUp);
+    }
+
+    [Fact]
     public async Task A_one_off_can_be_given_as_minutes_from_now_even_as_a_string()
     {
         var before = DateTimeOffset.UtcNow;

@@ -46,14 +46,17 @@ public sealed class TurnLoop
     /// Work to run after a turn has ended, on this loop (auto-compaction is the one user today).
     /// </summary>
     private readonly Func<CancellationToken, Task>? _afterTurn;
+    private readonly Func<InputItem, InputItemStatus, string?, Task>? _onSettled;
 
     public TurnLoop(
         IInputQueue queue,
         AgentTurnRunner runner,
         ISessionStore session,
-        Func<CancellationToken, Task>? afterTurn = null)
+        Func<CancellationToken, Task>? afterTurn = null,
+        Func<InputItem, InputItemStatus, string?, Task>? onSettled = null)
     {
         _afterTurn = afterTurn;
+        _onSettled = onSettled;
         _queue = queue ?? throw new ArgumentNullException(nameof(queue));
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -96,7 +99,21 @@ public sealed class TurnLoop
     {
         ArgumentNullException.ThrowIfNull(item);
 
-        await ProcessCoreAsync(item).ConfigureAwait(false);
+        var settled = await ProcessCoreAsync(item).ConfigureAwait(false);
+
+        // Told how the item ended, so a scheduled task can show what its last run did and not only that it was
+        // delivered. Best effort: the item is already settled and this must not change that.
+        if (settled is not null && _onSettled is not null)
+        {
+            try
+            {
+                await _onSettled(item, settled.Status, settled.Error).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Nothing to do: the outcome is recorded in the queue and the session either way.
+            }
+        }
 
         // After the turn, on this same loop: the queue has a single reader, so nothing else is running a turn
         // against this session now, and whatever the hook writes to it cannot interleave with one. A hook that
@@ -114,16 +131,18 @@ public sealed class TurnLoop
         }
     }
 
-    private async Task ProcessCoreAsync(InputItem item)
-    {
+    /// <summary>How an item ended, for the callback that wants to know. Null from <see cref="ProcessCoreAsync"/> means "nothing ran".</summary>
+    private sealed record Settled(InputItemStatus Status, string? Error);
 
+    private async Task<Settled?> ProcessCoreAsync(InputItem item)
+    {
         if (await AlreadyTurnedAsync(item).ConfigureAwait(false))
         {
             // At-least-once delivery: the item was re-queued after an interruption, but its turn already ran
             // to an end. Re-running it would duplicate the conversation.
             Interlocked.Increment(ref _skipped);
             await _queue.CompleteAsync(item.ItemId, InputItemStatus.Done).ConfigureAwait(false);
-            return;
+            return null;
         }
 
         // The ceiling is the loop's, not the runner's: every budget inside a turn is a promise by the code
@@ -155,27 +174,28 @@ public sealed class TurnLoop
                 Forget(running);
 
                 Interlocked.Increment(ref _failed);
-                await _queue.CompleteAsync(
-                    item.ItemId,
-                    InputItemStatus.Failed,
-                    $"回合超过 {_runner.TurnTimeout.TotalSeconds:0} 秒未结束，已中止"
-                    + "（多半是某个工具或模型调用没有返回；请看会话里最后一个 tool/call 定位）").ConfigureAwait(false);
-                return;
+                var overran = $"回合超过 {_runner.TurnTimeout.TotalSeconds:0} 秒未结束，已中止"
+                    + "（多半是某个工具或模型调用没有返回；请看会话里最后一个 tool/call 定位）";
+                await _queue.CompleteAsync(item.ItemId, InputItemStatus.Failed, overran).ConfigureAwait(false);
+                return new Settled(InputItemStatus.Failed, overran);
             }
 
             await running.ConfigureAwait(false);
             Interlocked.Increment(ref _completed);
             await _queue.CompleteAsync(item.ItemId, InputItemStatus.Done).ConfigureAwait(false);
+            return new Settled(InputItemStatus.Done, null);
         }
         catch (OperationCanceledException)
         {
             Interlocked.Increment(ref _canceled);
             await _queue.CompleteAsync(item.ItemId, InputItemStatus.Canceled).ConfigureAwait(false);
+            return new Settled(InputItemStatus.Canceled, null);
         }
         catch (Exception error)
         {
             Interlocked.Increment(ref _failed);
             await _queue.CompleteAsync(item.ItemId, InputItemStatus.Failed, error.Message).ConfigureAwait(false);
+            return new Settled(InputItemStatus.Failed, error.Message);
         }
     }
 

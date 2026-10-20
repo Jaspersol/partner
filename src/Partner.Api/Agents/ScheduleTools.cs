@@ -44,7 +44,8 @@ public sealed class ScheduleCreateTool(ApiContext context) : ITool
           "cron":{"type":"string","description":"kind=cron 时：五段 cron，本机本地时间"},
           "intervalMinutes":{"type":"integer","minimum":1,"description":"kind=interval 时：间隔分钟数"},
           "delayMinutes":{"type":"integer","minimum":1,"description":"kind=once 时：从现在起多少分钟后执行"},
-          "at":{"type":"string","description":"kind=once 时：本地时间 yyyy-MM-dd HH:mm（与 delayMinutes 二选一）"}
+          "at":{"type":"string","description":"kind=once 时：本地时间 yyyy-MM-dd HH:mm（与 delayMinutes 二选一）"},
+          "catchUp":{"type":"string","enum":["once","skip","all"],"description":"程序没在运行、错过了时间点怎么办：once（默认，补一次）、skip（过了 5 分钟就不补，只记为错过）、all（每个错过的都补，最多最近 5 个）"}
         },"required":["message","kind"]}
         """);
 
@@ -101,7 +102,8 @@ public sealed class ScheduleCreateTool(ApiContext context) : ITool
             ScheduleArgs.Text(argumentsJson, "cron"),
             ScheduleArgs.Number(argumentsJson, "intervalMinutes"),
             at,
-            message);
+            message,
+            ScheduleArgs.Text(argumentsJson, "catchUp"));
 
         var (task, error) = await ScheduleRules.CreateAsync(context.Scheduler, request, now, ct).ConfigureAwait(false);
         if (task is null)
@@ -154,7 +156,14 @@ public sealed class ScheduleListTool(ApiContext context) : ITool
     {
         ScheduleTaskStatus.Inactive => task.Trigger is OnceTrigger && task.LastDeliveryAt is not null ? "已执行" : "已暂停",
         ScheduleTaskStatus.Failed => $"投递失败，会重试（{task.LastError}）",
-        _ => $"下次 {ScheduleRules.Local(task.NextScheduledAt)}",
+        _ => $"下次 {ScheduleRules.Local(task.NextScheduledAt)}" + LastRun(task),
+    };
+
+    private static string LastRun(ScheduleTask task) => task.LastRunOk switch
+    {
+        true => $"；上次执行完成（{ScheduleRules.Local(task.LastRunAt!.Value)}）",
+        false => $"；上次执行失败（{ScheduleRules.Local(task.LastRunAt!.Value)}）：{task.LastRunError}",
+        _ => string.Empty,
     };
 
     private static string Preview(string payload)

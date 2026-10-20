@@ -59,7 +59,13 @@ public static class ScheduleEndpoints
 }
 
 /// <summary>What a client sends to create a task. Which fields matter depends on <see cref="Kind"/>.</summary>
-public sealed record ScheduleRequest(string? Kind, string? Cron, int? IntervalMinutes, DateTimeOffset? At, string? Payload);
+public sealed record ScheduleRequest(
+    string? Kind,
+    string? Cron,
+    int? IntervalMinutes,
+    DateTimeOffset? At,
+    string? Payload,
+    string? CatchUp = null);
 
 /// <summary>
 /// A task as the page reads it. The trigger is split into the field that made it, so the form can be refilled
@@ -77,7 +83,13 @@ public sealed record ScheduleView(
     DateTimeOffset? NextAt,
     DateTimeOffset? LastAt,
     int Attempt,
-    string? LastError)
+    string? LastError,
+    string CatchUp = "once",
+    int Missed = 0,
+    DateTimeOffset? LastMissedAt = null,
+    DateTimeOffset? LastRunAt = null,
+    bool? LastRunOk = null,
+    string? LastRunError = null)
 {
     public static ScheduleView From(ScheduleTask task)
     {
@@ -103,6 +115,12 @@ public sealed record ScheduleView(
             task.Status == ScheduleTaskStatus.Inactive ? null : task.NextScheduledAt,
             task.LastDeliveryAt,
             task.Attempt,
-            task.LastError);
+            task.LastError,
+            task.CatchUp.ToString().ToLowerInvariant(),
+            task.MissedCount,
+            task.LastMissedAt,
+            task.LastRunAt,
+            task.LastRunOk,
+            task.LastRunError);
     }
 }

@@ -1,3 +1,5 @@
+using Partner.Core.Contracts;
+using Partner.Core.Queue;
 using Partner.Api.Agents;
 using Partner.Api.Settings;
 using Partner.Core.Agent;
@@ -294,6 +296,29 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     }
 
     /// <summary>
+    /// A scheduled message has been answered (or has failed): write that on the task, so the page can show what
+    /// its last run did instead of only that the message was delivered.
+    /// </summary>
+    private async Task RecordScheduledRunAsync(InputItem item, InputItemStatus status, string? error)
+    {
+        if (item.Source != InputSource.Schedule || status == InputItemStatus.Canceled)
+        {
+            return;
+        }
+
+        // schedule:{taskId}:{occurrence}, written by the scheduler; the task id has no colon in it.
+        var parts = item.IdempotencyKey.Split(':', 3);
+        if (parts.Length < 2 || parts[0] != "schedule")
+        {
+            return;
+        }
+
+        await _context.Scheduler
+            .RecordRunAsync(parts[1], status == InputItemStatus.Done, error, _clock.GetUtcNow())
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Past this share of the prompt budget (or as soon as the assembler had to drop history), a finished turn is
     /// followed by a compaction pass instead of letting the oldest entries fall out of the window silently.
     /// </summary>
@@ -304,7 +329,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         var usage = await assembler.MeasureAsync(ct).ConfigureAwait(false);
         if (usage.Fraction > AutoCompactFraction || usage.FoldedItems > 0)
         {
-            await CompactAsync(usage.BudgetTokens, ct).ConfigureAwait(false);
+            await CompactAsync(SessionCompactor.HistoryBudget(usage), ct).ConfigureAwait(false);
         }
     }
 
@@ -465,7 +490,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             _context.Queue,
             runner,
             _context.Session,
-            afterTurn: ct => CompactIfNeededAsync(assembler, ct));
+            afterTurn: ct => CompactIfNeededAsync(assembler, ct),
+            onSettled: RecordScheduledRunAsync);
         _stop = new CancellationTokenSource();
         _running = _loop.RunAsync(_stop.Token);
         _llm = llm;
