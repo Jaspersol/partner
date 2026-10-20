@@ -39,3 +39,9 @@ engines/tts/*.exe
 engines/tts/test-output.wav
 engines/kws-asr/models/
 engines/kws-asr/sherpa-onnx/
+
+# Planning and design notes live on the developer machine, not in the repository (README.md files stay).
+ui-redesign.md
+ui.md
+web-search.md
+本地音频.md
