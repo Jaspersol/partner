@@ -191,6 +191,7 @@ public sealed class MemoryStore : IMemoryStore
 
         var candidates = await LoadCandidatesAsync(match, cjkMatch, ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
+        var analysed = new MemoryLifecycle.Incoming(incoming.Body);
 
         foreach (var candidate in candidates)
         {
@@ -199,7 +200,7 @@ public sealed class MemoryStore : IMemoryStore
                 continue;
             }
 
-            if (!MemoryLifecycle.Conflicts(incoming.Body, candidate.Body))
+            if (!analysed.ConflictsWith(candidate.Body))
             {
                 continue;
             }
@@ -1036,7 +1037,7 @@ public sealed class MemoryStore : IMemoryStore
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = $"""
           SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                 bm25({index}) AS rank, m.source_event_seq
+                 bm25({index}) AS rank, m.source_event_seq, m.last_recalled_at
           FROM {index}
           JOIN memories m ON m.rowid = {index}.rowid
           WHERE {index} MATCH $q AND m.valid_to IS NULL
@@ -1082,7 +1083,8 @@ public sealed class MemoryStore : IMemoryStore
         reader.GetDouble(6),
         reader.GetDouble(7),
         FtsRank: null,
-        SourceEventSeq: reader.IsDBNull(9) ? null : reader.GetInt64(9));
+        SourceEventSeq: reader.IsDBNull(9) ? null : reader.GetInt64(9),
+        LastRecalledAt: reader.IsDBNull(10) ? null : ParseTime(reader.GetString(10)));
 
     /// <summary>
     /// Reads a stored scope, falling back to <see cref="MemoryScope.Recall"/> for a value this build no longer

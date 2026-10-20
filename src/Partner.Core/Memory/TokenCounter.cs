@@ -8,6 +8,16 @@ namespace Partner.Core.Memory;
 /// Counts tokens for budgeting. The local estimate is always available; a counter that can ask the model
 /// itself (a tokenizer endpoint) also implements <see cref="CountAsync"/>.
 /// </summary>
+/// <summary>
+/// A counter that can be told what the model really charged, and tunes its estimate toward it.
+/// </summary>
+public interface ICalibratedTokenCounter : ITokenCounter
+{
+    /// <param name="estimated">What this counter said the request cost.</param>
+    /// <param name="actual">What the server says it cost (<c>usage.prompt_tokens</c>).</param>
+    void Calibrate(int estimated, int actual);
+}
+
 public interface ITokenCounter
 {
     int Count(string text);
@@ -27,9 +37,37 @@ public interface ITokenCounter
 /// provider-backed counter (see <c>HttpLlmClient</c>) is preferred wherever one is available.
 /// </para>
 /// </summary>
-public sealed class ApproximateTokenCounter : ITokenCounter
+public sealed class ApproximateTokenCounter : ICalibratedTokenCounter
 {
     private const int CharsPerToken = 4;
+
+    private const double MinScale = 0.4;
+    private const double MaxScale = 4.0;
+
+    /// <summary>How far one observation moves the scale. A single odd request must not swing every later budget.</summary>
+    private const double Smoothing = 0.3;
+
+    private double _scale = 1.0;
+
+    /// <summary>The factor the raw estimate is multiplied by; 1 until the server has said otherwise.</summary>
+    public double Scale => Volatile.Read(ref _scale);
+
+    /// <summary>
+    /// Moves the scale toward <c>actual / estimated</c>. The estimate here is already scaled, so the update is
+    /// multiplicative: if the server charged 20% more than said, the scale grows by a fifth of that 20%.
+    /// </summary>
+    public void Calibrate(int estimated, int actual)
+    {
+        if (estimated < 50 || actual < 50)
+        {
+            return; // too small to say anything about the ratio
+        }
+
+        var ratio = (double)actual / estimated;
+        var current = Scale;
+        var next = Math.Clamp(current * (1 + (Smoothing * (ratio - 1))), MinScale, MaxScale);
+        Volatile.Write(ref _scale, next);
+    }
 
     public int Count(string text)
     {
@@ -53,7 +91,8 @@ public sealed class ApproximateTokenCounter : ITokenCounter
         var other = text.Length - cjk;
 
         // Round up so any non-empty text costs at least one token.
-        return cjk + ((other + CharsPerToken - 1) / CharsPerToken);
+        var raw = cjk + ((other + CharsPerToken - 1) / CharsPerToken);
+        return Math.Max(1, (int)Math.Ceiling(raw * Scale));
     }
 }
 
@@ -62,15 +101,20 @@ public sealed class ApproximateTokenCounter : ITokenCounter
 /// undershoot relative to a different model's tokenizer; taking the max means a budget is never blown by
 /// picking the optimistic side.
 /// </summary>
-public sealed class DualArmTokenCounter(ITokenCounter provider, ITokenCounter local) : ITokenCounter
+public sealed class DualArmTokenCounter(ITokenCounter provider, ITokenCounter local) : ICalibratedTokenCounter
 {
+    public void Calibrate(int estimated, int actual) => (local as ICalibratedTokenCounter)?.Calibrate(estimated, actual);
+
     public int Count(string text) => Math.Max(provider.Count(text), local.Count(text));
 
     public async ValueTask<int> CountAsync(string text, CancellationToken ct = default)
     {
-        var fromProvider = await provider.CountAsync(text, ct).ConfigureAwait(false);
-        var fromLocal = await local.CountAsync(text, ct).ConfigureAwait(false);
-        return Math.Max(fromProvider, fromLocal);
+        // Both at once: the provider arm is a network round trip and the local one is not, so awaiting them in
+        // turn only ever added the local time to the remote one.
+        var providerCount = provider.CountAsync(text, ct).AsTask();
+        var localCount = local.CountAsync(text, ct).AsTask();
+        await Task.WhenAll(providerCount, localCount).ConfigureAwait(false);
+        return Math.Max(providerCount.Result, localCount.Result);
     }
 }
 
@@ -154,17 +198,32 @@ public sealed class TokenCountCache
         }
     }
 
-    /// <summary>A 128-bit content hash. SHA-256 is in the box; a 128-bit prefix makes collisions irrelevant.</summary>
+    /// <summary>
+    /// A 128-bit content key: two independent 64-bit FNV-1a passes over the characters, plus the length. A cache hit
+    /// still reads the whole text once, so the hash is what the lookup costs — SHA-256 over a UTF-8 copy of every
+    /// body was most of it. Nothing here is adversarial (the text is this process's own history), and a collision
+    /// would mis-price one entry, which a budget absorbs.
+    /// </summary>
     private readonly record struct Key(ulong High, ulong Low)
     {
         public static Key Of(string text)
         {
-            Span<byte> hash = stackalloc byte[32];
-            SHA256.HashData(Encoding.UTF8.GetBytes(text), hash);
+            const ulong OffsetA = 14695981039346656037UL;
+            const ulong PrimeA = 1099511628211UL;
+            const ulong OffsetB = 0x9E3779B97F4A7C15UL;
+            const ulong PrimeB = 0x100000001B3UL * 31 + 7;
 
-            return new Key(
-                BinaryPrimitives.ReadUInt64BigEndian(hash),
-                BinaryPrimitives.ReadUInt64BigEndian(hash[8..]));
+            var a = OffsetA;
+            var b = OffsetB ^ (ulong)text.Length;
+
+            foreach (var ch in text)
+            {
+                a = (a ^ ch) * PrimeA;
+                b = ((b << 5) | (b >> 59)) ^ ch;
+                b *= PrimeB;
+            }
+
+            return new Key(a, b ^ ((ulong)text.Length << 32));
         }
     }
 }

@@ -36,7 +36,9 @@ public sealed class MemoryScorer : IMemoryScorer
         double vector = ComputeVector(queryEmbedding, candidateEmbedding);
         double fts = ComputeFts(candidate.FtsRank);
         double importance = Clamp01(candidate.Importance);
-        double temporal = ComputeTemporalDecay(candidate.CreatedAt, now);
+        double temporal = ComputeTemporalDecay(
+            candidate.LastRecalledAt is { } recalled && recalled > candidate.CreatedAt ? recalled : candidate.CreatedAt,
+            now);
         double veracity = Clamp01(candidate.Veracity);
         double tier = TierWeight(candidate.Tier);
         double content = ComputeContentAdjustment(candidate.Body);

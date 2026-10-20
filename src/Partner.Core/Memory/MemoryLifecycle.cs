@@ -55,6 +55,37 @@ public static class MemoryLifecycle
         return Shared(candidate, existing).Count >= MinSharedKeywords;
     }
 
+    /// <summary>
+    /// The incoming record, analysed once, for comparing against many existing ones. <see cref="Conflicts(string, string)"/>
+    /// splits both texts into keywords on every call; a write compares against up to a few hundred candidates and
+    /// the incoming side never changes.
+    /// </summary>
+    public sealed class Incoming(string body)
+    {
+        private readonly string _normalized = Normalize(body);
+        private readonly HashSet<string> _keywords = Keywords(body);
+
+        public bool ConflictsWith(string existing)
+        {
+            if (string.Equals(_normalized, Normalize(existing), StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var other = Keywords(existing);
+            var shared = 0;
+            foreach (var word in _keywords.Count <= other.Count ? _keywords : other)
+            {
+                if ((_keywords.Count <= other.Count ? other : _keywords).Contains(word))
+                {
+                    shared++;
+                }
+            }
+
+            return shared >= MinSharedKeywords;
+        }
+    }
+
     /// <summary>Text reduced to what a comparison should be made on: punctuation and spacing removed.</summary>
     internal static string Normalize(string text) =>
         string.Concat(text.Where(c => !char.IsWhiteSpace(c) && !char.IsPunctuation(c)));

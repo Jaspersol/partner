@@ -44,7 +44,8 @@ public sealed record MemoryCandidate(
     double Veracity,        // 0..1
     double Confidence,      // 0..1
     double? FtsRank = null, // bm25 magnitude, normalised per index: -1 is this index's best hit, null when unused
-    long? SourceEventSeq = null);
+    long? SourceEventSeq = null,
+    DateTimeOffset? LastRecalledAt = null);
 
 /// <summary>
 /// Explainable score of a candidate: every component is in <c>[0,1]</c> and is reported separately so

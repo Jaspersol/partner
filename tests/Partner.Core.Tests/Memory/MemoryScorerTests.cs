@@ -268,6 +268,25 @@ public sealed class MemoryScorerTests
         Assert.Empty(scorer.Explain(new MemoryScore(0, 0, 0, 0, 0, 0, 0, 1)));
         Assert.Empty(scorer.Explain(new MemoryScore(0, 0, 0, 0, 0, 0, 0, 0.5)));
     }
+
+    [Fact]
+    public void A_record_recalled_recently_is_not_treated_as_old_because_it_was_written_long_ago()
+    {
+        var wrote = Now.AddDays(-120);
+        var untouched = new MemoryCandidate(
+            "r", "alpha beta gamma", MemoryTier.Semantic, MemoryScope.Recall, wrote, 0.5, 1.0, 1.0);
+        var usedYesterday = untouched with { LastRecalledAt = Now.AddDays(-1) };
+
+        var cold = Score(untouched, "alpha");
+        var warm = Score(usedYesterday, "alpha");
+
+        Assert.True(warm.TemporalDecay > cold.TemporalDecay, $"warm {warm.TemporalDecay} should beat cold {cold.TemporalDecay}");
+        Assert.True(warm.TemporalDecay > 0.9, "a record used yesterday is about as fresh as it gets");
+
+        // A recall time earlier than the write (clock skew, an import) never makes a record look older.
+        var skewed = untouched with { LastRecalledAt = wrote.AddDays(-10) };
+        Assert.Equal(cold.TemporalDecay, Score(skewed, "alpha").TemporalDecay, 10);
+    }
 }
 
 /// <summary>Token budget approximation (design doc §2.5.6 ④).</summary>
@@ -331,10 +350,8 @@ public sealed class ApproximateTokenCounterTests
         }
         finally
         {
-            SqliteConnectionPoolCleanup();
             Directory.Delete(dir, recursive: true);
         }
     }
 
-    private static void SqliteConnectionPoolCleanup() => Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 }
