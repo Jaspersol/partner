@@ -10,6 +10,7 @@ import TestButton from '../components/TestButton.vue'
 import { INPUT_MODES } from '../api'
 import { normalizeGear } from '../gears'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
+import { getAutostart, getTrayEnabled, hasShellPrefs, setAutostart, setTrayEnabled } from '../shellPrefs'
 import type { IconName } from '../icons'
 import type {
   ConsumerState,
@@ -772,6 +773,7 @@ interface Section {
 }
 
 const SECTIONS: Section[] = [
+  { key: 'general', label: '通用', icon: 'settings' },
   { key: 'model', label: '对话模型', icon: 'sparkle' },
   { key: 'input', label: '语音输入', icon: 'mic' },
   { key: 'output', label: '语音输出', icon: 'speaker' },
@@ -830,6 +832,44 @@ const running = computed<Record<string, boolean>>(() => ({
   output: voice.value?.output?.running === true,
 }))
 
+// Launch-at-login and the tray belong to the desktop shell, so they apply at once and are not part of the saved form.
+const shellPrefs = hasShellPrefs()
+const autostart = ref(false)
+const trayEnabled = ref(false)
+const shellPrefError = ref('')
+
+async function onAutostart(value: boolean): Promise<void> {
+  shellPrefError.value = ''
+  try {
+    await setAutostart(value)
+    autostart.value = value
+  } catch (error) {
+    autostart.value = !value
+    shellPrefError.value = `开机自启设置失败：${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function onTrayEnabled(value: boolean): Promise<void> {
+  shellPrefError.value = ''
+  try {
+    await setTrayEnabled(value)
+    trayEnabled.value = value
+  } catch (error) {
+    trayEnabled.value = !value
+    shellPrefError.value = `托盘设置失败：${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function loadShellPrefs(): Promise<void> {
+  if (!shellPrefs) return
+  try {
+    autostart.value = await getAutostart()
+    trayEnabled.value = await getTrayEnabled()
+  } catch {
+    // Leave both off; toggling reports the real error.
+  }
+}
+
 // Reduced transparency and theme are frontend-only and never saved with the settings.
 const reducedTransparency = ref(readReducedTransparency())
 
@@ -869,6 +909,7 @@ onMounted(() => {
   section.value = readStored(SECTION_KEY, 'model', (value): value is string => typeof value === 'string' && SECTIONS.some((item) => item.key === value))
   advanced.value = readStored(ADVANCED_KEY, {} as Record<string, boolean>, (value): value is Record<string, boolean> => typeof value === 'object' && value !== null)
   void refresh()
+  void loadShellPrefs()
 })
 
 /** Asked by the shell before it switches away: the views are `v-if`, so leaving discards every edit. */
@@ -900,6 +941,34 @@ defineExpose({ refresh, hasUnsavedChanges })
         </nav>
 
         <div class="settings-body">
+          <section v-show="section === 'general'" class="panel" data-test="settings-section-general">
+            <header class="panel-head"><h2>通用</h2></header>
+            <div v-if="shellPrefs" class="g-card">
+              <SettingRow label="开机自启" hint="登录 Windows 后自动启动 Partner。">
+                <input
+                  type="checkbox"
+                  class="g-switch"
+                  role="switch"
+                  :checked="autostart"
+                  data-test="settings-autostart"
+                  @change="onAutostart(($event.target as HTMLInputElement).checked)"
+                />
+              </SettingRow>
+              <SettingRow label="启用托盘" hint="开启后，关闭窗口会最小化到系统托盘；右键托盘图标可重新打开或彻底退出。关闭则点关闭就直接退出。">
+                <input
+                  type="checkbox"
+                  class="g-switch"
+                  role="switch"
+                  :checked="trayEnabled"
+                  data-test="settings-tray"
+                  @change="onTrayEnabled(($event.target as HTMLInputElement).checked)"
+                />
+              </SettingRow>
+              <p v-if="shellPrefError" class="warn-line" role="alert" data-test="settings-shell-error">{{ shellPrefError }}</p>
+            </div>
+            <p v-else class="callout" data-test="settings-general-unavailable">这些选项只在桌面版中可用。</p>
+          </section>
+
           <section v-show="section === 'model'" class="panel" data-test="settings-section-model">
             <header class="panel-head">
               <h2>对话模型</h2>

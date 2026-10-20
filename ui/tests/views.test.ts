@@ -1707,7 +1707,7 @@ describe('settings view', () => {
     await flushPromises()
 
     const nav = wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())
-    expect(nav).toEqual(['对话模型', '语音输入', '语音输出', '电脑操控', '文件访问', '联网搜索', '本地引擎', '外观'])
+    expect(nav).toEqual(['通用', '对话模型', '语音输入', '语音输出', '电脑操控', '文件访问', '联网搜索', '本地引擎', '外观'])
 
     // Every field is in the document whichever category is showing (the others are only hidden), so a change on
     // one category is never lost by looking at another.

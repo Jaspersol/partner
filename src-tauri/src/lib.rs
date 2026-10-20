@@ -10,17 +10,138 @@ use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rand::RngCore;
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{
+    AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
+use tauri_plugin_autostart::MacosLauncher;
+
+const TRAY_ID: &str = "main-tray";
 
 /// Keeps the sidecar handle so it can be killed when the shell exits.
 struct Sidecar(Mutex<Option<Child>>);
 
+/// Whether closing the window hides it to the tray instead of quitting. Mirrors the file on disk.
+struct TrayEnabled(AtomicBool);
+
+/// The preference lives beside the workspace rather than in the API's settings: it is the shell's, and the shell
+/// needs it before (and without) the API answering.
+fn tray_pref_path() -> Option<PathBuf> {
+    let base = std::env::var("LOCALAPPDATA").ok()?;
+    Some(PathBuf::from(base).join("Partner").join("tray-enabled"))
+}
+
+fn read_tray_pref() -> bool {
+    tray_pref_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| text.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn write_tray_pref(enabled: bool) -> Result<(), String> {
+    let path = tray_pref_path().ok_or("LOCALAPPDATA is not set")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(path, if enabled { "1" } else { "0" }).map_err(|error| error.to_string())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+fn create_tray(app: &AppHandle) -> tauri::Result<()> {
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+    let open = MenuItem::with_id(app, "open", "打开partner", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出partner", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("Partner")
+        .menu(&menu)
+        // Left click reopens the window; the menu is for the right button.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_tray_enabled(state: State<'_, TrayEnabled>) -> bool {
+    state.0.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn set_tray_enabled(
+    app: AppHandle,
+    state: State<'_, TrayEnabled>,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        create_tray(&app).map_err(|error| error.to_string())?;
+    } else {
+        // Dropping the tray icon removes it from the notification area.
+        let _ = app.remove_tray_by_id(TRAY_ID);
+    }
+    write_tray_pref(enabled)?;
+    state.0.store(enabled, Ordering::SeqCst);
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .invoke_handler(tauri::generate_handler![get_tray_enabled, set_tray_enabled])
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let enabled = window
+                    .app_handle()
+                    .try_state::<TrayEnabled>()
+                    .map(|state| state.0.load(Ordering::SeqCst))
+                    .unwrap_or(false);
+                if enabled && window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
+            let tray_enabled = read_tray_pref();
+            app.manage(TrayEnabled(AtomicBool::new(tray_enabled)));
+            if tray_enabled {
+                create_tray(app.handle())?;
+            }
             let port = free_port()?;
             // The shell owns the token: generated here, passed to the sidecar through the environment (never
             // argv, never a file), and injected into the webview. The window does not wait for the API to finish
