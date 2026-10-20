@@ -184,6 +184,9 @@ public sealed class DesktopAutomation : IDisposable
     /// </summary>
     private WalkSnapshot _walkState = WalkSnapshot.Empty;
 
+    /// <summary>The window the last action was aimed at; an unfiltered observation keeps looking into it.</summary>
+    private volatile string? _recentWindowId;
+
     /// <summary>
     /// One observation's walks and truncation reasons, immutable once published.
     /// <para>
@@ -393,6 +396,40 @@ public sealed class DesktopAutomation : IDisposable
 
     public LeaseStore Leases => _leases;
 
+    /// <summary>The window the last action was aimed at, or null before any.</summary>
+    public string? RecentWindowId => _recentWindowId;
+
+    /// <summary>
+    /// Looks again at the window an action is about to hit.
+    /// <para>
+    /// Re-reading a window's whole control tree before every click is most of what a click costs. An action that
+    /// names no control (a bare coordinate) does not need the tree to be fresh, only the window to be where it
+    /// was: when its lease is still live and its rectangle is unchanged, the controls the model was shown are
+    /// still where it was shown them, so only the windows are listed again.
+    /// </para>
+    /// </summary>
+    /// <param name="reusedElements">True when the control tree was not re-read.</param>
+    public DesktopObservation ObserveForAct(string entityId, bool coordinateOnly, out bool reusedElements)
+    {
+        reusedElements = false;
+
+        if (coordinateOnly
+            && _leases.Peek(entityId) is { } lease
+            && lease.ExpiresAt > _clock.GetUtcNow()
+            && _lastObservation?.Find(entityId) is { } was)
+        {
+            var cheap = Observe(walkWindow: _ => false);
+            if (cheap.Find(entityId) is { } now
+                && string.Equals(now.LayoutDigest, was.LayoutDigest, StringComparison.Ordinal))
+            {
+                reusedElements = true;
+                return cheap;
+            }
+        }
+
+        return Observe(elementsFor: entityId);
+    }
+
     /// <summary>Observes the current windows and issues a fresh generation.</summary>
     /// <param name="scope">What kind of view asked, which changes the lease TTL.</param>
     /// <param name="payloadBytes">How much was sent with it, which also changes the TTL.</param>
@@ -406,10 +443,16 @@ public sealed class DesktopAutomation : IDisposable
     public DesktopObservation Observe(
         ObserveScope scope = ObserveScope.Action,
         int payloadBytes = 0,
-        string? elementsFor = null)
+        string? elementsFor = null,
+        Func<DesktopWindow, bool>? walkWindow = null)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var windows = WindowEnumerator.List();
+
+        // Narrower than "every window": a UI Automation tree is read only for the windows asked for. The rest
+        // still appear as windows (they are on the desktop), and keep whatever elements the model was last shown.
+        var partial = elementsFor is not null || walkWindow is not null;
+        var walked = new HashSet<string>(StringComparer.Ordinal);
 
         // Elements are read per window and numbered inside this observation: an id is a position in this
         // answer, not a handle that survives a new one — which is exactly what makes a stale element detectable.
@@ -422,7 +465,7 @@ public sealed class DesktopAutomation : IDisposable
         // pair the previous walk produced, and the invariant an element id's meaning rests on.
         var walks = new Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)>(StringComparer.Ordinal);
         var truncated = new Dictionary<string, WalkStopReason>(StringComparer.Ordinal);
-        if (elementsFor is not null)
+        if (partial)
         {
             foreach (var (id, walk) in _walkState.Walks)
             {
@@ -443,6 +486,13 @@ public sealed class DesktopAutomation : IDisposable
             {
                 continue;
             }
+
+            if (walkWindow is not null && !walkWindow(window))
+            {
+                continue;
+            }
+
+            walked.Add(windowId);
 
             // Numbered by the same helper the picture's marks go through, so an id on a mark and the id in
             // this observation are the same control — not two independent walks that happen to agree today.
@@ -469,12 +519,11 @@ public sealed class DesktopAutomation : IDisposable
         // window's live controls from being held for the life of the process.
         _walkState = new WalkSnapshot(walks, truncated);
 
-        if (elementsFor is not null && _lastObservation is not null)
+        if (partial && _lastObservation is not null)
         {
             // The windows that were not re-walked keep what the model was shown, because those ids are what it
             // is holding — and a screenshot of one of them must still find its marks.
-            elements.AddRange(_lastObservation.Elements.Where(element =>
-                !string.Equals(element.WindowId, elementsFor, StringComparison.Ordinal)));
+            elements.AddRange(_lastObservation.Elements.Where(element => !walked.Contains(element.WindowId)));
         }
 
         watch.Stop();
@@ -534,6 +583,7 @@ public sealed class DesktopAutomation : IDisposable
             Sources = new[] { "win32.enumwindows", "uia.controlview" },
             Entities = entities,
             Elements = elements,
+            WalkedWindows = partial ? walked : null,
         };
 
         _lastObservation = observation;
@@ -625,6 +675,8 @@ public sealed class DesktopAutomation : IDisposable
         {
             return Refused(actionId, observation.ObsId, entityId, kind, parameters, "entity_not_found");
         }
+
+        _recentWindowId = entityId;
 
         var lease = _leases.Peek(entityId);
         var validation = _leases.Validate(lease, observation.ObsId, observation.Entities, _clock.GetUtcNow());
@@ -821,7 +873,10 @@ public sealed class DesktopAutomation : IDisposable
     /// </summary>
     /// <param name="entityId">One window, or null for every window with a debug port.</param>
     /// <returns>How many elements were added — zero everywhere means nothing changed for anyone.</returns>
-    public async Task<int> AddDomElementsAsync(string? entityId = null, CancellationToken ct = default)
+    public async Task<int> AddDomElementsAsync(
+        string? entityId = null,
+        CancellationToken ct = default,
+        IReadOnlySet<string>? onlyWindows = null)
     {
         if (_cdp is null || _cdpPorts is null || _lastObservation is null)
         {
@@ -834,6 +889,11 @@ public sealed class DesktopAutomation : IDisposable
         foreach (var entity in _lastObservation.Entities)
         {
             if (entityId is not null && !string.Equals(entityId, entity.EntityId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (onlyWindows is not null && !onlyWindows.Contains(entity.EntityId))
             {
                 continue;
             }

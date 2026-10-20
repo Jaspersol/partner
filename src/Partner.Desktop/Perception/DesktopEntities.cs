@@ -126,6 +126,12 @@ public sealed record DesktopObservation
     /// </summary>
     public IReadOnlyList<UiElement> Elements { get; set; } = Array.Empty<UiElement>();
 
+    /// <summary>
+    /// The windows whose controls were read for this observation; null when every window's were. A window
+    /// outside the set is on the desktop but was not looked into, which is not the same as having no controls.
+    /// </summary>
+    public IReadOnlySet<string>? WalkedWindows { get; init; }
+
     /// <summary>An element by the id this observation gave it.</summary>
     public UiElement? FindElement(string elementId) =>
         Elements.FirstOrDefault(element => string.Equals(element.ElementId, elementId, StringComparison.Ordinal));

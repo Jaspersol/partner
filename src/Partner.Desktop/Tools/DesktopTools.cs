@@ -57,27 +57,34 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         "desktop_observe",
         "看当前桌面：可见窗口（entityId、标题、进程、矩形）以及窗口内的可交互控件（elementId、名称、类型、点击点）。"
         + "动作只能针对这里返回的 entityId / elementId。若你要操作的程序不在列表里，它就没在运行：先用 desktop_launch 打开它，不要对别的窗口动手。"
-        + "只想看一个窗口时传 entityId 或 titleContains——不传就是整桌面，每个窗口的每个控件都在里面，又慢又贵。",
+        + "不传参数时只展开前台窗口和刚操作过的窗口的控件，其余窗口只列窗口本身（elementsOmitted）；要看某个窗口的控件，传它的 entityId 或 titleContains。"
+        + "确实需要整桌面所有控件时才传 all=true——每个窗口的每个控件都读一遍，又慢又贵。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"只看这一个窗口（来自上一次观察）"},
-          "titleContains":{"type":"string","description":"只看标题包含这个文字的窗口"}
+          "titleContains":{"type":"string","description":"只看标题包含这个文字的窗口"},
+          "all":{"type":"boolean","description":"读取所有窗口的控件（慢）；默认只读前台与刚操作过的窗口"}
         },"additionalProperties":false}
         """);
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
+        var filter = DesktopObserveFilter.Parse(argumentsJson);
+
+        // The filter decides which windows are *read*, not which are shown afterwards: reading every window's
+        // control tree is the expensive part (seconds for a nine-window desktop), and a result that is then
+        // thrown away has still been paid for.
         DesktopObservation observation;
         try
         {
-            observation = automation.Observe();
+            observation = filter.WholeDesktop
+                ? automation.Observe()
+                : automation.Observe(walkWindow: filter.WalkSelector(automation.RecentWindowId));
         }
         catch (Exception error)
         {
             return new ToolResult(false, $"观察失败：{error.Message}");
         }
-
-        var filter = DesktopObserveFilter.Parse(argumentsJson);
 
         // A browser page's own controls, for the windows that have one. Read after the window walk because it
         // is a network round trip on top of it — and its absence changes nothing, since those windows were
@@ -87,7 +94,7 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
 
         try
         {
-            domElements = await automation.AddDomElementsAsync(filter.EntityId, ct).ConfigureAwait(false);
+            domElements = await automation.AddDomElementsAsync(filter.EntityId, ct, observation.WalkedWindows).ConfigureAwait(false);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -131,8 +138,11 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                     width = entity.Rect.Width,
                     height = entity.Rect.Height,
                 },
+                // A window that was not looked into says so, instead of looking like a window with no controls.
+                elementsOmitted = observation.WalkedWindows is { } walked && !walked.Contains(entity.EntityId) ? true : (bool?)null,
                 elements = observation.Elements
-                    .Where(element => element.WindowId == entity.EntityId)
+                    .Where(element => element.WindowId == entity.EntityId
+                        && (observation.WalkedWindows is not { } inspected || inspected.Contains(entity.EntityId)))
                     .Select(element => new
                     {
                         elementId = element.ElementId,
@@ -195,10 +205,30 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
     /// empty", which sends the model off launching programs that are already running.
     /// </para>
     /// </summary>
-    public sealed record DesktopObserveFilter(string? EntityId, string? TitleContains)
+    public sealed record DesktopObserveFilter(string? EntityId, string? TitleContains, bool All = false)
     {
         public bool IsEmpty => EntityId is not { Length: > 0 } && TitleContains is not { Length: > 0 };
 
+        /// <summary>Every window's controls were asked for, with `all`.</summary>
+        public bool WholeDesktop => All;
+
+        /// <summary>
+        /// Which windows get their controls read. A filter names them; with none, the window in front and the one
+        /// the last action went to, the two a next step is almost always about. The rest are listed as windows only.
+        /// </summary>
+        public Func<Partner.Desktop.Windows.DesktopWindow, bool> WalkSelector(string? recentWindowId) => window =>
+        {
+            var id = window.Handle.ToString("x");
+
+            if (IsEmpty)
+            {
+                return window.IsForeground || string.Equals(id, recentWindowId, StringComparison.Ordinal);
+            }
+
+            return (EntityId is not { Length: > 0 } || string.Equals(EntityId, id, StringComparison.Ordinal))
+                && (TitleContains is not { Length: > 0 }
+                    || (window.Title ?? string.Empty).Contains(TitleContains, StringComparison.OrdinalIgnoreCase));
+        };
         /// <summary>What was asked for, for the refusal that says nothing matched it.</summary>
         public string Describe() =>
             (EntityId is { Length: > 0 } ? $"entityId={EntityId}" : string.Empty) +
@@ -219,7 +249,7 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
             try
             {
                 var arguments = JsonSerializer.Deserialize<ObserveArguments>(argumentsJson, Json);
-                return new DesktopObserveFilter(arguments?.EntityId, arguments?.TitleContains);
+                return new DesktopObserveFilter(arguments?.EntityId, arguments?.TitleContains, arguments?.All ?? false);
             }
             catch (JsonException)
             {
@@ -228,7 +258,7 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         }
     }
 
-    private sealed record ObserveArguments(string? EntityId, string? TitleContains);
+    private sealed record ObserveArguments(string? EntityId, string? TitleContains, bool? All);
 }
 
 /// <summary>
@@ -273,8 +303,8 @@ public sealed class DesktopActTool(
         + "scroll 需要 scrollDelta（**格数**：正数向上滚，负数向下滚，一次 3 格比较合适）；"
         + "scrollIntoView 只需 elementId（由控件自己报距离，不用猜滚多少）；drag 需要 x/y + toX/toY。"
         + "执行前会重新观察并核对目标是否仍是同一个窗口/控件。"
-        + "动作执行后会自动附上该窗口的新截图（含网格与标记，mediaId 可直接供 px/py 用），"
-        + "不需要再手动 desktop_screenshot 才能看见效果；feedback=on-failure 只在校验不确认时附图（省钱）；feedback=off 全关。",
+        + "动作执行后，若校验不能确认效果（画面无变化或无法判断）会附上该窗口的新截图（含网格与标记，mediaId 可直接供 px/py 用），"
+        + "不需要再手动 desktop_screenshot 才能看见效果；默认只在校验不能确认效果时附图（省钱）；feedback=auto 每次都附图；feedback=off 全关。",
         """
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"窗口 id；给了 elementId 或 x/y 时可省略"},
@@ -293,7 +323,7 @@ public sealed class DesktopActTool(
           "scrollDelta":{"type":"integer","description":"滚轮格数：正数向上，负数向下，一次 3 格比较合适"},
           "offset":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"description":"控件内部的相对位置 0..1，不传就是控件中心"},
           "clickCount":{"type":"integer","enum":[1,2],"description":"1 = 单击，2 = 双击（仅 leftClick）"},
-          "feedback":{"type":"string","enum":["auto","off","on-failure"],"default":"auto","description":"auto = 动作后自动附新截图；on-failure = 仅当校验未能确认效果（NoChange/Indeterminate）时才附图，省 token；off = 不要图"}
+          "feedback":{"type":"string","enum":["auto","off","on-failure"],"default":"on-failure","description":"on-failure（默认）= 仅当校验未能确认效果（NoChange/Indeterminate）时才附图，省 token；auto = 每次动作后都附新截图；off = 不要图"}
         },"required":["kind"],"additionalProperties":false}
         """);
 
@@ -408,9 +438,13 @@ public sealed class DesktopActTool(
         // act only on what was seen — without making a slow human answer a failure. Only this window's UI
         // Automation tree is re-read: it is the one being acted on, and walking every window costs seconds.
         DesktopObservation fresh;
+        var reusedElements = false;
         try
         {
-            fresh = automation.Observe(elementsFor: entityId);
+            fresh = automation.ObserveForAct(
+                entityId,
+                coordinateOnly: arguments.ElementId is not { Length: > 0 },
+                out reusedElements);
         }
         catch (Exception error)
         {
@@ -427,7 +461,11 @@ public sealed class DesktopActTool(
         // the act rather than resolved to whatever now sits at that index.
         try
         {
-            await automation.AddDomElementsAsync(entityId, ct).ConfigureAwait(false);
+            // Nothing to re-read when the controls were carried over: the page's nodes ride along with them.
+            if (!reusedElements)
+            {
+                await automation.AddDomElementsAsync(entityId, ct).ConfigureAwait(false);
+            }
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -976,7 +1014,7 @@ public sealed class DesktopActTool(
         && feedback is not "off"
         && supportsImages
         && kind is not (ActionKind.Focus or ActionKind.MovePointer or ActionKind.ScrollIntoView)
-        && (feedback != "on-failure"
+        && (feedback is "auto"
             || verify is VerifyDecision.NoChange or VerifyDecision.Indeterminate);
 
     /// <summary>

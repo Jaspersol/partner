@@ -52,7 +52,7 @@ public sealed class DesktopActFeedbackTests
     }
 
     [Fact]
-    public void The_visual_kinds_ask_for_a_picture_by_default()
+    public void The_visual_kinds_ask_for_a_picture_when_feedback_is_auto()
     {
         foreach (var kind in new[]
                  {
@@ -60,8 +60,19 @@ public sealed class DesktopActFeedbackTests
                      ActionKind.KeyPress, ActionKind.TypeText, ActionKind.Scroll, ActionKind.Drag,
                  })
         {
-            Assert.True(DesktopActTool.WantsPicture(kind, null, supportsImages: true, guardPassed: true), kind.ToString());
+            Assert.True(DesktopActTool.WantsPicture(kind, "auto", supportsImages: true, guardPassed: true), kind.ToString());
         }
+    }
+
+    [Fact]
+    public void By_default_a_picture_is_only_attached_when_the_check_could_not_confirm_the_effect()
+    {
+        Assert.False(DesktopActTool.WantsPicture(
+            ActionKind.LeftClick, null, supportsImages: true, guardPassed: true, VerifyDecision.AnyChange));
+        Assert.True(DesktopActTool.WantsPicture(
+            ActionKind.LeftClick, null, supportsImages: true, guardPassed: true, VerifyDecision.NoChange));
+        Assert.True(DesktopActTool.WantsPicture(
+            ActionKind.LeftClick, null, supportsImages: true, guardPassed: true, VerifyDecision.Indeterminate));
     }
 
     // ---- the render, end to end but with a stub capture ---------------------------------------
