@@ -201,12 +201,50 @@ public sealed class MemoryScorer : IMemoryScorer
 
     private static void Flush(HashSet<string> tokens, StringBuilder builder)
     {
-        if (builder.Length >= MinTokenLength)
+        var run = builder.ToString();
+        builder.Clear();
+
+        if (!run.Any(CjkText.IsCjk))
         {
-            tokens.Add(builder.ToString());
+            if (run.Length >= MinTokenLength)
+            {
+                tokens.Add(run);
+            }
+
+            return;
         }
 
-        builder.Clear();
+        // A run of Chinese has no spaces to split on, so as one token it matches only a sentence worded exactly
+        // the same. Its character pairs are what two differently-worded sentences can share (see CjkText); the
+        // Latin or digit stretches around it stay whole tokens.
+        foreach (var bigram in CjkText.Bigrams(run))
+        {
+            tokens.Add(bigram);
+        }
+
+        var latin = new StringBuilder();
+        foreach (var ch in run)
+        {
+            if (CjkText.IsCjk(ch))
+            {
+                AddLatin(tokens, latin);
+                continue;
+            }
+
+            latin.Append(ch);
+        }
+
+        AddLatin(tokens, latin);
+
+        static void AddLatin(HashSet<string> tokens, StringBuilder latin)
+        {
+            if (latin.Length >= MinTokenLength)
+            {
+                tokens.Add(latin.ToString());
+            }
+
+            latin.Clear();
+        }
     }
 
     private static void AddIfNonZero(List<string> reasons, string name, double value)

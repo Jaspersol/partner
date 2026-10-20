@@ -155,8 +155,8 @@ public sealed class MemoryLifecycleTests : IDisposable
         await Write(store, "old", MemoryTier.Semantic, "很久以前说过的一件旧事", now.AddDays(-100));
         await Write(store, "fresh", MemoryTier.Semantic, "最近说过的一件新事", now.AddDays(-1));
 
-        // Any recall maintains the store, which is where demotion runs.
         await store.RecallAsync("新事");
+        await store.DemoteIdleAsync(); // demotion is the maintenance pass's job, not the recall path's
 
         Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("old"))!.Tier);
         Assert.Equal(MemoryTier.Semantic, (await store.GetAsync("fresh"))!.Tier);

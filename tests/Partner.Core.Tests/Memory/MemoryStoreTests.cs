@@ -142,7 +142,7 @@ public sealed class MemoryStoreTests : IDisposable
         await using var store = Open();
         for (var i = 0; i < 5; i++)
         {
-            await store.WriteAsync(Rec($"m{i}", "alpha beta gamma", importance: 0.1 * i));
+            await store.WriteAsync(Rec($"m{i}", $"alpha beta gamma variant{i}", importance: 0.1 * i));
         }
 
         var hits = await store.RecallAsync("alpha beta", limit: 2);
@@ -156,7 +156,7 @@ public sealed class MemoryStoreTests : IDisposable
     {
         await using var store = Open(new MemoryStoreOptions { InjectionTokenLimit = 12, RecallLimit = 10 });
         await store.WriteAsync(Rec("a", "alpha beta gamma delta epsilon zeta eta theta"));
-        await store.WriteAsync(Rec("b", "alpha beta gamma delta epsilon zeta eta theta"));
+        await store.WriteAsync(Rec("b", "alpha omega sigma kappa lambda mu nu rho"));
 
         var injection = await store.InjectAsync("alpha");
 
@@ -212,7 +212,9 @@ public sealed class MemoryStoreTests : IDisposable
         var created = _clock.GetUtcNow() - TimeSpan.FromHours(30);
         await store.WriteAsync(Rec("stale", "alpha", MemoryTier.Working, createdAt: created));
 
-        // The very next write must consolidate the stale working record first.
+        // The next write after the throttle window must consolidate the stale working record first (a pass reads the
+        // whole table, so writes inside the window share one).
+        _clock.Advance(MemoryStore.PromotionThrottle);
         await store.WriteAsync(Rec("newer", "beta"));
 
         var stale = await store.GetAsync("stale");
@@ -328,7 +330,7 @@ public sealed class MemoryStoreTests : IDisposable
     {
         await using var store = Open(new MemoryStoreOptions { Embeddings = new HashingEmbeddingProvider() });
         await store.WriteAsync(Rec("a", "the deployment pipeline runs nightly"));
-        await store.WriteAsync(Rec("b", "the deployment pipeline runs nightly"));
+        await store.WriteAsync(Rec("b", "the deployment pipeline runs nightly on weekdays"));
 
         var hits = await store.RecallAsync("deployment pipeline");
 
@@ -388,6 +390,20 @@ public sealed class MemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task The_same_sentence_in_two_rows_is_handed_out_once()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("working-copy", "用户喜欢喝无糖乌龙茶", MemoryTier.Working));
+        await store.WriteAsync(Rec("episodic-copy", "用户喜欢喝无糖乌龙茶", MemoryTier.Episodic));
+        await store.WriteAsync(Rec("other", "用户喜欢喝茶的时间是下午", MemoryTier.Semantic));
+
+        var hits = await store.RecallAsync("乌龙茶");
+
+        Assert.Equal(1, hits.Count(h => h.Body == "用户喜欢喝无糖乌龙茶"));
+
+    }
+
+    [Fact]
     public async Task An_idle_record_is_demoted_but_a_retained_one_is_not()
     {
         await using var store = Open();
@@ -397,10 +413,10 @@ public sealed class MemoryStoreTests : IDisposable
         await store.WriteAsync(Rec("retained", "beta", MemoryTier.Semantic, MemoryScope.Retain, longAgo));
         await store.WriteAsync(Rec("trigger", "gamma marker", MemoryTier.Episodic, MemoryScope.Recall));
 
-        // Demotion rides on the recall path — it is the only moment the store is open when a record is seen to
-        // have gone unused, and being handed out is what marks a record used. So the query has to match some
-        // *other* record: recalling the idle ones would protect them, which is the whole mechanism working.
+        // Being handed out is what marks a record used, so the query has to match some *other* record:
+        // recalling the idle ones would protect them, which is the whole mechanism working.
         await store.RecallAsync("gamma");
+        await store.DemoteIdleAsync(); // demotion lives in the maintenance pass, not on the recall path
 
         Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("ordinary"))!.Tier);
         Assert.Equal(MemoryTier.Semantic, (await store.GetAsync("retained"))!.Tier);
@@ -447,6 +463,7 @@ public sealed class MemoryStoreTests : IDisposable
         await store.WriteAsync(Rec("trigger", "gamma marker", MemoryTier.Episodic, MemoryScope.Recall));
 
         await store.RecallAsync("gamma");
+        await store.DemoteIdleAsync(); // demotion lives in the maintenance pass, not on the recall path
 
         // It used to fall through the CASE into Working, skipping a level. Procedural is the only tier that
         // records a way of doing something rather than a fact, so losing two notches loses the reason to keep it.

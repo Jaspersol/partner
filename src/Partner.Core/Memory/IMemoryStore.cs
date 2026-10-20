@@ -8,6 +8,13 @@ public sealed record MemoryStoreOptions
     /// <summary>Token budget for injection (design doc §2.5.6 ⑥: injectionTokenLimit).</summary>
     public int InjectionTokenLimit { get; init; } = 5000;
 
+    /// <summary>
+    /// Hits scoring below this are not returned. The score has a floor of roughly 0.2 even for a record that only
+    /// shares one word (importance, recency, tier all contribute), so a threshold is what keeps a barely related
+    /// record from taking an injection slot just because the store had nothing better. 0 keeps everything.
+    /// </summary>
+    public double MinScore { get; init; }
+
     /// <summary>FTS coarse-filter size before re-ranking.</summary>
     public int CandidateLimit { get; init; } = 200;
 

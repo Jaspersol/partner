@@ -23,7 +23,7 @@ internal static class MemorySchema
 
     private const string Tables = """
         PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = FULL;
+        PRAGMA synchronous = NORMAL;
         PRAGMA busy_timeout = 5000;
 
         CREATE TABLE IF NOT EXISTS memories (

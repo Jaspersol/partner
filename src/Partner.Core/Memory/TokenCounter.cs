@@ -23,7 +23,7 @@ public interface ITokenCounter
 /// Dependency-free approximation: ~1 token per 4 characters, never zero for non-empty text.
 /// <para>
 /// Deliberately crude, and knowingly wrong in one direction for some scripts: CJK text runs closer to 1 token
-/// per character than 1 per 4, so this <b>under</b>counts Chinese. It is the fallback, not the answer — a
+/// per character than 1 per 4, so this <b>under</b>counted Chinese before it counted CJK characters one for one. It is the fallback, not the answer — a
 /// provider-backed counter (see <c>HttpLlmClient</c>) is preferred wherever one is available.
 /// </para>
 /// </summary>
@@ -38,8 +38,22 @@ public sealed class ApproximateTokenCounter : ITokenCounter
             return 0;
         }
 
+        // Chinese and kana run near one token per character, not one per four, so they are counted one for one;
+        // everything else keeps the ~4-chars-per-token rule. Counting 5000 characters of Chinese as 1250 tokens
+        // is how a budget gets blown by a factor of four.
+        var cjk = 0;
+        foreach (var ch in text)
+        {
+            if (ch is >= (char)0x4E00 and <= (char)0x9FFF or >= (char)0x3040 and <= (char)0x30FF)
+            {
+                cjk++;
+            }
+        }
+
+        var other = text.Length - cjk;
+
         // Round up so any non-empty text costs at least one token.
-        return (text.Length + CharsPerToken - 1) / CharsPerToken;
+        return cjk + ((other + CharsPerToken - 1) / CharsPerToken);
     }
 }
 

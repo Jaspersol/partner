@@ -133,12 +133,30 @@ public sealed class MemoryStore : IMemoryStore
         Execute($"PRAGMA user_version = {version}");
     }
 
+    /// <summary>How often the write path may run a promotion pass; the maintenance pass covers the rest.</summary>
+    internal static readonly TimeSpan PromotionThrottle = TimeSpan.FromSeconds(30);
+
+    private DateTimeOffset _lastPromotionPass = DateTimeOffset.MinValue;
+
+    private async Task PromoteIfDueAsync(CancellationToken ct)
+    {
+        var now = _clock.GetUtcNow();
+        if (now - _lastPromotionPass < PromotionThrottle && now >= _lastPromotionPass)
+        {
+            return;
+        }
+
+        _lastPromotionPass = now;
+        await PromoteEligibleAsync(ct).ConfigureAwait(false);
+    }
+
     public async Task<string> WriteAsync(MemoryRecord record, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        // Design doc §2.5.6 ③: every write path consolidates eligible working records before committing.
-        await PromoteEligibleAsync(ct).ConfigureAwait(false);
+        // Design doc §2.5.6 ③: every write path consolidates eligible working records before committing. A pass
+        // reads the table, so it runs at most once per PromotionThrottle, not once per record.
+        await PromoteIfDueAsync(ct).ConfigureAwait(false);
 
         // A newer statement about the same thing retires the older one. Doing it here rather than at recall
         // means the list a person reads already shows the truth, instead of the prompt quietly hiding one half
@@ -200,7 +218,7 @@ public sealed class MemoryStore : IMemoryStore
     }
 
     /// <summary>
-    /// Marks what was just handed out as used, and demotes what has gone quiet.
+    /// Marks what was just handed out as used.
     /// <para>
     /// Both happen on the recall path because that is the only place "used" is observable, and demotion needs a
     /// moment when the store is already open. A record nobody found for three months is not something to keep
@@ -211,16 +229,25 @@ public sealed class MemoryStore : IMemoryStore
     {
         var now = _clock.GetUtcNow();
 
-        foreach (var recordId in recalled)
+        // One statement per chunk instead of one per hit: the recall path is on the critical path of every turn.
+        // Demotion is not here any more — it scans the whole table, and the maintenance pass already runs it.
+        const int ChunkSize = 400;
+        for (var from = 0; from < recalled.Count; from += ChunkSize)
         {
+            var chunk = recalled.Skip(from).Take(ChunkSize).ToList();
+
             await using var cmd = _db.CreateCommand();
-            cmd.CommandText = "UPDATE memories SET last_recalled_at = $now WHERE record_id = $id";
+            var names = new List<string>(chunk.Count);
+            for (var i = 0; i < chunk.Count; i++)
+            {
+                names.Add("$r" + i);
+                cmd.Parameters.AddWithValue("$r" + i, chunk[i]);
+            }
+
+            cmd.CommandText = $"UPDATE memories SET last_recalled_at = $now WHERE record_id IN ({string.Join(',', names)})";
             cmd.Parameters.AddWithValue("$now", Iso(now));
-            cmd.Parameters.AddWithValue("$id", recordId);
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
-
-        await DemoteIdleAsync(now, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -275,12 +302,23 @@ public sealed class MemoryStore : IMemoryStore
             return;
         }
 
-        await PromoteEligibleAsync(ct).ConfigureAwait(false);
+        await PromoteIfDueAsync(ct).ConfigureAwait(false);
+
+        // Embedded before the transaction opens: computing a vector can be a network call, and a write
+        // transaction held open across it blocks every other writer for as long as the provider takes.
+        var vectors = new Dictionary<string, float[]?>(StringComparer.Ordinal);
+        if (_options.Embeddings.Dimensions > 0)
+        {
+            foreach (var record in list)
+            {
+                vectors[record.RecordId] = await TryEmbedAsync(record.Body, ct).ConfigureAwait(false);
+            }
+        }
 
         await using var tx = _db.BeginTransaction();
         foreach (var record in list)
         {
-            await InsertAsync(record, ct, tx).ConfigureAwait(false);
+            await InsertAsync(record, ct, tx, embedded: vectors).ConfigureAwait(false);
         }
 
         await tx.CommitAsync(ct).ConfigureAwait(false);
@@ -433,6 +471,7 @@ public sealed class MemoryStore : IMemoryStore
             return Array.Empty<MemoryHit>();
         }
 
+        var seenBodies = new HashSet<string>(StringComparer.Ordinal);
         var result = eligible
             .Select(candidate =>
             {
@@ -451,6 +490,10 @@ public sealed class MemoryStore : IMemoryStore
             })
             .OrderByDescending(h => h.Score.Total)
             .ThenBy(h => h.RecordId, StringComparer.Ordinal)
+            // The same sentence can live in two rows (a promotion leaves the working row behind next to its episodic
+            // copy). Handing the model both is two slots for one fact; the better-scored row stands for it.
+            .Where(hit => hit.Score.Total >= _options.MinScore)
+            .Where(hit => seenBodies.Add(MemoryLifecycle.Normalize(hit.Body)))
             .Take(take)
             .ToList();
 
@@ -747,7 +790,12 @@ public sealed class MemoryStore : IMemoryStore
         "SELECT record_id, tier, scope, body, source_event_seq, created_at, valid_from, valid_to, ttl_expires_at, "
         + "consolidated_at, confidence, importance, veracity, superseded_by, edited_by FROM memories";
 
-    private async Task InsertAsync(MemoryRecord record, CancellationToken ct, SqliteTransaction? tx = null, bool insertOrIgnore = false)
+    private async Task InsertAsync(
+        MemoryRecord record,
+        CancellationToken ct,
+        SqliteTransaction? tx = null,
+        bool insertOrIgnore = false,
+        IReadOnlyDictionary<string, float[]?>? embedded = null)
     {
         var createdAt = record.CreatedAt == default ? _clock.GetUtcNow() : record.CreatedAt;
         var validFrom = record.ValidFrom ?? createdAt;
@@ -792,7 +840,9 @@ public sealed class MemoryStore : IMemoryStore
 
         if (_options.Embeddings.Dimensions > 0)
         {
-            var vector = await TryEmbedAsync(record.Body, ct).ConfigureAwait(false);
+            var vector = embedded is not null && embedded.TryGetValue(record.RecordId, out var precomputed)
+                ? precomputed
+                : await TryEmbedAsync(record.Body, ct).ConfigureAwait(false);
             if (vector is not null)
             {
                 await StoreEmbeddingAsync(record.RecordId, vector, ct, tx).ConfigureAwait(false);

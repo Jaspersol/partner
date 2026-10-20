@@ -161,7 +161,7 @@ public sealed class ApiContext : IAsyncDisposable
         // owes the reader — changing it live would mean re-embedding or silently diverging between old and
         // new records on the vector arm of the scorer.
         var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
-        var memoryOptions = new MemoryStoreOptions();
+        var memoryOptions = new MemoryStoreOptions { MinScore = 0.3 };
         if (settings.Load().Memory.Embeddings)
         {
             memoryOptions = memoryOptions with { Embeddings = new HashingEmbeddingProvider() };

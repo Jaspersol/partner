@@ -56,7 +56,7 @@ public static class MemoryLifecycle
     }
 
     /// <summary>Text reduced to what a comparison should be made on: punctuation and spacing removed.</summary>
-    private static string Normalize(string text) =>
+    internal static string Normalize(string text) =>
         string.Concat(text.Where(c => !char.IsWhiteSpace(c) && !char.IsPunctuation(c)));
 
     /// <summary>The distinctive words the two records have in common.</summary>

@@ -37,6 +37,9 @@ public sealed class MemoryRecallHook : AgentHookBase
     /// The log the prompt is built from. Optional so a store can be recalled without one — a test, or a caller
     /// that only wants ranked hits — in which case nothing is excluded and the hook behaves as it did before.
     /// </param>
+    /// <summary>The most of the input used as the recall query.</summary>
+    internal const int MaxQueryChars = 300;
+
     public MemoryRecallHook(IMemoryStore memory, ISessionStore? session)
     {
         _memory = memory ?? throw new ArgumentNullException(nameof(memory));
@@ -55,6 +58,13 @@ public sealed class MemoryRecallHook : AgentHookBase
         if (string.IsNullOrWhiteSpace(query))
         {
             return HookOutcome.Continue;
+        }
+
+        // A pasted document is not a question: its first stretch carries what the person is asking, and a query
+        // as long as the payload only widens the candidate set with words that say nothing about intent.
+        if (query.Length > MaxQueryChars)
+        {
+            query = query[..MaxQueryChars];
         }
 
         var injection = await _memory

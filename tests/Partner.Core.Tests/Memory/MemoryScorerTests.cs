@@ -41,6 +41,20 @@ public sealed class MemoryScorerTests
     }
 
     [Fact]
+    public void Differently_worded_chinese_sentences_share_lexical_overlap_through_their_character_pairs()
+    {
+        // 我不太喜欢被打断 and 用户不喜欢被反复确认 share no whole token, but they share 喜欢 and 不喜 ... pairs.
+        MemoryScore related = Score(Candidate("用户不喜欢被反复确认"), "我不太喜欢被打断");
+        Assert.True(related.Lexical > 0.0, "a reworded sentence should still overlap");
+
+        MemoryScore unrelated = Score(Candidate("今天下午三点开会"), "我不太喜欢被打断");
+        Assert.Equal(0.0, unrelated.Lexical, 10);
+
+        // A Latin word inside a Chinese sentence is still a token of its own.
+        Assert.True(Score(Candidate("部署 deployment 已完成"), "deployment 状态").Lexical > 0.0);
+    }
+
+    [Fact]
     public void Lexical_ignores_case_and_tokens_shorter_than_two_characters()
     {
         Assert.Equal(1.0, Score(Candidate("Alpha BETA gamma"), "alpha beta").Lexical, 10);
@@ -282,4 +296,45 @@ public sealed class ApproximateTokenCounterTests
             previous = count;
         }
     }
+
+    [Fact]
+    public void Chinese_text_is_priced_close_to_a_token_per_character()
+    {
+        var counter = new ApproximateTokenCounter();
+
+        Assert.Equal(500, counter.Count(new string('情', 500)));
+        Assert.Equal(3, counter.Count("abcdefghi")); // Latin keeps the four-characters rule
+        Assert.Equal(0, counter.Count(string.Empty));
+    }
+
+    [Fact]
+    public async Task A_hit_below_the_minimum_score_is_not_returned()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "partner-tests", Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var open = new MemoryStore(Path.Combine(dir, "all.db"), new MemoryStoreOptions());
+            await using var strict = new MemoryStore(Path.Combine(dir, "strict.db"), new MemoryStoreOptions { MinScore = 0.99 });
+            var record = new MemoryRecord
+            {
+                RecordId = "r1",
+                Tier = MemoryTier.Semantic,
+                Scope = MemoryScope.Recall,
+                Body = "alpha beta gamma",
+            };
+            await open.WriteAsync(record);
+            await strict.WriteAsync(record);
+
+            Assert.NotEmpty(await open.RecallAsync("alpha"));
+            Assert.Empty(await strict.RecallAsync("alpha"));
+        }
+        finally
+        {
+            SqliteConnectionPoolCleanup();
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    private static void SqliteConnectionPoolCleanup() => Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 }

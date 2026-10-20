@@ -338,11 +338,11 @@ public sealed class MemoryHookTests : IDisposable
         // Long bodies used to go into the prompt unbounded: recall took its fixed limit and injected every
         // hit in full, so one giant note could crowd out the conversation itself. The hook now runs through
         // the store's injection budget and marks the cut.
-        // A tight budget store of its own: the default 5000-token budget would need ten of these bodies to
+        // A tight budget store of its own: the default 5000-token budget would need ten of these bodies (about 510 tokens each) to
         // flinch, and the test wants the cut, not the count.
         var (session, _) = JsonlSessionStore.Open(_dir);
         _session = session;
-        _memory = new MemoryStore(Path.Combine(_dir, "tight.db"), new MemoryStoreOptions { InjectionTokenLimit = 300 });
+        _memory = new MemoryStore(Path.Combine(_dir, "tight.db"), new MemoryStoreOptions { InjectionTokenLimit = 1000 });
         var memory = _memory;
 
         for (var i = 0; i < 4; i++)
