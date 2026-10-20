@@ -27,6 +27,7 @@ import os
 import struct
 import sys
 import threading
+import time
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -245,6 +246,18 @@ def _resample(samples, speed: float):
     return samples[low] * (1 - weight) + samples[high] * weight
 
 
+def warm_up(state: "EngineState") -> None:
+    """合成一句短话并丢掉。首句要付锚点预解码和后端预热的钱（实测首句 0.69s，之后稳态 0.42s），
+    让这笔钱在启动时付，而不是由用户的第一句话来付。失败不致命：只是首句慢一点。"""
+    started = time.monotonic()
+    try:
+        with state.lock:
+            state.stream.clone("好的。", language="chinese", config=OFFLINE)
+        print(f"tts-server warm-up done in {time.monotonic() - started:.2f}s")
+    except Exception as error:  # noqa: BLE001
+        print(f"tts-server warm-up skipped: {error}", file=sys.stderr)
+
+
 def serve():
     parser = argparse.ArgumentParser(description="Qwen3-TTS GGUF OpenAI-compatible server")
     parser.add_argument("--model-dir", default=str(ENGINE_DIR / "model"), help="默认 engines/tts/model")
@@ -254,6 +267,7 @@ def serve():
     args = parser.parse_args()
 
     Handler.state = EngineState(args.model_dir, args.voice, args.device)
+    warm_up(Handler.state)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"tts-server listening on http://127.0.0.1:{args.port}")
     try:

@@ -93,15 +93,12 @@ class Recognizers:
         self.wake_ring = wake_ring
         self.keywords_path = keywords_path
 
-        asr_dir = models / "sensevoice"
-        self.recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-            model=str(asr_dir / "model.int8.onnx"),  # CPU 用 int8：fp16 在 CUDA 才有意义
-            tokens=str(asr_dir / "tokens.txt"),
-            num_threads=threads,  # 线程直接乘内存：压到 2
-            use_itn=True,
-            language="auto",
-            provider="cpu",
-        )
+        # SenseVoice 不在这里建：它是 idle 内存的大头（Private ~330MB），而唤醒门开着时绝大多数时间只有 KWS
+        # 在听。第一次真的要转写时才建（见 `recognizer`），之后常驻。
+        self._asr_dir = models / "sensevoice"
+        self._recognizer = None
+        self._recognizer_lock = threading.Lock()
+        self.threads = threads
 
         self.kws = None
         self._kws_lock = threading.Lock()
@@ -111,6 +108,28 @@ class Recognizers:
         self.picked = pick_kws_files(models / "kws") if keywords_path is not None else None
         if keywords_path is not None and keywords_path.exists():
             self._build_kws(keywords_path.read_text(encoding="utf-8"))
+
+    @property
+    def recognizer(self):
+        """首次使用时才建 SenseVoice。双检锁：两个并发的第一次请求只建一份。"""
+        if self._recognizer is None:
+            with self._recognizer_lock:
+                if self._recognizer is None:
+                    started = time.monotonic()
+                    self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                        model=str(self._asr_dir / "model.int8.onnx"),  # CPU 用 int8：fp16 在 CUDA 才有意义
+                        tokens=str(self._asr_dir / "tokens.txt"),
+                        num_threads=self.threads,  # 线程直接乘内存：压到 2
+                        use_itn=True,
+                        language="auto",
+                        provider="cpu",
+                    )
+                    print(f"sensevoice loaded on first use in {time.monotonic() - started:.1f}s", file=sys.stderr)
+        return self._recognizer
+
+    @property
+    def asr_loaded(self) -> bool:
+        return self._recognizer is not None
 
     def _build_kws(self, keywords_content: str) -> None:
         """按给定关键词内容重建 spotter 与监听流。重建 ~1 s；期间锁着 /wake/infer 的调用方在排队。
@@ -244,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/health", "/healthz"):
-            self._json(200, {"ok": True, "kws": HandlerShared.recognizers.kws is not None})
+            self._json(200, {"ok": True, "kws": HandlerShared.recognizers.kws is not None, "asr": HandlerShared.recognizers.asr_loaded})
             return
         if self.path == "/keywords":
             self._json(200, {"keywords": HandlerShared.recognizers.keywords_now()})
