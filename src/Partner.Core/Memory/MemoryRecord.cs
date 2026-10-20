@@ -1,6 +1,6 @@
 namespace Partner.Core.Memory;
 
-/// <summary>Who made a change (design doc §2.5.5): the distinction must stay visible.</summary>
+/// <summary>Who made a change: the distinction must stay visible.</summary>
 public enum Actor
 {
     Agent,
@@ -8,9 +8,9 @@ public enum Actor
 }
 
 /// <summary>
-/// One memory record (design doc §2.2). Records are append-only in spirit: corrections go through
-/// <c>ReviseAsync</c> (which appends a revision) and removals through <c>SoftDeleteAsync</c> (soft
-/// invalidation + body purge), never a silent overwrite.
+/// One memory record. Records are append-only in spirit: corrections go through <c>ReviseAsync</c> (which
+/// appends a revision) and removals through <c>SoftDeleteAsync</c> (soft invalidation + body purge), never a
+/// silent overwrite.
 /// </summary>
 public sealed record MemoryRecord
 {
@@ -54,7 +54,7 @@ public sealed record MemoryRecord
     public Actor? EditedBy { get; init; }
 }
 
-/// <summary>Audit entry for an edit (design doc §2.2 / §2.5.5).</summary>
+/// <summary>Audit entry for an edit.</summary>
 public sealed record MemoryRevision(
     string RecordId,
     DateTimeOffset At,
@@ -62,7 +62,7 @@ public sealed record MemoryRevision(
     string After,
     Actor Actor);
 
-/// <summary>Audit entry for promotion / trim / delete / write (design doc §2.5.6 ③).</summary>
+/// <summary>Audit entry for promotion / trim / delete / write.</summary>
 public sealed record ConsolidationEntry(
     long Id,
     string RecordId,
@@ -70,7 +70,7 @@ public sealed record ConsolidationEntry(
     string Action,
     string? Detail);
 
-/// <summary>Result of a budget-bounded injection (design doc §2.5.6 ④ step 5).</summary>
+/// <summary>Result of a budget-bounded injection.</summary>
 public sealed record InjectionResult(
     IReadOnlyList<MemoryHit> Hits,
     int Tokens,

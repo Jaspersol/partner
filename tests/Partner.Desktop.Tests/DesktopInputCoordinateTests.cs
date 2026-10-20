@@ -5,12 +5,9 @@ namespace Partner.Desktop.Tests;
 
 /// <summary>
 /// The coordinate contract of the input layer, asserted on the <c>INPUT</c> records themselves rather than on
-/// where the cursor ended up — these tests must never move the user's mouse.
-/// <para>
-/// This is the regression guard for the bug that made every click land in the corner of the screen: the
-/// positional mouse events were sent without <c>MOUSEEVENTF_ABSOLUTE</c>, so a screen coordinate was applied
-/// as a relative mouse delta. Nothing in the suite could see it, because nothing inspected the records.
-/// </para>
+/// where the cursor ended up — these tests must never move the user's mouse. The records are what prove a
+/// screen coordinate carries <c>MOUSEEVENTF_ABSOLUTE</c>; without it the coordinate is applied as a relative
+/// mouse delta and every click lands in the corner of the screen.
 /// </summary>
 public sealed class DesktopInputCoordinateTests
 {
@@ -66,9 +63,9 @@ public sealed class DesktopInputCoordinateTests
     [Fact]
     public void Every_reachable_pixel_lands_on_itself()
     {
-        // The invariant the previous formula broke. Windows resolves a normalized coordinate with
-        // floor(n * size / 65536), so a scaling that treats the desktop as 65535 evenly-spaced positions
-        // puts a measurable number of columns on their left-hand neighbour: measured 8 of 2560 columns and
+        // The invariant: Windows resolves a normalized coordinate with floor(n * size / 65536), so a scaling
+        // that treats the desktop as 65535 evenly-spaced positions puts a measurable number of columns on
+        // their left-hand neighbour: measured 8 of 2560 columns and
         // 5 of 1440 rows, always one pixel short. One pixel is invisible on a window-sized target and is
         // the wrong control on a three-pixel-wide one, and nothing in the pipeline reports an error.
         foreach (var (origin, size) in new[]
@@ -88,9 +85,9 @@ public sealed class DesktopInputCoordinateTests
     [Fact]
     public void A_point_at_the_very_edge_of_the_desktop_is_still_reachable()
     {
-        // The reason the old formula looked right: it mapped the last pixel to exactly 65535. That only
-        // holds for a desktop whose size divides 65536 evenly, and it is what pushed the far edge of every
-        // other size a pixel short. The last pixel has to be reachable, not mapped to a magic number.
+        // Mapping the last pixel to exactly 65535 only holds when the desktop size divides 65536 evenly and
+        // pushes the far edge of every other size a pixel short. The last pixel has to be reachable, not
+        // mapped to a magic number.
         Assert.Equal(2559, VirtualDesktop.Denormalize(VirtualDesktop.Normalize(2559, 0, 2560), 0, 2560));
         Assert.Equal(1919, VirtualDesktop.Denormalize(VirtualDesktop.Normalize(1919, 0, 1920), 0, 1920));
         Assert.Equal(-1, VirtualDesktop.Denormalize(VirtualDesktop.Normalize(-1, -1920, 4480), -1920, 4480));
@@ -187,8 +184,7 @@ public sealed class DesktopInputCoordinateTests
 
         for (var x = desktop.X; x < desktop.X + desktop.Width; x++)
         {
-            // Exactly, not within a pixel: the mapping is lossless in the direction a click depends on, which
-            // is the whole point of the fix. This used to be sampled every 137 pixels and allowed ±1.
+            // Exactly, not within a pixel: the mapping is lossless in the direction a click depends on.
             Assert.Equal(x, VirtualDesktop.Denormalize(desktop.NormalizeX(x), desktop.X, desktop.Width));
         }
     }

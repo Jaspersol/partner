@@ -1,32 +1,33 @@
 namespace Partner.Core.Agent.Mcp;
 
 /// <summary>
-/// 一个 MCP 服务器连接（设计文档 §2.6.3）：生命周期、能力发现与工具调用。
+/// A connection to one MCP server: lifecycle, capability discovery, and tool calls.
 /// <para>
-/// 实现必须保证：进程死亡或未启动时调用立即抛 <see cref="InvalidOperationException"/>（不挂起），
-/// 单次请求超过 <see cref="McpServerConfig.CallTimeout"/> 时抛 <see cref="TimeoutException"/>。
+/// Implementations must guarantee: a call made while the process is dead or not started throws
+/// <see cref="InvalidOperationException"/> immediately (never hangs), and a single request that exceeds
+/// <see cref="McpServerConfig.CallTimeout"/> throws <see cref="TimeoutException"/>.
 /// </para>
 /// </summary>
 public interface IMcpClient : IAsyncDisposable
 {
-    /// <summary>子进程是否存活（已停止或已退出为 <see langword="false"/>）。</summary>
+    /// <summary>Whether the child process is alive (<see langword="false"/> when stopped or exited).</summary>
     bool IsRunning { get; }
 
-    /// <summary>配置中的服务器名。</summary>
+    /// <summary>The server name from the configuration.</summary>
     string ServerName { get; }
 
-    /// <summary>启动子进程并完成 <c>initialize</c> 握手与 <c>notifications/initialized</c> 通知。</summary>
+    /// <summary>Starts the child process and completes the <c>initialize</c> handshake and the <c>notifications/initialized</c> notification.</summary>
     Task StartAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// 列出服务器暴露的工具；在 <see cref="McpServerConfig.CapabilityCacheTtl"/> 内重复调用返回缓存，
-    /// 不产生新的 <c>tools/list</c> 请求。
+    /// Lists the tools the server exposes; repeated calls within <see cref="McpServerConfig.CapabilityCacheTtl"/>
+    /// return the cache and issue no new <c>tools/list</c> request.
     /// </summary>
     Task<IReadOnlyList<McpToolDescriptor>> ListToolsAsync(CancellationToken ct = default);
 
-    /// <summary>调用一个工具；协议错误与 <c>isError</c> 都通过 <see cref="McpCallResult"/> 返回。</summary>
+    /// <summary>Calls one tool; protocol errors and <c>isError</c> are both returned through <see cref="McpCallResult"/>.</summary>
     Task<McpCallResult> CallToolAsync(string toolName, string argumentsJson, CancellationToken ct = default);
 
-    /// <summary>关闭 stdin、等待子进程退出（最多 2 秒）后杀掉进程树；可重复调用。</summary>
+    /// <summary>Closes stdin, waits up to 2 seconds for the child to exit, then kills the process tree; safe to call repeatedly.</summary>
     Task StopAsync(CancellationToken ct = default);
 }

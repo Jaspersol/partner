@@ -28,7 +28,7 @@ public sealed class ToolGovernanceTests
         Assert.Equal(ToolDecision.Ask, asked.Decision);
         Assert.False(string.IsNullOrWhiteSpace(asked.Reason));
 
-        // 治理只看工具名：未知工具仍失败关闭。
+        // Governance looks only at the tool name: an unknown tool still fails closed.
         Assert.Equal(ToolDecision.Deny, governance.Decide("shell", "{}").Decision);
     }
 

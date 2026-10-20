@@ -5,8 +5,8 @@ using Partner.Desktop.Interop;
 namespace Partner.Desktop.Tools;
 
 /// <summary>
-/// Changes a window's state: restore, maximize, minimize, or move and resize it. The things a person does with the
-/// title bar, which the act tool cannot (it clicks controls inside a window, and a minimized window has none).
+/// Changes a window's state: restore, maximize, minimize, or move and resize it — the things a person does with
+/// the title bar. The act tool cannot do this: it clicks controls inside a window, and a minimized window has none.
 /// <para>
 /// Not read-only and not dangerous: it rearranges what is on screen and leaves the GUI no further than the window
 /// itself. The window must be one an observation returned and the policy allows.

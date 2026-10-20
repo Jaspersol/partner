@@ -28,7 +28,7 @@ internal sealed class InjectingHook : AgentHookBase
 }
 
 /// <summary>
-/// Lets a scripted model that used to drive the desktop tools as the main agent do the same work as the desktop
+/// Lets a scripted model that drives the desktop tools as the main agent do the same work as the desktop
 /// sub-agent, through the real delegation path.
 /// <para>
 /// The main agent's side is fixed: a user message becomes a delegation of that text, a delegation result becomes a

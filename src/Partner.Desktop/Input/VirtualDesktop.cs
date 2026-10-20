@@ -14,8 +14,8 @@ namespace Partner.Desktop.Input;
 /// </remarks>
 public sealed record VirtualDesktop(int X, int Y, int Width, int Height)
 {
-    /// <summary>Reads the current layout. Cheap (four <c>GetSystemMetrics</c> calls) but not cached: the user
-    /// can unplug a monitor between two actions, and a stale origin would misplace everything after that.</summary>
+    /// <summary>Reads the current layout. Not cached: a monitor can be unplugged between two actions, and a
+    /// stale origin would misplace everything after that.</summary>
     public static VirtualDesktop Current()
     {
         var x = NativeMethods.GetSystemMetrics(NativeMethods.SmXVirtualScreen);
@@ -36,17 +36,9 @@ public sealed record VirtualDesktop(int X, int Y, int Width, int Height)
     /// <summary>
     /// Screen pixel to the 0..65535 range absolute mouse coordinates use.
     /// <para>
-    /// Windows does not divide the desktop into 65536 equal slices and round to the nearest one: it resolves
-    /// a normalized coordinate back to a pixel with <c>floor(n × size / 65536)</c>. To land on a chosen pixel
-    /// the normalized value therefore has to be the <i>smallest</i> n that resolves to it —
-    /// <c>ceil(p × 65536 / size)</c> — and any other choice of n puts the pointer on a different pixel.
-    /// </para>
-    /// <para>
-    /// The obvious alternative, scaling by <c>65535 / (size - 1)</c> so that both endpoints are inclusive,
-    /// is the wrong model and it misplaces the pointer on a measurable number of pixels. Measured on a
-    /// 2560-wide desktop: 8 of 2560 columns landed one pixel short (2→1, 4→3, 7→6, 9→8, 12→11, 17→16,
-    /// 22→21, 27→26), and 5 of 1440 rows likewise. A 1 px error is invisible on a large target; on a 3 px
-    /// wide control it is a different control, and the failure is silent — the injection reports success.
+    /// Windows resolves a normalized coordinate back to a pixel with <c>floor(n × size / 65536)</c>. To land on
+    /// a chosen pixel, n must be the smallest value that resolves to it: <c>ceil(p × 65536 / size)</c>. Any
+    /// other choice puts the pointer on a different pixel, silently, while injection still reports success.
     /// </para>
     /// </summary>
     public static ushort Normalize(int value, int origin, int size)
@@ -60,10 +52,8 @@ public sealed record VirtualDesktop(int X, int Y, int Width, int Height)
         return (ushort)Math.Clamp(scaled, 0, 65535);
     }
 
-    /// <summary>
-    /// The inverse of <see cref="Normalize(int, int, int)"/>: the pixel Windows resolves a normalized
-    /// coordinate to. Exposed so the landing point is asserted rather than assumed.
-    /// </summary>
+    /// <summary>Inverse of <see cref="Normalize(int, int, int)"/>: the pixel Windows resolves a normalized
+    /// coordinate to.</summary>
     public static int Denormalize(ushort normalized, int origin, int size) =>
         size <= 1 ? origin : origin + (int)((normalized * (long)size) / 65536);
 

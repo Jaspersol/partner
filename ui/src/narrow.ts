@@ -4,31 +4,21 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
  * The two widths at which the layout changes shape, and the only place they are written down.
  *
  * <para>
- * `styles.css` expresses both as `@container` queries, because that is the right tool for "change the layout".
- * But a container query cannot be *read* — and two things need to know the answer: whether the inspector is a
- * column or an overlay (so it knows whether a resize handle means anything), and whether the sidebar can be
- * opened at all (so its button does not lie). So the same two numbers appear here, and this file is where to
- * change them alongside the queries.
+ * `styles.css` expresses both as `@container` queries, but a container query cannot be *read* — and two things
+ * need to know the answer: whether the inspector is a column or an overlay, and whether the sidebar can be
+ * opened at all. Change these numbers alongside the queries.
  * </para>
  *
  * <para>
- * They are separate thresholds on purpose. The inspector goes overlay while there is still room for a rail; the
- * rail goes rail-only when opening it would leave the content region too narrow to read a row in.
+ * Separate thresholds on purpose: the inspector goes overlay while there is still room for a rail; the rail
+ * goes rail-only when opening it would leave the content region too narrow to read a row in.
  * </para>
  */
 
 /** The inspector stops being a column and becomes an overlay at or below this. Mirrors `@container body (max-width: 64rem)`. */
 export const OVERLAY_AT_REM = 64
 
-/**
- * The sidebar becomes a rail permanently at or below this. Mirrors `@container shell (max-width: 52rem)`.
- *
- * <para>
- * Before S5 this was a CSS-only rule that hid the labels and left the track at full width — so a narrow window
- * got icons nobody could name, occupying 240px. Worse, the toggle button went on reading 「展开侧栏」 while doing
- * nothing at all, because the state it reported was not the state on screen.
- * </para>
- */
+/** The sidebar becomes a rail permanently at or below this. Mirrors `@container shell (max-width: 52rem)`. */
 export const RAIL_AT_REM = 52
 
 /** Pixels per rem, which is how a container query's `rem` is compared against a measured pixel width. */
@@ -73,12 +63,8 @@ export function useOverlayMode() {
 }
 
 /**
- * True when the window is too narrow for the sidebar to be opened at all.
- *
- * <para>
- * This is the answer the toggle button needed and did not have. Below the threshold the rail is the only state
- * there is, so the button is hidden rather than left in place offering something it cannot deliver.
- * </para>
+ * True when the window is too narrow for the sidebar to be opened at all: below the threshold the rail is the
+ * only state there is, so the toggle button is hidden rather than offering something it cannot deliver.
  */
 export function useRailOnlyMode() {
   const railOnly = ref(false)

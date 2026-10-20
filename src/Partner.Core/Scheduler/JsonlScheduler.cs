@@ -64,7 +64,7 @@ public sealed record SchedulerOptions
 }
 
 /// <summary>
-/// Durable scheduler over two append-only logs (design doc §2.4).
+/// Durable scheduler over two append-only logs.
 /// <para>
 /// State lives in <c>&lt;directory&gt;/scheduler/tasks.jsonl</c> (one full task snapshot per change, last wins)
 /// and <c>&lt;directory&gt;/scheduler/receipts.jsonl</c> (one record per delivered occurrence). The due set is
@@ -331,7 +331,7 @@ public sealed class JsonlScheduler : IScheduler
                 now = _clock.GetUtcNow();
                 await RefreshZoneAsync(now, ct).ConfigureAwait(false);
 
-                // The due set comes from persisted state, not from the timer (design doc §2.4 rule 2).
+                // The due set comes from persisted state, not from the timer.
                 due = _byId.Values
                     .Where(t => t.Status != ScheduleTaskStatus.Inactive && EffectiveDueAt(t) <= now)
                     .OrderBy(t => t.NextScheduledAt)

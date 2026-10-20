@@ -17,7 +17,6 @@ public sealed class ParentWatchdogTests
 
         await WaitForReadinessAsync(child);
 
-        // This is what a launcher dying looks like from the child's side.
         child.Process.StandardInput.Close();
 
         Assert.True(

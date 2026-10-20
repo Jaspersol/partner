@@ -5,7 +5,7 @@ using Partner.Core.Contracts;
 namespace Partner.Core.Tests.Agent.Skills;
 
 /// <summary>
-/// 技能注入钩子（设计文档缺口 C）：注入文案、注册表顺序、空集合不注入、优先级与取消。
+/// The skill injection hook: injected text, registry order, no injection for an empty set, priority and cancellation.
 /// </summary>
 public sealed class SkillInjectionHookTests
 {
@@ -26,7 +26,7 @@ public sealed class SkillInjectionHookTests
         Assert.Equal("skills.inject", hook.Name);
         Assert.Equal(50, hook.Priority);
 
-        // 注册表顺序即 SkillId 升序：alpha 在前。
+        // Registry order is SkillId ascending, so alpha comes first.
         var block = Assert.Single(ctx.InjectedPrompts);
         Assert.Equal(
             Header + "\n- alpha — Alpha: Alpha desc\n- zeta — Zeta: Zeta desc",
@@ -56,7 +56,7 @@ public sealed class SkillInjectionHookTests
 
         await hook.RunAsync(ctx, CancellationToken.None);
 
-        // 50 < 60：技能块排在后面注入的提示词之前。
+        // 50 < 60: the skill block lands before the prompt injected later.
         Assert.Equal(2, ctx.InjectedPrompts.Count);
         Assert.StartsWith(Header, ctx.InjectedPrompts[0]);
         Assert.Equal("later", ctx.InjectedPrompts[1]);

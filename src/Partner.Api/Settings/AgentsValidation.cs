@@ -49,7 +49,7 @@ public static partial class AgentsValidation
                 errors.Add($"子 agent '{agent.Id}' 需要名称");
             }
 
-            // V1: one scenario, from the closed list, held by one agent.
+            // One scenario, from the closed list, held by one agent.
             if (AgentScenarios.Find(agent.Scenario) is null)
             {
                 errors.Add($"「{label}」的场景 '{agent.Scenario}' 不存在；可选：{string.Join("、", AgentScenarios.All.Select(s => s.Key))}");
@@ -84,7 +84,7 @@ public static partial class AgentsValidation
             }
         }
 
-        // V2: the built-in agent is the one that owns desktop control, and it cannot be taken away or re-pointed.
+        // The built-in agent is the one that owns desktop control, and it cannot be taken away or re-pointed.
         var builtin = agents.SubAgents.FirstOrDefault(agent => agent.Id == AgentsSettings.DesktopId);
         if (builtin is null)
         {
@@ -95,14 +95,14 @@ public static partial class AgentsValidation
             errors.Add("内置的桌面操控子 agent 的场景不能修改");
         }
 
-        // V3: desktop control without someone to do it would register no desktop tools at all, and the model would
+        // Desktop control without someone to do it would register no desktop tools at all, and the model would
         // quietly stop being able to operate the desktop. Refuse the configuration instead.
         if (settings.Desktop.Enabled && builtin is { Enabled: false })
         {
             errors.Add("桌面操控已开启，必须有一个启用的桌面操控子 agent");
         }
 
-        // V4: a whitelist you can turn on with nothing in it is a switch that does nothing; say so.
+        // A whitelist you can turn on with nothing in it is a switch that does nothing; say so.
         if (settings.Files.Enabled)
         {
             if (settings.Files.Roots.Count == 0)

@@ -1,6 +1,6 @@
 namespace Partner.Core.Memory;
 
-/// <summary>Memory tier of a record (design doc §2.5.6).</summary>
+/// <summary>Memory tier of a record.</summary>
 public enum MemoryTier
 {
     Working,
@@ -10,17 +10,15 @@ public enum MemoryTier
 }
 
 /// <summary>
-/// How long a record is allowed to be forgotten (design doc §2.5.6).
+/// How long a record is allowed to be forgotten.
 /// <para>
-/// Deliberately two values and one job. The design doc's third value (<c>Global</c>, shared across sessions)
-/// had nothing to share across — there is one logical session — so keeping it would have left a column whose
-/// every row said the same thing, which is a filter that cannot filter.
+/// Two values and one job. A third value (<c>Global</c>, shared across sessions) had nothing to share across —
+/// there is one logical session — so every row would have said the same thing.
 /// </para>
 /// <para>
 /// <b>Retain locks forgetting, not correction.</b> A retained record survives demotion and trimming, but a
-/// later statement in the same tier still supersedes it: a person who corrects themselves means it, and
-/// refusing that would make the store argue with them. Tier says how much a record is trusted; this says
-/// whether it may be forgotten, and the two axes do not overlap.
+/// later statement in the same tier still supersedes it. Tier says how much a record is trusted; this says
+/// whether it may be forgotten.
 /// </para>
 /// </summary>
 public enum MemoryScope
@@ -94,13 +92,7 @@ public sealed record MemoryScore(
 /// <para>
 /// Carries when it was recorded, which tier it came from and whether it is retained, because a hook that
 /// injects it into a prompt has to be able to say how old it is. "The user prefers dark mode" read as fact is
-/// different from the same line read as something from three months ago that may since have changed — and the
-/// model can only weigh that if it is told.
-/// </para>
-/// <para>
-/// <see cref="Scope"/> rides along for the same reason: a hit is the same record the list shows, so a person
-/// filtering the list by retention has to be able to filter the results by it too. A hit rendered as an
-/// anonymous match cannot be compared with the list it came from.
+/// different from the same line read as something from three months ago.
 /// </para>
 /// </summary>
 public sealed record MemoryHit(
@@ -120,9 +112,8 @@ public static class MemoryAge
     /// <summary>
     /// A short phrase for a record's age, relative to <paramref name="now"/>.
     /// <para>
-    /// Deliberately vague past a month. "42 days ago" invites the model to reason about a day count it cannot
-    /// use, whereas "recorded a while ago" correctly signals that this is background rather than a fact the
-    /// person just stated.
+    /// Deliberately vague past a month: "42 days ago" invites the model to reason about a day count it cannot
+    /// use, whereas "recorded a while ago" correctly signals background rather than a fact just stated.
     /// </para>
     /// </summary>
     public static string Describe(DateTimeOffset createdAt, DateTimeOffset now)

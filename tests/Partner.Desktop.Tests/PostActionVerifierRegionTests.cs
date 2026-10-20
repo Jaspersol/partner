@@ -7,16 +7,16 @@ namespace Partner.Desktop.Tests;
 /// Judging one region of a window instead of the whole of it.
 /// <para>
 /// The decision is a fraction of the judged area, so the region is the resolution of the whole mechanism: a
-/// small control inside a large window produces a change too small to clear a whole-window threshold, and a
-/// click that demonstrably worked comes back as "not confirmed". These tests hold both sides of that — the
-/// button that changed is confirmed, and a change somewhere else in the window still is not.
+/// small control inside a large window produces a change too small to clear a whole-window threshold. These
+/// tests hold both sides: the button that changed is confirmed, and a change somewhere else in the window is
+/// not.
 /// </para>
 /// </summary>
 public sealed class PostActionVerifierRegionTests
 {
     /// <summary>
     /// A window big enough for the arithmetic to bite: 0.5% of 800×600 is 2400 pixels, and a 50×30 button
-    /// changing is 1500. Judged against the window that reads as nothing at all.
+    /// changing is 1500.
     /// </summary>
     private const int Window = 800;
     private const int WindowHeight = 600;
@@ -43,8 +43,7 @@ public sealed class PostActionVerifierRegionTests
     [Fact]
     public async Task The_same_click_judged_against_the_whole_window_would_have_read_as_no_change()
     {
-        // The measurement the region fixes. Same two frames, same threshold, only the judged area differs —
-        // so the old verdict is not an opinion, it is arithmetic.
+        // The measurement the region fixes. Same two frames, same threshold, only the judged area differs.
         var changed = Frame(Window, WindowHeight, (ButtonAt.X, ButtonAt.Y, ButtonWidth, ButtonHeight));
         var buttonPixels = (double)ButtonWidth * ButtonHeight;
         var windowPixels = (double)Window * WindowHeight;
@@ -159,10 +158,9 @@ public sealed class PostActionVerifierRegionTests
     /// <summary>
     /// The same verdict, obtained by copying the button's own pixels instead of re-rendering the window.
     /// <para>
-    /// PrintWindow renders the whole window through DWM and is the most expensive call on the action path, and a
-    /// click changes a rectangle the size of a control. This is the cheap route — but only the decision has to
-    /// match: it is a different set of pixels, and if the verdict differed between the two that would be a
-    /// measurement bug wearing a performance win.
+    /// PrintWindow renders the whole window through DWM and is the most expensive call on the action path, and
+    /// a click changes a rectangle the size of a control. Only the decision has to match: it is a different
+    /// set of pixels, so a differing verdict would be a measurement bug wearing a performance win.
     /// </para>
     /// </summary>
     [Fact]
@@ -250,9 +248,9 @@ public sealed class PostActionVerifierRegionTests
         Assert.Equal(0, capture.RegionCaptures);
         Assert.Equal(1, capture.WindowCaptures);
 
-        // And it degrades to exactly the old whole-window judgement, which for a small control is the
-        // false negative the region path exists to remove. That is the honest price of not knowing where the
-        // frame was taken — a guess would have been worse than either answer.
+        // And it degrades to the whole-window judgement, which for a small control is the false negative the
+        // region path exists to remove. That is the price of not knowing where the frame was taken; a guess
+        // would have been worse than either answer.
         Assert.Equal(VerifyDecision.NoChange, result.Decision);
     }
 

@@ -5,21 +5,10 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 /**
- * The page's Content-Security-Policy, checked against what the UI actually renders.
+ * The page's Content-Security-Policy, checked as text because happy-dom enforces none.
  *
- * <para>
- * A CSP is invisible to every other test in this folder: mounting the composer in happy-dom hands back an
- * `<img src="blob:...">` that looks perfectly fine, and the browser refuses it afterwards for reasons that
- * never reach the console of the component. That is how an attachment could upload, show its name and its
- * byte count, and display nothing at all where the picture was — with a green test suite.
- * </para>
- *
- * <para>
- * So the policy is read here as text. The bytes of an attachment cannot be linked to (an `<img>` carries no
- * Authorization header, and a token in a query string leaks into logs and history), so the preview is an
- * object URL and `blob:` has to be in img-src — in the page's own meta tag <em>and</em> in the Tauri shell's,
- * since a header and a meta tag are enforced together and the stricter of the two wins.
- * </para>
+ * Attachment previews use object URLs, so `blob:` must be in img-src in both the page meta tag and the Tauri
+ * shell config: both are enforced and the stricter wins.
  */
 
 // vitest runs with the frontend directory as cwd (see api.contract.test.ts).
@@ -45,7 +34,6 @@ describe('the page policy', () => {
   })
 
   it('keeps remote origins out of images, which is the reason the policy exists', () => {
-    // 'self' plus data: and blob: — a URL the server serves, a data URL and an object URL. Nothing else.
     for (const source of [imgSrc(page), imgSrc((JSON.parse(shell).app as { security: { csp: string } }).security.csp)]) {
       for (const allowed of source.split(/\s+/).filter((token) => token !== '' && token !== "'self'")) {
         expect(['data:', 'blob:']).toContain(allowed)

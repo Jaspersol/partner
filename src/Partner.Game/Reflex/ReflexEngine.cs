@@ -4,13 +4,13 @@ using Partner.Game.Perception;
 namespace Partner.Game.Reflex;
 
 /// <summary>
-/// The reflex engine (design doc §2.7): pick at most one behavior per tick by score, hold the slot for the
+/// The reflex engine: pick at most one behavior per tick by score, hold the slot for the
 /// whole async run, and never let the LLM into the reaction path.
 /// <para>
 /// Two invariants are structural:
 /// <list type="bullet">
 ///   <item><b>One behavior at a time.</b> While an async behavior runs, the slot is locked and later ticks
-///   do nothing — that is what keeps a 1.5 s survival action from being preempted mid-way.</item>
+///   do nothing, which keeps a long survival action from being preempted mid-way.</item>
 ///   <item><b>The lock is bounded only by a deadlock breaker</b>, never by a short policy cap.</item>
 /// </list>
 /// </para>

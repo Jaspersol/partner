@@ -85,7 +85,6 @@ public sealed partial class ViewEndpointsTests
         Assert.True(context.GetProperty("foldedItems").GetInt32() > 0, "nothing was reported as folded");
         Assert.True(context.GetProperty("keptItems").GetInt32() < 12, "everything was kept in a 512-token window");
 
-        // And what is kept fits: the usage never exceeds the budget it reports.
         Assert.True(context.GetProperty("usedTokens").GetInt32() <= context.GetProperty("budgetTokens").GetInt32());
     }
 

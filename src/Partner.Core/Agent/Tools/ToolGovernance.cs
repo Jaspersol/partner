@@ -1,42 +1,44 @@
 namespace Partner.Core.Agent.Tools;
 
-/// <summary>一次工具调用的治理结论。</summary>
+/// <summary>The governance decision for one tool call.</summary>
 public enum ToolDecision
 {
-    /// <summary>直接执行。</summary>
+    /// <summary>Execute directly.</summary>
     Allow,
 
-    /// <summary>需要人工批准后才能执行。</summary>
+    /// <summary>Requires human approval before it runs.</summary>
     Ask,
 
-    /// <summary>拒绝执行。</summary>
+    /// <summary>Do not execute.</summary>
     Deny,
 }
 
 /// <summary>
-/// 治理结论与原因。<see cref="Reason"/> 在所有分支上都必须非空——它会被写进日志/事件，用于事后解释。
+/// A governance decision and its reason. <see cref="Reason"/> must be non-empty on every branch — it is
+/// written to logs/events to explain the decision after the fact.
 /// </summary>
-/// <param name="Decision">结论。</param>
-/// <param name="Reason">非空的判定原因。</param>
+/// <param name="Decision">The decision.</param>
+/// <param name="Reason">The non-empty reason.</param>
 public sealed record GovernanceDecision(ToolDecision Decision, string Reason);
 
 /// <summary>
-/// 工具治理（设计文档 §2.9.6）：在工具真正执行<b>之前</b>判定允许、询问还是拒绝。
-/// 实现不得产生副作用；<paramref name="argumentsJson"/> 供将来按参数细粒度判定使用。
+/// Tool governance: decides allow, ask, or deny <b>before</b> the tool actually runs.
+/// Implementations must have no side effects; <paramref name="argumentsJson"/> is available for finer
+/// argument-based decisions.
 /// </summary>
 public interface IToolGovernance
 {
-    /// <param name="toolName">模型请求的工具名。</param>
-    /// <param name="argumentsJson">模型给出的原始参数 JSON。</param>
+    /// <param name="toolName">The tool name the model requested.</param>
+    /// <param name="argumentsJson">The raw argument JSON from the model.</param>
     GovernanceDecision Decide(string toolName, string argumentsJson);
 }
 
 /// <summary>
-/// 白名单治理：默认失败关闭（fail-closed），未显式列出的工具一律拒绝（设计文档 §5 R8）。
+/// Allow-list governance: fail-closed by default; any tool not explicitly listed is denied.
 /// <para>
-/// 判定顺序：<c>allowed</c> → <see cref="ToolDecision.Allow"/>；否则 <c>ask</c> → <see cref="ToolDecision.Ask"/>；
-/// 否则 <see cref="ToolDecision.Deny"/>。同名同时出现在两个列表时 <c>allowed</c> 优先（<see cref="ToolDecision.Allow"/> 胜出）。
-/// 工具名按序号（大小写敏感）比较。
+/// Order: <c>ask</c> → <see cref="ToolDecision.Ask"/>; else <c>allowed</c> → <see cref="ToolDecision.Allow"/>;
+/// else <see cref="ToolDecision.Deny"/>. Ask wins over allow when a name is in both lists, so a
+/// "needs approval" setting cannot be bypassed silently. Tool names are compared ordinally (case-sensitive).
 /// </para>
 /// </summary>
 public sealed class AllowListGovernance : IToolGovernance
@@ -44,8 +46,8 @@ public sealed class AllowListGovernance : IToolGovernance
     private readonly HashSet<string> _allowed;
     private readonly HashSet<string> _ask;
 
-    /// <param name="allowed">无需批准即可执行的工具名。</param>
-    /// <param name="ask">需要人工批准的工具名；为 <see langword="null"/> 时视为空。</param>
+    /// <param name="allowed">Tool names that may run without approval.</param>
+    /// <param name="ask">Tool names that need human approval; <see langword="null"/> means empty.</param>
     public AllowListGovernance(IEnumerable<string> allowed, IEnumerable<string>? ask = null)
     {
         ArgumentNullException.ThrowIfNull(allowed);
@@ -56,8 +58,9 @@ public sealed class AllowListGovernance : IToolGovernance
     /// <inheritdoc />
     public GovernanceDecision Decide(string toolName, string argumentsJson)
     {
-        // 统一优先级（与 PolicyToolGovernance 一致）：deny > ask > allow > 默认拒绝。
-        // 更严格者胜出：同时出现在 ask 与 allow 时按 ask 处理，否则「需要批准」的设置会被静默绕过。
+        // Same precedence as PolicyToolGovernance: deny > ask > allow > deny by default.
+        // The stricter entry wins: a name in both ask and allow is treated as ask, so a "needs approval"
+        // setting cannot be bypassed silently.
         if (_ask.Contains(toolName))
         {
             return new GovernanceDecision(ToolDecision.Ask, "需要人工批准（治理询问列表）");

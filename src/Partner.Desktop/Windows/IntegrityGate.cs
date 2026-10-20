@@ -8,16 +8,14 @@ namespace Partner.Desktop.Windows;
 /// <para>
 /// UIPI (User Interface Privilege Isolation) silently drops input a lower-integrity process sends to a
 /// higher-integrity window: <c>SendInput</c> still reports success — the events entered the input stream —
-/// and the elevated application simply never sees them. That is the failure mode where the agent clicks and
-/// nothing happens, with "注入成功" in the result and nothing in the world to explain it. Reading the
-/// target's integrity level <i>before</i> injecting turns the silence into a named refusal.
+/// and the elevated application never sees them. The agent then clicks and nothing happens, with
+/// "注入成功" in the result and nothing in the world to explain it. Reading the target's integrity level
+/// <i>before</i> injecting turns the silence into a named refusal.
 /// </para>
 /// <para>
 /// The check is deliberately <b>fail-open</b>: a level that cannot be read (a protected process, an access
-/// denied on the token) leaves the action to proceed. The confirmed cases are the only ones the
-/// no-op guarantee holds for — and fail-closed here would refuse legitimate targets on unreadable
-/// processes. Refusing visible action to guard against an invisible problem is the failure mode this gate
-/// exists to prevent, not to cause.
+/// denied on the token) leaves the action to proceed. Fail-closed here would refuse legitimate targets on
+/// unreadable processes, which is the failure mode this gate exists to prevent.
 /// </para>
 /// <para>
 /// A process's integrity level is fixed for its lifetime, so the answer for one (process, start time) pair
@@ -95,7 +93,7 @@ public sealed class IntegrityGate
     /// <summary>
     /// The confirmed-elevated test: the target's token integrity RID, compared against this process's.
     /// Undetermined answers (process or token could not be opened, a malformed SID) are <b>not</b> elevated,
-    /// by the fail-open rule above — only a read whole enough to compare can refuse.
+    /// per the fail-open rule above — only a read whole enough to compare can refuse.
     /// </summary>
     private static bool QueryIsElevated(uint pid)
     {

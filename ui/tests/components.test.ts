@@ -238,10 +238,9 @@ describe('event list', () => {
   })
 
   it('does not cross the wires between two calls that happen to share a name', () => {
-    // The pairing map used to hold call-id -> the card *object* and wrote into it. It now holds a position and
-    // replaces the entry there. That is only correct if positions cannot be reused for something else, and the
-    // case that would catch a mistake is two calls of the same tool interleaved with results in between: a name
-    // is not an identity, only the id in meta is.
+    // The pairing map holds call-id -> a position and replaces the entry there. That is only correct if
+    // positions cannot be reused for something else, and the case that catches a mistake is two calls of the
+    // same tool interleaved with results in between: a name is not an identity, only the id in meta is.
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
@@ -350,16 +349,15 @@ describe('event list', () => {
   })
 
   it('does not react to a click on a message', async () => {
-    // A click used to select the row and name it in the top bar. There is nothing behind a selection any more,
-    // so the message is just text.
+    // Nothing is behind a selection, so a clicked message stays plain text.
     const wrapper = mount(EventList, { props: { selectedSeq: null, items: [{ ...baseItem, seq: 3 }] } })
     await wrapper.find('li').trigger('click')
     expect(wrapper.emitted('select')).toBeUndefined()
   })
 
   it('names the kind rather than printing the enum', () => {
-    // ui.md §5.2 asks for a word, and asks for a word rather than a colour because colour is already spoken
-    // for in this view: 已编辑 and 已失效 own it. `ToolCall` on screen is an internal spelling leaking out.
+    // A word rather than a colour, because colour is already spoken for in this view: 已编辑 and 已失效 own it.
+    // `ToolCall` on screen is an internal spelling leaking out.
     const wrapper = mount(EventList, {
       props: {
         selectedSeq: null,
@@ -413,9 +411,8 @@ describe('event list', () => {
     expect(families).toEqual(['shell', 'search', 'control'])
 
     // An unrecognised tool still gets an icon: it is the one a reader cannot guess, so it must not vanish.
-    // The assertion is on geometry rather than on text — the icon used to be a character, so "it has a label"
-    // was the strongest thing that could be said about it. Now that it is an SVG, the stronger claim is
-    // available and worth making: it drew paths, and it drew the neutral fallback rather than nothing.
+    // The assertion is on geometry rather than text: the icon is an SVG, and it must draw paths and use the
+    // neutral fallback rather than render nothing.
     const unknown = wrapper.find('[data-tool=mystery_tool]')
     const glyph = unknown.find('.icon svg')
     expect(glyph.exists()).toBe(true)
@@ -1442,8 +1439,8 @@ describe('composer', () => {
       props: { api: stubApi(), consumer: { running: true, reason: '运行中', model: 'm', stats, tools: [] } },
     })
 
-    // The tool list and the queue count used to be printed here. Neither is a reason for the reader to act,
-    // and a strip that says 「队列 0」 is a line about nothing — so with nothing wrong there is no strip.
+    // Neither the tool list nor the queue count is a reason for the reader to act, and a strip that says
+    // 「队列 0」 is a line about nothing, so with nothing wrong there is no strip.
     expect(wrapper.find('[data-test="composer-strip"]').exists()).toBe(false)
   })
 
@@ -1626,8 +1623,7 @@ describe('composer', () => {
 
 describe('status bar', () => {
   it('draws nothing while the connection is healthy', () => {
-    // The endpoint, the model and the version used to be printed here permanently. The model now lives in the
-    // composer; a healthy window has nothing to report at the foot.
+    // The model lives in the composer; a healthy window has nothing to report at the foot.
     const wrapper = mount(StatusBar, {
       props: {
         connected: true,
@@ -1643,8 +1639,8 @@ describe('status bar', () => {
   })
 
   it('stays a connection readout and leaves the queue to the top bar badge', () => {
-    // ui.md §3: the badge moved to the top bar, so the footer degrades to connection state. The queue
-    // numbers used to appear in three places on one screen, which made them look like three opinions.
+    // The badge lives in the top bar, so the footer is connection state only. The same queue numbers in
+    // three places on one screen read as three opinions.
     const wrapper = mount(StatusBar, {
       props: {
         connected: true,
@@ -1708,8 +1704,8 @@ describe('markdown body', () => {
       },
     })
 
-    // `##` is an h2. It used to render as an h4, which pushed every session heading three levels down
-    // the document outline and gave assistive tech a hierarchy that did not match the source.
+    // `##` is an h2. Rendering it as an h4 pushes every session heading three levels down the document
+    // outline and gives assistive tech a hierarchy that does not match the source.
     expect(wrapper.find('h2').text()).toBe('结果')
     expect(wrapper.find('blockquote').text()).toContain('引用一行')
     expect(wrapper.find('blockquote code').text()).toBe('code')
@@ -1737,8 +1733,8 @@ describe('markdown body', () => {
   })
 
   it('parses a code span inside emphasis instead of showing its backticks', () => {
-    // Model output mixes the two constantly ("**没有把 `running` 复位**"). The emphasis used to carry its
-    // contents as raw text, so the backticks reached the reader verbatim.
+    // Model output mixes the two constantly ("**没有把 `running` 复位**"). Emphasis must parse its contents
+    // rather than carry them as raw text, or the backticks reach the reader verbatim.
     const wrapper = mount(MarkdownBody, { props: { body: '**没有把 `running` 复位**' } })
 
     expect(wrapper.find('strong code').text()).toBe('running')
@@ -1755,10 +1751,8 @@ describe('markdown body', () => {
    * A body with carriage returns must terminate, and must still be recognised as what it is.
    *
    * <para>
-   * This is the hang, kept as a test because it was invisible: the whole app opened onto a session view whose
-   * 84th event was a CRLF tool result, the parser stopped consuming lines at the first <c>+ </c> bullet in it,
-   * and the webview's renderer then ran at a full core without ever yielding. The UI painted its first screen
-   * and then stopped answering clicks — which reads as a frozen app, not as a parse bug.
+   * A parser that stops consuming lines at the first <c>+ </c> bullet in a CRLF body runs at a full core
+   * without yielding, and the webview stops answering clicks — which reads as a frozen app, not as a parse bug.
    * </para>
    *
    * <para>
@@ -1819,10 +1813,9 @@ describe('markdown body', () => {
   })
 
   it('never stops making progress, whatever the body', () => {
-    // The second half of the fix, stated as a property rather than as an example: a parser whose loop can
-    // consume nothing is one line away from hanging the renderer again, whatever the next branch looks like.
-    // Each of these lines is one that some branch above declines, which is exactly how a paragraph used to
-    // be left with nothing to push.
+    // A parser whose loop can consume nothing is one line away from hanging the renderer, whatever the next
+    // branch looks like. Each line below is one that some branch above declines, which leaves a paragraph
+    // with nothing to push.
     const stubborn = [
       '    + bullet that starts like a block',
       '  - indented bullet',

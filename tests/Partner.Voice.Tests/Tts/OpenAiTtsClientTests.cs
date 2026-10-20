@@ -60,14 +60,14 @@ public sealed class OpenAiTtsClientTests
             }
         }
 
-        // 默认 24 kHz × 100 ms = 2400 采样。
+        // Default 24 kHz times 100 ms is 2400 samples.
         Assert.Equal(new[] { 2400, 2400, 1200 }, chunks.Select(c => c.Length));
     }
 
     [Fact]
     public async Task Multichannel_wav_takes_the_first_channel()
     {
-        // 交错两路：左路 0.5, -0.25, 1, -1；右路全 0。解码只取左路。
+        // Two interleaved channels: left is 0.5, -0.25, 1, -1; right is all zero. Decoding takes the left channel.
         var interleave = new[] { 0.5f, 0f, -0.25f, 0f, 1f, 0f, -1f, 0f };
         var (client, _) = Create((_, _) => Task.FromResult(WavResponse(WavInterleaved(interleave, 2))));
         List<float> decoded;
@@ -269,10 +269,10 @@ public sealed class OpenAiTtsClientTests
         return all;
     }
 
-    /// <summary>把 [-1,1] float 采样编成 16-bit 单声道 PCM WAV，客户端的反向操作。</summary>
+    /// <summary>Encodes [-1,1] float samples as a 16-bit mono PCM WAV, the inverse of the client's decoding.</summary>
     private static byte[] Wav(float[] samples) => WavInterleaved(samples, channels: 1);
 
-    /// <summary>把交错采样编成 16-bit PCM WAV（多声道时输入按帧交错）。</summary>
+    /// <summary>Encodes interleaved samples as 16-bit PCM WAV (input is interleaved by frame for multiple channels).</summary>
     private static byte[] WavInterleaved(float[] samples, short channels)
     {
         const int headerSize = 44;

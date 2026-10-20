@@ -1,6 +1,6 @@
 /**
- * Theme is pure frontend (ui.md §3): it never reaches the API. The choice is remembered per machine, and
- * `auto` leaves the decision to the OS via the token selectors in styles.css.
+ * Theme is pure frontend: it never reaches the API. The choice is remembered per machine, and `auto` leaves the
+ * decision to the OS via the token selectors in styles.css.
  */
 
 export type Theme = 'auto' | 'light' | 'dark'
@@ -40,9 +40,9 @@ export function themeLabel(theme: Theme): string {
 }
 
 /**
- * 「减弱透明效果」: the in-app switch for the glass (ui-redesign.md §2.2). Same mechanism as the theme — a
- * per-machine preference, frontend only, expressed as an attribute the token sheet reads. `reduced` swaps every
- * translucent layer for an opaque one and turns the blur and the ambient wash off.
+ * 「减弱透明效果」: the in-app switch for the glass. Same mechanism as the theme — a per-machine preference,
+ * frontend only, expressed as an attribute the token sheet reads. `reduced` swaps every translucent layer for an
+ * opaque one and turns the blur and the ambient wash off.
  */
 const GLASS_KEY = 'partner.glass'
 

@@ -5,7 +5,7 @@ using Partner.Core.Contracts;
 namespace Partner.Core.Sessions;
 
 /// <summary>
-/// One record in the single session log (design doc §2.2).
+/// One record in the single session log.
 /// <para>
 /// Append-only: an event is never rewritten. A correction is a new event with
 /// <see cref="Kind"/> = <see cref="SessionEventKind.Edit"/> carrying <see cref="EditedFromSeq"/>.

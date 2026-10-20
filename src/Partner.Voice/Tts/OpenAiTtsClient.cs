@@ -6,13 +6,14 @@ using System.Text.Json;
 namespace Partner.Voice.Tts;
 
 /// <summary>
-/// 通用 TTS HTTP 客户端：OpenAI 标准 <c>POST {BaseUrl}/audio/speech</c>，请求
-/// <c>{ model, input, voice, response_format: "wav" }</c>，响应体是完整 WAV，一次性合
-/// 成到内存再切成 <see cref="TtsOptions.ChunkMs"/> 块播放。
+/// Generic TTS HTTP client: OpenAI standard <c>POST {BaseUrl}/audio/speech</c>, request
+/// <c>{ model, input, voice, response_format: "wav" }</c>, response body a complete WAV that is
+/// synthesized into memory at once and split into <see cref="TtsOptions.ChunkMs"/> chunks for playback.
 /// <para>
-/// 与 <see cref="HttpTtsClient"/>（自建服务的裸 PCM 流）不同：标准端点几乎都不支持
-/// 流式返回，且请求字段名不同（<c>input</c>/<c>voice</c>/<c>speed</c> 而不是 <c>text</c>/<c>lang</c>）。
-/// 每次请求都到完整响应才出第一批音频——流式对这种端点的意义只剩下块切分。
+/// Unlike <see cref="HttpTtsClient"/> (raw PCM stream from the native service), standard endpoints almost never
+/// support streaming, and the request field names differ (<c>input</c>/<c>voice</c>/<c>speed</c> instead of
+/// <c>text</c>/<c>lang</c>). The first audio arrives only after the full response, so streaming here means
+/// chunking only.
 /// </para>
 /// </summary>
 public sealed class OpenAiTtsClient : ITtsClient
@@ -21,7 +22,7 @@ public sealed class OpenAiTtsClient : ITtsClient
 
     private static readonly JsonWriterOptions WriterOptions = new()
     {
-        // 中文文本不必转义成 \uXXXX。
+        // Chinese text need not be escaped to \uXXXX.
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 

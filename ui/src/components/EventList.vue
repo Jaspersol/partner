@@ -50,33 +50,18 @@ type Row =
   | { kind: 'recall'; seq: number; body: string }
   | { kind: 'fold'; key: string; open: boolean; label: string }
 
-/**
- * Pairs each tool call with its result.
- * <para>
- * They are two events in the log and one thing to a reader. The pairing key is the call id the runner wrote
- * into both events' meta; a result whose call is missing (a partial removal, an older log) still renders, so
- * nothing disappears silently.
- * </para>
- */
 /** A tool call and its result, already paired. */
 type ToolRow = Extract<Row, { kind: 'tool' }>
 
 /**
  * Folds the log into rows: pairs each tool call with its result, and keeps a result whose call is missing.
  *
- * <para>
- * Built immutably. It used to keep a map of call-id → card <i>object</i> and then write `card.status` and
- * `card.result` into it as the matching result came along. That works today only because the whole array is
- * rebuilt from scratch every time and Vue re-renders from it — nothing depends on the mutation, and nothing
- * would notice it. The moment anything renders a row in place (a memoised card, a virtual list, a diff against
- * the previous rows) a mutated object is the bug: the row and its card are the same object, so a change cannot
- * be observed as a change.
- * </para>
+ * The pairing key is the call id the runner writes into both events' meta. A result whose call is missing (a
+ * partial removal, an older log) still renders, so nothing disappears silently.
  *
- * <para>
- * The map therefore holds <i>positions</i>, and a completed card replaces the entry at that position. One new
- * object per paired call; nothing is written after the fact.
- * </para>
+ * Built immutably: a completed card replaces the entry at that position, so nothing is written after the fact.
+ * Mutating a row object would break any in-place renderer (memoised card, virtual list, diff), since the row
+ * and its card would be the same object and a change could not be observed.
  */
 const allRows = computed<Row[]>(() => {
   const out: Row[] = []
@@ -130,17 +115,15 @@ const allRows = computed<Row[]>(() => {
       continue
     }
 
-    // Reasoning arrives as its own row: it is a different kind of thing from the answer, and a reader who
-    // wants to know "what was it working out" should not have to read the answer to find out. Both the logged
-    // event and the live placeholder land here.
+    // Reasoning is its own row: it is a different kind of thing from the answer. Both the logged event and the
+    // live placeholder land here.
     if (item.kind === 'Thinking' || item.kind === 'ThinkingStreaming') {
       out.push({
         kind: 'thinking',
         // A live row has no seq of its own, so it is keyed by what it is rather than by where it sits.
         key: item.streaming === true ? 'thinking-streaming' : `thinking-${item.seq}`,
-        // The live row's text lives beside the body, in `reasoning`; a logged one carries it in the body like
-        // every other event. A finished row has no clock: "thinking for 90s" is what was true while it was
-        // running, and showing it afterwards would read as a duration the model is still taking.
+        // The live row's text lives in `reasoning`; a logged one carries it in the body like every other event.
+        // A finished row has no clock: the duration only means something while the model is still thinking.
         body: item.streaming === true ? (item.reasoning ?? item.body) : item.body,
         running: item.streaming === true,
         since: item.streaming === true ? (item.reasoningSince ?? item.at) : null,
@@ -149,8 +132,7 @@ const allRows = computed<Row[]>(() => {
     }
 
     // A block the hook injected and labelled is shown as the thing it is, not as system text: the label is what
-    // the writer said it was (recall, skills), and the body is that block's prompt. Unlabelled system lines —
-    // an error, "consumer started" — keep the note they always had.
+    // the writer said it was (recall, skills), and the body is that block's prompt.
     if (item.kind === 'System' && item.meta?.label === 'recall') {
       out.push({ kind: 'recall', seq: item.seq, body: item.body })
       continue
@@ -163,7 +145,6 @@ const allRows = computed<Row[]>(() => {
   return out
 })
 
-/** The fold header's words: what is inside, so a reader knows whether it is worth opening. */
 function foldLabel(group: Row[]): string {
   const count = (test: (row: Row) => boolean) => group.filter(test).length
   const parts = [
@@ -292,7 +273,7 @@ const layout = computed(() =>
   }),
 )
 
-/** The row's role as a word, for the one thing the page no longer prints: who is speaking. */
+/** The row's role as a word: who is speaking. */
 function roleWord(row: Row): string {
   if (row.kind === 'tool') return '工具'
   if (row.kind === 'thinking') return '思考'
@@ -435,9 +416,9 @@ function cancelArm() {
  * Which row the keyboard is on.
  *
  * <para>
- * One index rather than one `tabindex` per row. With every row focusable, a keyboard reader had to press Tab
- * once per event to get past the conversation — five hundred presses to reach the composer, on a list that is
- * still growing while they read it. Now the list is a single tab stop and the arrows move within it.
+ * One index rather than one `tabindex` per row: a keyboard reader would otherwise press Tab once per event to
+ * get past the conversation, on a list that grows while they read. The list is a single tab stop and the
+ * arrows move within it.
  * </para>
  */
 const focusIndex = ref(0)
@@ -692,7 +673,6 @@ li[data-side='center'] .stack {
   align-items: center;
 }
 
-/* ---- folded process ----------------------------------------------------------------------------- */
 .fold-toggle {
   align-self: flex-start;
   display: inline-flex;
@@ -747,7 +727,6 @@ li[data-side='center'] .stack {
   margin-block-start: var(--space-1);
 }
 
-/* ---- bubbles ------------------------------------------------------------------------------------- */
 .bubble {
   position: relative;
   min-inline-size: 0;
@@ -824,7 +803,6 @@ li:focus-visible .bubble {
   outline-offset: 2px;
 }
 
-/* ---- the line under a bubble ------------------------------------------------------------------- */
 /* Present in the layout (so hovering never moves anything) and invisible until it is wanted. */
 .meta {
   display: flex;
@@ -900,7 +878,6 @@ li[data-side='center'] .meta {
   color: var(--text-3);
 }
 
-/* ---- streaming ---------------------------------------------------------------------------------- */
 /* The caret is the whole point of the streaming row: the text is still arriving. It is the one animation in the
    app that carries meaning rather than decoration, so under reduced motion it stops blinking but stays. */
 .streaming .bubble::after {

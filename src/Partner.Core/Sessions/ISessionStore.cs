@@ -1,7 +1,7 @@
 namespace Partner.Core.Sessions;
 
 /// <summary>
-/// The single, project-wide session log (design doc §2.3).
+/// The single, project-wide session log.
 /// <para>
 /// Contract:
 /// <list type="bullet">

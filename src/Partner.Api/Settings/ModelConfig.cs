@@ -5,9 +5,9 @@ namespace Partner.Api.Settings;
 /// <summary>
 /// The model endpoint the consumer should use, and where that decision came from.
 /// <para>
-/// Precedence is explicit: a complete model section in settings wins, the environment is the fallback, and
-/// when neither is complete the consumer does not start. The origin travels with the config so the UI can say
-/// which one is in effect instead of leaving the user guessing why an edit did nothing.
+/// Precedence: a complete model section in settings wins, the environment is the fallback, and when neither is
+/// complete the consumer does not start. The origin travels with the config so the UI can say which one is in
+/// effect.
 /// </para>
 /// </summary>
 public sealed record ModelConfig(

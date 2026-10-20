@@ -4,10 +4,7 @@ import type { DesktopState, PendingApproval } from '../api'
 import HintTip from './HintTip.vue'
 import Icon from './Icon.vue'
 
-/**
- * A tool call waiting for a human. It lives in the app shell rather than inside a view because the turn is
- * already parked: a prompt that only exists on one tab is a prompt nobody sees while they are elsewhere.
- */
+/** A tool call waiting for a human. Lives in the app shell so the prompt stays visible on every view. */
 const props = defineProps<{
   pending: PendingApproval[]
   desktop: DesktopState | null
@@ -17,7 +14,6 @@ const emit = defineEmits<{ answer: [approvalId: string, approved: boolean] }>()
 
 const current = computed(() => props.pending[0] ?? null)
 
-/** The window an approval is about, so the question is "allow this, on that window" rather than a raw id. */
 const target = computed(() => {
   const args = current.value?.arguments ?? ''
   const id = /"entityId"\s*:\s*"([^"]+)"/.exec(args)?.[1]
@@ -29,11 +25,6 @@ const target = computed(() => {
   return entity ? `『${entity.title}』${entity.foreground ? '（当前前台）' : ''}` : `#${id}`
 })
 
-/**
- * A timed-task request, read out in words. The generic wording below is about a desktop window ("keep acting on
- * it for N steps") and shows the raw `kind`; for a task that is both wrong and unhelpful — what the person has to
- * judge is *when* it will fire and *what it will say to the assistant*, which sit inside the arguments.
- */
 const schedule = computed(() => {
   const name = current.value?.toolName ?? ''
   if (name !== 'schedule_create' && name !== 'schedule_delete') {
@@ -44,7 +35,7 @@ const schedule = computed(() => {
   try {
     args = JSON.parse(current.value?.arguments ?? '{}') as Record<string, unknown>
   } catch {
-    // Unreadable arguments still get asked about; the raw text below is what the person sees.
+    // Unreadable arguments are still shown and still asked about.
   }
 
   if (name === 'schedule_delete') {
@@ -75,10 +66,7 @@ const kind = computed(() =>
   schedule.value ? '' : (/"kind"\s*:\s*"([^"]+)"/.exec(current.value?.arguments ?? '')?.[1] ?? ''),
 )
 
-/**
- * Grant's size comes from the server — it is the server's semantics, not the banner's. A null desktop
- * state (no desktop observation yet) falls back to what the store does by default.
- */
+/** Grant size is the server's semantics; 10 matches the store default when no desktop state exists yet. */
 const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 </script>
 
@@ -88,10 +76,6 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
       <div class="approval-head">
         <Icon name="shield" :size="16" class="approval-icon" />
         <span class="title">{{ schedule ? `模型请求${schedule.verb}定时任务` : '模型请求执行动作' }}</span>
-        <!--
-          Whose question this is. A sub-agent's approval arrives while the person may be looking at something
-          else entirely; without the origin it reads as the main agent acting, which is a different thing to allow.
-        -->
         <span v-if="current.origin" class="origin" data-test="approval-origin">来自 {{ current.origin }}</span>
       </div>
       <div class="approval-what">
@@ -120,8 +104,6 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
 </template>
 
 <style scoped>
-/* A warning is a glass card with an amber edge, not a full-width stripe: it has to be unmissable and it has to
-   sit inside the same column as the dock it interrupts. */
 .approval {
   display: flex;
   align-items: center;
@@ -156,7 +138,6 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
   font-weight: 600;
 }
 
-/* The asker, named before the tool: "who is asking" changes the answer more than "which tool" does. */
 .origin {
   font-weight: 600;
   color: var(--text);
@@ -179,7 +160,6 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
   overflow: hidden;
 }
 
-/* Unlike the raw arguments this is the thing being judged, so it is not greyed and not cut to a line. */
 .schedule-what {
   margin: 0;
   font-size: var(--fs-ui);

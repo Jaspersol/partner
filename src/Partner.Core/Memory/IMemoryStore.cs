@@ -2,10 +2,10 @@ namespace Partner.Core.Memory;
 
 public sealed record MemoryStoreOptions
 {
-    /// <summary>How many hits a recall returns by default (design doc §2.5.6 ⑥: recallLimit).</summary>
+    /// <summary>How many hits a recall returns by default.</summary>
     public int RecallLimit { get; init; } = 8;
 
-    /// <summary>Token budget for injection (design doc §2.5.6 ⑥: injectionTokenLimit).</summary>
+    /// <summary>Token budget for injection.</summary>
     public int InjectionTokenLimit { get; init; } = 5000;
 
     /// <summary>
@@ -32,12 +32,12 @@ public sealed record MemoryStoreOptions
 }
 
 /// <summary>
-/// The memory layer (design doc §2.5 / §2.5.6). Three tiers plus working memory, explainable retrieval,
-/// promotion before trimming, and a four-step privacy delete.
+/// The memory layer. Three tiers plus working memory, explainable retrieval, promotion before trimming, and a
+/// four-step privacy delete.
 /// </summary>
 public interface IMemoryStore : IAsyncDisposable
 {
-    /// <summary>Stores one record. Runs the promotion scan before committing (design doc §2.5.6 ③).</summary>
+    /// <summary>Stores one record. Runs the promotion scan before committing.</summary>
     Task<string> WriteAsync(MemoryRecord record, CancellationToken ct = default);
 
     /// <summary>Bulk store in one transaction (used by importers and benchmarks).</summary>
@@ -53,10 +53,8 @@ public interface IMemoryStore : IAsyncDisposable
     /// <summary>
     /// Recall that leaves out records distilled from <paramref name="excludeSourceSeqs"/>.
     /// <para>
-    /// For a caller that already has those events in front of it. A turn recalls what earlier turns knew, but
-    /// the conversation it is about to send still contains the turn that produced the record — so without this
-    /// the model reads the same statement twice, once as history and once as a remembered fact, and the second
-    /// copy is labelled "background from an earlier session" when it is neither.
+    /// For a caller that already has those events in front of it, so the model does not read the same statement
+    /// twice — once as history and once as a remembered fact.
     /// </para>
     /// <para>
     /// Filtering happens before the top-<c>limit</c> cut, so the answer still holds <c>limit</c> usable hits.
@@ -80,12 +78,12 @@ public interface IMemoryStore : IAsyncDisposable
         IReadOnlySet<long>? excludeSourceSeqs,
         CancellationToken ct = default);
 
-    /// <summary>Appends a revision and applies the new body (design doc §2.5.5).</summary>
+    /// <summary>Appends a revision and applies the new body.</summary>
     Task<string> ReviseAsync(string recordId, string newBody, Actor actor, CancellationToken ct = default);
 
     /// <summary>
     /// Four-step privacy delete: soft-invalidate → drop embeddings → purge the body → mark for compaction.
-    /// Missing any step is a leak (design doc §2.5 第 4 条).
+    /// Missing any step is a leak.
     /// </summary>
     Task SoftDeleteAsync(string recordId, Actor actor, CancellationToken ct = default);
 
@@ -119,8 +117,7 @@ public interface IMemoryStore : IAsyncDisposable
     /// <para>
     /// The schema carries no unique constraint on <c>source_event_seq</c>: a memory may be written with no source
     /// at all, so making writes at-least-once is the caller's job, and this is the question that lets it. The
-    /// column <b>is</b> indexed — the cascade that deletes a session's memories reads it in ranges, and a
-    /// thousand-event deletion would otherwise be a thousand scans.
+    /// column is indexed because the cascade that deletes a session's memories reads it in ranges.
     /// </para>
     /// </summary>
     Task<MemoryRecord?> FindBySourceAsync(long sourceEventSeq, CancellationToken ct = default);
@@ -130,8 +127,7 @@ public interface IMemoryStore : IAsyncDisposable
     /// query.
     /// <para>
     /// The range form exists for deletion: what has to be found is everything a deleted span of the session log
-    /// left behind, and asking one event at a time makes the cost of removing a long conversation grow with its
-    /// length.
+    /// left behind, and per-event queries would make removal cost grow with conversation length.
     /// </para>
     /// </summary>
     Task<IReadOnlyList<MemoryRecord>> FindBySourceRangeAsync(long fromSeq, long toSeq, CancellationToken ct = default);
@@ -139,8 +135,8 @@ public interface IMemoryStore : IAsyncDisposable
     /// <summary>
     /// Moves a record to another tier, on a person's judgement. False when the id is unknown.
     /// <para>
-    /// The tier decides how long the demotion rule protects a record, and "a fact I rely on" versus "something
-    /// I once guessed" is not something a score can tell — so it is the person's call, and it is persisted.
+    /// The tier decides how long the demotion rule protects a record. "A fact I rely on" versus "something I
+    /// once guessed" is not something a score can tell, so it is the person's call, and it is persisted.
     /// </para>
     /// </summary>
     Task<bool> SetTierAsync(string recordId, MemoryTier tier, CancellationToken ct = default);
@@ -148,9 +144,8 @@ public interface IMemoryStore : IAsyncDisposable
     /// <summary>
     /// Pins a record against forgetting, or releases it back to the ordinary rules. False when the id is unknown.
     /// <para>
-    /// Independent of the tier: retention is about time, tier is about trust, and neither implies the other.
-    /// Read it as the promise that demotion and trimming will not break — <b>not</b> as protection against being
-    /// corrected, which is a different thing and still happens.
+    /// Independent of the tier: retention is about time, tier is about trust. It protects against demotion and
+    /// trimming, not against being corrected.
     /// </para>
     /// </summary>
     Task<bool> SetScopeAsync(string recordId, MemoryScope scope, CancellationToken ct = default);

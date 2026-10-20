@@ -4,8 +4,8 @@ using Partner.Core.Agent.Tools;
 namespace Partner.Core.Agent.Governance;
 
 /// <summary>
-/// Governance backed by a <see cref="ToolPolicy"/> file, with target-parameter validation
-/// (design doc §2.9.6). Every denial carries a precise reason so the decision is auditable.
+/// Governance backed by a <see cref="ToolPolicy"/> file, with target-parameter validation. Every denial
+/// carries a precise reason so the decision is auditable.
 /// </summary>
 public sealed class PolicyToolGovernance : IToolGovernance
 {

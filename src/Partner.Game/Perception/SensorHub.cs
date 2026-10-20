@@ -3,8 +3,8 @@ using Partner.Game.Adapter;
 namespace Partner.Game.Perception;
 
 /// <summary>
-/// Where a signal came from, which decides whether it may be debounced (design doc §2.6.1 ③, applied to the
-/// game layer): sensor chatter is debounced, anything on the action or verification path never is.
+/// Where a signal came from, which decides whether it may be debounced:
+/// sensor chatter is debounced, anything on the action or verification path never is.
 /// </summary>
 public enum SignalKind
 {
@@ -107,8 +107,8 @@ public sealed class SensorHub
 }
 
 /// <summary>
-/// The reflex → conscious gate (design doc §2.7): only signals the reflex layer explicitly escalates reach
-/// the LLM. Everything else stays in the reaction path where it belongs.
+/// The reflex → conscious gate: only signals the reflex layer explicitly escalates reach
+/// the LLM. Everything else stays in the reaction path.
 /// </summary>
 public sealed class ConsciousGate
 {

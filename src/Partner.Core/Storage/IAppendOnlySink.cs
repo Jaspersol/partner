@@ -3,7 +3,7 @@ namespace Partner.Core.Storage;
 /// <summary>
 /// A single-writer, append-only line sink with an explicit durability barrier.
 /// <para>
-/// Semantics required by the design doc (§2.3, §2.9.7):
+/// Semantics:
 /// <list type="bullet">
 ///   <item><see cref="Append"/> may buffer — it does not promise durability.</item>
 ///   <item><see cref="FlushToDisk"/> is the only durability barrier. A failure there must surface as an

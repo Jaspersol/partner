@@ -178,8 +178,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_client_without_streaming_reports_its_answer_in_one_piece()
     {
-        // This is what makes StreamAsync an addition rather than a break: an implementation that only knows
-        // CompleteAsync still satisfies the interface.
         ILlmClient client = new ScriptedLlmClient(
             new[] { new LlmResponse("all at once", Array.Empty<LlmToolCall>(), "stop") });
 
@@ -215,7 +213,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task Streaming_assembles_tool_calls_from_fragments()
     {
-        // Raw string literals: the JSON itself contains escaped quotes, and a raw literal passes them through.
         var handler = new SseHandler(
             Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"clock","arguments":"{\"city\":\""}}]}}]}"""),
             Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"上海\"}"}}]}}]}"""),
@@ -223,7 +220,6 @@ public sealed class HttpLlmClientTests
 
         var response = await Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), _ => { });
 
-        // A tool call arrives split: the name in one frame, the JSON arguments across the rest.
         var call = Assert.Single(response.ToolCalls);
         Assert.Equal("call_1", call.Id);
         Assert.Equal("clock", call.Name);
@@ -233,7 +229,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_server_that_refuses_streaming_falls_back_to_the_buffered_call()
     {
-        // Some local servers only implement one of the two shapes. Failing the turn over that would be silly.
         var handler = new SequencedHandler(
             new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("stream not supported") },
             new HttpResponseMessage(HttpStatusCode.OK)
@@ -256,7 +251,6 @@ public sealed class HttpLlmClientTests
     public async Task Streaming_keeps_the_reasoning_channel_apart_from_the_answer()
     {
         // The two arrive interleaved and on separate keys depending on the vendor, and before any answer text.
-        // Reporting them as one stream would show the thinking as part of what the model said.
         var handler = new SseHandler(
             Frame("""{"choices":[{"delta":{"reasoning_content":"先想 "}}]}"""),
             Frame("""{"choices":[{"delta":{"reasoning_content":"一下"}}]}"""),
@@ -277,8 +271,7 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task Streaming_reads_the_reasoning_key_a_vendor_happens_to_use()
     {
-        // OpenAI's reasoning models answer under `reasoning` rather than `reasoning_content`. Both are read,
-        // because refusing one of them is the same as not supporting the model.
+        // OpenAI's reasoning models answer under `reasoning` rather than `reasoning_content`; both are read.
         var handler = new SseHandler(
             Frame("""{"choices":[{"delta":{"reasoning":"pondering"}}]}"""),
             "data: [DONE]");
@@ -321,8 +314,8 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_client_that_only_knows_the_buffered_call_still_works()
     {
-        // The reasoning callback is a default method precisely so that existing clients are not broken — and
-        // they still get the reasoning, just not while it happens.
+        // The reasoning callback is a default method: clients that only know the buffered call still get the
+        // reasoning, just not while it happens.
         ILlmClient client = new ScriptedLlmClient(
             new[] { new LlmResponse("答", Array.Empty<LlmToolCall>(), "stop", Reasoning: "想过了") });
 
@@ -337,8 +330,8 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_rejection_says_what_to_do_and_keeps_the_id_to_quote()
     {
-        // The three facts a failure has to carry: what it was, why, and what to do. A bare "HTTP 400" answers
-        // none of them, and the id is what the provider's support will ask for.
+        // The three facts a failure has to carry: what it was, why, and what to do; the id is what the
+        // provider's support will ask for.
         var handler = new StubHandler(
             HttpStatusCode.BadRequest,
             """{"error":{"message":"field 'model' is required"}}""");
@@ -363,8 +356,7 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task An_error_body_that_echoes_a_key_is_cleaned_before_it_is_kept()
     {
-        // An error body is exactly the kind of text that repeats the credential back. Keeping it verbatim would
-        // write the key into the session log, which is a file meant to be readable.
+        // An error body can repeat the credential back, and the session log is meant to be readable.
         var handler = new StubHandler(
             HttpStatusCode.Unauthorized,
             """{"error":{"message":"bad key sk-abcdef123456 for model"}}""");
@@ -380,7 +372,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_401_points_at_the_credential_rather_than_saying_bad_request()
     {
-        // "Bad request" sends somebody to check the JSON. This sends them to check the key, which is where it is.
         var handler = new StubHandler(HttpStatusCode.Unauthorized, "nope");
 
         var failure = await Assert.ThrowsAsync<ModelCallFailure>(
@@ -393,7 +384,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public void A_dead_endpoint_says_it_could_not_be_reached_and_names_the_next_step()
     {
-        // The most common failure by far, and the one that used to read as a bare connection exception.
         var failure = ModelCallFailure.From(
             "模型补全",
             new HttpRequestException("refused", new System.Net.Sockets.SocketException(10061)));
@@ -405,9 +395,8 @@ public sealed class HttpLlmClientTests
     [Fact]
     public void A_cancellation_reports_as_a_timeout_naming_the_limit_it_waited()
     {
-        // The transport cannot tell a cancellation apart from a deadline, so the timeout has to read as one —
-        // and the number has to be the one the reader is about to go change. "0s" would send them to the
-        // settings page without telling them what to raise.
+        // The transport cannot tell a cancellation apart from a deadline, so the timeout must name the limit
+        // the reader is about to go change.
         var failure = ModelCallFailure.From("模型补全", new TaskCanceledException(), TimeSpan.FromSeconds(120));
 
         Assert.Equal(ModelCallFailure.FailureKind.Timeout, failure.Kind);
@@ -448,15 +437,13 @@ public sealed class HttpLlmClientTests
         var tool = body.RootElement.GetProperty("tools")[0];
         Assert.Equal("function", tool.GetProperty("type").GetString());
         Assert.Equal("clock", tool.GetProperty("function").GetProperty("name").GetString());
-        // The schema goes back out as JSON, not as an escaped string.
         Assert.Equal("object", tool.GetProperty("function").GetProperty("parameters").GetProperty("type").GetString());
     }
 
     [Fact]
     public async Task The_default_thinking_gear_is_medium()
     {
-        // The gear is a setting with a default, not an opt-in: an untouched install says "medium" on every
-        // request, and a server that does not know the field is what `off` is for.
+        // The gear is a setting with a default, not an opt-in.
         var handler = new StubHandler(
             HttpStatusCode.OK,
             """{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}""");
@@ -492,7 +479,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_gear_the_menu_does_not_offer_is_passed_through()
     {
-        // Endpoints invent their own words (`minimal`, `none`, …). The list is a menu, not a constraint.
         var handler = new StubHandler(
             HttpStatusCode.OK,
             """{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}""");
@@ -513,8 +499,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_gear_on_the_request_overrides_the_configured_default()
     {
-        // One message can ask for a heavier or lighter turn than the global default. That is why the gear
-        // rides the request: rebuilding the client per turn would mean stopping the consumer.
         var handler = new StubHandler(
             HttpStatusCode.OK,
             """{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}""");
@@ -558,7 +542,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_request_can_turn_the_gear_off_for_one_turn()
     {
-        // The reason the override is a value and not a nullable option: off has to be selectable per turn.
         var handler = new StubHandler(
             HttpStatusCode.OK,
             """{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}""");
@@ -650,9 +633,6 @@ public sealed class HttpLlmClientTests
     [Fact]
     public async Task A_provider_error_carries_the_status_the_body_and_a_next_step()
     {
-        // The exception type is ModelCallFailure rather than HttpRequestException because the three facts a
-        // reader needs are the status, the provider's body, and what to do — and a bare HttpRequestException
-        // is where that information used to be lost.
         var handler = new StubHandler(HttpStatusCode.TooManyRequests, """{"error":{"message":"slow down"}}""");
 
         var error = await Assert.ThrowsAsync<ModelCallFailure>(
@@ -758,8 +738,6 @@ public sealed class HttpLlmClientTests
         Assert.Equal(JsonValueKind.Array, system.ValueKind);
         Assert.Equal("你是助手。", system[0].GetProperty("text").GetString());
         Assert.Equal("ephemeral", system[0].GetProperty("cache_control").GetProperty("type").GetString());
-
-        // Only the system message carries the marker; the user turn is still a plain string.
         Assert.Equal(JsonValueKind.String, markedBody.RootElement.GetProperty("messages")[1].GetProperty("content").ValueKind);
     }
 

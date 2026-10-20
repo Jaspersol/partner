@@ -36,7 +36,7 @@ const announcement = computed(() => (props.connected ? '' : `连接已断开：$
     to act on or be warned about: no connection, a stale read, a delegated job they can stop.
   -->
   <footer v-if="!connected || stale || job" class="statusbar">
-    <!-- 401 is worth naming: it means the token, not the network (ui.md §7). -->
+    <!-- 401 is worth naming: it means the token, not the network. -->
     <span v-if="!connected" class="error" data-test="status">{{ connectionError }}</span>
     <span class="sr-only" role="status" aria-live="polite" data-test="status-announcer">{{ announcement }}</span>
 

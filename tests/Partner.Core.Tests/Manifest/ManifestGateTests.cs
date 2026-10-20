@@ -4,8 +4,7 @@ using Partner.Core.Manifest;
 namespace Partner.Core.Tests.Manifest;
 
 /// <summary>
-/// The Phase 0 gate: a capability that disappears or drops a level must fail the build
-/// (design doc Phase 0 acceptance).
+/// The gate: a capability that disappears or drops a level must fail the build.
 /// </summary>
 public sealed class ManifestGateTests
 {
@@ -134,13 +133,9 @@ public sealed class ManifestGateTests
     }
 
     /// <summary>
-    /// The two cases that are easy to confuse, and the reason they are separated at all.
-    /// <para>
     /// A capability that dropped because its checks <em>failed</em> is a regression. A capability that dropped
     /// because its checks were <em>opted out of</em> is a run that did not look — neither a pass nor a
-    /// regression. Reporting the second as the first is what makes a gate untrustworthy: a developer on a busy
-    /// desktop gets red builds that have nothing to do with the code, and then red stops meaning anything.
-    /// </para>
+    /// regression.
     /// </summary>
     private static CapabilityManifest WithEvidence(
         string id,
@@ -180,8 +175,7 @@ public sealed class ManifestGateTests
     [Fact]
     public void A_drop_beside_skipped_checks_is_still_a_regression()
     {
-        // The excuse is for checks that did not run. A check that ran and failed is evidence, and it is
-        // reported — otherwise "partly opted out" would become a way to hide a real one.
+        // The excuse is for checks that did not run; a check that ran and failed is evidence.
         var baseline = WithEvidence(
             "desktop.live",
             CapabilityLevel.ProductSupported,
@@ -221,8 +215,7 @@ public sealed class ManifestGateTests
     [Fact]
     public void A_skipped_check_is_not_counted_as_evidence_of_a_pass()
     {
-        // The other half of the rule: a capability whose every check was skipped reports nothing at all, so a
-        // green run cannot be read as "proven" for something nobody looked at.
+        // A capability whose every check was skipped reports nothing, so a green run cannot be read as "proven".
         var baseline = WithEvidence("desktop.live", CapabilityLevel.ProductSupported, new CapabilityCheckEvidence("opt-in", true, true));
         var current = WithEvidence(
             "desktop.live",

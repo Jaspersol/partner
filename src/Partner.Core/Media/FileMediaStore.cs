@@ -1,27 +1,22 @@
 namespace Partner.Core.Media;
 
 /// <summary>
-/// <see cref="IMediaStore"/> over <c>&lt;workspace&gt;/media</c>: one file per attachment.
-/// <para>
-/// A file is named <c>{id}__{name}</c>, where the name is the one the person gave it. Two reasons, and the
-/// second is the important one: a reader recognises <c>季度报表.pdf</c> where they cannot recognise
-/// <c>a3f9…pdf</c>, and <b>the model can only open a path it can read</b> — an attachment identified solely by an
-/// opaque id is not something a tool like <c>read</c> can act on. Files written before this naming arrived are
-/// still found by id.
-/// </para>
+/// <see cref="IMediaStore"/> over <c>&lt;workspace&gt;/media</c>: one file per attachment, named
+/// <c>{id}__{name}</c>. The readable name is kept because <b>the model can only open a path it can read</b>:
+/// an attachment identified solely by an opaque id is not something a tool like <c>read</c> can act on.
 /// </summary>
 public sealed class FileMediaStore : IMediaStore
 {
     /// <summary>Media type → the extension this store writes it under.</summary>
     private static readonly Dictionary<string, string> AcceptedTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        // Images: these reach the model inline as image parts, so the types are the ones every endpoint accepts.
+        // Images travel inline as image parts; these are the types every endpoint accepts.
         ["image/png"] = ".png",
         ["image/jpeg"] = ".jpg",
         ["image/webp"] = ".webp",
         ["image/gif"] = ".gif",
 
-        // Documents and text. Reached as a *path* in the message, not inline — see MediaAttachment.IsImage.
+        // Documents and text are reached as a *path* in the message, not inline — see MediaAttachment.IsImage.
         ["application/pdf"] = ".pdf",
         ["application/rtf"] = ".rtf",
         ["application/json"] = ".json",
@@ -50,8 +45,8 @@ public sealed class FileMediaStore : IMediaStore
         ["text/x-c++"] = ".cpp",
     };
 
-    /// A ceiling on one attachment. Local models take image bytes inline, so this is about not handing the
-    /// runtime a file it will spend a minute encoding — not about disk.
+    /// A ceiling on one attachment. Local models take image bytes inline, so this bounds encoding time,
+    /// not disk use.
     /// </summary>
     public const long MaxBytes = 8L * 1024 * 1024;
 
@@ -89,8 +84,8 @@ public sealed class FileMediaStore : IMediaStore
         var name = SafeName(fileName, mediaId, extension);
         var path = Path.Combine(_directory, mediaId + NameSeparator + name);
 
-        // Streamed to disk with a ceiling rather than buffered whole: an oversized upload should be refused
-        // while it arrives, not after it has been held in memory.
+        // Streamed to disk with a ceiling: an oversized upload is refused while it arrives, not after it has
+        // been held in memory.
         await using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
             var buffer = new byte[64 * 1024];
@@ -175,7 +170,7 @@ public sealed class FileMediaStore : IMediaStore
             .ToList();
     }
 
-    /// <summary>What is stored before a name is chosen: the legacy form is <c>{id}{ext}</c>, the current one has a separator.</summary>
+    /// <summary>Extracts the id: files without a separator are the older <c>{id}{ext}</c> form.</summary>
     private static string IdOf(string fileName)
     {
         var at = fileName.IndexOf(NameSeparator, StringComparison.Ordinal);
@@ -183,8 +178,8 @@ public sealed class FileMediaStore : IMediaStore
     }
 
     /// <summary>
-    /// The extension to write under, from the declared type or — when the browser sent a useless one — from the
-    /// file's own extension. A wrong guess is not fatal: a model opening the path sees the bytes either way.
+    /// The extension to write under, from the declared type or, when that is unusable, from the file's own
+    /// extension. A wrong guess is not fatal: a model opening the path sees the bytes either way.
     /// </summary>
     private static string ExtensionFor(string? contentType, string? fileName)
     {
@@ -205,9 +200,8 @@ public sealed class FileMediaStore : IMediaStore
 
         if (!string.IsNullOrWhiteSpace(declared))
         {
-            // An unlisted but well-formed type (application/vnd.openxmlformats-officedocument…, say) is allowed
-            // through: the extension is guessed from the subtype. This is a document store, not an execution
-            // surface, and refusing a .docx because nobody listed it helps nobody.
+            // An unlisted but well-formed type is allowed through with a guessed extension: this is a document
+            // store, not an execution surface, and refusing a .docx because nobody listed it helps nobody.
             var subtype = declared.Split('/').LastOrDefault() ?? string.Empty;
             foreach (var suffix in new[] { "vnd.openxmlformats-officedocument.wordprocessingml.document", "vnd.openxmlformats-officedocument.spreadsheetml.sheet", "vnd.openxmlformats-officedocument.presentationml.presentation", "vnd.ms-excel", "vnd.ms-word" })
             {
@@ -251,8 +245,7 @@ public sealed class FileMediaStore : IMediaStore
             return mediaId + extension;
         }
 
-        // Keep the stem short but keep the extension: a name the model cannot open the right way is worse than
-        // a long one, and the extension is what says how.
+        // Shorten the stem but keep the extension: the extension is what tells the model how to open the file.
         if (cleaned.Length > MaxNameLength)
         {
             var stem = Path.GetFileNameWithoutExtension(cleaned);

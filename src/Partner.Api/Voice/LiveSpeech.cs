@@ -3,9 +3,9 @@ namespace Partner.Api.Voice;
 /// <summary>
 /// Bookkeeping for speaking a reply while the model is still writing it.
 /// <para>
-/// The live text only ever grows within one step, and the step's final text arrives later as a log event. This
-/// remembers how much of the live text was already handed to the speaker, so the log event only contributes
-/// what is left — otherwise the first sentences would be read out twice.
+/// Live text only grows within one step, and the step's final text arrives later as a log event. This remembers
+/// how much of the live text was already handed to the speaker, so the log event contributes only what is left —
+/// otherwise the first sentences would be read out twice.
 /// </para>
 /// <para>
 /// Chunks end on a sentence boundary on purpose: text is cleaned (markdown, emoji) before it is spoken, and
@@ -35,7 +35,7 @@ internal sealed class LiveSpeech
         }
 
         // The log event for this text was already spoken; the live copy (whole, or a stale prefix of it) lingers
-        // until the stream is told the step is over, and must not be mistaken for a new step.
+        // until the stream reports the step is over and must not be mistaken for a new step.
         if (_finished is not null && _finished.StartsWith(text, StringComparison.Ordinal))
         {
             return null;

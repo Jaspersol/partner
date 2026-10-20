@@ -3,7 +3,6 @@ using Partner.Core.Tests.Sessions;
 
 namespace Partner.Core.Tests.Memory;
 
-/// <summary>Acceptance tests for the memory store (design doc §2.5.6).</summary>
 public sealed class MemoryStoreTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-tests", Guid.NewGuid().ToString("n"));
@@ -29,14 +28,14 @@ public sealed class MemoryStoreTests : IDisposable
         MemoryScope scope = MemoryScope.Recall,
         DateTimeOffset? createdAt = null,
         double importance = 0.5) => new()
-    {
-        RecordId = id,
-        Tier = tier,
-        Scope = scope,
-        Body = body,
-        CreatedAt = createdAt ?? default,
-        Importance = importance,
-    };
+        {
+            RecordId = id,
+            Tier = tier,
+            Scope = scope,
+            Body = body,
+            CreatedAt = createdAt ?? default,
+            Importance = importance,
+        };
 
     [Fact]
     public async Task Write_and_get_round_trip_preserves_fields()
@@ -104,7 +103,7 @@ public sealed class MemoryStoreTests : IDisposable
 
         var hits = await store.RecallAsync("deploy pipeline blue green");
 
-        // bm25 is negative, and the old mapping read it as "no match", so the component never showed up at all.
+        // bm25 ranks are negative; a match still has to report Fts > 0.
         Assert.All(hits, h => Assert.Contains(h.Reasons, r => r.StartsWith("fts", StringComparison.Ordinal)));
         Assert.All(hits, h => Assert.True(h.Score.Fts > 0.0));
 
@@ -212,8 +211,8 @@ public sealed class MemoryStoreTests : IDisposable
         var created = _clock.GetUtcNow() - TimeSpan.FromHours(30);
         await store.WriteAsync(Rec("stale", "alpha", MemoryTier.Working, createdAt: created));
 
-        // The next write after the throttle window must consolidate the stale working record first (a pass reads the
-        // whole table, so writes inside the window share one).
+        // The next write after the throttle window must consolidate the stale working record first; a pass reads
+        // the whole table, so writes inside the window share one.
         _clock.Advance(MemoryStore.PromotionThrottle);
         await store.WriteAsync(Rec("newer", "beta"));
 
@@ -425,8 +424,6 @@ public sealed class MemoryStoreTests : IDisposable
     [Fact]
     public async Task The_maintenance_pass_ages_and_trims_without_any_recall()
     {
-        // The read/write paths used to be the only place maintenance ran, so a library nobody opened for
-        // months never aged: this pass is what a notebook that sits unopened still goes through.
         await using var store = Open();
         var longAgo = _clock.GetUtcNow() - TimeSpan.FromDays(200);
 
@@ -465,8 +462,7 @@ public sealed class MemoryStoreTests : IDisposable
         await store.RecallAsync("gamma");
         await store.DemoteIdleAsync(); // demotion lives in the maintenance pass, not on the recall path
 
-        // It used to fall through the CASE into Working, skipping a level. Procedural is the only tier that
-        // records a way of doing something rather than a fact, so losing two notches loses the reason to keep it.
+        // Procedural records a way of doing something rather than a fact, so it drops only one level.
         Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("howto"))!.Tier);
     }
 
@@ -506,9 +502,6 @@ public sealed class MemoryStoreTests : IDisposable
         var superseded = await store.GetAsync("old");
         Assert.NotNull(superseded!.ValidTo);
         Assert.Equal("new", superseded.SupersededBy);
-
-        // Retention is about time, not about being right. A person who corrects themselves means it, and a store
-        // that argued would be the bug.
     }
 
     [Fact]
@@ -536,8 +529,6 @@ public sealed class MemoryStoreTests : IDisposable
 
         await store.SetScopeAsync("m1", MemoryScope.Retain);
 
-        // Pinning retention to one tier would have been simpler to explain, but it would have left Procedural
-        // unprotectable: a retained "how to deploy this" note would arrive as an established fact.
         Assert.Equal(MemoryTier.Procedural, (await store.GetAsync("m1"))!.Tier);
     }
 
@@ -562,9 +553,8 @@ public sealed class MemoryStoreTests : IDisposable
         await using var reopened = Open();
         Assert.Equal(MemoryScope.Recall, (await reopened.GetAsync("m1"))!.Scope);
 
-        // Falling back quietly must not mean falling back unnoticed: the drift is counted, so a store full of a
-        // scope this build does not have is visible instead of merely behaving as if everything was let go. Only
-        // the values that are actually unknown are counted — a readable scope leaves no entry.
+        // Falling back quietly must not mean falling back unnoticed: the drift is counted so an unknown scope is
+        // visible. Only values that are actually unknown are counted; a readable scope leaves no entry.
         Assert.Equal(1, reopened.UnknownScopes["Global"]);
         Assert.Single(reopened.UnknownScopes);
     }

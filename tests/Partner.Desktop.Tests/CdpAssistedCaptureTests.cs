@@ -64,7 +64,7 @@ public sealed class CdpAssistedCaptureTests
         // The borders being a different colour must not make it look painted: only the client area is judged.
         Assert.NotEqual(Pixel(blank.Bgra, 0, 0), Pixel(blank.Bgra, 50, 40));
 
-        // A varied page is passed through. (The one red pixel is not on the sample grid, so give it real texture.)
+        // A varied page is passed through. The single red pixel is off the sample grid, so give it real texture.
         var textured = Frame((x, y) => x is 0 or FrameWidth - 1 || y is 0 or FrameHeight - 1 ? Frame1 : (uint)(0xFF000000 | (uint)((x * 7 + y * 13) % 255) << 8));
         Assert.False(CdpAssistedCapture.LooksBlank(textured, Client, textured.ScreenRect!));
         _ = painted;
@@ -79,7 +79,7 @@ public sealed class CdpAssistedCaptureTests
 
         Assert.NotNull(merged);
         Assert.Equal(Red, Pixel(merged!.Bgra, 50, 40) | 0xFF000000);
-        Assert.Equal(Frame1, Pixel(merged.Bgra, 0, 0)); // the window's own border is untouched
+        Assert.Equal(Frame1, Pixel(merged.Bgra, 0, 0));
         Assert.Contains("cdp.screenshot", merged.Method, StringComparison.Ordinal);
         Assert.Equal(blank.Width, merged.Width);
     }

@@ -11,7 +11,7 @@ using Partner.Core.Agent.Llm;
 namespace Partner.Api.Tests;
 
 /// <summary>
-/// The queue consumer as the host wires it (design doc §2.2). The interesting claims are negative ones:
+/// The queue consumer as the host wires it. The interesting claims are negative ones:
 /// it must not claim to be running when no model is configured, and it must not leave work queued forever
 /// when one is.
 /// </summary>
@@ -90,7 +90,6 @@ public sealed class ConsumerEndpointTests : ApiFixture
 
             llm.Release.SetResult();
 
-            // After: the live row is gone, and the complete answer is an ordinary event.
             var settled = await WaitForSessionAsync(session =>
                 !session.GetProperty("busy").GetBoolean()
                 && session.GetProperty("items").EnumerateArray()
@@ -134,7 +133,6 @@ public sealed class ConsumerEndpointTests : ApiFixture
             await Eventually.IsTrueAsync(async () => await HasLeftTheQueueAsync(itemId!)),
             "the consumer never finished the delivered item");
 
-        // The whole point of the consumer: the queue drains and the conversation appears.
         var session = await _http.GetFromJsonAsync<JsonElement>("/api/session");
         var bodies = session.GetProperty("items").EnumerateArray()
             .Select(item => (Kind: item.GetProperty("kind").GetString(), Body: item.GetProperty("body").GetString()))
@@ -171,15 +169,7 @@ public sealed class ConsumerEndpointTests : ApiFixture
         Assert.DoesNotContain("second", userBodies);
     }
 
-    /// <summary>
-    /// True once the queue no longer holds the item — which is how a finished item now announces itself.
-    /// </summary>
-    /// <remarks>
-    /// It used to report a status, and polled for "Done". It cannot any more: the queue is what is still in
-    /// play, so a settled item is absent rather than marked. That is a stronger statement than "Done" — there
-    /// is no way for it to still be waiting — but it also means <c>/api/queue</c> no longer answers "what
-    /// happened to item X", and anything that needs that has to read the session log or keep its own record.
-    /// </remarks>
+    /// <summary>True once the queue no longer holds the item, which is how a settled item is reported.</summary>
     private async Task<bool> HasLeftTheQueueAsync(string itemId)
     {
         var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
@@ -238,7 +228,6 @@ public sealed class UnconfiguredConsumerTests
             var reason = state.GetProperty("reason").GetString();
             Assert.Contains(HttpLlmClient.BaseUrlVariable, reason!, StringComparison.Ordinal);
 
-            // Work still lands in the queue; it simply does not move, and the state says so.
             var submitted = await http.PostAsJsonAsync("/api/input", new { source = "text", payload = "orphan" });
             Assert.Equal(HttpStatusCode.OK, submitted.StatusCode);
 
@@ -270,9 +259,9 @@ public sealed class UnconfiguredConsumerTests
 internal static class Eventually
 {
     /// <param name="attempts">
-    /// 200 polls at 25ms is 5s, which is enough for a turn that fails against a refused endpoint. It is not
-    /// enough when the same machine is also running every other test assembly: give a caller that waits on a
-    /// reconfigure *and* a completed turn more room rather than making every caller wait longer.
+    /// 200 polls at 25ms is 5s, enough for a turn that fails against a refused endpoint. When the machine is
+    /// also running every other test assembly, a caller that waits on a reconfigure *and* a completed turn
+    /// needs more room; raise it per caller rather than making every caller wait longer.
     /// </param>
     public static async Task<bool> IsTrueAsync(Func<Task<bool>> condition, int attempts = 200)
     {

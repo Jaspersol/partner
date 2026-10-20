@@ -5,9 +5,8 @@ using Partner.Core.Scheduler;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// What a timed task has to satisfy to be stored, and how one reads in words. Shared by the HTTP endpoints and by
-/// the assistant's own tools on purpose: two entry points with two copies of "how short may an interval be" is
-/// how the assistant ends up able to create what the page would have refused.
+/// What a timed task must satisfy to be stored, and how it reads in words. Shared by the HTTP endpoints and the
+/// assistant's tools so both enforce the same limits.
 /// </summary>
 public static class ScheduleRules
 {
@@ -23,8 +22,8 @@ public static class ScheduleRules
         TimeZoneInfo.ConvertTime(instant, TimeZoneInfo.Local).ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Validates the request and, when it passes, stores it. The error is the sentence to show whoever asked —
-    /// a person on the page, or the model, which reads it and tries again.
+    /// Validates the request and stores it when valid. The error is the sentence shown to whoever asked — a
+    /// person on the page, or the model, which reads it and retries.
     /// </summary>
     public static async Task<(ScheduleTask? Task, string? Error)> CreateAsync(
         IScheduler scheduler, ScheduleRequest request, DateTimeOffset now, CancellationToken ct)
@@ -70,8 +69,8 @@ public static class ScheduleRules
     }
 
     /// <summary>
-    /// Validation lives here, not in the triggers: those are pure and trust their input, and this is the one
-    /// place a stranger's text becomes one.
+    /// Validation lives here, not in the triggers: those are pure and trust their input; this is the one place
+    /// a stranger's text becomes one.
     /// </summary>
     public static bool TryBuildTrigger(ScheduleRequest request, DateTimeOffset now, out ScheduleTrigger? trigger, out string problem)
     {
@@ -88,8 +87,7 @@ public static class ScheduleRules
                 }
                 catch (ArgumentException error)
                 {
-                    // ArgumentException appends "(Parameter 'expression')" to the message; the reason before it
-                    // is what the reader needs, the parameter name is ours.
+                    // ArgumentException appends "(Parameter 'expression')"; the reader needs the reason before it.
                     var reason = Regex.Replace(error.Message, @"\s*\(Parameter '[^']*'\)\s*$", string.Empty);
                     problem = $"cron 表达式不对：{reason}";
                     return false;
@@ -125,7 +123,7 @@ public static class ScheduleRules
     public static CatchUpPolicy ParseCatchUp(string? text) =>
         Enum.TryParse<CatchUpPolicy>(text, ignoreCase: true, out var policy) ? policy : CatchUpPolicy.Once;
 
-    /// <summary>The rule in words. Cron stays as the expression: translating it would be a second source of truth.</summary>
+    /// <summary>The rule in words. Cron stays as the expression: translating it would create a second source of truth.</summary>
     public static string Describe(ScheduleTask task) => task.Trigger switch
     {
         IntervalTrigger interval => interval.Interval.TotalMinutes switch

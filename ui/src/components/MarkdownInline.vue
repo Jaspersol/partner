@@ -4,8 +4,8 @@ export default { name: 'MarkdownInline' }
 
 <script setup lang="ts">
 /**
- * One inline run, rendered. Emphasis can contain anything emphasis can contain, so the recursion lives here
- * instead of being open-coded at each of the five block sites that render runs.
+ * One inline run, rendered. Recursion lives here rather than being open-coded at each block site that renders
+ * runs, because emphasis can contain anything emphasis can contain.
  */
 import type { Inline } from './markdownTypes'
 

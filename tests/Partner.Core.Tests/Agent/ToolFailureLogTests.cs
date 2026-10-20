@@ -29,7 +29,6 @@ public sealed class ToolFailureLogTests
     [Fact]
     public void The_most_frequent_failure_is_the_first_one_listed()
     {
-        // The whole point is that the thing which keeps happening is the thing you read first.
         var log = new InMemoryToolFailureLog();
         log.Record("write", "denied", "permission denied", Base);
         for (var i = 0; i < 5; i++)
@@ -45,7 +44,7 @@ public sealed class ToolFailureLogTests
     public void Two_tools_failing_the_same_way_are_two_rows()
     {
         // The tool is part of the diagnosis: a search that finds nothing and a read that finds nothing are
-        // different problems with the same word in them.
+        // different problems.
         var log = new InMemoryToolFailureLog();
         log.Record("read", "missing", "file not found", Base);
         log.Record("search", "missing", "file not found", Base);
@@ -56,8 +55,7 @@ public sealed class ToolFailureLogTests
     [Fact]
     public void A_long_recurring_failure_does_not_push_the_others_out()
     {
-        // Capacity exists so a flood of one-offs cannot become the summary. A hundred rare failures must not
-        // crowd out the one failure that happens every turn.
+        // Capacity exists so a flood of one-offs cannot crowd out the one failure that happens every turn.
         var log = new InMemoryToolFailureLog(capacity: 4);
         log.Record("read", "the recurring one", "it happened again", Base);
 
@@ -72,8 +70,7 @@ public sealed class ToolFailureLogTests
     [Fact]
     public void Messages_that_differ_only_by_their_argument_land_on_one_key()
     {
-        // Without this the summary is a list of one-offs, which is the session log with extra steps. The
-        // argument is what varies; the reason is what repeats.
+        // Without this the summary is a list of one-offs. The argument varies; the reason repeats.
         var a = ToolFailureReason.From("grep timed out after 30s on reports/");
         var b = ToolFailureReason.From("grep timed out after 45s on reports/");
 
@@ -83,10 +80,8 @@ public sealed class ToolFailureLogTests
     [Fact]
     public void Grouping_is_coarse_on_purpose_and_the_detail_survives_in_the_message()
     {
-        // Numbers are masked, so `q1` and `q2` collapse. That is the trade the summary makes deliberately:
-        // the row's job is to say "this keeps happening to this tool", and a key that preserved every
-        // argument would just be the session log again. A reader who needs to know *which* file still has it,
-        // in LastMessage, ungrouped.
+        // Numbers are masked, so `q1` and `q2` collapse: the row's job is to say "this keeps happening to this
+        // tool", and a reader who needs *which* file still has it in LastMessage.
         Assert.Equal(
             ToolFailureReason.From("file not found: reports/q1.xlsx"),
             ToolFailureReason.From("file not found: reports/q2.xlsx"));
@@ -103,7 +98,7 @@ public sealed class ToolFailureLogTests
     [Fact]
     public void Different_reasons_stay_apart()
     {
-        // Over-merging is the failure mode of a summary: a row that says "the files are wrong" is useless.
+        // Over-merging would make a row like "the files are wrong", which is useless.
         var missing = ToolFailureReason.From("file not found: a.txt");
         var denied = ToolFailureReason.From("permission denied: a.txt");
 
@@ -144,9 +139,7 @@ public sealed class ToolFailureLogTests
     [Fact]
     public void A_failure_remembers_where_it_happened()
     {
-        // The queue log holds the same moment durably, as finishedAt. Without the item id a reader cannot join
-        // the two, and after a restart the summary's clock and the log's clock answer the same question
-        // differently.
+        // The queue log holds the same moment durably, as finishedAt; the item id joins the two.
         var log = new InMemoryToolFailureLog();
         log.Record("read", "file not found", "file not found: a.txt", Base, "in-7");
 

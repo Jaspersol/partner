@@ -1,12 +1,9 @@
 namespace Partner.Desktop.Perception;
 
 /// <summary>
-/// Issues and validates entity leases (design doc §2.6.1 ①).
-/// <para>
-/// Validation order is part of the contract and must not be rearranged: <b>expired → generation mismatch →
-/// entity not found → digest mismatch</b>. Each step rules out a different failure mode, and the reported
-/// reason is what makes an "action refused" diagnosable instead of mysterious.
-/// </para>
+/// Issues and validates entity leases. Validation order is part of the contract and must not be rearranged:
+/// <b>expired, generation mismatch, entity not found, digest mismatch</b>. Each step rules out a different
+/// failure mode, and the reported reason makes an "action refused" diagnosable.
 /// </summary>
 public sealed class LeaseStore
 {
@@ -80,10 +77,10 @@ public sealed class LeaseStore
             return new LeaseValidation(LeaseRejection.EntityNotFound, null);
         }
 
-        // 4) same id, same generation — but is it still the *same window*? Identity is handle + process +
-        // process start time, so this catches a recycled handle (the previous window closed and Windows
-        // handed the same handle to a new one) and a restarted process. Title and geometry are not identity:
-        // a window that retitles itself or moves is still the window the model decided about.
+        // 4) Same id, same generation, but is it still the same window? Identity is handle + process + process
+        // start time, so this catches a recycled handle (the previous window closed and Windows handed the same
+        // handle to a new one) and a restarted process. Title and geometry are not identity: a window that
+        // retitles itself or moves is still the window the model decided about.
         if (!string.Equals(entity.IdentityDigest, lease.IdentityDigest, StringComparison.Ordinal))
         {
             return new LeaseValidation(LeaseRejection.DigestMismatch, entity);

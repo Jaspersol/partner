@@ -392,7 +392,7 @@ public sealed partial class SubAgentHost : IAsyncDisposable
         lock (_gate)
         {
             var excess = _jobs.Count(job => !job.IsRunning) - KeepFinished;
-            for (var i = 0; i < _jobs.Count && excess > 0; )
+            for (var i = 0; i < _jobs.Count && excess > 0;)
             {
                 if (_jobs[i].IsRunning)
                 {

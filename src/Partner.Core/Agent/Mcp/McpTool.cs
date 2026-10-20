@@ -7,8 +7,8 @@ public sealed class McpTool : ITool
 {
     private readonly IMcpClient _client;
 
-    /// <param name="client">已启动的 MCP 客户端。</param>
-    /// <param name="descriptor">来自 <c>tools/list</c> 的工具描述。</param>
+    /// <param name="client">A started MCP client.</param>
+    /// <param name="descriptor">The tool descriptor from <c>tools/list</c>.</param>
     public McpTool(IMcpClient client, McpToolDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(client);
@@ -35,7 +35,7 @@ public sealed class McpTool : ITool
         }
         catch (Exception ex)
         {
-            // ITool 契约：失败也是结果，不抛异常中断回合。
+            // ITool contract: a failure is a result; it must not throw and abort the turn.
             return new ToolResult(false, ex.Message);
         }
     }

@@ -3,7 +3,7 @@ using Partner.Desktop.Perception;
 
 namespace Partner.Desktop.Tests;
 
-/// <summary>Lease TTL policy: the reference numbers are normative (design doc §2.6.1 ①).</summary>
+/// <summary>Lease TTL policy: the reference numbers are normative.</summary>
 public sealed class LeaseTtlPolicyTests
 {
     private static readonly LeaseTtlPolicy Policy = new();

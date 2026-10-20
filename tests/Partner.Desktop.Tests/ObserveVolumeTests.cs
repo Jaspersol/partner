@@ -61,7 +61,7 @@ public sealed class ObserveVolumeTests
         var byName = await ObserveAsync(automation, """{"all":true,"nameContains":"按钮 4","maxElements":200}""");
         foreach (var window in byName.GetProperty("entities").EnumerateArray())
         {
-            // 按钮 4, 40, 42, 44, 46, 48
+            // Buttons 4, 40, 42, 44, 46, 48
             Assert.Equal(6, window.GetProperty("elements").GetArrayLength());
         }
     }

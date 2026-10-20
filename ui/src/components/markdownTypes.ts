@@ -1,6 +1,6 @@
 /**
  * The shapes the Markdown renderer works in. Kept apart from the parser so the recursive run renderer can
- * speak the same types without importing a component.
+ * use the same types without importing a component.
  */
 
 /**

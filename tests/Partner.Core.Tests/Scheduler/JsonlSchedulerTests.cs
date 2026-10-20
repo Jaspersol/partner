@@ -99,7 +99,7 @@ internal sealed class RecordingQueue : IInputQueue
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
-/// <summary>Acceptance tests for the durable scheduler (design doc §2.4 / Phase 2).</summary>
+/// <summary>Acceptance tests for the durable scheduler.</summary>
 public sealed class JsonlSchedulerTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-tests", Guid.NewGuid().ToString("n"));
@@ -418,8 +418,8 @@ public sealed class JsonlSchedulerTests : IDisposable
         using var cts = new CancellationTokenSource();
         var driver = scheduler.RunAsync(cts.Token);
 
-        // The regression the design doc cares about: blocking the caller for 2x the interval must not stop
-        // delivery — the scheduler waits on its own OS-level handle, not on a shared event loop.
+        // Blocking the caller for 2x the interval must not stop delivery: the scheduler waits on its own OS-level
+        // handle, not on a shared event loop.
         Thread.Sleep(150);
 
         await cts.CancelAsync();

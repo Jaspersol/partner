@@ -5,9 +5,9 @@ namespace Partner.Core.Agent.Web;
 /// was asked for at all?
 /// <para>
 /// Chinese is not split on spaces, so a query like 北京天气 is one "word" to any whitespace splitter and would
-/// never match anything. CJK text is therefore tokenized into single characters and adjacent pairs, which is the
-/// cheap version of the segmentation the whole check would otherwise need — and it is enough for deciding whether
-/// a page is about the subject, which is all this is for.
+/// never match anything. CJK text is therefore tokenized into single characters and adjacent pairs — the cheap
+/// version of the segmentation the whole check would otherwise need, enough to decide whether a page is about the
+/// subject.
 /// </para>
 /// </summary>
 public static class QueryTokens

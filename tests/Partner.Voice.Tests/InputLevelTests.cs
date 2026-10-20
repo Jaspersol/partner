@@ -35,7 +35,7 @@ public sealed class InputLevelTests
         return (half, source);
     }
 
-    /// <summary>推进 n 秒的静音或语音帧（20 ms 一步），每步 tick 一次。</summary>
+    /// <summary>Advances n seconds of silence or speech in 20 ms steps, ticking once per step.</summary>
     private static async Task AdvanceAsync(
         VoiceInputHalf half,
         SyntheticAudioSource source,
@@ -108,7 +108,7 @@ public sealed class InputLevelTests
         Assert.True(half.AmbientRms >= 0.03, $"ambient={half.AmbientRms:0.0000}");
     }
 
-    /// <summary>不返回文本的 ASR：这些用例只关心电平与底噪，不关心转写。</summary>
+    /// <summary>An ASR that returns no text; these tests cover levels and noise floor, not transcription.</summary>
     private sealed class SilentAsr : IAsrClient
     {
         public Task<string> TranscribeAsync(float[] pcm, CancellationToken ct = default) =>

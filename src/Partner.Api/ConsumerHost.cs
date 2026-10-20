@@ -17,7 +17,6 @@ using Partner.Core.Agent.Delegation;
 
 namespace Partner.Api;
 
-/// <summary>What the consumer is doing, so "nothing is executing" is a visible state rather than a silent one.</summary>
 /// <summary>One tool the model can call, with the decision governance will apply to it.</summary>
 public sealed record ToolExposure(string Name, string Decision);
 
@@ -33,11 +32,11 @@ public sealed record ConsumerState(
     IReadOnlyList<AgentToolExposure> AgentTools);
 
 /// <summary>
-/// Owns the single consumer of the input queue (design doc §2.2) for the API process.
+/// Owns the single consumer of the input queue for the API process.
 /// <para>
 /// It starts only when a model is available. A consumer wired to a stub model would look like a working
-/// runtime while executing nothing, which is worse than not starting: the reason travels in
-/// <see cref="ConsumerState.Reason"/> and is served on <c>/api/consumer</c>.
+/// runtime while executing nothing: the reason travels in <see cref="ConsumerState.Reason"/> and is served on
+/// <c>/api/consumer</c>.
 /// </para>
 /// <para>
 /// Configuration can change at runtime, so the loop is replaceable: <see cref="ReconfigureAsync"/> stops the
@@ -122,8 +121,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         if (agent.Model is { } own)
         {
-            // One client per endpoint for the life of the consumer, not one per job: a job used to open its own
-            // connection (and TLS handshake) and throw it away, for a model it had just been talking to.
+            // One client per endpoint for the life of the consumer, not one per job: a per-job client would open a
+            // connection (and TLS handshake) for a model it had just been talking to.
             var http = _subClients.GetOrAdd(
                 own.BaseUrl!.TrimEnd('/'),
                 _ => new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
@@ -166,9 +165,9 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         AgentTools: SubAgentTools());
 
     /// <summary>
-    /// What each reachable sub-agent can call. The tools are not in the main agent's table any more, and
-    /// "what can the model touch, and what will it ask first" is exactly the thing a person needs to be able to
-    /// read off the status endpoint — so it is reported here, decided live like the main table.
+    /// What each reachable sub-agent can call. The tools are not in the main agent's table, and "what can the
+    /// model touch, and what will it ask first" must be readable from the status endpoint, decided live like the
+    /// main table.
     /// </summary>
     private IReadOnlyList<AgentToolExposure> SubAgentTools()
     {
@@ -233,8 +232,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         lock (_liveGate)
         {
-            // A new item starts a new live text; the old one belongs to a step that already ended. The same is
-            // true of a new step within a turn, which is why the item id is the identity here.
+            // A new item starts a new live text; the old one belongs to a step that already ended. The same holds
+            // for a new step within a turn, which is why the item id is the identity here.
             _live = _live is { } current && current.ItemId == itemId
                 ? current with
                 {
@@ -280,8 +279,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         lock (_liveGate)
         {
-            // The text stays: the log now holds the finished thinking, but a view that is mid-poll should
-            // still see the last of it rather than the row blinking empty before the answer arrives.
+            // The text stays: the log holds the finished thinking, but a view that is mid-poll should still see
+            // the last of it rather than the row blinking empty before the answer arrives.
             if (_live is { } current && current.ItemId == itemId && current.Reasoning is not null)
             {
                 _live = current with { ReasoningSince = null };
@@ -478,16 +477,16 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         var settings = _context.Settings.Load();
         var tools = new InMemoryToolRegistry();
 
-        // Desktop tools are no longer registered here, and that is the point of the sub-agents: the main agent
-        // hands desktop work to the desktop sub-agent and never holds the tools itself. File tools stay with the
-        // main agent only while no enabled sub-agent has taken them ("no scenario configured" = main does it).
+        // Desktop tools are registered only by the desktop sub-agent: the main agent hands desktop work to it
+        // and never holds the tools itself. File tools stay with the main agent only while no enabled sub-agent
+        // has taken them ("no scenario configured" = main does it).
         if (AgentRouting.MainOwnsFiles(settings))
         {
             FileToolSet.Register(tools, settings, _workspace);
         }
 
-        // On by default: web search is the capability this build ships enabled, so out of the box these two
-        // tools are the main agent's. They move to a web-search sub-agent the moment one is created and enabled.
+        // On by default: web search ships enabled, so out of the box these two tools are the main agent's. They
+        // move to a web-search sub-agent the moment one is created and enabled.
         if (AgentRouting.MainOwnsWeb(settings))
         {
             WebToolSet.Register(tools, _context);
@@ -553,8 +552,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// The hooks a turn runs: what it already knows, and what it leaves behind.
     /// <para>
     /// Memory is always registered, unlike skills. Skills need a workspace to load from, but the memory store
-    /// always exists — and registering it only when non-empty is how it stayed empty for so long: there was no
-    /// first record for such a condition to ever notice.
+    /// always exists, and registering it only when non-empty would keep it empty.
     /// </para>
     /// </summary>
     private HookRegistry TurnHooks(string workspace)

@@ -6,11 +6,10 @@ namespace Partner.Core.Agent.Web;
 /// <summary>
 /// The fourth quality gate: saying honestly what the results are.
 /// <para>
-/// Everything a search returns is a lead, and the model reading this text has no way to tell a fresh result from
-/// a stale one, an answer from a served page, or eight sources from one source repeated. So the text says:
-/// which results, how many carry a date and where that date came from, how old the whole answer is, which
-/// engines answered and which did not with the reason, and — when there is almost nothing — which filter to
-/// loosen. Omitting any of that would make the model's confidence a function of the fetch, not of the evidence.
+/// Everything a search returns is a lead, and the model reading this text cannot tell a fresh result from a stale
+/// one, an answer from a served page, or eight sources from one source repeated. The text therefore states which
+/// results, how many carry a date and where that date came from, how old the whole answer is, which engines
+/// answered and which did not with the reason, and — when there is almost nothing — which filter to loosen.
 /// </para>
 /// </summary>
 public sealed class ResultFormatter
@@ -19,8 +18,8 @@ public sealed class ResultFormatter
     public const int SparseThreshold = 3;
 
     /// <summary>
-    /// The sentence that has to be in every answer. It is fixed text rather than a style instruction, because an
-    /// instruction can be dropped by a model in a hurry and this one line is the difference between a lead and a
+    /// The sentence that has to be in every answer. Fixed text rather than a style instruction, because an
+    /// instruction can be dropped by a model in a hurry and this line is the difference between a lead and a
     /// claim.
     /// </summary>
     public const string LeadWarning =
@@ -76,7 +75,7 @@ public sealed class ResultFormatter
         return text.ToString();
     }
 
-    /// <summary>The most one result may spend on its snippet; arXiv and Wikipedia hand back whole abstracts.</summary>
+    /// <summary>The most one result may spend on its snippet; arXiv and Wikipedia return whole abstracts.</summary>
     public const int MaxSnippetChars = 300;
 
     /// <summary>Soft ceiling on the hit list: the hit that crosses it is the last one printed.</summary>
@@ -187,9 +186,9 @@ public sealed class ResultFormatter
     }
 
     /// <summary>
-    /// What to try next when there is almost nothing. The three levers are the three the caller controls, and
-    /// they are named in the order that is most likely to be the culprit: a recency filter discards results that
-    /// were found, a narrow kind never asked anybody who indexes widely, and the keywords are the last resort.
+    /// What to try next when there is almost nothing. The three levers are the three the caller controls, named
+    /// in the order most likely to be the culprit: a recency filter discards results that were found, a narrow
+    /// kind never asked anybody who indexes widely, and the keywords are the last resort.
     /// </summary>
     private static void AppendRelaxation(StringBuilder text, SearchOutcome outcome)
     {

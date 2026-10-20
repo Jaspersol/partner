@@ -6,10 +6,8 @@ namespace Partner.Core.Memory;
 /// Keeps the store honest about two things: which record speaks for a topic, and which records have gone
 /// quiet long enough to stop being trusted.
 /// <para>
-/// Both rules exist because a memory that is never contradicted and never used is indistinguishable from
-/// garbage, and a store that only grows will eventually hand the model more stale than current. Nothing here
-/// deletes anything — an invalidated record stays visible and editable, because a person looking at the list
-/// has to be able to see what was superseded and decide for themselves.
+/// Nothing here deletes anything — an invalidated record stays visible and editable, so a person can see what
+/// was superseded and decide.
 /// </para>
 /// </summary>
 public static class MemoryLifecycle
@@ -21,12 +19,9 @@ public static class MemoryLifecycle
     /// How many distinctive words two records must share before one is treated as speaking about the same
     /// thing.
     /// <para>
-    /// An absolute count, not a ratio. A ratio punishes the records that matter most: "项目部署在阿里云上" and
-    /// "项目部署在腾讯云上了" are obviously the same claim about the same subject, yet they share a smaller
-    /// <em>fraction</em> of the shorter one than two unrelated sentences do, because both are short and both
-    /// are dense. Measured on real pairs, the ratio spans 0.43 for a genuine contradiction of a longer sentence
-    /// and 0.63 for a short one — there is no threshold that separates them. The count does: a contradiction
-    /// shares the subject words, and an unrelated record shares at most a greeting.
+    /// An absolute count, not a ratio: a ratio punishes short, dense records, and measured on real pairs the
+    /// ratio ranges overlap between genuine contradictions and unrelated text. A contradiction shares the
+    /// subject words; an unrelated record shares at most a greeting.
     /// </para>
     /// </summary>
     public const int MinSharedKeywords = 5;
@@ -34,15 +29,12 @@ public static class MemoryLifecycle
     /// <summary>
     /// Whether <paramref name="candidate"/> and <paramref name="existing"/> make claims about the same thing.
     /// <para>
-    /// Compared as the sets of their distinctive words — CJK bigrams for Chinese, whole words for Latin —
-    /// because a shared string count alone rates "用户可能" as more alike than two records that genuinely
-    /// contradict each other.
+    /// Compared as sets of distinctive words — CJK bigrams for Chinese, whole words for Latin — because a raw
+    /// shared-string count rates common fragments as more alike than a genuine contradiction.
     /// </para>
     /// <para>
-    /// An identical record is explicitly <b>not</b> a conflict. Retiring it would lose a fact without adding
-    /// anything: the newcomer says the same thing, so the older copy carries nothing the new one does not.
-    /// And it is a real case — the same turn can be distilled twice, and two turns can land on the same
-    /// statement.
+    /// An identical record is explicitly <b>not</b> a conflict: the newcomer says the same thing, so retiring the
+    /// older copy would lose nothing but would not gain anything either. The same turn can be distilled twice.
     /// </para>
     /// </summary>
     public static bool Conflicts(string candidate, string existing)
@@ -102,8 +94,8 @@ public static class MemoryLifecycle
     /// <summary>
     /// The distinctive words of a record: CJK bigrams and Latin words, stopwords dropped.
     /// <para>
-    /// Dropping the stopwords is what keeps two records that both merely start with "用户" from looking
-    /// identical — that word is in every record this system writes.
+    /// Dropping stopwords keeps two records that both merely start with the same common subject word from looking
+    /// identical.
     /// </para>
     /// </summary>
     public static HashSet<string> Keywords(string text)
@@ -155,11 +147,9 @@ public static class MemoryLifecycle
     }
 
     /// <summary>
-    /// Words that appear in so many records that sharing one means nothing.
-    /// <para>
-    /// Small on purpose. Every word dropped here is a signal the conflict check stops seeing, so this is a list
-    /// of words that are genuinely contentless rather than a general stopword list.
-    /// </para>
+    /// Words that appear in so many records that sharing one means nothing. Every word dropped here is a signal
+    /// the conflict check stops seeing, so this is a list of contentless words rather than a general stopword
+    /// list.
     /// </summary>
     private static readonly HashSet<string> Stopwords = new(StringComparer.Ordinal)
     {

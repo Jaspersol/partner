@@ -2,27 +2,27 @@ using Partner.Voice.Asr;
 
 namespace Partner.Voice.Settings;
 
-/// <summary>Voice input settings (design doc §2.8.12 — control is settings, not buttons).</summary>
+/// <summary>Voice input settings (control is settings, not buttons).</summary>
 public sealed record VoiceInputSetting
 {
     public bool Enabled { get; init; }
 
     /// <summary>
-    /// 唤醒门（本地 KWS）：非 null 时麦克风持续监听但<b>不提交 ASR</b>，
-    /// 直到 <see cref="IWakeChecker"/> 报出命中。null = 不设门（纯语音输入，旧行为）。
+    /// Wake gate (local KWS): when non-null the microphone keeps listening but <b>does not submit to ASR</b>
+    /// until <see cref="IWakeChecker"/> reports a hit. null = no gate (plain voice input).
     /// </summary>
     public IWakeChecker? Wake { get; init; }
 
     /// <summary>
-    /// 唤醒命中瞬间的提示音（叮），在输出设备上自发播放。null/关 = 静默进会话。
-    /// 无回调依赖：宿主把 sink 交给 <see cref="VoiceInputHalf"/>，命中那 tick 直接 Enqueue。
+    /// Tone played on the output device at the wake hit. null/off = enter the session silently.
+    /// No callback dependency: the host hands the sink to <see cref="VoiceInputHalf"/>, which enqueues directly on the hit tick.
     /// </summary>
     public bool WakeTone { get; init; } = true;
 
     /// <summary>Input device name (partial, case/space-insensitive match) or null for the system default.</summary>
     public string? DeviceId { get; init; }
 
-    /// <summary>Fixed RMS gate. Must sit above the room noise floor or silence is never detected (R11).</summary>
+    /// <summary>Fixed RMS gate. Must sit above the room noise floor or silence is never detected.</summary>
     public double SilenceThreshold { get; init; } = 0.003;
 
     /// <summary>
@@ -38,12 +38,12 @@ public sealed record VoiceInputSetting
     public double UtteranceGapMs { get; init; } = 1200;
 
     /// <summary>
-    /// 唤醒词命中后、用户还没开口时，会话最多再等多久的静默。
+    /// Maximum silence after a wake hit, before the user speaks, that keeps the session open.
     /// <para>
-    /// 与 <see cref="UtteranceGapMs"/> 分开：提示音到人开口之间的那段沉默是「在想说什么」，
-    /// 不是「说完了」。用判句间隔去关会话，人还没出声闸门就合上了——之后说的全部只喂给唤醒探针，
-    /// 永远不进 ASR（实测：唤醒后停 1.2 s 再说话，utterance 为 0）。
-    /// 一旦真听到语音，立刻回到 <see cref="UtteranceGapMs"/> 的正常判句。
+    /// Separate from <see cref="UtteranceGapMs"/>: the silence between the tone and speech is "thinking what to say",
+    /// not "finished talking". Closing the session on the sentence gap shuts the gate before the user speaks — everything
+    /// said afterwards only feeds the wake probe and never reaches ASR. Once real speech is heard, the normal
+    /// <see cref="UtteranceGapMs"/> sentence logic resumes.
     /// </para>
     /// </summary>
     public double WakeTimeoutMs { get; init; } = 5000;
@@ -63,7 +63,7 @@ public sealed record VoiceInputSetting
     public static VoiceInputSetting Default { get; } = new();
 }
 
-/// <summary>Voice output settings (design doc §2.8.11 — the output half exists only when enabled).</summary>
+/// <summary>Voice output settings (the output half exists only when enabled).</summary>
 public sealed record VoiceOutputSetting
 {
     public bool Enabled { get; init; }

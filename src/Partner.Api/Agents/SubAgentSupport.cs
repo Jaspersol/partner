@@ -63,8 +63,8 @@ internal sealed class OriginApprovalHandler(QueuedApprovalHandler inner, string 
 }
 
 /// <summary>
-/// The desktop tools, registered the way the main agent used to register them and now only a desktop sub-agent
-/// does. One place, so the tool set a job gets cannot drift from what the settings describe.
+/// The desktop tools a desktop sub-agent gets. One place, so the tool set a job gets cannot drift from what the
+/// settings describe.
 /// </summary>
 internal static class DesktopToolSet
 {

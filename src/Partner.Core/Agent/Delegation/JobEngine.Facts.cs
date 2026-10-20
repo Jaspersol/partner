@@ -69,7 +69,7 @@ public sealed partial class JobEngine
 
     /// <summary>
     /// Whether a tool failure is a refusal rather than a miss. The prefixes are the ones the runner and the
-    /// file tools write; the host adds markers for failures only it knows how to recognise (an elevated window).
+    /// file tools write; <paramref name="extraTerminal"/> adds markers only the host can recognise.
     /// </summary>
     private string? TerminalOf(string body)
     {

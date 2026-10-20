@@ -1,26 +1,27 @@
 namespace Partner.Core.Agent.Tools;
 
 /// <summary>
-/// 一个可被模型调用的工具（设计文档 §2.9.6）。
+/// A tool the model can call.
 /// <para>
-/// 实现只负责执行：参数解析与失败都通过 <see cref="ToolResult"/> 返回，不抛出以中断回合。
-/// 是否允许调用由 <see cref="IToolGovernance"/> 在调用<b>之前</b>决定。
+/// An implementation only executes: argument parsing and failures are returned through <see cref="ToolResult"/>,
+/// never thrown to abort the turn. Whether a call is permitted is decided by <see cref="IToolGovernance"/>
+/// <b>before</b> the call.
 /// </para>
 /// </summary>
 public interface ITool
 {
-    /// <summary>工具描述（注册表与模型都以此为准）。</summary>
+    /// <summary>The tool description (the registry and the model both use it).</summary>
     ToolSpec Spec { get; }
 
-    /// <param name="argumentsJson">模型给出的原始参数 JSON。</param>
-    /// <param name="ct">取消令牌。</param>
+    /// <param name="argumentsJson">The raw argument JSON from the model.</param>
+    /// <param name="ct">Cancellation token.</param>
     Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default);
 }
 
 /// <summary>
 /// A tool that knows how long it legitimately needs. The runner's per-call timeout is one number for every
-/// tool; a tool with its own time budget (a search that is allowed to wait for slow engines) would otherwise be
-/// cancelled by that number and lose the results it had already collected.
+/// tool; a tool with its own time budget would otherwise be cancelled by that number and lose results it had
+/// already collected.
 /// </summary>
 public interface ITimedTool : ITool
 {

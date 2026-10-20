@@ -280,7 +280,7 @@ public sealed class HttpAsrClientTests
         }
     }
 
-    /// <summary>返回一个把内容切成固定大小片的流，用来验证 SSE 行被 TCP 读截断的情形。</summary>
+    /// <summary>Returns content in fixed-size slices, to exercise SSE lines split across TCP reads.</summary>
     private sealed class SlicedContent : HttpContent
     {
         private readonly byte[] _data;

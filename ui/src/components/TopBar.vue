@@ -76,7 +76,7 @@ const announcement = computed(() => {
     <div class="row topbar-right">
       <div ref="tools" class="row topbar-tools" data-test="topbar-tools" />
 
-      <!-- Blocked work is visible without opening anything (ui.md §1, §3).
+      <!-- Blocked work is visible without opening anything.
 
            The queue poll runs every five seconds whether or not anything changed, so putting `aria-live` on the
            badge itself would interrupt whatever the screen reader was reading on nearly every tick. The live
@@ -103,7 +103,7 @@ const announcement = computed(() => {
         <Icon :name="THEME_ICON[theme]" :size="16" />
       </button>
 
-      <!-- The native title bar is off (src-tauri), so the three buttons it used to carry live here. They only
+      <!-- The native title bar is off (src-tauri), so the three window buttons are rendered here. They only
            exist inside the desktop shell: in a plain browser the browser has its own. -->
       <div v-if="hasWindowChrome()" class="row window-buttons" data-test="window-buttons">
         <button class="ghost icon-btn" aria-label="最小化" title="最小化" data-test="window-minimize" @click="windowCommand('minimize')">

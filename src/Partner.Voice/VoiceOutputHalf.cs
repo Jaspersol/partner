@@ -18,7 +18,7 @@ public enum SpeechStatus
     Failed,
 }
 
-/// <summary>One sentence on its way to the speaker (design doc §2.2).</summary>
+/// <summary>One sentence on its way to the speaker.</summary>
 public sealed record SpeechItem
 {
     public required string SpeechId { get; init; }
@@ -36,7 +36,7 @@ public sealed record SpeechItem
 }
 
 /// <summary>
-/// Output half (design doc §2.8.11): session text → readable sentences → streaming TTS → ordered playback,
+/// Output half: session text → readable sentences → streaming TTS → ordered playback,
 /// with the gate closed while speaking. Only exists when voice output is enabled.
 /// </summary>
 public sealed class VoiceOutputHalf : IDisposable
@@ -230,10 +230,10 @@ public sealed class VoiceOutputHalf : IDisposable
     }
 
     /// <summary>
-    /// Ends the turn: flushes the trailing fragment, starts playback and closes the gate. Until this point
-    /// everything has been synthesized but held — the assistant must not start speaking mid-sentence.
+    /// Ends the turn: flushes the trailing fragment, starts playback and closes the gate.
     /// <para>
-    /// 上闩在这里而不是 sink 构造里：sink 跨回合复用，构造时的初值只在第一回合有效。
+    /// The latch is set here rather than in the sink constructor: the sink is reused across turns, so a
+    /// constructor-time value only applies to the first turn.
     /// </para>
     /// </summary>
     public async Task FlushTurnAsync(CancellationToken ct = default)
@@ -243,10 +243,9 @@ public sealed class VoiceOutputHalf : IDisposable
             return;
         }
 
-        // 每回合都重新上闩：本回合的全部句子先合成进 sink 的队列，最后一次放出去。
-        // 不上的话第 2 句要等第 1 句合成完才开始合成，两句之间就是一段随文本变长的静音。
-        // 提示音走同一个 sink，所以闩住时它也只是排队——Release 前它不响，这是唤醒瞬间那一 tick
-        // 就上闩的直接后果，不是提示音本身的问题。
+        // Latch again on every turn: all sentences of the turn are synthesized into the sink queue first and
+        // released together. Otherwise sentence 2 waits for sentence 1 to finish synthesizing, leaving a gap
+        // that grows with the text. The tone uses the same sink, so while latched it only queues.
         if (!_streamHeld)
         {
             // A stream that is already playing was released earlier; latching again would stall it.
@@ -426,9 +425,10 @@ public sealed class VoiceOutputHalf : IDisposable
     }
 
     /// <summary>
-    /// 同文本句子去重：新句子若与仍在播/仍在队里的上一句一字不差，丢弃。真实复现里 assistant 文本
-    /// 重复到达（重试、日志重放等上层未知路径）时，听众听到的是「第一段放到一半，第二段从头又来」——
-    /// 合成层拦截比在播放层找两个播放器便宜，也直接对得上症状。
+    /// Same-text sentence deduplication: a new sentence identical to one still playing or still queued is
+    /// dropped. When assistant text arrives twice (retries, log replay), the listener would otherwise hear
+    /// "first segment half-played, then the second from the start". Blocking at the synthesis layer is cheaper
+    /// than hunting two players at the playback layer.
     /// </summary>
     private IReadOnlyList<string> DeduplicateAgainstPending(IReadOnlyList<string> sentences)
     {
@@ -440,7 +440,7 @@ public sealed class VoiceOutputHalf : IDisposable
         var result = new List<string>(sentences.Count);
         foreach (var sentence in sentences)
         {
-            // 与最近尚未播完的一句比对即可：重复的来源是把同一文本再走一遍流程，中间必然隔着播放时长。
+            // Comparing against the most recent unfinished sentence is enough: duplicates come from replaying the same text through the pipeline.
             var duplicate = _items
                 .Where(i => i.Status is not (SpeechStatus.Played or SpeechStatus.Failed))
                 .Any(i => string.Equals(i.Text, sentence, StringComparison.Ordinal));

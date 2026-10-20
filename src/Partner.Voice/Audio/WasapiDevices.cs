@@ -4,7 +4,7 @@ using Partner.Voice.Settings;
 namespace Partner.Voice.Audio;
 
 /// <summary>
-/// WASAPI capture (design doc §2.8.1): 16 kHz mono float32 into the ring buffer.
+/// WASAPI capture: 16 kHz mono float32 into the ring buffer.
 /// <para>
 /// The device callback only copies samples — no allocation-heavy work, no I/O, no logging — because it runs
 /// on the audio thread and anything slow there produces dropouts.
@@ -18,10 +18,10 @@ public sealed class WasapiAudioSource : IAudioSource
 
     public WasapiAudioSource(VoiceInputSetting setting)
     {
-        
+
         ArgumentNullException.ThrowIfNull(setting);
 
-        
+
         SampleRate = 16000;
         DeviceNumber = ResolveDevice(setting.DeviceId, out var name);
         DeviceName = name;
@@ -119,8 +119,7 @@ public sealed class WasapiAudioSource : IAudioSource
             samples[i] = value / 32768f;
         }
 
-        // The ring is the single hand-off point; the callback itself stays allocation-light.
-        // The ring is written by the owner callback: the source stays a pure device adapter.
+        // The ring is the single hand-off point: the source stays a pure device adapter.
         _onSamples?.Invoke(samples);
     }
 
@@ -129,7 +128,7 @@ public sealed class WasapiAudioSource : IAudioSource
 }
 
 /// <summary>
-/// WASAPI playback (design doc §2.8.11): one reused output stream per sample rate, held while the segment
+/// WASAPI playback: one reused output stream per sample rate, held while the segment
 /// is still being synthesized, with a drain hold-off so the gate does not reopen into the device buffer.
 /// </summary>
 public sealed class WasapiAudioSink : IAudioSink
@@ -142,9 +141,8 @@ public sealed class WasapiAudioSink : IAudioSink
     private IWavePlayer? _player;
     private int _openRate;
 
-    // 初值 false，闩锁由每一回合的 FlushTurnAsync 自己上：sink 实例跨回合复用，初值 true 只在
-    // 第一回合生效——之后每个回合都是「第 1 句边合成边播，第 2 句等第 1 句合成完才出声」，
-    // 句间静音长度 = 后一句的合成耗时，正好随文本变长。
+    // The latch is set by each turn's FlushTurnAsync: the sink instance is reused across turns, so the
+    // field starts false.
     private bool _held;
     private bool _running;
     private bool _disposed;

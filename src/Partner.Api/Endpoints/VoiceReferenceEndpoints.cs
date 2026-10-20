@@ -1,19 +1,20 @@
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// 音色克隆的参考音频。界面里选的文件只是浏览器里的一个 File，拿不到磁盘路径，而本地朗读引擎要的是它自己能
-/// 打开的路径，所以文件先上传到工作区的 <c>voices</c> 目录，再把落盘后的路径填进设置。
+/// Reference audio for voice cloning. A file picked in the UI is only a browser File with no disk path, and the
+/// local TTS engine needs a path it can open, so the file is uploaded into the workspace's <c>voices</c>
+/// directory and the stored path is written into settings.
 /// </summary>
 public static class VoiceReferenceEndpoints
 {
-    /// <summary>参考音频一般十几秒；放宽到 20 MB，既装得下整首歌的 wav，又不至于被当成上传通道。</summary>
+    /// <summary>Reference audio is usually seconds long; 20 MB holds a full wav without becoming an upload channel.</summary>
     public const long MaxBytes = 20L * 1024 * 1024;
 
     private static readonly string[] Extensions = [".wav"];
 
     public static void Map(WebApplication app, string workspace)
     {
-        // Raw body plus the name in a header, like the attachment upload: a File goes straight through.
+        // Raw body plus the name in a header, like the attachment upload.
         app.MapPost("/api/voice/reference", async (HttpRequest request, CancellationToken ct) =>
         {
             var encoded = request.Headers["X-File-Name"].ToString();

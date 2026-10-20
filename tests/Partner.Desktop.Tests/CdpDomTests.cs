@@ -7,13 +7,9 @@ using Xunit;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// The page's DOM as a source of controls.
-/// <para>
-/// This exists for the applications UI Automation cannot see: a Chromium or Electron window exposes one
-/// control — the webview's document surface — so every button in it is reachable only by a coordinate the
-/// model read off a picture. The tests here pin the mapping and the honesty rules, not the socket, because
-/// the failures that matter are all "a number that looks right and is a different control".
-/// </para>
+/// The page's DOM as a source of controls, for applications UI Automation cannot see: a Chromium or Electron
+/// window exposes one control, the webview's document surface, so every button in it is reachable only by a
+/// coordinate the model read off a picture. These tests pin the mapping and the honesty rules, not the socket.
 /// </summary>
 public sealed class CdpDomTests
 {
@@ -28,7 +24,7 @@ public sealed class CdpDomTests
         new(marker, name, role, x, y, width, height);
 
 
-    // ---- which page one port answers with（多标签共享一个调试端口时的选择） --------
+    // Which page one port answers with when several tabs share a debug port.
 
     [Theory]
     [InlineData("音乐 - 网易云音乐", "音乐", true)]
@@ -46,8 +42,7 @@ public sealed class CdpDomTests
     public async Task A_port_serving_two_tabs_answers_the_window_that_asks()
     {
         // Two windows share one debug port; the first page in the list is not the one every window means.
-        // The pick goes by title — and when a hint matches nothing, the first page still answers, which is
-        // the behaviour this rule contained.
+        // The pick goes by title; when a hint matches nothing, the first page still answers.
         var safe = new CdpPage("第一标签", "http://x/1", "ws://first");
         var wanted = new CdpPage("音乐 - 网易云音乐", "http://x/2", "ws://second");
 
@@ -58,12 +53,12 @@ public sealed class CdpDomTests
             return Task.FromResult<CdpPage?>(picked);
         });
 
-        // The read itself would need a real page (the socket open fails on a fake), so what this asserts is
-        // the pick: which page the hint routed to, because that is where both the read and the press land.
+        // The read itself needs a real page (the socket open fails on a fake), so this asserts the pick: which
+        // page the hint routed to, because that is where both the read and the press land.
         await source.ReadAsync(9222, "音乐 - 网易云音乐");
         Assert.Equal("ws://second", picked!.WebSocketDebuggerUrl);
 
-        // And the un-hinted call keeps the old shape: first page, first socket.
+        // The un-hinted call keeps first page, first socket.
         picked = null;
         await source.ReadAsync(9222);
         Assert.Equal("ws://first", picked!.WebSocketDebuggerUrl);
@@ -84,9 +79,9 @@ public sealed class CdpDomTests
     [Fact]
     public void A_scaled_display_is_converted_rather_than_assumed_away()
     {
-        // The failure this guards is not subtle once it happens: a viewport rectangle is in CSS pixels, and at
-        // 150% three physical pixels sit where the page drew one. An unconverted point lands up to a third of
-        // the screen away — on a neighbouring control — with every step reporting success.
+        // A viewport rectangle is in CSS pixels; at 150% three physical pixels sit where the page drew one.
+        // An unconverted point lands up to a third of the screen away, on a neighbouring control, with every
+        // step reporting success.
         var atOne = CdpDomSource.ToScreen(Record(x: 100), 0, 0, 1);
         var atOneAndAHalf = CdpDomSource.ToScreen(Record(x: 100), 0, 0, 1.5);
 
@@ -100,9 +95,8 @@ public sealed class CdpDomTests
     [InlineData(-1)]
     public void An_absurd_or_missing_scale_factor_does_not_produce_nonsense(double ratio)
     {
-        // A page that reports devicePixelRatio 0 has told us nothing usable; treating it as 1 keeps the
-        // answer readable on a machine that is known to be unscaled, instead of collapsing every element to
-        // a point at the window's corner.
+        // A page reporting devicePixelRatio 0 has told us nothing usable; treating it as 1 keeps the answer
+        // readable on a known-unscaled machine instead of collapsing every element to a point at the corner.
         var rect = CdpDomSource.ToScreen(Record(x: 100, width: 80), 0, 0, ratio);
 
         Assert.Equal(100, rect.X);
@@ -129,17 +123,17 @@ public sealed class CdpDomTests
     [Fact]
     public void A_role_the_page_invents_falls_back_to_something_pressable()
     {
-        // A page can say role="carousel-thing". Pressing it is the only thing anyone means by seeing it as a
-        // control, so it is named a Button rather than dropped or passed through as gibberish.
+        // A page can invent a role such as role="carousel-thing". Pressing it is the only thing anyone means by
+        // seeing it as a control, so it becomes a Button rather than being dropped or passed through.
         Assert.Equal("Button", CdpDomSource.RoleOf("carousel-thing"));
     }
 
     [Fact]
     public void A_page_element_is_the_same_shape_as_a_ui_automation_one()
     {
-        // Everything downstream — numbering, screenshot marks, the server-computed click point, revalidation —
-        // is unchanged by where a control came from, which is what makes the DOM a source rather than a
-        // second kind of thing.
+        // Everything downstream (numbering, screenshot marks, the server-computed click point, revalidation) is
+        // unchanged by where a control came from, which is what makes the DOM a source rather than a second kind
+        // of thing.
         var element = CdpDomSource.ToElement(Record(), "1a2b", 8, 31, 1);
 
         Assert.Equal("1a2b#cdp:3", element.ElementId);
@@ -156,8 +150,8 @@ public sealed class CdpDomTests
     [Fact]
     public void The_marker_is_part_of_the_id_because_it_is_the_only_thing_that_survives()
     {
-        // The DOM half of this. An index would name whatever now sits at that position after a re-render,
-        // which is the failure the whole element-addressed path exists to avoid.
+        // An index would name whatever sits at that position after a re-render, the failure the whole
+        // element-addressed path exists to avoid.
         Assert.Contains("#cdp:3", CdpDomSource.ToElement(Record(), "w", 0, 0, 1).ElementId, StringComparison.Ordinal);
         Assert.NotEqual(
             CdpDomSource.ToElement(Record(marker: "3"), "w", 0, 0, 1).ElementId,
@@ -178,7 +172,7 @@ public sealed class CdpDomTests
     [Fact]
     public void An_offscreen_page_element_is_kept_and_marked()
     {
-        // Same reason as the UI Automation walk: something that was thrown away can never be scrolled to.
+        // Same reason as the UI Automation walk: something thrown away can never be scrolled to.
         var element = CdpDomSource.ToElement(Record() with { Offscreen = true }, "w", 0, 0, 1);
 
         Assert.True(element.IsOffscreen);
@@ -251,7 +245,7 @@ public sealed class CdpRegistryTests
     public void An_electron_program_named_after_its_product_is_not_recognised_by_name(string path)
     {
         // Stated rather than papered over: 网易云音乐 is an Electron app and nothing in "cloudmusic" says so.
-        // The name list can only cover what it can see; the flag in the arguments is what covers the rest.
+        // The name list covers only what it can see; the flag in the arguments covers the rest.
         Assert.False(CdpRegistry.IsChromiumFamily(path));
     }
 
@@ -334,9 +328,9 @@ public sealed class LaunchResultTests
     [Fact]
     public void A_browser_whose_port_did_not_open_says_why_and_what_to_do()
     {
-        // The likeliest reason is not a bug and the model cannot guess it: a single-instance application that
-        // was already running takes the new command line and never opens a port. Saying "no controls" instead
-        // sends the model looking for a control that was never going to appear.
+        // The likeliest reason is not a bug and the model cannot guess it: an already-running single-instance
+        // application takes the new command line and never opens a port. Saying "no controls" would send the
+        // model looking for a control that was never going to appear.
         var result = DesktopLaunchTool.BuildResult("chrome", null, 1234, chromium: true, opened: false, port: 9222);
 
         Assert.True(result.Ok);

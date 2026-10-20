@@ -17,13 +17,12 @@ public sealed record CompactionResult(int FoldedEvents, long? SummarySeq, string
 }
 
 /// <summary>
-/// Folds history that no longer fits the context window into one summary (design doc §2.5 short-term
-/// memory: "窗口内上下文 + 压缩").
+/// Folds history that no longer fits the context window into one summary.
 /// <para>
 /// Both halves are append-only, so folding never loses anything: a <see cref="SessionEventKind.Summary"/>
 /// carries the text and a <see cref="SessionEventKind.Retract"/> hides the events it replaced. Without the
-/// retraction the summarized events would still be sent, and the window would not have shrunk at all. This is
-/// the deliberate opposite of an explicit removal, which takes the content out of the log for good.
+/// retraction the summarized events would still be sent and the window would not have shrunk. This is the
+/// opposite of an explicit removal, which takes the content out of the log for good.
 /// </para>
 /// </summary>
 public sealed class SessionCompactor
@@ -44,8 +43,8 @@ public sealed class SessionCompactor
     /// the history already fits, so calling it after every settings change is safe.
     /// <para>
     /// <paramref name="promptBudget"/> is the room for history: the assembler subtracts the system block (and
-    /// the current input) from the window before it fits anything, so a caller passing the whole prompt budget
-    /// would keep more than the assembler will send and the next turn would drop it again. Use
+    /// the current input) from the window before fitting anything, so passing the whole prompt budget would keep
+    /// more than the assembler will send and the next turn would drop it again. Use
     /// <see cref="HistoryBudget"/>.
     /// </para>
     /// </summary>
@@ -71,8 +70,8 @@ public sealed class SessionCompactor
         var summaries = view.Items.Where(item => item.Kind == SessionEventKind.Summary).ToList();
 
         // The summary is about to join the system block, so its room comes out of the history's: fitting against
-        // the whole budget and then adding the summary on top is how a freshly compacted session still overflows.
-        // Its length scales with the window instead of being a fixed 512, which is most of a small model's history.
+        // the whole budget and then adding the summary on top would overflow a freshly compacted session. Its
+        // length scales with the window instead of being a fixed 512, which is most of a small model's history.
         var summaryTokens = SummaryTokensFor(promptBudget);
 
         // The same rule the assembler uses: the newest suffix that fits stays, the rest is folded. A
@@ -136,7 +135,7 @@ public sealed class SessionCompactor
             return new CompactionResult(0, null, "压缩失败：模型没有返回摘要");
         }
 
-        // Only trimmed: a summary keeps its line structure, like any other model output.
+        // Trimmed only: a summary keeps its line structure, like any other model output.
         var single = text.Trim();
 
         var summarySeq = await _session.AppendAsync(new SessionEvent

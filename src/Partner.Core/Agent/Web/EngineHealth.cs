@@ -20,7 +20,7 @@ public sealed record EngineHealthSnapshot(
     int Strikes,
     string? LastReason);
 
-/// <summary>What is persisted per engine. Also the shape on disk, so a failure can be read by a person.</summary>
+/// <summary>What is persisted per engine. Also the on-disk shape, so a failure can be read by a person.</summary>
 public sealed record EngineHealthRecord(
     string Id,
     int Strikes,
@@ -32,9 +32,8 @@ public sealed record EngineHealthRecord(
 public sealed record EngineHealthFile(int Version, EngineHealthRecord[] Engines);
 
 /// <summary>
-/// The circuit breaker. Sources fail in ways that are specific to a user's network — one engine may be
-/// unreachable from where they are and fine everywhere else — so the capability adapts to the network it finds
-/// instead of assuming one, and an engine that has started failing stops being waited for.
+/// The circuit breaker. Sources fail in ways specific to a user's network — one engine may be unreachable from
+/// where they are and fine everywhere else — so the capability adapts to the network it finds.
 /// <para>
 /// Three failure classes, because they are not equally strong evidence. A block page is deliberate and immediate.
 /// A network error is usually the network and takes a second occurrence. Returning nothing while a companion
@@ -44,11 +43,11 @@ public sealed record EngineHealthFile(int Version, EngineHealthRecord[] Engines)
 /// </summary>
 public sealed class EngineHealth
 {
-    /// <summary>First cooldown. Doubles on each repeat offence.</summary>
+    /// <summary>First cooldown. Doubles on each repeat offense.</summary>
     public static readonly TimeSpan BaseCooldown = TimeSpan.FromMinutes(5);
 
-    /// <summary>The ceiling. Six hours is long enough to stop wasting time on a dead source today, short enough
-    /// to try again tomorrow without the user having to do anything.</summary>
+    /// <summary>The ceiling. Six hours stops wasting time on a dead source today, yet retries tomorrow
+    /// without user action.</summary>
     public static readonly TimeSpan MaxCooldown = TimeSpan.FromHours(6);
 
     /// <summary>A deliberate interception is believed the first time.</summary>
@@ -58,8 +57,8 @@ public sealed class EngineHealth
     public const int NetworkStrikes = 2;
 
     /// <summary>
-    /// Two in a row for a parser that stopped matching. The plan's risk table says a parse failure must reach the
-    /// breaker rather than quietly become "no results", and a page redesign is not a transient condition.
+    /// Two in a row for a parser that stopped matching. A parse failure must reach the breaker rather than
+    /// quietly become "no results", and a page redesign is not a transient condition.
     /// </summary>
     public const int UnparseableStrikes = 2;
 
@@ -118,7 +117,7 @@ public sealed class EngineHealth
         return health;
     }
 
-    /// <summary>Where the state file lives, for the settings page to show.</summary>
+    /// <summary>Where the state file lives, shown on the settings page.</summary>
     public string FilePath => _path;
 
     /// <summary>
@@ -175,7 +174,7 @@ public sealed class EngineHealth
                 if (strikes == 0)
                 {
                     // No evidence: a thinned bucket, a caller cancellation, an honest empty result with nothing
-                    // to compare it to. Recording these would break healthy engines for being unlucky.
+                    // to compare against. Recording these would break healthy engines for being unlucky.
                     return false;
                 }
 

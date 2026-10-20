@@ -37,33 +37,23 @@ public sealed record CdpElementRecord(
 /// <summary>
 /// The DOM of a page, as a set of controls the same shape as the ones UI Automation returns.
 /// <para>
-/// This exists for the applications UI Automation cannot see. A Chromium or Electron window exposes a handful of
-/// elements to UIA — the webview's own document surface and little else — so "click 播放" is unreachable there
-/// and the only route left is a coordinate the model read off a picture. The DOM is where those controls
-/// actually are, named and addressable, and the protocol exposes them directly.
+/// This exists for applications UI Automation cannot see. A Chromium or Electron window exposes almost nothing
+/// to UIA, so its controls are unreachable except by a coordinate read off a picture. The DOM is where those
+/// controls actually are, named and addressable, and the protocol exposes them directly.
 /// </para>
 /// </summary>
 public sealed class CdpDomSource
 {
     /// <summary>
-    /// The attribute stamped on each element this reads. Kept in the page's own namespace so it cannot collide
-    /// with the application's, and removed from the reported shape — it is a handle, not part of the control.
+    /// The attribute stamped on each element this reads. In the page's own namespace so it cannot collide with
+    /// the application's, and removed from the reported shape: it is a handle, not part of the control.
     /// </summary>
     public const string MarkerAttribute = "data-partner-cdp";
 
     /// <summary>
-    /// The walk, run inside the page.
-    /// <para>
-    /// Interactive elements are the union of the tags that are controls on their own and the ARIA roles that
-    /// make anything else one — which is what a page means by "you can press this". Every returned element is
-    /// stamped before it is reported, so the report and the later click address the same node rather than the
-    /// same position.
-    /// </para>
-    /// <para>
-    /// Viewport coordinates, not screen coordinates: a page has no idea where it is on the screen, and the
-    /// caller knows. Offscreen elements are reported rather than dropped, for the same reason the UI Automation
-    /// walk reports them — something that cannot be named can never be acted on.
-    /// </para>
+    /// The walk, run inside the page. Elements are stamped before being reported, so the report and the later
+    /// click address the same node rather than the same position. Coordinates are viewport-relative; offscreen
+    /// elements are reported rather than dropped, since something that cannot be named can never be acted on.
     /// </summary>
     internal const string ReadScript = """
         (() => {
@@ -188,14 +178,10 @@ public sealed class CdpDomSource
         """;
 
     /// <summary>
-    /// Presses the element a marker names, through the page's own DOM.
-    /// <para>
-    /// <c>click()</c> rather than a synthetic mouse event at coordinates, for the same reason a UI Automation
-    /// pattern beats a coordinate click: it reaches the element itself, so a window covering it, a control that
-    /// moved since the observation, and the pointer being somewhere else entirely are all irrelevant. And a
-    /// page that re-rendered has dropped the marker, which is reported rather than guessed at — clicking
-    /// whatever now sits at that index is the failure this whole mechanism exists to avoid.
-    /// </para>
+    /// Presses the element a marker names, through the page's own DOM. <c>click()</c> rather than a synthetic
+    /// mouse event at coordinates: it reaches the element itself, so occlusion, movement since the observation
+    /// and pointer position are irrelevant. A page that re-rendered has dropped the marker, which is reported
+    /// rather than guessed at.
     /// </summary>
     internal const string ActScript = """
         (() => {
@@ -240,13 +226,10 @@ public sealed class CdpDomSource
         """;
 
     /// <summary>
-    /// Viewport coordinates to screen coordinates.
-    /// <para>
-    /// The page knows where it is inside the window; only the caller knows where the window is on the screen.
-    /// The scale factor is not a detail: a viewport rectangle is in CSS pixels, and a display at 150% puts three
-    /// physical pixels where the page drew one — so an unconverted point lands up to a third of the screen away,
-    /// on a neighbouring control, with every step of the pipeline reporting success.
-    /// </para>
+    /// Viewport coordinates to screen coordinates. The page knows where it is inside the window; only the
+    /// caller knows where the window is. The scale factor matters: viewport rectangles are in CSS pixels, and
+    /// at 150% DPI three physical pixels cover one CSS pixel, so an unconverted point lands on a neighbouring
+    /// control while every step reports success.
     /// </summary>
     internal static PixelRect ToScreen(CdpElementRecord record, int clientX, int clientY, double devicePixelRatio)
     {
@@ -260,9 +243,8 @@ public sealed class CdpDomSource
     }
 
     /// <summary>
-    /// A page role as the observation's vocabulary. Deliberately a smaller set than UI Automation's: what
-    /// matters here is whether pressing it does something, and a name the model already knows from the other
-    /// path is worth more than a precise one it has not seen.
+    /// A page role as the observation's vocabulary. Deliberately smaller than UI Automation's: what matters is
+    /// whether pressing it does something, and a familiar name beats a precise one.
     /// </summary>
     internal static string RoleOf(string pageRole) => pageRole.ToLowerInvariant() switch
     {
@@ -283,9 +265,8 @@ public sealed class CdpDomSource
     };
 
     /// <summary>
-    /// A page element as an observation element, in the same shape the UI Automation walk produces — so
-    /// everything downstream (numbering, marks, the click point, revalidation) is unchanged by where the
-    /// control came from.
+    /// A page element as an observation element, in the same shape the UI Automation walk produces, so
+    /// everything downstream is unchanged by where the control came from.
     /// </summary>
     internal static UiElement ToElement(CdpElementRecord record, string windowId, int clientX, int clientY, double ratio)
     {
@@ -307,19 +288,14 @@ public sealed class CdpDomSource
     public sealed record CdpDomSnapshot(double DevicePixelRatio, string Title, string Url, IReadOnlyList<CdpElementRecord> Elements);
 
     /// <summary>
-    /// Runs one expression in the page and returns its value as text.
-    /// <para>
-    /// Public because "what does the page say now" is a question with exactly one honest answer, and the
-    /// alternative — inferring the effect of a click from a screenshot — is how a working click gets reported
-    /// as one that changed nothing.
-    /// </para>
+    /// Runs one expression in the page and returns its value as text. Public because inferring the effect of a
+    /// click from a screenshot can report a working click as one that changed nothing.
     /// </summary>
     public Task<string?> EvaluateAsync(int port, string expression, string? windowTitle = null, CancellationToken ct = default) =>
         SendAsync(port, windowTitle, $"({expression})", ct);
 
-    /// <summary>Live sockets, one per (port, page) pair. A port serves several tabs, and each target has
-    /// its own <c>webSocketDebuggerUrl</c> — the socket keys on the page so two windows of one browser can
-    /// each talk to the tab they are looking at instead of both talking to the first one.</summary>
+    /// <summary>Live sockets, one per (port, page) pair. A port serves several tabs, and each target has its own
+    /// <c>webSocketDebuggerUrl</c>; keying on the page keeps two windows of one browser on their own tabs.</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(int Port, string Url), CdpConnection> _connections = new();
 
     /// <summary>How long one expression may take before the page is written off as not answering.</summary>
@@ -332,9 +308,7 @@ public sealed class CdpDomSource
     private readonly Func<int, string?, Task<CdpPage?>> _connect;
 
     /// <summary>
-    /// Overridable so the page lookup and the walk can be exercised without a browser: the failure modes being
-    /// pinned here are "no port", "no page on it" and "the page answered nothing", and all three need a real
-    /// process to reproduce otherwise.
+    /// Overridable so the page lookup and the walk can be exercised without a browser.
     /// </summary>
     public CdpDomSource(
         HttpClient? http = null,
@@ -350,10 +324,9 @@ public sealed class CdpDomSource
     private readonly ConcurrentDictionary<(int Port, string Title), (CdpPage Page, long At)> _pageCache = new();
 
     /// <summary>
-    /// <see cref="ConnectAsync"/> behind a short cache. Reading a page, then acting on it, then checking the
-    /// result each asked the browser for its tab list again — the same answer, three HTTP round trips per action.
-    /// Only a found page is cached: a missing one is retried at once, because "not up yet" is the case where
-    /// waiting costs the most.
+    /// <see cref="ConnectAsync"/> behind a short cache: reading a page, acting on it and checking the result
+    /// each ask the browser for its tab list again. Only a found page is cached; a missing one is retried at
+    /// once, because "not up yet" is the case where waiting costs the most.
     /// </summary>
     internal async Task<CdpPage?> ConnectCachedAsync(int port, string? preferredTitle)
     {
@@ -388,8 +361,7 @@ public sealed class CdpDomSource
 
     /// <summary>
     /// Reads one window's page. Null when there is nothing to read: no debug port, no page on it, or a page
-    /// that did not answer. Never throws — a browser that is not there is not an error, it is a window the
-    /// other paths are for.
+    /// that did not answer. Never throws; a browser that is not there is a window the other paths are for.
     /// </summary>
     public async Task<CdpDomSnapshot?> ReadAsync(int port, string? windowTitle = null, CancellationToken ct = default)
     {
@@ -440,8 +412,8 @@ public sealed class CdpDomSource
     }
 
     /// <summary>
-    /// Presses a marked element. Null when the page could not be reached; a refusal when it could not press
-    /// that element — which is reported rather than turned into a click at the coordinates it used to occupy.
+    /// Presses a marked element. Null when the page could not be reached; a refusal when it could not press that
+    /// element, reported rather than turned into a click at the coordinates it used to occupy.
     /// </summary>
     public async Task<UiaInvocation?> ActAsync(int port, string marker, string? windowTitle = null, CancellationToken ct = default)
     {
@@ -513,8 +485,7 @@ public sealed class CdpDomSource
 
     /// <summary>
     /// Sends input commands to the page the window names. Null when the page cannot be reached, so the caller
-    /// can tell "this channel is not available" from "the page refused" — the first is a reason to try another
-    /// channel, the second is an answer.
+    /// can tell "this channel is not available" from "the page refused".
     /// </summary>
     internal async Task<UiaInvocation?> SendInputAsync(
         int port,
@@ -555,8 +526,8 @@ public sealed class CdpDomSource
     private const string Quiet = "（后台：页面调试协议，不需要前台，也不动用户的指针）";
 
     /// <summary>
-    /// Tells the page to behave as the focused one without touching the window's real focus. This is "focus" for
-    /// a window that is not to be brought forward: key input reaches a page that believes it has the focus.
+    /// Tells the page to behave as the focused one without touching the window's real focus: key input reaches a
+    /// page that believes it has the focus.
     /// </summary>
     public Task<UiaInvocation?> FocusAsync(int port, string? windowTitle, CancellationToken ct = default) =>
         SendInputAsync(port, windowTitle, Array.Empty<CdpCommand>(), "cdp.focus", $"页面已设为聚焦{Quiet}", ct);
@@ -590,9 +561,9 @@ public sealed class CdpDomSource
     }
 
     /// <summary>
-    /// The page of the tab a window shows, rendered by the browser. Works for a window that is behind others,
-    /// minimized, or whose content the window system cannot capture (a GPU-composited surface prints as flat grey).
-    /// Null when there is no page, no port, or the browser declined.
+    /// The page of the tab a window shows, rendered by the browser. Works for a window behind others, minimized,
+    /// or whose content the window system cannot capture (a GPU-composited surface prints as flat grey). Null
+    /// when there is no page, no port, or the browser declined.
     /// </summary>
     public async Task<byte[]?> ScreenshotAsync(int port, string? windowTitle = null, CancellationToken ct = default)
     {
@@ -630,12 +601,9 @@ public sealed class CdpDomSource
 
     /// <summary>
     /// The first page on a debug port that matches what was asked for, falling back to the first page at all.
-    /// Several tabs share one port, and without this rule they do not share it safely — a second window reads
-    /// the first tab's DOM and presses the first tab's buttons, which is a wrong-tab click with no error
-    /// anywhere. The window title is the only hint the window has: Chromium names the window after its page
-    /// (often with a suffix like " - Google Chrome"), Electron after its app or page. The match is
-    /// bidirectional containment, case-insensitive, on the two titles; when nothing matches (the suffix
-    /// conventions differ too much) the first page answers, which is the behaviour this used to always have.
+    /// Several tabs share one port, and without this rule a second window would read the first tab's DOM and
+    /// press the first tab's buttons. The match is bidirectional, case-insensitive containment on the two
+    /// titles; Chromium names the window after its page (often with a suffix), Electron after its app or page.
     /// </summary>
     private async Task<CdpPage?> ConnectAsync(int port, string? preferredTitle)
     {
@@ -708,13 +676,10 @@ public sealed class CdpDomSource
     }
 
     /// <summary>
-    /// One socket per debug port, held open between calls.
-    /// <para>
-    /// Not an optimisation — a requirement. A debug target accepts <b>one</b> client at a time, so reading the
-    /// page and then acting on it over two sockets fails with "another client is already attached" the moment
-    /// the first has not finished closing. That is precisely the read-then-press sequence this whole mechanism
-    /// exists for, so the connection is kept and re-established only when the page goes away.
-    /// </para>
+    /// One socket per debug port, held open between calls. Not an optimisation but a requirement: a debug target
+    /// accepts one client at a time, so reading the page and then acting on it over two sockets fails with
+    /// "another client is already attached" while the first is still closing. The connection is re-established
+    /// only when the page goes away.
     /// </summary>
     private async Task<CdpConnection?> ConnectionAsync(int port, string? preferredTitle, CancellationToken ct)
     {
@@ -727,9 +692,8 @@ public sealed class CdpDomSource
         var key = (port, page.WebSocketDebuggerUrl);
         if (_connections.TryGetValue(key, out var existing2) && existing2.IsOpen)
         {
-            // The pick is checked against the hint each time: a tab that was retitled (or closed and
-            // replaced) must not keep serving the stale socket — the hint is what the window answered
-            // for, and a stale one names a different page with every coordinate wrong by a tab.
+            // The pick is checked against the hint each time: a tab that was retitled or replaced must not keep
+            // serving the stale socket, whose coordinates are all wrong by a tab.
             if (Matches(page.Title, preferredTitle))
             {
                 return existing2;
@@ -775,8 +739,7 @@ public sealed class CdpDomSource
                 return null;
             }
 
-            // A page that never answers must not hold the turn: an observation with no budget is a turn that
-            // never comes back, and the caller cannot tell that apart from a slow one.
+            // A page that never answers must not hold the turn: the caller cannot tell a hang from slowness.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(EvaluateTimeout);
 
@@ -807,14 +770,10 @@ public sealed class CdpDomSource
         public bool IsOpen => _socket.State == WebSocketState.Open;
 
         /// <summary>
-        /// Connects and switches the protocol on.
-        /// <para>
-        /// <c>Runtime.enable</c> is not optional, and leaving it out is not a smaller request: without it the
-        /// protocol has no record of the page's execution contexts, and <c>Runtime.evaluate</c> without an
-        /// explicit one is answered against whichever context is the default — a document with nothing in it, so
-        /// every lookup finds no elements and every click finds no node. The first call can even succeed, which
-        /// makes it look intermittent.
-        /// </para>
+        /// Connects and switches the protocol on. <c>Runtime.enable</c> is required: without it the protocol has
+        /// no record of the page's execution contexts, and <c>Runtime.evaluate</c> is answered against a default
+        /// empty document, so every lookup finds nothing. The first call can even succeed, which makes it look
+        /// intermittent.
         /// </summary>
         public async Task OpenAsync(CancellationToken ct)
         {
@@ -826,7 +785,7 @@ public sealed class CdpDomSource
                 .ConfigureAwait(false);
 
             // The reply carries the context list, which nothing here asks for, but waiting for it is the point:
-            // evaluating before it arrives is the race described above.
+            // evaluating before it arrives hits the race described above.
             var buffer = new byte[64 * 1024];
             var message = new StringBuilder();
 
@@ -867,7 +826,7 @@ public sealed class CdpDomSource
             catch (WebSocketException)
             {
                 // The page navigated or the browser closed. The next call reconnects; this one reports nothing,
-                // which the caller reads as "no controls" — the same as any other unreachable page.
+                // which the caller reads as "no controls", the same as any other unreachable page.
                 return null;
             }
             finally
@@ -915,14 +874,10 @@ public sealed class CdpDomSource
 
         /// <summary>
         /// Sends a sequence of commands in order, holding the connection for the whole of it so another caller's
-        /// request cannot land between a press and its release.
-        /// <para>
-        /// The page is first told to behave as the focused one (<c>Emulation.setFocusEmulationEnabled</c>). A
-        /// window in the background is not focused as far as the browser is concerned, and a page that is not
-        /// focused ignores key input and drops <c>:focus</c> styling — which is the one thing that would turn
-        /// "works in the foreground" into "silently does nothing in the background". It changes what the page
-        /// believes, not what the user sees.
-        /// </para>
+        /// request cannot land between a press and its release. The page is first told to behave as the focused
+        /// one (<c>Emulation.setFocusEmulationEnabled</c>): a background window is not focused as far as the
+        /// browser is concerned, and an unfocused page ignores key input and drops <c>:focus</c> styling. This
+        /// changes what the page believes, not what the user sees.
         /// </summary>
         /// <returns>Null when the connection died; otherwise the first protocol error, or an empty string for success.</returns>
         public async Task<string?> RunAsync(IReadOnlyList<CdpCommand> commands, CancellationToken ct)
@@ -990,12 +945,9 @@ public sealed class CdpDomSource
             var buffer = new byte[256 * 1024];
             var message = new StringBuilder();
 
-            // A websocket *message* is one protocol message, and that is the framing that matters here: two
-            // replies read into one string are not parseable as a single document, so a buffer that kept
-            // accumulating them would fail every read after the first — which is exactly a walk followed by
-            // a press, the sequence this whole mechanism exists for.
-            // A screenshot is megabytes of base64 in one message, which is dozens of frames; the bound is on frames,
-            // and has to leave room for that.
+            // A websocket message is one protocol message, and that framing matters here: two replies read into
+            // one string are not parseable as a single document, so every read after the first would fail. A
+            // screenshot is megabytes of base64 in one message, hence the generous frame bound.
             for (var received = 0; received < 4096; received++)
             {
                 var result = await _socket.ReceiveAsync(buffer, ct).ConfigureAwait(false);
@@ -1012,8 +964,8 @@ public sealed class CdpDomSource
                     continue;
                 }
 
-                // The browser pushes its own events on this socket, so a message answering a different id
-                // is stepped over rather than returned as this one's answer.
+                // The browser pushes its own events on this socket, so a message answering a different id is
+                // stepped over.
                 if (IsReplyTo(message.ToString(), id))
                 {
                     return message.ToString();
@@ -1045,12 +997,9 @@ public sealed class CdpDomSource
         }
 
         /// <summary>
-        /// Whether this message answers <paramref name="id"/>.
-        /// <para>
-        /// Kept apart from reading the answer because not every reply carries one: the handshake's
-        /// <c>Runtime.enable</c> acknowledgement is a message with nothing in it, and asking it for a value
+        /// Whether this message answers <paramref name="id"/>. Kept apart from reading the answer because not
+        /// every reply carries one: the <c>Runtime.enable</c> acknowledgement has no value, and asking it for one
         /// would fail on a reply that arrived perfectly.
-        /// </para>
         /// </summary>
         private static bool IsReplyTo(string message, int id)
         {
@@ -1075,12 +1024,9 @@ public sealed class CdpDomSource
         }
     }
     /// <summary>
-    /// The value out of a <c>Runtime.evaluate</c> response, as text.
-    /// <para>
-    /// A string comes back as itself; anything structured comes back as its own JSON, which the caller that
-    /// asked for a shape then parses. Strings are deliberately not re-encoded: a page that answers "已点击"
-    /// has to arrive as those characters, not as a quoted string that never compares equal to them.
-    /// </para>
+    /// The value out of a <c>Runtime.evaluate</c> response, as text. A string comes back as itself; anything
+    /// structured comes back as its own JSON. Strings are not re-encoded: a page that answers "已点击" must
+    /// arrive as those characters, not as a quoted string that never compares equal.
     /// </summary>
     private static string? Extract(string received)
     {
@@ -1096,9 +1042,8 @@ public sealed class CdpDomSource
 
             var payload = result.GetProperty("result");
 
-            // An exception in the page, an unserialisable value, a timeout: each of these arrives as a result
-            // with no value in it, and asking for one anyway throws out of a read that should simply have had
-            // nothing to report. The caller reads all of them the same way — nothing came back.
+            // An exception in the page, an unserialisable value, a timeout: each arrives as a result with no
+            // value, and asking for one anyway would throw out of a read that should report nothing.
             if (!payload.TryGetProperty("value", out var value))
             {
                 return null;

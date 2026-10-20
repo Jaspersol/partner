@@ -22,7 +22,11 @@ public sealed class AgentsSettingsTests : IDisposable
 
     private static SubAgentSettings Reader(bool enabled = true, string? prompt = null) => new()
     {
-        Id = "reader", Name = "文件阅读", Enabled = enabled, Scenario = AgentScenarios.FileRead, Prompt = prompt,
+        Id = "reader",
+        Name = "文件阅读",
+        Enabled = enabled,
+        Scenario = AgentScenarios.FileRead,
+        Prompt = prompt,
     };
 
     private static RuntimeSettings With(Func<AgentsSettings, AgentsSettings>? agents = null, bool desktop = false, FilesSettings? files = null) =>
@@ -30,7 +34,8 @@ public sealed class AgentsSettingsTests : IDisposable
         {
             Desktop = new DesktopSettings { Enabled = desktop },
             Files = files ?? new FilesSettings(),
-        } with { Agents = (agents ?? (a => a))(new AgentsSettings()) };
+        } with
+        { Agents = (agents ?? (a => a))(new AgentsSettings()) };
 
     [Fact]
     public void Two_defaults_are_equal_even_though_each_holds_its_own_list()
@@ -62,7 +67,6 @@ public sealed class AgentsSettingsTests : IDisposable
             files: new FilesSettings { Enabled = true, Roots = ["C:\\"] });
         Assert.False(AgentRouting.ToolTableDiffers(before, remodelled));
 
-        // Disabling the reader hands file tools back to the main agent: that is a different table.
         var disabled = With(a => a with { SubAgents = [.. a.SubAgents, Reader(enabled: false)] }, files: new FilesSettings { Enabled = true, Roots = ["C:\\"] });
         Assert.True(AgentRouting.ToolTableDiffers(before, disabled));
 

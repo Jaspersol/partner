@@ -4,19 +4,15 @@ namespace Partner.Api;
 
 /// <summary>
 /// Periodic memory self-maintenance: promotion, idle demotion, TTL trim, and the physical removal of
-/// soft-deleted rows, in that order — the order they are numbered by in the design's consolidation pass.
+/// soft-deleted rows, in that order.
 /// <para>
-/// It exists because the store otherwise only maintains itself as a side effect of reads and writes. A
-/// notebook nobody opens for a month would never age at all: TTL-expired working records would sit there
-/// forever, and an unconsolidated note would wait precisely until the next turn happens to run before it
-/// becomes trimmable. Folding the pass into the recall path is what a bug report would call "slow every
-/// turn after lunch"; folding it into a timer keeps the ledger in one place.
+/// The store otherwise only maintains itself as a side effect of reads and writes, so a workspace left idle
+/// would never age.
 /// </para>
 /// <para>
-/// Started and stopped with <see cref="ConsumerHost.ReconfigureAsync"/>, like everything else that runs
-/// between turns — a one-shot pass before the loop starts is not enough, because a workspace can sit idle
-/// far longer than a TTL. Errors are logged to the console, never thrown: a failed pass must not take down
-/// the consumer the person is talking to, and the next interval will try again.
+/// Started and stopped with <see cref="ConsumerHost.ReconfigureAsync"/>: a one-shot pass before the loop starts
+/// is not enough, because a workspace can sit idle far longer than a TTL. Errors are logged to the console,
+/// never thrown, so a failed pass does not take down the consumer; the next interval tries again.
 /// </para>
 /// </summary>
 public sealed class MemoryMaintenanceService : IAsyncDisposable
@@ -34,7 +30,7 @@ public sealed class MemoryMaintenanceService : IAsyncDisposable
         _interval = interval ?? TimeSpan.FromDays(1);
 
         // No periodic work starts here: the host decides when the runtime is up, and the first pass waits
-        // one full interval so a restart does not immediately repeat the pass the previous process just ran.
+        // one full interval so a restart does not immediately repeat the previous process's pass.
         _timer = new Timer(Tick, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 

@@ -152,18 +152,15 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
 
         var events = await EventsAsync();
 
-        // The report came back from the agent source, first line saying how it ended.
         var report = events.Single(e => e.Kind == SessionEventKind.User && e.Source == InputSource.Agent);
         Assert.StartsWith("[子 agent「文件阅读」任务", report.Body, StringComparison.Ordinal);
         Assert.Contains("已完成", report.Body.Split('\n')[0], StringComparison.Ordinal);
         Assert.Contains("文件内容：你好，世界", report.Body, StringComparison.Ordinal);
 
-        // The main agent saw the delegation and the report; it never called a file tool itself.
         var called = events.Where(e => e.Kind == SessionEventKind.ToolCall).Select(e => e.Meta!["name"]).ToList();
         Assert.Equal(["agent_delegate"], called);
         Assert.Contains("已完成", _llm.Main.Requests[2].Messages.Last(m => m.Role == "user").Content!, StringComparison.Ordinal);
 
-        // The work is in the job's own session.
         var job = Assert.Single(_consumer.Agents.Jobs());
         Assert.Equal("completed", job.Status);
         // (The log escapes non-ASCII text, so it is read back as JSON rather than searched as text.)
@@ -196,7 +193,6 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         Assert.Contains("5/5", report.Body, StringComparison.Ordinal);
         Assert.Contains("没找到 a.txt（第5次）", report.Body, StringComparison.Ordinal);
 
-        // The main agent was handed the reason and the instruction not to call it done.
         Assert.Contains("不要说成已经完成", _llm.Main.Requests[0].Messages[0].Content!, StringComparison.Ordinal);
         Assert.Equal(0, ((ScriptedLlmClient)_llm.Sub).Remaining);
         Assert.Equal("cannot_execute", Assert.Single(_consumer.Agents.Jobs()).Status);
@@ -222,15 +218,12 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         var results = (await EventsAsync()).Where(e => e.Kind == SessionEventKind.ToolResult).ToList();
         Assert.Equal(4, results.Count);
 
-        // The first starts at once; the next two are accepted and wait their turn.
         Assert.Single(results, e => e.Body.Contains("已开始", StringComparison.Ordinal));
         Assert.Equal(2, results.Count(e => e.Meta!["ok"] == "true" && e.Body.Contains("在排队", StringComparison.Ordinal)));
 
-        // The fourth finds the queue full.
         var busy = Assert.Single(results, e => e.Meta!["ok"] == "false");
         Assert.StartsWith("busy:", busy.Body, StringComparison.Ordinal);
 
-        // The status tool shows the waiting ones as queued, not as running.
         Assert.Equal(2, _consumer.Agents.Jobs().Count(job => job.Status == "queued"));
 
         gate.Release();
@@ -311,13 +304,11 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         await WaitAsync(() => Task.FromResult(_consumer.Agents.Job(first.Job!.Id)!.Status != "running"), "the job to end");
         await WaitForAssistantAsync("收到失败报告");
 
-        // Different spacing and punctuation, same goal.
         var again = _consumer.Agents.Start("file-read", " 读取a.txt！", null);
 
         Assert.False(again.Started);
         Assert.Contains("刚刚失败过", again.Refusal, StringComparison.Ordinal);
 
-        // A genuinely different goal goes through.
         _llm.Sub = new ScriptedLlmClient([Report("s2", true, "好了"), Say("ok")]);
         _llm.Main = new ScriptedLlmClient([Say("第二个报告")]);
         Assert.True(_consumer.Agents.Start("file-read", "列出目录里有什么", null).Started);
@@ -358,10 +349,8 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         var report = (await EventsAsync()).Single(e => e.Kind == SessionEventKind.User && e.Source == InputSource.Agent);
         Assert.Contains("interrupted", report.Body, StringComparison.Ordinal);
 
-        // Everything it knew about is closed, so the journal is emptied instead of growing for ever.
         Assert.Equal(string.Empty, await File.ReadAllTextAsync(Path.Combine(_workspace, "agents", "jobs.jsonl")));
 
-        // The journal now says it finished, so a second start finds nothing to report.
         Assert.Equal(0, await _consumer.Agents.RecoverAsync());
     }
 
@@ -395,7 +384,6 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         Assert.DoesNotContain("agent_delegate", mainOnly);
         Assert.Empty(noSub);
 
-        // A file-read agent takes them over, and the main agent gets the delegation tools instead.
         var settings = _context.Settings.Load();
         _context.Settings.Save(settings with
         {
@@ -430,7 +418,6 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         Assert.DoesNotContain("web_fetch", mainAfter);
         Assert.Contains("agent_delegate", mainAfter);
 
-        // And the searcher is reported with the tools of its own scenario, not with the file ones.
         Assert.Equal(
             new[] { "web_fetch", "web_search" },
             withSearcher.Except(sub).OrderBy(name => name, StringComparer.Ordinal));
@@ -457,7 +444,6 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         });
         saved.EnsureSuccessStatusCode();
 
-        // Nothing restarted: the counters of the running consumer are still there.
         Assert.Equal(handledBefore, _consumer.State.Stats.Handled);
 
         await SendAsync("第二句");

@@ -7,8 +7,8 @@ using Partner.Voice.Settings;
 namespace Partner.Voice.Tests;
 
 /// <summary>
-/// A transcription takes seconds, and the tick used to wait for it: end-of-speech detection and the wake probe
-/// stood still for the whole request. Now the request runs beside the ticks and its result is taken on the next one.
+/// A transcription takes seconds, so the request runs beside the ticks and its result is taken on the next one;
+/// end-of-speech detection and the wake probe do not stand still for it.
 /// </summary>
 public sealed class AsrInFlightTests
 {
@@ -76,8 +76,8 @@ public sealed class AsrInFlightTests
         Assert.True(half.AsrBusy);
         Assert.Empty(heard);
 
-        // The request is still out. Ticks go on (this loop would have hung on the first one before), a second
-        // sentence is spoken meanwhile, and nothing is sent twice while the first is unanswered.
+        // The request is still out. Ticks go on, a second sentence is spoken meanwhile, and nothing is sent
+        // twice while the first is unanswered.
         await FeedAsync(half, source, 1.5, 0.5f);
         await FeedAsync(half, source, 1.5, 0f);
         Assert.Equal(1, asr.Requests);

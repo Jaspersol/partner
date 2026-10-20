@@ -3,8 +3,8 @@ using Partner.Core.Memory;
 namespace Partner.Core.Tests.Memory;
 
 /// <summary>
-/// Scoring semantics of the memory layer (design doc §2.5.6 ④/⑤): every component is normalised,
-/// the content penalty is a multiplier, and every hit can explain itself.
+/// Scoring semantics of the memory layer: every component is normalised, the content penalty is a multiplier,
+/// and every hit can explain itself.
 /// </summary>
 public sealed class MemoryScorerTests
 {
@@ -289,7 +289,7 @@ public sealed class MemoryScorerTests
     }
 }
 
-/// <summary>Token budget approximation (design doc §2.5.6 ④).</summary>
+/// <summary>Token budget approximation.</summary>
 public sealed class ApproximateTokenCounterTests
 {
     private readonly ApproximateTokenCounter _counter = new();

@@ -82,9 +82,9 @@ public sealed record GameActionOutcome
 public sealed record LatencyStats(double P50Ms, double P99Ms, double MaxMs, int Samples);
 
 /// <summary>
-/// A game adapter talks to a game over its own process boundary and its own protocol
-/// (design doc §2.7: 独立进程、独立协议、绝不走 MCP). Every method is a single request/response
-/// round trip except attach/detach.
+/// A game adapter talks to a game over its own process boundary and its own protocol:
+/// a separate process, a separate protocol, never MCP. Every method is a single
+/// request/response round trip except attach/detach.
 /// </summary>
 public interface IGameAdapter : IAsyncDisposable
 {

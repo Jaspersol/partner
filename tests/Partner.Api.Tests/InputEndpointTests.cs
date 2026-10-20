@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace Partner.Api.Tests;
 
 /// <summary>
-/// The UI's delivery entry point (design doc §2.3.1). What it promises is narrow and worth pinning down: the
-/// item lands in the single FIFO queue, with the caller's source, and nothing executes it here.
+/// The UI's delivery entry point. What it promises is narrow: the item lands in the single FIFO queue, with
+/// the caller's source, and nothing executes it here.
 /// </summary>
 public sealed partial class ViewEndpointsTests
 {
@@ -22,7 +22,6 @@ public sealed partial class ViewEndpointsTests
         Assert.True(body.GetProperty("seq").GetInt64() > 0);
         Assert.False(body.GetProperty("deduplicated").GetBoolean());
 
-        // It is in the queue, waiting — not in the session, and not done.
         var queue = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
         var item = queue.GetProperty("items").EnumerateArray().Single();
         Assert.Equal("Queued", item.GetProperty("status").GetString());
@@ -100,8 +99,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task A_submitted_gear_rides_the_queued_item()
     {
-        // The gear is chosen per message, so it has to survive the hop through the queue: the consumer reads
-        // it off the item, not off whatever the settings happened to say by the time the turn ran.
+        // The gear is read off the queued item, not off the settings at turn time.
         var response = await _http.PostAsJsonAsync(
             "/api/input",
             new { source = "text", payload = "think harder", reasoningEffort = "high" });
@@ -115,8 +113,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task Submitting_input_without_a_gear_leaves_it_unset()
     {
-        // Unset is not the default gear: the default is applied when the request is built, so an item can
-        // say "no choice" and still get the configured gear.
+        // Unset is not the default gear: the default is applied when the request is built.
         var response = await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "hi" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -128,8 +125,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task Submitting_input_rejects_a_gear_that_is_not_on_the_menu()
     {
-        // Rejected rather than passed through: the picker only ever offers listed gears, so anything else
-        // is a stale or hand-rolled client, and accepting it would hide the mismatch.
+        // Anything outside the list is a stale or hand-rolled client; accepting it would hide the mismatch.
         var response = await _http.PostAsJsonAsync(
             "/api/input",
             new { source = "text", payload = "x", reasoningEffort = "turbo" });
@@ -144,8 +140,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task A_gear_the_menu_grew_is_accepted()
     {
-        // The list is the user's, not a built-in enum — an endpoint with its own word must be usable without
-        // a code change.
+        // The list is user-configured, not a built-in enum.
         var settings = await _http.PutAsJsonAsync("/api/settings", new
         {
             model = new { reasoningGears = new[] { "medium", "high", "minimal" } },

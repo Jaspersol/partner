@@ -8,8 +8,8 @@ namespace Partner.Core.Tests.Agent;
 /// <summary>
 /// The memory wire, end to end at the Core level: what a turn recalls, and what it leaves behind.
 /// <para>
-/// These exist because the failure this fixes is invisible — a store that stays empty looks exactly like a
-/// store nobody has used. Nothing errors; the memory view is simply blank forever.
+/// These exist because the failure is invisible: an empty store looks exactly like an unused one. Nothing
+/// errors; the memory view is simply blank.
 /// </para>
 /// </summary>
 public sealed class MemoryHookTests : IDisposable
@@ -74,7 +74,6 @@ public sealed class MemoryHookTests : IDisposable
 
         await new MemoryDistilHook(memory, session).RunAsync(Context("我喜欢用深色主题"), default);
 
-        // Before this existed, this assertion is what failed: the store was empty and nothing said why.
         var records = await memory.ListAsync();
         Assert.Single(records);
         Assert.Contains("深色", records[0].Body, StringComparison.Ordinal);
@@ -83,8 +82,8 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task A_sub_agents_report_is_not_filed_as_something_the_person_said()
     {
-        // The same words, the same exchange: from a person they become a memory, from a sub-agent's report they
-        // must not — recall would later serve "用户喜欢深色主题" back as a fact about someone who never said it.
+        // The same words in a sub-agent's report must not become a memory: recall would later serve them as a
+        // fact about someone who never said them.
         var (session, memory) = Open();
         await session.AppendAsync(new SessionEvent
         {
@@ -128,7 +127,7 @@ public sealed class MemoryHookTests : IDisposable
     public async Task A_repeated_run_of_the_same_turn_does_not_double_count_it()
     {
         // A turn retried after a crash would otherwise record the same fact twice, and recall would return it
-        // as two independent pieces of evidence — the one place a duplicate is load-bearing on being wrong.
+        // as two independent pieces of evidence.
         var (session, memory) = Open();
         await ExchangeAsync(session, "我的部署脚本在 scripts 目录", "知道了");
         var hook = new MemoryDistilHook(memory, session);
@@ -147,7 +146,7 @@ public sealed class MemoryHookTests : IDisposable
     public async Task Turns_that_carry_no_fact_about_the_person_are_not_remembered(string user, string assistant)
     {
         // Acknowledgements and questions about the assistant would otherwise fill the store with things the
-        // person never claimed, and a memory store nobody reads is the same as no memory store.
+        // person never claimed.
         var (session, memory) = Open();
         await ExchangeAsync(session, user, assistant);
 
@@ -159,8 +158,7 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task A_tool_only_turn_is_remembered_from_a_successful_act()
     {
-        // Desktop answers in tool results, not prose; without this path the whole day's desktop work left no
-        // memory at all — the model had "said" nothing the distiller recognised.
+        // Desktop answers in tool results, not prose; this path is what turns a successful act into a memory.
         var (session, memory) = Open();
         await session.AppendAsync(new SessionEvent
         {
@@ -187,8 +185,8 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task A_background_act_is_remembered_like_any_other_successful_act()
     {
-        // A click carried by a page's debug protocol reads "已在后台执行"; if the memory filter only knew the
-        // older phrases, a day of background work would leave nothing behind.
+        // A click carried by a page's debug protocol reports a different success phrase, which the memory
+        // filter must also accept.
         var (session, memory) = Open();
         await session.AppendAsync(new SessionEvent
         {
@@ -214,7 +212,7 @@ public sealed class MemoryHookTests : IDisposable
     public async Task A_all_failed_tool_turn_leaves_no_memory()
     {
         // Only executed-and-verified act results count: a refusal or an unverifiable click is not a fact the
-        // store can vouch for, and a failed day of clicking is not worth remembering.
+        // store can vouch for.
         var (session, memory) = Open();
         await session.AppendAsync(new SessionEvent
         {
@@ -275,7 +273,6 @@ public sealed class MemoryHookTests : IDisposable
         var ctx = Context("我不太喜欢被打断");
         await new MemoryRecallHook(memory).RunAsync(ctx, default);
 
-        // The whole point of storing it: the next prompt already knows, without being told again.
         Assert.NotEmpty(ctx.InjectedPrompts);
         Assert.Contains("不喜欢被反复确认", string.Join('\n', ctx.InjectedPrompts), StringComparison.Ordinal);
     }
@@ -284,8 +281,7 @@ public sealed class MemoryHookTests : IDisposable
     public async Task A_memory_from_a_turn_the_prompt_still_carries_is_not_injected()
     {
         // Memory is written at the end of every turn, so the exchange right above is already in the store when
-        // the next prompt is built. Recalling it would send the same statement twice and label the second copy
-        // "from an earlier session" — when it is the turn directly above.
+        // the next prompt is built. Recalling it would send the same statement twice.
         var (session, memory) = Open();
         await ExchangeAsync(session, "我不太喜欢被打断", "明白，以后不打断你");
         await new MemoryDistilHook(memory, session).RunAsync(Context("我不太喜欢被打断"), default);
@@ -300,8 +296,8 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task A_memory_whose_turn_left_the_window_comes_back()
     {
-        // The other half of the rule: exclusion follows the prompt, not the clock. Once compaction retracts the
-        // turn, the conversation no longer carries it — and that is the moment the memory is the only copy.
+        // Exclusion follows the prompt, not the clock: once compaction retracts the turn, the memory is the
+        // only copy left.
         var (session, memory) = Open();
         await ExchangeAsync(session, "我不太喜欢被打断", "明白，以后不打断你");
         await new MemoryDistilHook(memory, session).RunAsync(Context("我不太喜欢被打断"), default);
@@ -335,11 +331,8 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task Injection_stops_at_the_budget_and_says_so()
     {
-        // Long bodies used to go into the prompt unbounded: recall took its fixed limit and injected every
-        // hit in full, so one giant note could crowd out the conversation itself. The hook now runs through
-        // the store's injection budget and marks the cut.
-        // A tight budget store of its own: the default 5000-token budget would need ten of these bodies (about 510 tokens each) to
-        // flinch, and the test wants the cut, not the count.
+        // A tight budget store of its own: the default 5000-token budget would need ten of these ~510-token
+        // bodies to flinch, and the test wants the cut.
         var (session, _) = JsonlSessionStore.Open(_dir);
         _session = session;
         _memory = new MemoryStore(Path.Combine(_dir, "tight.db"), new MemoryStoreOptions { InjectionTokenLimit = 1000 });
@@ -367,8 +360,7 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task Deleting_an_event_deletes_what_was_remembered_from_it()
     {
-        // This is the leak the cascade exists to close: the person asked for it gone, and it would otherwise be
-        // recalled — and injected — into a conversation weeks later where they never said it.
+        // Without the cascade it would be recalled and injected weeks later, where they never said it.
         var (session, memory) = Open();
         await ExchangeAsync(session, "我用的是公司内网账号 alice", "明白了");
         await new MemoryDistilHook(memory, session).RunAsync(Context("我用的是公司内网账号 alice"), default);
@@ -397,9 +389,6 @@ public sealed class MemoryHookTests : IDisposable
     [Fact]
     public async Task Deleting_a_long_span_reads_it_in_one_query()
     {
-        // Deleting a conversation walks its seq range. One query per seq made the cost of removing a long thread
-        // grow with its length — a thousand queries for a thousand events — and the walk was justified by the
-        // column having no index. It has one now, so the span is a single indexed range read.
         var (_, memory) = Open();
         await memory.WriteBatchAsync(new[]
         {

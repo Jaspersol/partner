@@ -22,7 +22,7 @@ public sealed record ContextUsage(
 }
 
 /// <summary>
-/// Builds the messages a turn starts with (design doc §2.9.4):
+/// Builds the messages a turn starts with:
 /// <c>system (base + hook injections)</c> → <c>session window (trimmed to the token budget)</c> →
 /// <c>current input</c>.
 /// </summary>
@@ -42,13 +42,8 @@ public interface IContextAssembler
 /// Default assembler: base system prompt + hook injections + the newest history that fits the model's context
 /// window + the current input.
 /// <para>
-/// The window is a <b>token</b> budget, not an item count: what overflows a model is tokens, and the two are
-/// only loosely related (one tool result can outweigh twenty short turns). The budget reserves room for the
-/// completion, so a prompt can never fill the window and leave the answer truncated.
-/// </para>
-/// <para>
-/// Counting goes through <see cref="ITokenCounter.CountAsync"/>, so a provider-backed counter is used where
-/// one exists and the local estimate is the fallback.
+/// The window is a <b>token</b> budget, not an item count: what overflows a model is tokens, and one tool
+/// result can outweigh twenty short turns. The budget reserves room for the completion.
 /// </para>
 /// </summary>
 public sealed class SessionWindowContextAssembler : IContextAssembler
@@ -85,8 +80,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     }
 
     /// <summary>
-    /// The prompt in force right now: the live source when there is one and it has something to say, else the
-    /// fixed one. Read per call, never cached — that is the entire point of the source.
+    /// The prompt in force right now: the live source when it has something to say, else the fixed one.
+    /// Read per call, never cached.
     /// </summary>
     private string BasePrompt =>
         _promptSource?.Invoke() is { } live && !string.IsNullOrWhiteSpace(live) ? live : _baseSystemPrompt;
@@ -122,10 +117,9 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct, images.Count)
             .ConfigureAwait(false);
 
-        // Split by how often a block changes. Stable blocks (the prompt, the skill list) stay in the system
-        // message; the recall block is different on nearly every turn, and anything that differs at the start of
-        // the prompt invalidates the prefix cache for the whole history behind it. So it goes after the history,
-        // in front of the current input, where a change costs only the tokens it adds.
+        // Split by how often a block changes. Stable blocks stay in the system message; the volatile recall block
+        // changes nearly every turn, and anything that differs at the start of the prompt invalidates the prefix
+        // cache for the whole history behind it. It goes after the history, in front of the current input.
         var stable = new List<string>();
         var volatileBlocks = new List<string>();
         for (var i = 0; i < injectedPrompts.Count; i++)
@@ -155,8 +149,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
     /// <summary>
     /// The current input, led by background that is not part of it. Marked on both sides: it is reference
-    /// material for this turn, not something the person said, and the line between the two has to survive being
-    /// read as one message.
+    /// material for this turn, not something the person said.
     /// </summary>
     private static string WithBackground(IReadOnlyList<string> blocks, string input) =>
         "[背景资料，仅供本回合参考，不是用户说的话]\n"
@@ -168,9 +161,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// The text of the current input, followed by where its non-image attachments are.
     ///
     /// <para>
-    /// A document cannot ride an <c>image_url</c> part — that does not degrade, it fails the whole request — so
-    /// it travels as a path instead. That is also the form a tool like <c>read</c> can act on: the model has to
-    /// be able to open the file, not merely be told that it exists.
+    /// A document cannot ride an <c>image_url</c> part — that fails the whole request — so it travels as a path
+    /// the model can open with a tool.
     /// </para>
     /// </summary>
     private static string MessageBody(string payload, IReadOnlyList<MediaAttachment> attachments)
@@ -195,8 +187,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
     /// <summary>
     /// The attachments of the input being sent. Only this input's: history stays textual, so a later question
-    /// does not re-send megabytes the model has already seen — and does not quote paths that may since have been
-    /// deleted.
+    /// does not re-send megabytes the model has already seen.
     /// </summary>
     private IReadOnlyList<MediaAttachment> ResolveAttachments(IReadOnlyList<string> mediaIds)
     {
@@ -220,9 +211,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// <summary>
     /// Everything the two public entry points share: what fits, and what it costs.
     /// <para>
-    /// <paramref name="fromMemory"/> is how the read-only measurement stays read-only: a turn may ask the model
-    /// for a token count, but reporting occupancy must not, because the session view would then wait on — or
-    /// fail because of — a model endpoint that is slow, dead, or not configured yet.
+    /// <paramref name="fromMemory"/> keeps the read-only measurement read-only: reporting occupancy must not wait
+    /// on a model endpoint that is slow, dead, or not configured yet.
     /// </para>
     /// </summary>
     private async Task<Plan> PlanAsync(
@@ -265,15 +255,13 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             ? 0
             : await Cost(currentInput, ct).ConfigureAwait(false);
 
-        // An attachment costs the window something a character count cannot see. The number is a conservative
-        // flat charge per image rather than a model-specific measurement: it keeps the budget from claiming
-        // room that the image will actually take.
+        // An attachment costs the window something a character count cannot see. The flat per-image charge keeps
+        // the budget from claiming room the image will actually take.
         inputTokens += imageCount * ContextBudget.ImageTokens;
 
         var budget = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput) - systemTokens - inputTokens;
 
-        // Priced once: the fit and the total below used to price the kept entries a second time, which for a counter
-        // backed by the model is a second round trip each.
+        // Priced once: a model-backed counter would otherwise make a second round trip per kept entry.
         var priced = new Dictionary<SessionViewItem, int>(ReferenceEqualityComparer.Instance);
 
         async ValueTask<int> CostOf(SessionViewItem entry, CancellationToken token)
@@ -317,7 +305,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             conversation.Count - kept.Count);
     }
 
-    /// <summary>The most of a hand-off's arguments or result that is replayed. The detail is in the log; the model needs the fact.</summary>
+    /// <summary>The most of a hand-off's arguments or result that is replayed. The detail is in the log.</summary>
     private const int TraceChars = 400;
 
     /// <summary>
@@ -326,9 +314,9 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// <para>
     /// History is conversational on purpose, so tool calls are not replayed — with this one exception. Handing
     /// work over is the one call whose only trace in the conversation is the assistant's own sentence about it
-    /// (「已经交给桌面操控子 agent 了」). Replayed without the call, those sentences teach the model that saying it
-    /// is doing it, and from the next turn on it says so without calling anything: nothing runs, and the person is
-    /// told it is under way.
+    /// ("already handed to the desktop sub-agent"). Replayed without the call, those sentences teach the model
+    /// that saying it is doing it, and from the next turn on it says so without calling anything: nothing runs,
+    /// and the person is told it is under way.
     /// </para>
     /// </summary>
     internal static bool IsHandoffTrace(SessionViewItem entry) =>

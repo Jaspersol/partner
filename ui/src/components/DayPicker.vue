@@ -6,18 +6,12 @@ import Icon from './Icon.vue'
 /**
  * The day a reader is looking at, chosen year → month → day from the days that have conversation in them.
  *
- * <para>
- * A cascader: one button that names the day on screen, and a panel with three columns that narrow as the reader
- * goes. A column lists only what exists under the choice to its left, so a day with no conversation can never be
- * picked — and there is nothing to grey out, because it is simply not there. The list is not maintained here: it
- * is exactly the days the server reports, so a day that gains its first message appears by itself.
- * </para>
+ * A cascader: a column lists only what exists under the choice to its left, so a day with no conversation can
+ * never be picked. The list is exactly the days the server reports, so a day that gains its first message
+ * appears by itself.
  *
- * <para>
- * Changing year or month only changes what the columns show. The view moves when a day is clicked, because a
- * month is not something the session can be looking at. Newest first in every column, since the one most people
- * want is at the top.
- * </para>
+ * Changing year or month only changes what the columns show; the view moves when a day is clicked. Newest first
+ * in every column.
  */
 const props = defineProps<{
   days: readonly SessionDay[]
@@ -51,12 +45,11 @@ function localKey(offsetDays: number): string {
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`
 }
 
-/** 今天 / 昨天 only when it really is — after a quiet week the newest day is just a date. */
+/** Today / yesterday only when the day really is one. */
 function near(day: string): string {
   return day === localKey(0) ? '今天' : day === localKey(-1) ? '昨天' : ''
 }
 
-/** The trigger's text: the whole date, so the button alone says which day is on screen. */
 const current = computed(() => {
   if (props.modelValue === '') return '选择日期'
   const { year, month, date } = parts(props.modelValue)
@@ -85,7 +78,6 @@ const dates = computed(() =>
   }),
 )
 
-/** Starts the columns on the day on screen, or on the newest day when that one is not on offer any more. */
 function browseTo(day: string) {
   const known = newestFirst.value.includes(day) ? day : (newestFirst.value[0] ?? '')
   const { year, month } = parts(known)
@@ -133,7 +125,7 @@ function onOutside(event: Event) {
   if (root.value !== null && !root.value.contains(event.target as Node)) close(false)
 }
 
-// The listener lives only while the panel is open: a picker that is never opened should cost nothing.
+// The listener lives only while the panel is open.
 watch(open, (isOpen) => {
   if (isOpen) document.addEventListener('pointerdown', onOutside)
   else document.removeEventListener('pointerdown', onOutside)

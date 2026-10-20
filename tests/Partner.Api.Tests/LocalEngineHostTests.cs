@@ -5,8 +5,9 @@ using Partner.Api.Voice;
 namespace Partner.Api.Tests;
 
 /// <summary>
-/// 本地引擎进程托管：用真实子进程（powershell sleep）验证「开 = 进程在、关 = 进程没了」。
-/// 真实引擎（sherpa / tts-server）太重，进程生命周期本身是这里唯一值得钉住的行为。
+/// Local engine process hosting, verified with a real child process (powershell sleep): on means the process
+/// exists, off means it is gone. The real engines (sherpa / tts-server) are too heavy; process lifecycle is
+/// the only behaviour worth pinning here.
 /// </summary>
 public sealed class LocalEngineHostTests
 {
@@ -14,7 +15,8 @@ public sealed class LocalEngineHostTests
     {
         Enabled = enabled,
         Command = "powershell",
-        // -NoProfile: 实测加载 profile 会把几十毫秒的进程变成几秒的；-Command 睡眠 60s 的工作集 ~60MB。
+        // -NoProfile: loading a profile turns a process that should take milliseconds into seconds.
+        // A -Command sleeping 60s has a working set of about 60MB.
         Arguments = new[] { "-NoProfile", "-Command", $"Start-Sleep -Seconds 60; # {port}" },
         Port = port,
         ReadyTimeoutSeconds = 2,
@@ -149,8 +151,9 @@ public sealed class LocalEngineHostTests
             },
         });
 
-        // 参数模板展开的正确性只能到「进程起来且最终退出码走的是我们注入的 exit 0」——
-        // 命令行参数本身不回读，占位符写错会让引擎听错端口，那是集成验证的事。
+        // Placeholder expansion can only be checked as far as "the process starts and exits with our injected
+        // exit 0". The command line is not read back; a wrong placeholder would make the engine listen on the
+        // wrong port, which is for integration verification.
         Assert.True(state.Tts.Running || state.Tts.Reason.Contains("退出", StringComparison.Ordinal));
     }
 
@@ -171,10 +174,11 @@ public sealed class LocalEngineHostTests
         await AssertProcessGoneAsync(ttsPid);
     }
 
-    /// <summary>非0 意味着进程要么活着要么被换查到别的进程上——两种都算断言失败。</summary>
+    /// <summary>A non-zero exit means the process is alive or the PID was reused; both fail the assertion.</summary>
     private static async Task AssertProcessGoneAsync(int pid)
     {
-        // Windows 上进程对象可能已 dispose，但 PID 要等所有句柄关掉才可能被复用；短窗内查活进程足够。
+        // On Windows the process object may be disposed while the PID stays reusable until all handles close;
+        // checking for a live process in a short window is enough.
         for (var attempt = 0; attempt < 20; attempt++)
         {
             try
@@ -187,11 +191,11 @@ public sealed class LocalEngineHostTests
             }
             catch (ArgumentException)
             {
-                return; // 不存在 = 已退出。
+                return; // absent means exited.
             }
             catch (InvalidOperationException)
             {
-                return; // HasExited 无法判断多半是刚退出。
+                return; // HasExited cannot decide; most likely it just exited.
             }
 
             await Task.Delay(100);

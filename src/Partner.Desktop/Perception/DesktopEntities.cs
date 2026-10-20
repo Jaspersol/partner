@@ -3,7 +3,7 @@ using System.Text;
 
 namespace Partner.Desktop.Perception;
 
-/// <summary>What kind of observation produced the entities — it changes the lease TTL (design doc §2.6.1).</summary>
+/// <summary>What kind of observation produced the entities; it changes the lease TTL.</summary>
 public enum ObserveScope
 {
     Action,
@@ -68,14 +68,10 @@ public sealed record UiEntity
     public required double Confidence { get; init; }
 
     /// <summary>
-    /// Whether this window's control list may be incomplete because the UI Automation walk hit a bound.
-    /// <para>
-    /// The walk is bounded — depth, controls per window, nodes visited, time — and on a Chromium-shaped
-    /// window those bounds are what makes an observation take milliseconds instead of tens of seconds. But a
-    /// truncated list is not the same answer as a short one, and reporting it as one is how a control that
-    /// exists goes missing with nothing to show for it. Depth and the control cap are ordinary and are not
-    /// reported; being cut off on nodes or time is, because that is where controls really do disappear.
-    /// </para>
+    /// Whether this window's control list may be incomplete because the UI Automation walk hit a bound. The
+    /// walk is bounded (depth, controls per window, nodes visited, time), which keeps an observation on a
+    /// Chromium-shaped window fast, but a truncated list must not be reported as a short one. Depth and the
+    /// control cap are ordinary and not reported; being cut off on nodes or time is.
     /// </summary>
     public bool ElementsTruncated { get; init; }
 
@@ -85,9 +81,9 @@ public sealed record UiEntity
     /// <summary>
     /// Identity of the window: handle + owning process + when that process started.
     /// <para>
-    /// Deliberately <b>not</b> the title or the rectangle. A music player retitles itself on every track, a
-    /// browser on every tab change, an editor on its dirty marker — and a window that is restored, moved or
-    /// resized keeps its identity. Folding either into identity is how "act only on what you saw" turns into
+    /// Deliberately <b>not</b> the title or the rectangle: a music player retitles itself on every track, a
+    /// browser on every tab change, an editor on its dirty marker, and a window that is restored, moved or
+    /// resized keeps its identity. Folding either into identity would make "act only on what you saw" into
     /// "you may never act at all" on exactly the applications people want to control. Compare
     /// <see cref="LayoutDigest"/> for position instead, and treat a difference there as drift to report
     /// rather than a reason to refuse.
@@ -140,12 +136,9 @@ public sealed record DesktopObservation
         Entities.FirstOrDefault(e => string.Equals(e.EntityId, entityId, StringComparison.Ordinal));
 
     /// <summary>
-    /// Identity digest of a window: handle + process + process start time.
-    /// <para>
-    /// Title and rectangle are excluded on purpose — see <see cref="UiEntity.IdentityDigest"/>. The label is
-    /// carried alongside as <see cref="UiEntity.Label"/> so the model can still read it; it is simply not what
-    /// makes a window *that* window.
-    /// </para>
+    /// Identity digest of a window: handle + process + process start time. Title and rectangle are excluded on
+    /// purpose; see <see cref="UiEntity.IdentityDigest"/>. The label stays in <see cref="UiEntity.Label"/> so the
+    /// model can still read it.
     /// </summary>
     public static string Identity(string entityId, int processId, long? processStartTicks, string? processName)
     {
@@ -158,12 +151,9 @@ public sealed record DesktopObservation
         Hash($"{rect.X},{rect.Y},{rect.Width},{rect.Height}");
 
     /// <summary>
-    /// Identity digest of a control inside a window: the window, its name and its role.
-    /// <para>
-    /// The rectangle is excluded here too, and for the same reason: a layout shift moves a button without
-    /// replacing it, and the caller recomputes the click point from the <i>fresh</i> rectangle anyway.
-    /// The value is excluded as before — typing into a field must not make the field look like a different one.
-    /// </para>
+    /// Identity digest of a control inside a window: the window, its name and its role. The rectangle is
+    /// excluded: a layout shift moves a button without replacing it, and the caller recomputes the click point
+    /// from the fresh rectangle. The value is excluded so typing into a field does not make it a different one.
     /// </summary>
     public static string ElementIdentity(string windowId, string name, string role, string? stable = null) =>
         Hash(stable is null
@@ -177,7 +167,7 @@ public sealed record DesktopObservation
     }
 }
 
-/// <summary>Lease over one entity (design doc §2.6.1 ①).</summary>
+/// <summary>Lease over one entity.</summary>
 public sealed record EntityLease
 {
     public required string EntityId { get; init; }

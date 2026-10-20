@@ -6,12 +6,8 @@ using Partner.Voice.Tts;
 namespace Partner.Voice.Tests;
 
 /// <summary>
-/// 播放顺序与「先合成完再出声」（设计文档 §2.8.11）。
-/// <para>
-/// 真机症状：一回合里第 1 句刚出声，第 2 句才开始合成，于是句间插进一段随文本变长的静音。
-/// 根因是闩锁只在 sink 构造时上过一次，而 sink 跨回合复用——第 2 个回合起没有任何东西挡住
-/// 边合成边播。这组用例断言的是「每一句的音频都到达得比 Release 早」，也就是闩锁每回合都在。
-/// </para>
+/// Playback order and synthesize-before-speaking: every sentence's audio must reach the sink before Release,
+/// including on the second and later turns that reuse the same sink.
 /// </summary>
 public sealed class VoiceOutputHalfTests
 {
@@ -38,7 +34,7 @@ public sealed class VoiceOutputHalfTests
         Assert.Equal(new[] { "第一句话。", "第二句话。", "第三句话。" }, tts.Requests);
         Assert.Equal(3, sink.EnqueuedSegments);
 
-        // 一声都没漏出去：全部到达时闩还上着，Release 在最后。
+        // Nothing leaked out: every segment arrived while held, and Release comes last.
         Assert.Equal(0, sink.EnqueuedWhileFree);
         Assert.Equal(1, sink.Releases);
     }
@@ -59,7 +55,7 @@ public sealed class VoiceOutputHalfTests
         output.OnText("第二回合的第一句。第二回合的第二句。", sessionEventSeq: 2);
         await output.FlushTurnAsync();
 
-        // 第二个回合同样一个字都不许在 Release 前出声——这正是真机上从第二回合开始出现的那段静音。
+        // The second turn must also play nothing before Release.
         Assert.Equal(freeAfterFirstTurn, sink.EnqueuedWhileFree);
         Assert.Equal(releasesAfterFirstTurn + 1, sink.Releases);
         Assert.Equal(
@@ -150,7 +146,7 @@ public sealed class VoiceOutputHalfTests
         Assert.False(output.IsStreaming);
     }
 
-    /// <summary>逐句记下「到达时闩着没有」，同时数 Release 次数。</summary>
+    /// <summary>Records whether each segment arrived while held, and counts Release calls.</summary>
     private sealed class RecordingSink : IAudioSink
     {
         private bool _held;
@@ -179,7 +175,7 @@ public sealed class VoiceOutputHalfTests
         {
             ArgumentNullException.ThrowIfNull(pcm);
 
-            // 终止标记（空数组）不算一段音频：每句末尾都有一个。
+            // A terminator (empty array) is not an audio segment; every sentence ends with one.
             if (pcm.Length > 0)
             {
                 EnqueuedSegments++;
@@ -211,7 +207,7 @@ public sealed class VoiceOutputHalfTests
         public void Dispose() => Stop();
     }
 
-    /// <summary>记下每句的合成请求，按顺序返回一小段 PCM。</summary>
+    /// <summary>Records each synthesis request and returns a short PCM buffer in order.</summary>
     private sealed class ScriptedTts : ITtsClient
     {
         public List<string> Requests { get; } = new();

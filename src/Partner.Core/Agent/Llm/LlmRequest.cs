@@ -3,18 +3,19 @@ using Partner.Core.Agent.Tools;
 namespace Partner.Core.Agent.Llm;
 
 /// <summary>
-/// 一次补全请求（设计文档 §2.9.5）：完整对话历史 + 本轮可见的工具清单。
+/// One completion request: the full conversation history plus the tool list visible to this turn.
 /// </summary>
-/// <param name="Messages">对话历史，按时间顺序。</param>
-/// <param name="Tools">本轮暴露给模型的工具（已由治理层筛过）。</param>
-/// <param name="MaxTokens">可选的输出上限。</param>
-/// <param name="Model">可选的模型覆盖。</param>
+/// <param name="Messages">Conversation history, in chronological order.</param>
+/// <param name="Tools">Tools exposed to the model this turn (already filtered by the governance layer).</param>
+/// <param name="MaxTokens">Optional output cap.</param>
+/// <param name="Model">Optional model override.</param>
 /// <param name="ReasoningEffort">
-/// 可选的思考挡位覆盖。
+/// Optional thinking-gear override.
 /// <para>
-/// null（缺省）= 用客户端配置里的默认挡位；显式给值 = 这一轮用这个，包括 <c>off</c>。放在请求上而不是
-/// 重建客户端，是因为挡位是**逐轮**的选择：改挡位要能只影响下一轮，而重建客户端得停掉消费者，
-/// 一次改一个值不该打断正在跑的回合。
+/// null (default) = use the client configuration's default gear; an explicit value = use it for this turn,
+/// including <c>off</c>. It lives on the request rather than rebuilding the client because the gear is a
+/// <b>per-turn</b> choice: changing it must affect only the next turn, while rebuilding the client would stop
+/// the consumer.
 /// </para>
 /// </param>
 public sealed record LlmRequest(

@@ -11,7 +11,7 @@ public enum VerifyDecision
     /// <summary>Measured, and nothing (relevant) changed.</summary>
     NoChange,
 
-    /// <summary>Could not be measured — never conflate this with "nothing changed" (design doc §2.6.1 ②).</summary>
+    /// <summary>Could not be measured; never conflate this with "nothing changed".</summary>
     Indeterminate,
 }
 
@@ -27,30 +27,25 @@ public sealed record VerifyResult(
 }
 
 /// <summary>
-/// Post-action verification (design doc §2.6.1 ②). A delivered action never proves an outcome: the region
-/// must be re-observed and compared within a fixed budget.
-/// <para>
-/// Adaptation recorded deliberately: the reference implementation reads DXGI dirty rects; here the dirty
-/// rect is <i>derived from the frame diff</i> (bounding box of changed pixels) because the GDI backend has
-/// no dirty-rect source. The decision matrix, the 0.005 area-ratio threshold and the 100 ms budget are
-/// otherwise identical. A second adaptation sits on top of that: repaints are asynchronous, so a NoChange
-/// is re-measured a bounded number of times (see <see cref="DefaultRecheckRounds"/>) before it is reported
-/// — the reference's single re-observation is folded into the polling loop.
-/// </para>
+/// Post-action verification: a delivered action never proves an outcome, so the region is re-observed and
+/// compared within a fixed budget. The dirty rect is the bounding box of changed pixels, derived from the frame
+/// diff because the GDI backend has no dirty-rect source. Repaints are asynchronous, so a NoChange is
+/// re-measured a bounded number of times (see <see cref="DefaultRecheckRounds"/>).
 /// </summary>
 public sealed class PostActionVerifier
 {
-    /// <summary>Poll budget for one verification (reference value: 100 ms).</summary>
+    /// <summary>Poll budget for one verification.</summary>
     public static readonly TimeSpan DefaultBudget = TimeSpan.FromMilliseconds(100);
 
-    /// <summary>Minimum intersected-area ratio for a change to count (reference value: 0.005).</summary>
+    /// <summary>Minimum intersected-area ratio for a change to count.</summary>
     public const double MinIntersectedAreaRatio = 0.005;
 
-    /// <summary>The pause between re-captures when the first frame shows no change yet. Repaints are
-    /// asynchronous: a busy compositor (Chromium) or an app that queues its <c>WM_PAINT</c> may not have
-    /// drawn the effect of the action within the few milliseconds between the release and the first capture,
-    /// and reading that early frame as "nothing changed" is how a click that worked comes back as a failure
-    /// and gets tried again.</summary>
+    /// <summary>
+    /// The pause between re-captures when the first frame shows no change yet. Repaints are asynchronous: a busy
+    /// compositor (Chromium) or an app that queues its <c>WM_PAINT</c> may not have drawn the effect within the
+    /// few milliseconds between release and first capture, and reading that early frame as "nothing changed"
+    /// makes a working click look like a failure and invites a retry.
+    /// </summary>
     public static readonly TimeSpan DefaultRecheckDelay = TimeSpan.FromMilliseconds(50);
 
     /// <summary>Extra captures after the first, when the first shows no change. Each is a full diff against
@@ -78,10 +73,9 @@ public sealed class PostActionVerifier
     /// Re-captures the window and compares it against <paramref name="before"/>.
     /// </summary>
     /// <param name="target">
-    /// The region to judge, in <b>frame</b> coordinates — not screen coordinates. The frames are captures of
-    /// the window, so their origin is the window's top-left corner; passing a screen rectangle here
-    /// intersected two different coordinate spaces and made the ratio meaningless. The frame's own rectangle
-    /// is what a window-level action means.
+    /// The region to judge, in <b>frame</b> coordinates, not screen coordinates. The frames are captures of the
+    /// window, so their origin is the window's top-left; a screen rectangle here would intersect two coordinate
+    /// spaces and make the ratio meaningless.
     /// </param>
     public Task<VerifyResult> VerifyAsync(
         nint handle,
@@ -91,17 +85,12 @@ public sealed class PostActionVerifier
         VerifyCoreAsync(handle, target, screenRegion: null, before, ct);
 
     /// <summary>
-    /// Judges one region of the window, named in <b>screen</b> coordinates.
+    /// Judges one region of the window, named in <b>screen</b> coordinates. This is the honest form for a region
+    /// that came from an observation: a screen rectangle is what the element list and the model both speak, while
+    /// the frames are cropped to their own origins.
     /// <para>
-    /// This is the honest form for a region that came from an observation, because a screen rectangle is what
-    /// the element list and the model both speak, while the frames are cropped to their own origins.
-    /// </para>
-    /// <para>
-    /// It matters for precision as much as for correctness: the decision is a fraction of the judged region's
-    /// area, so judging a whole window makes a small control's change too small to register. A button that
-    /// changed 1800 pixels reads as no change at all in a 1200×800 window, and the result then says the click
-    /// was not confirmed — the one sentence an agent cannot act on, because it does not know whether to retry
-    /// or to move on.
+    /// The decision is a fraction of the judged region's area, so judging a whole window can make a small
+    /// control's change too small to register.
     /// </para>
     /// </summary>
     public Task<VerifyResult> VerifyScreenRegionAsync(
@@ -127,18 +116,13 @@ public sealed class PostActionVerifier
             return VerifyResult.Indeterminate("no before frame", watch.Elapsed.TotalMilliseconds);
         }
 
-        // Capturing just the region, when it is safe to, is the difference between a cheap check and the most
-        // expensive call on the action path: PrintWindow renders the whole window through DWM twice per
-        // action, and 99% of what an action changes is a rectangle the size of a control.
-        //
-        // "Safe" means nothing else can be drawn inside the region. A screen BitBlt copies whatever is
-        // actually at those pixels — including a window on top of the target — which would read as a change
-        // that the target never made. So the caller has to say the target is in front (the occlusion guard
-        // already establishes that for a coordinate action), and anything else falls back to the window
-        // capture, which renders the window's own contents regardless of what covers it.
-        // Both frames of one round must be in one coordinate space: a whole window against a region patch
-        // would intersect two spaces and judge a corner that was never meant. So the region-before-frame is
-        // cropped once, and both sides of every round run in the same mode.
+        // Capturing just the region is much cheaper than PrintWindow, which renders the whole window through
+        // DWM twice per action. "Safe" means nothing else can be drawn inside the region: a screen BitBlt copies
+        // whatever is at those pixels, including a window on top, which would read as a change the target never
+        // made. The caller must say the target is in front (the occlusion guard establishes that for a
+        // coordinate action); otherwise this falls back to the window capture, which renders the window's own
+        // contents regardless of what covers it. Both frames of one round must be in one coordinate space, so
+        // the region-before-frame is cropped once and every round runs in the same mode.
         var regionMode = screenCaptureOk && screenRegion is { } region && before.ScreenRect is { } origin
             && Crop(before, region.X - origin.X, region.Y - origin.Y, region.Width, region.Height) is { } frame
             ? (Before: (CaptureResult?)frame, Screen: (PixelRect?)region)
@@ -185,13 +169,10 @@ public sealed class PostActionVerifier
         var elapsedMs = () => watch.Elapsed.TotalMilliseconds;
         var result = Compare(RoundBefore(), round.Value.Frame, round.Value.Judged, new Stopwatch(), elapsedMs);
 
-        // Repaints are asynchronous. A NoChange measured within a few milliseconds of the release can be a
-        // frame the application has not drawn yet, and reporting it as "nothing changed" invites a retry —
-        // the retry the double-triggered toggle is made of. So a NoChange is re-measured on a short loop:
-        // each round re-captures and re-diffs against the same before-frame, and the first round that sees a
-        // change wins. A later round whose capture fails, or a loop that runs out, leaves the measured
-        // NoChange standing — no change is what was actually measured, once per round, on every round until
-        // now. More waiting than this starts to look like hoping rather than verifying.
+        // Repaints are asynchronous. A NoChange measured within a few milliseconds of the release can be a frame
+        // the application has not drawn yet, and reporting it as "nothing changed" invites a retry, which is how
+        // a toggle gets double-triggered. A NoChange is re-measured on a short loop; the first round that sees a
+        // change wins. A later failed capture, or an exhausted loop, leaves the measured NoChange standing.
         for (var recheck = 0; recheck < _recheckRounds && result.Decision == VerifyDecision.NoChange; recheck++)
         {
             await Task.Delay(_recheckDelay, ct).ConfigureAwait(false);
@@ -201,9 +182,8 @@ public sealed class PostActionVerifier
                 break;
             }
 
-            // One diff budget per round, not per verification: the budget bounds one scan — capture to
-            // decision — and a scan that shares its clock with the rounds before it would spend the budget
-            // the moment it started and answer Indeterminate for a frame it never read.
+            // One diff budget per round, not per verification: the budget bounds one scan from capture to
+            // decision, and a scan sharing its clock with earlier rounds would answer Indeterminate immediately.
             result = Compare(RoundBefore(), next.Value.Frame, next.Value.Judged, new Stopwatch(), elapsedMs);
         }
 
@@ -226,10 +206,9 @@ public sealed class PostActionVerifier
         ArgumentNullException.ThrowIfNull(before);
         ArgumentNullException.ThrowIfNull(after);
 
-        // A window that was restored, moved or resized changes the frame between the two captures — and for a
-        // focus that restored it, that change *is* the outcome being asked about. Reporting Indeterminate there
-        // left the model with no signal about the action it had just taken, which is how a turn ends up
-        // re-observing instead of proceeding. The overlap is still a real comparison, so compare that.
+        // A window that was restored, moved or resized changes the frame between the two captures, and for a
+        // focus that restored it, that change is the outcome being asked about. The overlap is a real
+        // comparison, so compare that instead of reporting Indeterminate.
         var width = Math.Min(before.Width, after.Width);
         var height = Math.Min(before.Height, after.Height);
 
@@ -262,9 +241,8 @@ public sealed class PostActionVerifier
         {
             if (resized)
             {
-                // The pixels that overlap are identical, but the window changed shape between the two captures
-                // — which is itself something that happened, and hiding it behind "nothing changed" would be a
-                // lie about a change the model can see.
+                // The overlapping pixels are identical, but the window changed shape, which is itself something
+                // that happened and must not be hidden behind "nothing changed".
                 return new VerifyResult(
                     VerifyDecision.AnyChange,
                     1,
@@ -278,9 +256,7 @@ public sealed class PostActionVerifier
                 VerifyDecision.NoChange, 0, after.Method, "no dirty region", elapsedMs?.Invoke() ?? watch.Elapsed.TotalMilliseconds);
         }
 
-        // Both capture strategies arrive here with the judged region already in frame coordinates: the
-        // window capture maps a screen region through the before-frame's origin, and the region capture
-        // compares two frames that both *are* the region.
+        // Both capture strategies arrive here with the judged region already in frame coordinates.
         var judged = frameRegion ?? new PixelRect(0, 0, width, height);
         var clipped = judged.Intersect(new PixelRect(0, 0, width, height));
         var intersection = dirty.Intersect(clipped);
@@ -295,12 +271,9 @@ public sealed class PostActionVerifier
     }
 
     /// <summary>
-    /// A rectangle cut out of a frame, in the frame's own pixels.
-    /// <para>
-    /// Refused rather than shrunk when the rectangle is not inside the frame: a capture whose pixels do not
-    /// match the region it claims to be is exactly the misalignment that region capture exists to avoid, and
-    /// quietly clamping would hide it.
-    /// </para>
+    /// A rectangle cut out of a frame, in the frame's own pixels. Refused rather than shrunk when the rectangle
+    /// is not inside the frame: a capture whose pixels do not match its region is the misalignment this exists
+    /// to avoid.
     /// </summary>
     internal static CaptureResult? Crop(CaptureResult frame, int x, int y, int width, int height)
     {
@@ -329,10 +302,9 @@ public sealed class PostActionVerifier
     }
 
     /// <summary>
-    /// Where a region lands inside a frame. A screen region needs the frame's own origin; a region already
-    /// given in frame coordinates is taken as it is. Null when the region cannot be placed — a capture that
-    /// does not know where on the screen it was taken has no honest way to map a screen coordinate onto it,
-    /// and the caller falls back to judging the whole frame.
+    /// Where a region lands inside a frame. A screen region needs the frame's own origin; a region already in
+    /// frame coordinates is taken as is. Null when the region cannot be placed, and the caller falls back to
+    /// judging the whole frame.
     /// </summary>
     internal static PixelRect? Region(PixelRect? frameRegion, PixelRect? screenRegion, PixelRect? frameScreenRect)
     {
@@ -351,8 +323,8 @@ public sealed class PostActionVerifier
 
     /// <summary>
     /// The top-left <paramref name="width"/>×<paramref name="height"/> corner of a frame, re-strided to the new
-    /// width. A row-major frame carries its own stride, so cropping is a row copy — slicing the array would
-    /// shear the picture.
+    /// width. A row-major frame carries its own stride, so cropping is a row copy; slicing the array would shear
+    /// the picture.
     /// </summary>
     private static byte[] CropTopLeft(byte[] frame, int frameWidth, int width, int height)
     {

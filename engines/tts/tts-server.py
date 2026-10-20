@@ -1,28 +1,29 @@
-"""engines/tts/tts-server.py — 本仓提供的 TTS HTTP 壳。
+"""engines/tts/tts-server.py — the TTS HTTP shell shipped with this repo.
 
-把 HaujetZhao/Qwen3-TTS-GGUF 的 TTSEngine 包成 OpenAI 兼容端点，给 Partner
-设置里的 `tts.protocol=openai` 直接用：
+Wraps HaujetZhao/Qwen3-TTS-GGUF's TTSEngine in OpenAI-compatible endpoints for Partner's
+`tts.protocol=openai` setting:
 
-    POST /v1/audio/speech     { "input": …, "voice": …, "reference_text": …,
+    POST /v1/audio/speech     { "input": ..., "voice": ..., "reference_text": ...,
                                 "response_format": "wav", "speed": 1 }
-                              → audio/wav（16-bit PCM @ 24 kHz，一次性返回）
+                              -> audio/wav (16-bit PCM at 24 kHz, returned in one response)
 
-`reference_text` 是音频克隆源的转写文本（参考录音里实际说的话）。不传时依次退到
-`<wav>.txt` / `<wav 同名>.txt` 旁的 sidecar，再没有就走零样本克隆（只用音色向量）。
-它**不是**要朗读的文本——把 `input` 当转写会把参考音频的音色特征和错误的文本拼在
-一起，合成出来就是乱读。
+`reference_text` is the transcript of the audio clone source, meaning what is actually said in the reference
+recording. When omitted it falls back to a `<wav>.txt` or `<stem>.txt` sidecar, and with neither it uses
+zero-shot cloning from the speaker embedding alone. It is **not** the text to speak: passing `input` as the
+transcript pairs the reference timbre with the wrong text and produces garbled speech.
 
-用法（engines/tts 下，先 pip install -r requirements.txt）:
+Usage (from engines/tts after pip install -r requirements.txt):
 
     .venv/Scripts/python.exe tts-server.py --voice vivian --port 45102 --device vulkan
 
-模型走 `--model-dir`（默认 `model/`，即 engines/tts/model）。`voice` 三种写法，按顺序解析：
+Models come from `--model-dir` (default `model/`, meaning engines/tts/model). `voice` is resolved in order:
 
-  1. `output/elaborate/Vivian.json` 这类路径 → 直接当音色锚点（Base 模型克隆）
-  2. `vivian` / `晓晓` 这类名字 → 命中 `output/elaborate/<名字>.json`（zip 自带 8 个锚点）
-  3. 其它名字 → 交给上游当内置说话人 ID（vivian/serena/… 需 CustomVoice 导出，本仓默认装的是 Base）
+  1. A path such as `output/elaborate/Vivian.json` -> used directly as a voice anchor (Base model cloning)
+  2. A name such as `vivian` or `晓晓` -> matches `output/elaborate/<name>.json` (the zip ships 8 anchors)
+  3. Any other name -> passed to upstream as a built-in speaker ID (vivian/serena/... need a CustomVoice
+     export; this repo installs Base by default)
 
-每次请求可用 `voice` 覆盖默认音色，未提供则用启动时的默认锚点。
+Each request may override the default voice with `voice`; without it the startup anchor is used.
 """
 from __future__ import annotations
 
@@ -38,28 +39,26 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# 上游到处 print emoji；Windows 控制台默认 GBK，`print('🔊 …')` 会抛 UnicodeEncodeError。
-# 对宿主无所谓，对解码器子进程是致命的：worker 一崩，主进程 wait_until_ready 超时，
-# 报出来的是「engine init failed — missing model files?」，跟真实原因差了十万八千里。
-# 环境变量让 spawn 出来的子进程也吃这套（子进程会重新 import 本模块），reconfigure 管当前进程。
+# Upstream prints emoji, and the Windows console defaults to GBK, so `print('🔊 …')` raises
+# UnicodeEncodeError. The environment variables also cover spawned children (which re-import this module);
+# reconfigure covers the current process.
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("PYTHONUTF8", "1")
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
-    except (AttributeError, ValueError):  # 被重定向成非 TextIO 时不值得为它挂掉
+    except (AttributeError, ValueError):  # Redirected to a non-TextIO stream; not worth failing over.
         pass
 
 ENGINE_DIR = Path(__file__).resolve().parent
 
-# GUI zip 的布局：Qwen3-TTS-GUI.exe + internal/（包本体与 llama.dll）+ output/elaborate/（音色锚点）。
-# 包在 internal/ 下，所以 internal 要进 sys.path——上游的 __init__.py 还会往 PROJECT_ROOT
-# （也就是 internal/）写 log/。
+# GUI zip layout: Qwen3-TTS-GUI.exe plus internal/ (package and llama.dll) plus output/elaborate/
+# (voice anchors). The package lives under internal/, so internal/ must be on sys.path; upstream also
+# writes logs under PROJECT_ROOT, which is internal/.
 #
-# 但必须**追加**而不是插到最前：internal/ 是 PyInstaller 的 Python 3.14 运行时（53 个 dll + 19 个
-# cp314 .pyd，含 python314.dll）。排在 stdlib 前面会遮蔽本 venv 的 _ctypes 等，报
-# "Module use of python314.dll conflicts with this version of Python"。追加后
-# venv 的 site-packages 优先，只把 internal/ 里独有包名（qwen3_tts_gguf）当兜底。
+# Append rather than insert: internal/ is a PyInstaller Python 3.14 runtime and would shadow this venv's
+# _ctypes if it came before the stdlib, causing "Module use of python314.dll conflicts with this version
+# of Python". Appending keeps venv site-packages first and uses internal/ only for its own packages.
 if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 if str(ENGINE_DIR / "internal") not in sys.path:
@@ -71,25 +70,24 @@ from qwen3_tts_gguf.inference.schema.constants import SPEAKER_MAP  # noqa: E402
 SAMPLE_RATE = 24_000
 VOICE_ANCHORS = ENGINE_DIR / "output" / "elaborate"
 
-# 必须关掉上游的流式播放：TTSConfig.streaming 默认 True，而 DecoderProxy 一构造就无条件拉起
-# SpeakerWorker（workers/speaker.py 里一个裸的 sd.OutputStream，不带 device=，也就是系统默认输出
-# 设备）。streaming=True 时每个解码块都会同时进 play_q（proxy.py:126），于是引擎自己也在放。
-#
-# 症状：本机永远多出一次「外放」，跟设置里的输出设备无关——设置成音箱就同一只音箱响两遍，
-# 设置成虚拟声卡就是「音箱一遍 + 虚拟通道一遍」。我们这条链路只消费 HTTP 返回的完整 WAV，
-# 流式播放对宿主毫无用处，关掉既消掉这次外放，也省掉分块解码。
+# Upstream streaming playback must stay off. TTSConfig.streaming defaults to True and DecoderProxy starts
+# a SpeakerWorker unconditionally (a bare sd.OutputStream on the system default device); with streaming on,
+# every decoded chunk also reaches play_q (proxy.py:126), so the engine plays it itself. That adds a second
+# audible copy regardless of the configured output device. This pipeline consumes the full WAV from HTTP,
+# so streaming playback is useless here; turning it off removes the extra output and the chunked decode.
 OFFLINE = TTSConfig(streaming=False)
 
 
 def resolve_voice(voice: str | None) -> str | None:
-    """名字 → 可直接交给引擎的音色源。认不出来返回 None（调用方要报错，不能静默用默认音色）。
+    """Name -> a voice source the engine accepts. Returns None when unrecognized; the caller must report an
+    error rather than silently use the default voice.
 
-    三种命中：锚点路径（json/wav）→ 原样；锚点名（大小写不敏感）→ output/elaborate 下的 json；
-    内置说话人 ID（vivian/serena/…）→ 原样，由上游走 spk_embd。
+    Three matches: an anchor path (json/wav) is used as is; an anchor name (case-insensitive) resolves to a
+    json under output/elaborate; a built-in speaker ID (vivian/serena/...) is passed through to spk_embd.
 
-    最后那一路是上游的兜底逻辑：name 不在表里时 map_speaker 只打个 warning、返回 None，
-    然后照样合成出一段默认音色的音频。所以「没认出来」必须在这里挡住——否则用户把音色名
-    打错一个字，得到的是默认嗓子而不是错误。
+    The last path is upstream's fallback: when the name is not in the table, map_speaker only warns and
+    returns None, then synthesis still produces default-voice audio. Unrecognized names must therefore be
+    rejected here, or a single typo in a voice name yields the default voice instead of an error.
     """
     if not voice:
         return None
@@ -105,7 +103,7 @@ def resolve_voice(voice: str | None) -> str | None:
 
 
 def read_reference_text(voice: str) -> str:
-    """音频锚点旁的转写 sidecar：`<path>.txt` 优先，其次 `<stem>.txt`。没有就返回空。"""
+    """Transcript sidecar next to an audio anchor: `<path>.txt` first, then `<stem>.txt`. Empty if absent."""
     path = Path(voice)
     if path.suffix.lower() == ".json":
         return ""
@@ -119,11 +117,11 @@ def read_reference_text(voice: str) -> str:
 
 
 class EngineState:
-    """一个流一个音色锚点；并发请求排队串行化（引擎本质是单流推理）。"""
+    """One voice anchor per stream; concurrent requests are serialized because inference is single-stream."""
 
     def __init__(self, model_dir: str, default_voice: str | None, default_reference_text: str, device: str):
         onnx_provider = {"vulkan": "DML", "cpu": "CPUExecutionProvider"}.get(device, "DML")
-        # 绝对路径：解码器子进程（multiprocessing spawn）的 cwd 不保证一样。
+        # Absolute path: a spawned decoder subprocess does not share this process's working directory.
         model_path = str(Path(model_dir).resolve())
         self.engine = TTSEngine(
             model_dir=model_path,
@@ -160,10 +158,12 @@ class EngineState:
         )
 
     def apply_voice(self, voice: str | None, reference_text: str = "") -> bool:
-        """切换音色锚点；同一个 (voice, 转写) 不重复提取特征——每句都重建锚点会慢且音色漂。
+        """Switch the voice anchor. The same (voice, transcript) pair is not re-extracted: rebuilding the
+        anchor per sentence is slow and lets the timbre drift.
 
-        音频源需要它自己的转写：文本和 codes 在 ICL prompt 里逐位对齐，转写错了合成就会乱读。
-        没有转写时退到 sidecar，再没有就按零样本克隆（只用 spk_emb）。
+        An audio source needs its own transcript because text and codes align position by position in the ICL
+        prompt; a wrong transcript garbles synthesis. Without a transcript this falls back to the sidecar, and
+        without that to zero-shot cloning from spk_emb.
         """
         if not voice:
             return True
@@ -174,7 +174,8 @@ class EngineState:
 
         path = Path(voice)
         if path.suffix.lower() == ".json" or voice.lower() in SPEAKER_MAP:
-            # json 锚点自带转写，忽略传入文本；内置 ID 用固定样句生成锚点。
+            # A JSON anchor carries its own transcript, so the passed text is ignored; built-in IDs use a
+            # fixed sample sentence.
             ok = bool(self.stream.set_voice(voice, "你好，很高兴见到你。", config=OFFLINE))
         else:
             ok = bool(self.stream.set_voice(voice, text=text, config=OFFLINE))
@@ -185,7 +186,8 @@ class EngineState:
 
     @property
     def zero_shot(self) -> bool:
-        """音频锚点没有转写时只能零样本：只把 spk_emb 放进 prompt，codec codes 会错位到文本上。"""
+        """An audio anchor without a transcript is zero-shot only: with just spk_emb in the prompt, codec
+        codes misalign against the text."""
         voice = self.current_voice
         if not voice:
             return True
@@ -198,7 +200,7 @@ class EngineState:
 
 
 def float32_to_wav_bytes(samples, rate: int) -> bytes:
-    """float32 [-1,1] → 16-bit mono WAV（RIFX 头标准库拼，不引依赖）。"""
+    """float32 [-1,1] -> 16-bit mono WAV (RIFF header built with the stdlib, no extra dependency)."""
     import numpy as np
 
     pcm16 = np.clip(samples, -1.0, 1.0)
@@ -266,8 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
 
                 samples = result.audio
-                # speed ≠1 时线性重采样近似（引擎端没有 speed 参数）；
-                # 只在偏离 1 的请求里做，代价是短音频上采样质量略降。
+                # Approximate speed with linear resampling (the engine has no speed parameter); only for
+                # requests away from 1.0, at a small quality cost on short audio.
                 if abs(speed - 1.0) > 0.01:
                     samples = _resample(samples, speed)
 
@@ -292,7 +294,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _resample(samples, speed: float):
-    """线性插值变速。speed=2 → 音长减半音调不变…不，这里音调也变——线性重采样本来就是变速变调。"""
+    """Linear-interpolation speed change. speed=2 halves the duration, and pitch changes with it: linear
+    resampling alters both."""
     import numpy as np
 
     count = int(len(samples) / speed)
@@ -306,8 +309,9 @@ def _resample(samples, speed: float):
 
 
 def warm_up(state: "EngineState") -> None:
-    """合成一句短话并丢掉。首句要付锚点预解码和后端预热的钱（实测首句 0.69s，之后稳态 0.42s），
-    让这笔钱在启动时付，而不是由用户的第一句话来付。失败不致命：只是首句慢一点。"""
+    """Synthesize one short line and discard it. The first line pays for anchor pre-decode and backend warm-up
+    (about 0.69 s measured, 0.42 s steady state), so pay it at startup instead of on the user's first
+    sentence. Failure is not fatal; it only means a slower first line."""
     started = time.monotonic()
     try:
         with state.lock:

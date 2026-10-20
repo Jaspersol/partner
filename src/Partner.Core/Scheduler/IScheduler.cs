@@ -8,7 +8,7 @@ public sealed record DeliveryOutcome(
     DateTimeOffset? NextDueAt);
 
 /// <summary>
-/// The durable scheduler (design doc §2.4). Its only job is: <b>when a task comes due, enqueue one
+/// The durable scheduler. Its only job is: <b>when a task comes due, enqueue one
 /// <c>InputItem(source: schedule)</c></b>. It never runs an agent itself — that would bypass the queue's
 /// ordering and idempotency guarantees.
 /// <para>

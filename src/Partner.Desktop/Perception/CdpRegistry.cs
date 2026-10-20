@@ -9,15 +9,13 @@ namespace Partner.Desktop.Perception;
 /// <summary>
 /// Which windows have a DevTools endpoint, and on which port.
 /// <para>
-/// A browser only exposes one if it was started asking to. That is the whole limit of this mechanism and it is
-/// worth being blunt about: <b>only a window this agent launched</b> gets a debug port, because the flag has to
-/// be on the command line and the user's already-running application cannot be given one. For anything else the
-/// UI Automation path and the coordinate path still apply, and this simply does not exist.
+/// A browser exposes one only if it was started asking to: <b>only a window this agent launched</b> gets a debug
+/// port, because the flag must be on the command line. For anything else the UI Automation and coordinate paths
+/// still apply, and this does not exist.
 /// </para>
 /// <para>
-/// The flag also does nothing if the application is a single-instance one that is already running: the new
-/// command line is handed to the process that is already up, and it never opens a port. That is reported when it
-/// happens rather than left to look like "the page has no controls".
+/// The flag does nothing for a single-instance application that is already running: the new command line goes to
+/// the process already up, which never opens a port.
 /// </para>
 /// </summary>
 public sealed class CdpRegistry
@@ -57,11 +55,10 @@ public sealed class CdpRegistry
     /// <summary>
     /// Finds a debug port the <i>user</i> opened: a Chromium-family process started with
     /// <c>--remote-debugging-port</c> by hand or by a shortcut. Its listening loopback ports are read from the
-    /// system's TCP table and each is asked for <c>/json/version</c>; one that answers like DevTools is recorded.
+    /// TCP table and each is asked for <c>/json/version</c>; one that answers like DevTools is recorded.
     /// <para>
-    /// Not a way to reach a browser that was not opened for it — a process with no such port stays out of
-    /// reach — and a process that was looked at and had none is not looked at again for
-    /// <see cref="DiscoveryRetryMs"/>, so this costs nothing on the common path.
+    /// This cannot reach a browser not opened for it. A process looked at with no port is skipped for
+    /// <see cref="DiscoveryRetryMs"/>, so the common path costs nothing.
     /// </para>
     /// </summary>
     public async Task<int?> DiscoverAsync(int processId, string? executableName, CancellationToken ct = default)
@@ -118,8 +115,8 @@ public sealed class CdpRegistry
     public void Register(int processId, int port) => _ports[processId] = port;
 
     /// <summary>
-    /// The port a process opened, when this agent knows one. A process that has exited takes its entry with it:
-    /// the table used to keep every port it had ever been told about, and a recycled pid would inherit a dead port.
+    /// The port a process opened, when this agent knows one. An exited process takes its entry with it, so a
+    /// recycled pid cannot inherit a dead port.
     /// </summary>
     public int? PortOf(int processId)
     {
@@ -170,12 +167,9 @@ public sealed class CdpRegistry
     }
 
     /// <summary>
-    /// Waits for a launched process to open its debug port.
-    /// <para>
-    /// Bounded, because the honest answer for "it never did" is worth more than a turn spent waiting: a
-    /// single-instance application that was already running hands the command line to the process already up and
-    /// never opens one, and no amount of waiting changes that.
-    /// </para>
+    /// Waits for a launched process to open its debug port. Bounded, because the honest answer for "it never
+    /// did" is worth more than a turn spent waiting: a single-instance application that was already running
+    /// hands the command line to the running process and never opens one.
     /// </summary>
     public async Task<bool> WaitForPortAsync(int processId, int port, CancellationToken ct)
     {
@@ -186,9 +180,9 @@ public sealed class CdpRegistry
                 return false;
             }
 
-            // The process that was started may be gone already and that is not a failure: a Chromium launcher
-            // that hands its window to the real browser process exits at once. What counts is whether the port
-            // answers, and who owns it.
+            // The launched process may be gone already, which is not a failure: a Chromium launcher that hands
+            // its window to the real browser process exits at once. What counts is whether the port answers and
+            // who owns it.
             try
             {
                 using var response = await Probe.GetAsync($"http://127.0.0.1:{port}/json/version", ct).ConfigureAwait(false);

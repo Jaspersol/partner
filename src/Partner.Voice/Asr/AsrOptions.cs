@@ -2,16 +2,16 @@ using System.Text.RegularExpressions;
 
 namespace Partner.Voice.Asr;
 
-/// <summary>ASR 协议：Qwen 的 chat-audio（默认）、OpenAI 标准端点，或本地 sherpa-onnx 服务。</summary>
+/// <summary>ASR protocol: Qwen chat-audio (default), the OpenAI standard endpoint, or a local sherpa-onnx service.</summary>
 public static class AsrProtocols
 {
-    /// <summary>Qwen3-ASR：<c>POST /v1/chat/completions</c>，音频内联 base64。</summary>
+    /// <summary>Qwen3-ASR: <c>POST /v1/chat/completions</c> with inline base64 audio.</summary>
     public const string ChatAudio = "chat-audio";
 
-    /// <summary>OpenAI 标准：<c>POST /audio/transcriptions</c>，multipart 上传 WAV。</summary>
+    /// <summary>OpenAI standard: <c>POST /audio/transcriptions</c> with a multipart WAV upload.</summary>
     public const string OpenAi = "openai";
 
-    /// <summary>本地 sherpa-onnx 服务：<c>POST /recognize</c>，裸 float32 PCM 上传，返回 <c>{ "text": … }</c>。</summary>
+    /// <summary>Local sherpa-onnx service: <c>POST /recognize</c> with raw float32 PCM, returning <c>{ "text": … }</c>.</summary>
     public const string SenseVoice = "sensevoice";
 
     public static IReadOnlyList<string> Values { get; } = new[] { ChatAudio, OpenAi, SenseVoice };
@@ -21,14 +21,14 @@ public static class AsrProtocols
 }
 
 /// <summary>
-/// ASR 服务连接参数（设计文档 §2.8.10）。
+/// ASR service connection parameters.
 /// </summary>
 public sealed record AsrOptions
 {
-    /// <summary>服务基址，例如 <c>http://127.0.0.1:45101</c>。</summary>
+    /// <summary>Service base URL, e.g. <c>http://127.0.0.1:45101</c>.</summary>
     public required string BaseUrl { get; init; }
 
-    /// <summary>协议：<see cref="AsrProtocols.ChatAudio"/>（默认）或 <see cref="AsrProtocols.OpenAi"/>。</summary>
+    /// <summary>Protocol: <see cref="AsrProtocols.ChatAudio"/> (default) or <see cref="AsrProtocols.OpenAi"/>.</summary>
     public string Protocol { get; init; } = AsrProtocols.ChatAudio;
 
     public string Model { get; init; } = "qwen3-asr";
@@ -45,7 +45,7 @@ public sealed record AsrOptions
 }
 
 /// <summary>
-/// ASR 输出元数据处理：模型未预填时会先吐 <c>language X&lt;asr_text&gt;</c> 前缀。
+/// ASR output metadata handling: without a prefill the model emits a <c>language X&lt;asr_text&gt;</c> prefix.
 /// </summary>
 public static class AsrMetadata
 {
@@ -57,7 +57,7 @@ public static class AsrMetadata
     public static string Strip(string text) => Prefix.Replace(text, string.Empty);
 }
 
-/// <summary>读取超时（或连接超时）：整块音频需要重试。</summary>
+/// <summary>Read timeout (or connect timeout): the whole audio block must be retried.</summary>
 public sealed class AsrTimeoutException : Exception
 {
     public AsrTimeoutException(string message, Exception? inner = null) : base(message, inner)
@@ -65,7 +65,7 @@ public sealed class AsrTimeoutException : Exception
     }
 }
 
-/// <summary>ASR 服务返回了非 2xx 状态码。</summary>
+/// <summary>The ASR service returned a non-2xx status code.</summary>
 public sealed class AsrRequestException : Exception
 {
     public AsrRequestException(string message, Exception? inner = null) : base(message, inner)

@@ -30,7 +30,7 @@ public sealed class StdioMcpClientTests : IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // 临时目录清理失败不应让测试失败。
+            // A failed temp-directory cleanup must not fail the test.
         }
     }
 
@@ -270,7 +270,7 @@ public sealed class StdioMcpClientTests : IDisposable
         }
         catch (IOException)
         {
-            // 子进程正在追加写入；下一轮再读。
+            // The child is still appending; read again on the next pass.
             return Array.Empty<string>();
         }
     }

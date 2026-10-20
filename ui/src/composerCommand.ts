@@ -2,15 +2,7 @@
  * Slash commands typed into the composer.
  *
  * <para>
- * A command is a whole line that begins with a slash, and nothing else: a message that merely mentions
- * "/status" — "搜了一下 /status 的实现" — must still go to the model as text, because that is what the person
- * typing it meant. Matching is therefore anchored to the start of the trimmed line and requires the command to
- * be the entire line.
- * </para>
- *
- * <para>
- * Only one command exists. It is recognised here rather than in the component so the rule is testable on its
- * own, and so a second command is added by adding a case, not by editing a keydown handler.
+ * A command must be the whole trimmed line: a message that merely mentions "/status" goes to the model as text.
  * </para>
  */
 

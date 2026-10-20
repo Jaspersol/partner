@@ -48,8 +48,7 @@ public sealed record ReflexOptions
 
     /// <summary>
     /// Upper bound on how long one async behavior may hold the slot. This is a <b>deadlock breaker</b>, not a
-    /// policy: the reference implementation used a 50 ms cap, which released the slot mid-run and let another
-    /// reflex preempt a long survival action (eating interrupted by re-equipping).
+    /// policy: a short cap would release the slot mid-run and let another reflex preempt a long survival action.
     /// </summary>
     public double SlotLockDeadlockMs { get; init; } = 10_000;
 

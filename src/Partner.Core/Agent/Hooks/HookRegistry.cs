@@ -1,44 +1,49 @@
 namespace Partner.Core.Agent.Hooks;
 
 /// <summary>
-/// 钩子注册表（设计文档 §2.9.3）：注册、按阶段排序、按阶段执行。
+/// Hook registry: registration, per-phase ordering, and per-phase execution.
 /// </summary>
 public interface IHookRegistry
 {
     /// <summary>
-    /// 注册一个钩子。同一阶段内 <see cref="IAgentHook.Name"/> 重复或约束成环时抛异常，且注册不生效。
+    /// Registers a hook. Throws when <see cref="IAgentHook.Name"/> is duplicated in the same phase or the
+    /// constraints form a cycle, and the registration does not take effect.
     /// </summary>
     void Register(IAgentHook hook);
 
-    /// <summary>返回该阶段已排序的钩子列表（无钩子时返回空列表）。</summary>
+    /// <summary>Returns the ordered hooks for the phase (an empty list when there are none).</summary>
     IReadOnlyList<IAgentHook> HooksFor(AgentPhase phase);
 
-    /// <summary>按顺序执行该阶段的所有钩子。</summary>
+    /// <summary>Runs all hooks of the phase in order.</summary>
     Task<HookOutcome> RunAsync(AgentPhase phase, HookContext ctx, CancellationToken ct);
 
-    /// <summary>本轮是否已被某个钩子标记为跳过 Agent（粘性，直到 <see cref="ResetTurn"/>）。</summary>
+    /// <summary>Whether a hook has marked this turn to skip the agent (sticky until <see cref="ResetTurn"/>).</summary>
     bool SkipAgent { get; }
 
-    /// <summary>清除粘性标志与排序缓存，开始新的一轮。</summary>
+    /// <summary>Clears the sticky flag and ordering cache, starting a new turn.</summary>
     void ResetTurn();
 }
 
 /// <summary>
-/// <see cref="IHookRegistry"/> 的默认实现（设计文档 §2.9.3）。
+/// Default <see cref="IHookRegistry"/> implementation.
 /// <para>
-/// <b>排序</b>：每个阶段独立做拓扑排序，边来自 <see cref="IAgentHook.Before"/>/<see cref="IAgentHook.After"/>；
-/// 同时可执行的钩子按 <c>(Priority 升序, 注册顺序)</c> 决胜。
+/// <b>Ordering</b>: each phase is topologically sorted independently, with edges from
+/// <see cref="IAgentHook.Before"/>/<see cref="IAgentHook.After"/>; ties break by
+/// <c>(Priority ascending, registration order)</c>.
 /// </para>
 /// <para>
-/// <b>未知约束</b>：约束名在同一阶段内不存在时只记录到 <see cref="Warnings"/> 并忽略，绝不失败；
-/// 每个未知名字只记一条，顺序由阶段枚举顺序 + 注册顺序决定（每次注册后重算，因此目标钩子后续注册时该条警告会消失）。
+/// <b>Unknown constraints</b>: a constraint name absent from the phase is recorded in <see cref="Warnings"/> and
+/// otherwise ignored, never fatal; each unknown name is recorded once, ordered by phase enum order plus
+/// registration order (recomputed after every registration, so the warning disappears once the target hook is
+/// registered).
 /// </para>
 /// <para>
-/// <b>成环</b>：在 <see cref="Register"/> 时即检出并抛 <see cref="HookCycleException"/>（消息含成环钩子名），
-/// 该次注册回滚，注册表保持可用。
+/// <b>Cycles</b>: detected at <see cref="Register"/> time and thrown as <see cref="HookCycleException"/> (the
+/// message names the hooks in the cycle); that registration is rolled back and the registry stays usable.
 /// </para>
 /// <para>
-/// <b>并发</b>：<see cref="Register"/> 与读取均由同一把锁保护；锁不跨 <c>await</c>。
+/// <b>Concurrency</b>: <see cref="Register"/> and reads are protected by one lock; the lock never spans
+/// <c>await</c>.
 /// </para>
 /// </summary>
 public sealed class HookRegistry : IHookRegistry
@@ -49,7 +54,7 @@ public sealed class HookRegistry : IHookRegistry
     private readonly List<string> _warnings = new();
     private bool _skipAgent;
 
-    /// <summary>当前累计的未知约束警告（每个未知名字一条）。</summary>
+    /// <summary>Current accumulated unknown-constraint warnings (one per unknown name).</summary>
     public IReadOnlyList<string> Warnings
     {
         get
@@ -94,7 +99,7 @@ public sealed class HookRegistry : IHookRegistry
                 }
             }
 
-            // 先试排（不产生警告）：成环则直接抛，且不改变任何已提交状态。
+            // Trial sort first (no warnings): a cycle throws here, before any committed state changes.
             var candidate = new List<IAgentHook>(phaseHooks.Count + 1);
             candidate.AddRange(phaseHooks);
             candidate.Add(hook);
@@ -162,7 +167,7 @@ public sealed class HookRegistry : IHookRegistry
         }
     }
 
-    /// <summary>重算所有阶段的排序结果与警告列表（调用方须持锁）。</summary>
+    /// <summary>Recomputes the ordering and warning list for all phases (caller must hold the lock).</summary>
     private void RebuildSortedLocked()
     {
         _sorted.Clear();
@@ -171,7 +176,7 @@ public sealed class HookRegistry : IHookRegistry
         var unknown = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        // 按枚举顺序遍历阶段，保证 Warnings 的顺序确定。
+        // Iterate phases in enum order so the Warnings order is deterministic.
         foreach (var phase in Enum.GetValues<AgentPhase>())
         {
             if (!_byPhase.TryGetValue(phase, out var hooks) || hooks.Count == 0)
@@ -193,8 +198,9 @@ public sealed class HookRegistry : IHookRegistry
     }
 
     /// <summary>
-    /// 拓扑排序：同时可执行的钩子按 (Priority 升序, 注册顺序) 决胜；成环时抛 <see cref="HookCycleException"/>。
-    /// <paramref name="warnings"/> 非 null 时收集未知约束名。
+    /// Topological sort: ties break by (Priority ascending, registration order); throws
+    /// <see cref="HookCycleException"/> on a cycle. When <paramref name="warnings"/> is non-null, unknown
+    /// constraint names are collected there.
     /// </summary>
     private static List<IAgentHook> TopoSort(IReadOnlyList<IAgentHook> hooks, AgentPhase phase, List<string>? warnings)
     {
@@ -291,7 +297,7 @@ public sealed class HookRegistry : IHookRegistry
         return ordered;
     }
 
-    /// <summary>从仍未出队的节点沿前驱回溯，定位一个真实的环并生成消息（至少含一个成环钩子名）。</summary>
+    /// <summary>Walks predecessors from a node still in the queue to find a real cycle and build the message (containing at least one hook name in the cycle).</summary>
     private static string BuildCycleMessage(
         IReadOnlyList<IAgentHook> hooks,
         AgentPhase phase,
@@ -316,7 +322,7 @@ public sealed class HookRegistry : IHookRegistry
             position[current] = path.Count;
             path.Add(current);
 
-            // 入度仍大于 0 ⇒ 必然存在一个同样未出队的前驱。
+            // In-degree still > 0 means a predecessor that is also still in the queue must exist.
             current = predecessors[current].Find(p => inDegree[p] > 0);
         }
 

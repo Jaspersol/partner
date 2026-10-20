@@ -6,12 +6,12 @@ import Icon from './Icon.vue'
  * The mark that replaces a footnote.
  *
  * <para>
- * Every explanatory sentence this app used to print under a field or a card heading — 「留空表示不配置」,
- * 「关闭会立即释放麦克风设备」 — cost a line of height on every screen it appeared on, and a settings page with
- * twenty-seven of them is a page a reader has to scroll through twice: once past the prose to find the control,
- * and again to read the control beside whatever survived the first pass. The sentence is still worth having. It
- * is simply not worth *standing*. So it becomes a small round grey exclamation mark beside the thing it is
- * about, and the sentence appears when the reader asks for it.
+ * An explanatory sentence under a field or a card heading — 「留空表示不配置」, 「关闭会立即释放麦克风设备」
+ * — costs a line of height on every screen it appears on, and a settings page with twenty-seven of them is a
+ * page a reader has to scroll through twice: once past the prose to find the control, and again to read the
+ * control beside whatever survived the first pass. The sentence is still worth having. It is simply not worth
+ * *standing*. So it becomes a small round grey exclamation mark beside the thing it is about, and the sentence
+ * appears when the reader asks for it.
  * </para>
  *
  * <para>

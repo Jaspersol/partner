@@ -56,7 +56,7 @@ public sealed record SubAgentSettings
     /// <summary>One of <see cref="AgentScenarios"/>. Locked to <c>desktop</c> for the built-in agent.</summary>
     public string Scenario { get; init; } = string.Empty;
 
-    /// <summary>Null = the scenario's built-in prompt. Stored as an override so an upgrade to the default reaches people who never edited it.</summary>
+    /// <summary>Null = the scenario's built-in prompt. An override is stored so an upgrade to the default reaches people who never edited it.</summary>
     public string? Prompt { get; init; }
 
     /// <summary>Null = follow the main model (the default).</summary>

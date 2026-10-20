@@ -1,9 +1,8 @@
 namespace Partner.Core.Agent.Delegation;
 
 /// <summary>
-/// A timed task's message, as the model reads it. It was written by the person earlier and fires later, so the
-/// person is probably not at the keyboard: asking them a question gets no answer, and a turn that ends on one has
-/// done nothing at all.
+/// A timed task's message, as the model reads it. The person wrote it earlier and it fires later, so the person
+/// is probably not at the keyboard: asking them a question gets no answer.
 /// </summary>
 public static class ScheduleFrame
 {

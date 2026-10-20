@@ -334,8 +334,8 @@ public sealed class WebTransport : IDisposable
     /// named client instead of by a browser with its script markers missing.
     /// </para>
     /// <para>
-    /// The <c>Accept</c> value is one header and never two. Engines used to add their own media type on top of a
-    /// generic default, which sent both; the header is now set once, here, from what the caller says it wants.
+    /// The <c>Accept</c> value is one header and never two: it is set once, here, from what the caller says it
+    /// wants. An engine must not add its own media type on top of it.
     /// </para>
     /// </summary>
     /// <param name="request">The request to dress.</param>

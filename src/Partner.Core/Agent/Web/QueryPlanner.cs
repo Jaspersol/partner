@@ -3,7 +3,7 @@ namespace Partner.Core.Agent.Web;
 /// <summary>One engine that may be asked, and the reason it was put in the pool.</summary>
 /// <param name="Engine">The engine.</param>
 /// <param name="Role">Why it is here — a record lookup, a kind specialist, breadth, or a substitute.</param>
-/// <param name="Why">The reason in words, which is what the answer's "who answered" block reuses.</param>
+/// <param name="Why">The reason in words, reused by the answer's "who answered" block.</param>
 public sealed record PlannedEngine(IWebSearchEngine Engine, EnginePoolRole Role, string Why);
 
 /// <summary>
@@ -35,8 +35,7 @@ public sealed record WebPlanContext(
 
 /// <summary>
 /// The first quality gate: asking the right people. Pure and offline — it reads what each engine declared about
-/// itself and decides the pool, and there is no hand-written routing table anywhere for it to fall out of step
-/// with the engines.
+/// itself and decides the pool, with no hand-written routing table to fall out of step with the engines.
 /// </summary>
 public sealed class QueryPlanner
 {
@@ -97,7 +96,7 @@ public sealed class QueryPlanner
             }
 
             // Shape routing comes first and is exempt from the script filter: an engine that matched the question
-            // offline declared, by doing so, that it can answer this query.
+            // declared, by doing so, that it can answer this query.
             if (traits.Handles?.Invoke(query.Text) == true)
             {
                 records.Add(new PlannedEngine(engine, EnginePoolRole.Specialist, "问题形态直答"));
@@ -178,8 +177,8 @@ public sealed class QueryPlanner
     };
 
     /// <summary>
-    /// Shifts a group so that the engines at the cap's edge rotate between searches. Without it, the last
-    /// registered engine of a long group would never be asked, and nobody would ever find out why.
+    /// Shifts a group so the engines at the cap's edge rotate between searches. Without it, the last registered
+    /// engine of a long group would never be asked, and nobody would find out why.
     /// </summary>
     private static IEnumerable<PlannedEngine> Rotate(List<PlannedEngine> group, int rotation)
     {

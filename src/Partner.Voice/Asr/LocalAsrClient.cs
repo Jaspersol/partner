@@ -6,12 +6,12 @@ using System.Text.Json;
 namespace Partner.Voice.Asr;
 
 /// <summary>
-/// 本地 ASR HTTP 客户端（<see cref="AsrProtocols.SenseVoice"/>）：
-/// <c>POST {BaseUrl}/recognize</c>，请求体是裸的小端 float32 PCM（16 kHz，本地传输不走 WAV 封装），
-/// 响应是 <c>{ "text": … }</c>。
+/// Local ASR HTTP client (<see cref="AsrProtocols.SenseVoice"/>):
+/// <c>POST {BaseUrl}/recognize</c> with a raw little-endian float32 PCM body (16 kHz, no WAV wrapper on local
+/// transport), returning <c>{ "text": … }</c>.
 /// <para>
-/// 与 <see cref="OpenAiAsrClient"/> 的差别是服务端即本地进程：一次拷贝都嫌多，直接扔采样数组；
-/// 且引擎端无法给出 SSE，流式退化为一次性全文（同 OpenAI 客户端的处理）。
+/// Unlike <see cref="OpenAiAsrClient"/>, the server is a local process, so the sample array is sent directly.
+/// The engine cannot emit SSE, so streaming degrades to one full-text result.
 /// </para>
 /// </summary>
 public sealed class LocalAsrClient : IAsrClient
@@ -151,32 +151,31 @@ public sealed class LocalAsrClient : IAsrClient
 }
 
 /// <summary>
-/// 唤醒门检查器：宿主端把一段采集帧交给引擎跑 KWS，答案一次一个。
+/// Wake gate checker: the host hands a capture frame to the engine's KWS and gets one answer per call.
 /// <para>
-/// 麦克风在宿主端（Partner），引擎不抢音频源：<see cref="VoiceInputHalf"/> 每次 tick 把最近
-/// 的采集块交给 <see cref="IWakeChecker"/>，由实现转发给引擎的 <c>POST /wake/infer</c>。
-/// 实现是 HTTP（<see cref="LocalWakeClient"/>），测试是脚本钩子。
+/// The implementation forwards to the engine's <c>POST /wake/infer</c> over HTTP (<see cref="LocalWakeClient"/>);
+/// tests use a scripted hook.
 /// </para>
 /// </summary>
 public interface IWakeChecker
 {
-    /// <summary>喂一块采集，问一次。关键词非空 = 本块内命中。</summary>
+    /// <summary>Feeds one capture frame and asks once. A non-empty keyword means a hit within this frame.</summary>
     Task<LocalWakeClient.WakeHit> PollAsync(float[] frame, CancellationToken ct = default);
 }
 
 /// <summary>
-/// 唤醒词检测的 HTTP 客户端（本地 <see cref="AsrProtocols.SenseVoice"/> 引擎的伴生接口）：
-/// 每个 <see cref="IWakeChecker.PollAsync"/> 把采集帧 <c>POST /wake/infer</c>；命中返回
-/// <c>{ "hit": true, "keyword": …, "confidence": … }</c>，未命中 <c>{ "hit": false }</c>。
+/// HTTP client for wake word detection (companion endpoint of the local <see cref="AsrProtocols.SenseVoice"/> engine):
+/// each <see cref="IWakeChecker.PollAsync"/> posts the capture frame to <c>POST /wake/infer</c>; a hit returns
+/// <c>{ "hit": true, "keyword": …, "confidence": … }</c>, a miss returns <c>{ "hit": false }</c>.
 /// </summary>
 public sealed class LocalWakeClient : IWakeChecker, IDisposable
 {
     private const int ErrorBodyLimit = 512;
 
-    /// <summary>一次命中或一次空探。</summary>
+    /// <summary>One hit or one empty probe.</summary>
     public sealed record WakeHit(string? Keyword, long Seq, double Confidence)
     {
-        /// <summary>keyword 空（引擎端匿名命中）也算命中：hit 位是权威，不是名字。</summary>
+        /// <summary>An empty keyword (anonymous engine hit) still counts as a hit: the hit bit is authoritative, not the name.</summary>
         public bool IsHit => Keyword is not null || Seq > 0 || Confidence > 0;
     }
 

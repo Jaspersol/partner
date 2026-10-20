@@ -20,7 +20,7 @@ public sealed class JsonlSessionStore : ISessionStore
 
     /// <summary>
     /// Bumped by every mutation of the underlying log. A cached projection is only reusable while this is
-    /// unchanged, so the whole cache is one integer's worth of trust rather than a diff against the log.
+    /// unchanged, so cache validity costs one integer rather than a diff against the log.
     /// </summary>
     private long _version;
 
@@ -28,11 +28,9 @@ public sealed class JsonlSessionStore : ISessionStore
     /// The last built projection, kept for as long as the log has not moved.
     /// </summary>
     /// <para>
-    /// <c>ProjectAsync</c> reads the entire log, deserialises every line and replays the projection rules. It
-    /// used to be called four times per turn — to decide whether the turn already finished, to decide whether
-    /// the message is already logged, by the memory hook, and twice by the prompt assembler — plus once every
-    /// 400 ms from the session view while a turn is running. All of that work is a pure function of the log,
-    /// and the store is the only thing that writes it, so the result can be held until a write lands.
+    /// <c>ProjectAsync</c> reads the entire log, deserialises every line and replays the projection rules. That
+    /// work is a pure function of the log, and the store is the only thing that writes it, so the result can be
+    /// held until a write lands.
     /// </para>
     /// </remarks>
     private SessionView? _cachedProjection;
@@ -43,10 +41,8 @@ public sealed class JsonlSessionStore : ISessionStore
     /// Past this many events the projection is rebuilt every time instead of being held.
     /// </summary>
     /// <para>
-    /// A retained projection keeps every parsed event alive for the life of the process, and the pathological
-    /// case is a very long log — which is exactly when re-reading is what you least want. But past this size
-    /// the memory stops being a single conversation's worth, and trading it back for the read is the safer
-    /// default. Nothing in this app's own usage comes close.
+    /// A retained projection keeps every parsed event alive for the life of the process, and past this size the
+    /// memory stops being a single conversation's worth.
     /// </para>
     /// </summary>
     private const int CacheCeiling = 20_000;
@@ -123,7 +119,7 @@ public sealed class JsonlSessionStore : ISessionStore
         var durableBefore = _sink.DurableLength;
         _sink.Append(SessionJson.Serialize(record));
 
-        // Bumped before the flush, so a flush that faults and rolls back cannot leave a cache that claims to
+        // Bumped before the flush, so a flush that faults and rolls back cannot leave a cache claiming to
         // describe a record the log no longer has. `RollBackAndFault` bumps again for the same reason.
         InvalidateProjection();
 
@@ -151,12 +147,12 @@ public sealed class JsonlSessionStore : ISessionStore
     /// <para>
     /// Survivors are written to a sibling file and swapped in, so a crash leaves either the old log or the new
     /// one. One content-free <see cref="SessionEventKind.Retract"/> is left for the range: it records that
-    /// something was removed without recording what, and it keeps the seq space monotonic — seqs are never
-    /// reused, because memory records point back at them (<c>MemoryRecord.SourceEventSeq</c>).
+    /// something was removed without recording what, and keeps the seq space monotonic — seqs are never reused
+    /// because memory records point back at them (<c>MemoryRecord.SourceEventSeq</c>).
     /// </para>
     /// <para>
-    /// Only an explicit removal goes through here. Compaction writes a retraction too, but it is lossless by
-    /// design: the folded history stays in the log behind the summary.
+    /// Compaction also writes a retraction, but it is lossless: the folded history stays in the log behind the
+    /// summary.
     /// </para>
     /// </summary>
     public async Task<PurgeResult> PurgeAsync(long fromSeq, long toSeq, CancellationToken ct = default)
@@ -326,8 +322,7 @@ public sealed class JsonlSessionStore : ISessionStore
 
     /// <summary>
     /// Builds the projection and holds it, unless the log moved while we were reading it or it is too big to
-    /// keep. Both refusals are deliberate: a stale cache would be a correctness bug, and an unbounded one
-    /// would trade a slow read for a slow process.
+    /// keep. A stale cache would be a correctness bug; an unbounded one would trade a slow read for a slow process.
     /// </summary>
     private SessionView Cache(List<SessionEvent> events, long version)
     {
@@ -341,8 +336,8 @@ public sealed class JsonlSessionStore : ISessionStore
         lock (_cacheGate)
         {
             // Re-read the version: a write that landed mid-read leaves this view short of it, and caching it
-            // would make a temporary gap permanent. Returning it is still fine — it is a consistent view of the
-            // log as of when it was read, which is what the caller would have got anyway.
+            // would make a temporary gap permanent. Returning it is fine — it is a consistent view of the log as
+            // of when it was read.
             if (Interlocked.Read(ref _version) != version)
             {
                 return view;
@@ -504,7 +499,7 @@ public sealed class JsonlSessionStore : ISessionStore
             }
         }
 
-        // A turn boundary without a reason is not auditable (design doc §2.9.1 rule 2).
+        // A turn boundary without a reason is not auditable.
         if (e.Kind == SessionEventKind.TurnEnd)
         {
             if (e.Meta is null || !e.Meta.TryGetValue("reason", out var reason) || string.IsNullOrWhiteSpace(reason))
@@ -648,9 +643,9 @@ public static class SessionProjection
             revisions[target] = revisions.TryGetValue(target, out var n) ? n + 1 : 1;
         }
 
-        // Pass 2: emit renderable entries. Content plus the tool-call pair — those are shown collapsed, which
-        // is why they are not content: prompts and compaction ignore them, the session view does not.
-        // Revisions, retractions and turn/step markers stay in the raw log only.
+        // Pass 2: emit renderable entries — content plus the tool-call pair, which are shown collapsed and so
+        // are not content: prompts and compaction ignore them, the session view does not. Revisions, retractions
+        // and turn/step markers stay in the raw log only.
         var items = new List<SessionViewItem>();
         foreach (var e in ordered)
         {

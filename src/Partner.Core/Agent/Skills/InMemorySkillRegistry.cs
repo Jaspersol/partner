@@ -1,13 +1,14 @@
 namespace Partner.Core.Agent.Skills;
 
 /// <summary>
-/// <see cref="ISkillRegistry"/> 的内存实现（设计文档缺口 C）。
+/// In-memory <see cref="ISkillRegistry"/>.
 /// <para>
-/// 加载发生在组装期（单线程），运行期只读，因此不加锁。标识按序号（大小写敏感）比较。
+/// Loading happens at assembly time (single-threaded) and the registry is read-only afterwards, so there is
+/// no locking. Ids are compared ordinally (case-sensitive).
 /// </para>
 /// <para>
-/// <see cref="Reload"/> 遇到重复标识时<b>保留先出现的一个</b>，其后同名项被忽略；
-/// 由于 <see cref="SkillDefinition.SkillId"/> 来自唯一的目录名，正常加载不会产生重复。
+/// On duplicate ids, <see cref="Reload"/> keeps the first occurrence and ignores later ones;
+/// <see cref="SkillDefinition.SkillId"/> comes from a unique directory name, so normal loading produces none.
 /// </para>
 /// </summary>
 public sealed class InMemorySkillRegistry : ISkillRegistry
@@ -17,7 +18,7 @@ public sealed class InMemorySkillRegistry : ISkillRegistry
     private readonly Dictionary<string, SkillDefinition> _byId = new(StringComparer.Ordinal);
     private IReadOnlyList<SkillDefinition> _skills = NoSkills;
 
-    /// <summary>创建一个空注册表。</summary>
+    /// <summary>Creates an empty registry.</summary>
     public InMemorySkillRegistry()
     {
     }
@@ -38,7 +39,7 @@ public sealed class InMemorySkillRegistry : ISkillRegistry
         {
             ArgumentNullException.ThrowIfNull(skill);
 
-            // 重复标识：保留先出现的一个，忽略后续同名项。
+            // Duplicate id: keep the first occurrence and ignore later ones.
             _byId.TryAdd(skill.SkillId, skill);
         }
 

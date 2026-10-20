@@ -8,9 +8,8 @@ namespace Partner.Api;
 
 /// <summary>
 /// The single composition root: stores, auth middleware, health, view endpoints — in that order. Every host
-/// (the executable, the smoke, the tests) builds its app through here, so a test can never end up exercising
-/// a different wiring than production. That is exactly the gap that would otherwise hide a missing auth
-/// middleware behind green tests.
+/// (the executable, the smoke, the tests) builds its app through here, so a test exercises the same wiring as
+/// production.
 /// </summary>
 public static class ApiHost
 {
@@ -69,16 +68,15 @@ public static class ApiHost
         builder.Services.AddSingleton(package);
         builder.Services.AddSingleton(maintenance);
 
-        // The shell serves the UI from its own origin, so every API call is cross-origin. CORS here is a
-        // browser-enforced allowlist, not the security boundary — the bearer token is (and CORS never grants
-        // access without it). Origins are enumerated rather than wildcarded so a stray page cannot even probe.
+        // The shell serves the UI from its own origin, so every API call is cross-origin. CORS is a
+        // browser-enforced allowlist, not the security boundary — the bearer token is. Origins are enumerated
+        // rather than wildcarded so a stray page cannot even probe.
         builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
             .WithOrigins(
                 "http://tauri.localhost",
                 "https://tauri.localhost",
                 "tauri://localhost",
-                // The browser dev server and the production preview each have an origin of their own. Without
-                // them a plain-browser session reads as "every request failed" rather than "wrong origin".
+                // The browser dev server and the production preview each have an origin of their own.
                 "http://localhost:5173",
                 "http://127.0.0.1:5173",
                 "http://localhost:4173",
@@ -97,8 +95,8 @@ public static class ApiHost
         app.MapGet("/api/voice", (VoiceHost host) => Results.Ok(host.State));
         app.MapGet("/api/voice/local", (LocalEngineHost host) => Results.Ok(host.State));
 
-        // What the tools have been failing at, most frequent first. Separate from /api/consumer because this
-        // is a history rather than a state, and a caller refreshing a badge has no reason to read it.
+        // What the tools have been failing at, most frequent first. A history rather than a state, so it is
+        // separate from /api/consumer.
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
         EnginePackageEndpoints.Map(app);

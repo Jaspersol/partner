@@ -11,15 +11,15 @@ namespace Partner.Desktop.Tools;
 /// <para>
 /// Three conditions a GUI places in the model's way, each with one way to wait for it: a control that has
 /// not rendered yet (its UIA tree: poll a fresh walk of that one window); a window that has not opened yet
-/// (the window list, which is a few milliseconds per ask); a pane that has not finished repainting (two
+/// (the window list, a few milliseconds per ask); a pane that has not finished repainting (two
 /// hash-identical frames in a row — <see cref="StabilitySensor"/>). Read-only, so it never needs approval;
-/// and bounded by a hard timeout, so a slow page spends seconds, not steps.
+/// bounded by a hard timeout, so a slow page spends seconds, not steps.
 /// </para>
 /// <para>
-/// Deliberately bounded at <see cref="TimeoutCap"/> rather than configurable without limit: this is a
-/// budget, not a promise — the turn is single-reader and the queue behind it does not notice waiting that
-/// exceeds the cap. A page that needs longer is a desktop activity the model should look at again, not
-/// one the tool parks forever.
+/// Bounded at <see cref="TimeoutCap"/> rather than configurable without limit: this is a budget, not a
+/// promise. The turn is single-reader and the queue behind it does not notice waiting that exceeds the cap.
+/// A page that needs longer is a desktop activity the model should look at again, not one the tool parks
+/// forever.
 /// </para>
 /// </summary>
 public sealed class DesktopWaitTool(DesktopAutomation automation) : ITool
@@ -99,8 +99,8 @@ public sealed class DesktopWaitTool(DesktopAutomation automation) : ITool
         var pause = ElementPollInterval;
         while (true)
         {
-            // Polling only reads the one window's tree. The full observation (window list, a new generation, leases)
-            // is made once, when the control has shown up or the time is up.
+            // Polling only reads the one window's tree. The full observation (window list, a new generation,
+            // leases) is made once, when the control has shown up or the time is up.
             bool appeared;
             try
             {
@@ -116,8 +116,8 @@ public sealed class DesktopWaitTool(DesktopAutomation automation) : ITool
             {
                 await Task.Delay(pause, ct).ConfigureAwait(false);
 
-                // Backing off: a control that has not appeared after a second is not about to appear in the next
-                // 250 ms, and each probe is a walk of a window's whole tree.
+                // Backing off: a control that has not appeared after a second is not about to appear in the
+                // next 250 ms, and each probe walks a window's whole tree.
                 pause = TimeSpan.FromMilliseconds(Math.Min(pause.TotalMilliseconds * 2, 1000));
                 continue;
             }
@@ -233,6 +233,6 @@ public sealed class DesktopWaitTool(DesktopAutomation automation) : ITool
                 + "延长 timeout（≤5s）或先确认这个窗口上到底发生了什么。");
     }
 
-    /// <summary>What the model asked for, as it arrives from the model.</summary>
+    /// <summary>What the model asked for.</summary>
     private sealed record WaitArguments(string? Kind, string? EntityId, string? ElementId, string? TitleContains, int? TimeoutMs, int? StableRounds);
 }

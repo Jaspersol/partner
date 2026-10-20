@@ -104,7 +104,7 @@ public sealed class SessionCompactorTests : IDisposable
         var summary = (await store.ProjectAsync()).Items.Single(i => i.Kind == SessionEventKind.Summary);
         Assert.Equal("- 第一行\n- 第二行\n\n**小结**", summary.Body);
 
-        // The invariant the flattening was there for: the log is one record per line and still parses whole.
+        // The invariant: the log is one record per line and still parses whole.
         var count = 0;
         await foreach (var _ in store.ReadAllAsync())
         {

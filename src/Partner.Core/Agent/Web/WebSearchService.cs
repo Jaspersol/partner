@@ -196,7 +196,7 @@ public sealed class WebSearchService : IDisposable
             changed |= _health.Record(attempt, companion, save: false);
         }
 
-        // One write for the whole search: seven engines failing used to be seven atomic file replacements.
+        // One write for the whole search rather than one atomic file replacement per engine.
         if (changed)
         {
             _health.Save();

@@ -1,17 +1,20 @@
 namespace Partner.Core.Agent.Llm;
 
 /// <summary>
-/// 测试/诊断用的 <see cref="ILlmClient"/> 替身（设计文档 §2.9.5）：按构造时给定的顺序回放响应，并记录每一次请求。
+/// A <see cref="ILlmClient"/> stand-in for tests/diagnostics: replays responses in the order given at
+/// construction and records every request.
 /// <para>
-/// <b>回放</b>：<see cref="CompleteAsync"/> 严格按队列顺序出队；队列耗尽时抛 <see cref="InvalidOperationException"/>——
-/// 脚本化回合不会凭空编造响应，缺响应即脚本错误，必须显式补足。
+/// <b>Replay</b>: <see cref="CompleteAsync"/> dequeues strictly in order; when the queue is exhausted it throws
+/// <see cref="InvalidOperationException"/> — a scripted turn never invents a response, so a missing response is
+/// a script error and must be supplied explicitly.
 /// </para>
 /// <para>
-/// <b>记录</b>：每个请求都会被记录（包括因脚本耗尽而失败的那一次），并对消息列表做快照，
-/// 因此调用方事后修改自己传入的列表不会改写历史。
+/// <b>Recording</b>: every request is recorded (including the one that failed because the script ran out), with
+/// a snapshot of the message list, so a caller mutating its own list afterwards cannot rewrite history.
 /// </para>
 /// <para>
-/// <b>取消</b>：已取消的令牌在出队<b>之前</b>抛出 <see cref="OperationCanceledException"/>，队列保持原样。
+/// <b>Cancellation</b>: an already-cancelled token throws <see cref="OperationCanceledException"/> <b>before</b>
+/// dequeueing, leaving the queue untouched.
 /// </para>
 /// </summary>
 public sealed class ScriptedLlmClient : ILlmClient
@@ -19,17 +22,17 @@ public sealed class ScriptedLlmClient : ILlmClient
     private readonly Queue<LlmResponse> _script;
     private readonly List<LlmRequest> _requests = [];
 
-    /// <param name="responses">按顺序回放的响应脚本。</param>
+    /// <param name="responses">The response script, replayed in order.</param>
     public ScriptedLlmClient(IEnumerable<LlmResponse> responses)
     {
         ArgumentNullException.ThrowIfNull(responses);
         _script = new Queue<LlmResponse>(responses);
     }
 
-    /// <summary>已收到的全部请求（按到达顺序，消息已快照）。</summary>
+    /// <summary>All requests received, in arrival order, with messages snapshotted.</summary>
     public IReadOnlyList<LlmRequest> Requests => _requests;
 
-    /// <summary>脚本中尚未回放的响应数量。</summary>
+    /// <summary>Number of scripted responses not yet replayed.</summary>
     public int Remaining => _script.Count;
 
     /// <inheritdoc />
@@ -38,7 +41,7 @@ public sealed class ScriptedLlmClient : ILlmClient
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
 
-        // 先记录再出队：脚本耗尽时也能看到「是哪个请求没有被脚本覆盖」。
+        // Record before dequeueing, so an exhausted script still shows which request it did not cover.
         _requests.Add(request with { Messages = request.Messages.ToArray() });
 
         if (_script.Count == 0)

@@ -5,11 +5,9 @@ import MarkdownBody from '../src/components/MarkdownBody.vue'
 import type { SessionItem } from '../src/api'
 
 /**
- * What a long session actually costs (P4 #27/#28/#29).
+ * What a long session actually costs.
  *
- * The plan said "measure the threshold before choosing a fix", and then deferred it for several rounds — which is
- * how a measurement becomes something that is never done. So: measure it here, in a place that also fails if it
- * gets ten times worse.
+ * The measurement lives here, beside budgets that also fail if the cost gets ten times worse.
  *
  * <para>
  * These are **smoke budgets, not benchmarks**. The numbers are printed so a change can be compared against
@@ -74,14 +72,12 @@ async function timeAsync(label: string, runs: number, body: () => Promise<unknow
 
 describe('what a long session costs', () => {
   it('measures markdown parsing, row assembly, mount and re-render', async () => {
-    // ---- 1. MarkdownBody.parse, once per body per re-render -------------------------------------
     const markdown = mount(MarkdownBody, { props: { body: RICH_BODY } })
     expect(markdown.html()).toContain('第一段')
 
     const richParse = time('MarkdownBody: one rich body', 200, () => mount(MarkdownBody, { props: { body: RICH_BODY } }))
     const shortParse = time('MarkdownBody: one short body', 200, () => mount(MarkdownBody, { props: { body: SHORT_BODY } }))
 
-    // ---- 2. The items a real session accumulates -----------------------------------------------
     const items: SessionItem[] = []
     for (let seq = 1; seq <= 500; seq++) {
       const isTool = seq % 5 === 0
@@ -98,10 +94,8 @@ describe('what a long session costs', () => {
       })
     }
 
-    // ---- 3. Mount: every row, every MarkdownBody, once ------------------------------------------
     const mountCost = time('EventList: mount 500 rows', 5, () => mount(EventList, { props: { selectedSeq: null, items } }))
 
-    // ---- 4. Re-render: what a single poll costs --------------------------------------------------
     // The session view re-reads itself every 400ms while a turn is running, and `refresh()` replaces the
     // whole array — so this is the number that decides whether a poll is affordable.
     const wrapper = mount(EventList, { props: { selectedSeq: null, items } })
@@ -109,7 +103,6 @@ describe('what a long session costs', () => {
       wrapper.setProps({ items: [...items] }),
     )
 
-    // ---- 5. One changed row, for comparison ------------------------------------------------------
     // The question "is it the whole list or the parse?" is only answerable against a number for the same
     // list where one row differs — which is what `lastSeq` should be costing if the work is done right.
     const oneChanged = items.map((item, index) => (index === 250 ? { ...item, body: `${RICH_BODY} 改过了` } : item))
@@ -127,14 +120,12 @@ describe('what a long session costs', () => {
       `${((rerender / 400) * 100).toFixed(1)}% of one core. Mounting the view costs ${mountCost.toFixed(0)} ms, ` +
       `which is ${(mountCost / richParse).toFixed(0)} parses.`)
 
-    // ---- budgets ---------------------------------------------------------------------------------
     // Five times the measured cost, so a genuinely different implementation fails and a slow machine does not.
     // Written as `x < x + budget` rather than a bare number so the budget is visible in the failure message.
     expect(richParse).toBeLessThan(richParse + 25)
     expect(mountCost).toBeLessThan(mountCost + 2500)
     expect(rerender).toBeLessThan(rerender + 1200)
 
-    // ---- what the numbers actually say ------------------------------------------------------------
     //
     // The finding that matters, and the one the plan got wrong: MarkdownBody's `blocks` is a computed over
     // `props.body`, which is a **string**. A poll hands over a brand new array of brand new objects whose
@@ -154,11 +145,9 @@ describe('what a long session costs', () => {
   })
 
   it('re-parses every body on every poll, which is the finding', async () => {
-    // This is the shape of the defect, asserted rather than assumed: `items` is a brand new array with brand
-    // new objects, so every MarkdownBody's `computed` sees a different prop and re-parses. There is no cache.
-    //
-    // The counter is the honest way to state it: if a future change adds memoisation, this goes red and the
-    // comment above it becomes wrong — which is exactly when someone should read it.
+    // There is no cache: `items` is a brand new array with brand new objects on every poll, so every
+    // MarkdownBody's `computed` sees a different prop and re-parses. The counter is the honest way to state
+    // it: if memoisation is added, this goes red and should be reconsidered.
     let parsed = 0
     const items: SessionItem[] = Array.from({ length: 20 }, (_, index) => ({
       seq: index + 1,

@@ -3,7 +3,6 @@ using Partner.Desktop.Perception;
 
 namespace Partner.Desktop.Tests;
 
-/// <summary>One action used to ask the browser for its tab list three or four times; now it asks once.</summary>
 public sealed class CdpPageListCacheTests
 {
     private const string Tabs =

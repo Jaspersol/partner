@@ -4,11 +4,8 @@ import { nextTick, ref, watch } from 'vue'
 /**
  * A short form in the middle of the page, over a dimmed scrim.
  *
- * <para>
- * For things that are one textarea and two judgements — a new memory, a new sub-agent — where a bottom-of-page
- * form hides the list it adds to and a full page is too much. Absolutely positioned in the nearest positioned
- * ancestor, so it covers its view; Esc and the scrim close it.
- * </para>
+ * Absolutely positioned in the nearest positioned ancestor, so it covers its view; Esc and the scrim close it.
+ * Focus moves to the first field on open and back to the opener on close.
  */
 const props = defineProps<{ open: boolean; title: string }>()
 const emit = defineEmits<{ close: [] }>()

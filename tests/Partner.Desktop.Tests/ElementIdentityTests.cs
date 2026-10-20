@@ -33,7 +33,6 @@ public sealed class ElementIdentityTests
             DesktopObservation.ElementIdentity("w", "确定", "Button", "|Button|42.1.1"),
             DesktopObservation.ElementIdentity("w", "确定", "Button", "|Button|42.1.2"));
 
-        // Without the extra key the behaviour is what it was.
         Assert.Equal(
             DesktopObservation.ElementIdentity("w", "确定", "Button"),
             DesktopObservation.ElementIdentity("w", "确定", "Button"));
@@ -50,10 +49,9 @@ public sealed class ElementIdentityTests
             return;
         }
 
-        var seen = before.Elements.Single(e => e.ElementId == $"{window}:1"); // the second 确定, runtime r2
+        var seen = before.Elements.Single(e => e.ElementId == $"{window}:1"); // index 1: the second control, runtime r2
 
-        // The old id now lands on the first "确定": same name, same role, a different control. Name + role alone
-        // could not tell, so the old check passed and the click went to the wrong button.
+        // The old id now resolves to the first control: same name, same role, a different control.
         Assert.Equal("r1", after.FindElement(seen.ElementId) is { } landed ? landed.IdentityDigest == seen.IdentityDigest ? "same" : "r1" : "gone");
 
         var found = DesktopActTool.Reresolve(seen, after);

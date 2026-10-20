@@ -3,13 +3,12 @@ namespace Partner.Api;
 /// <summary>
 /// The turn in flight: what the model has written so far, and which queued item it belongs to.
 /// <para>
-/// This is a view of the running turn, not part of the session log. It exists so the session view can show a
-/// reply while it is being written; the log only ever holds the finished <c>Assistant</c> event.
+/// A view of the running turn, not part of the session log. The log only ever holds the finished
+/// <c>Assistant</c> event.
 /// </para>
 /// <para>
-/// Reasoning is carried separately from the answer because it arrives first and finishes first. Collapsing
-/// them would make the wait before an answer look like the answer, and would leave the reader unable to tell
-/// "it is still thinking" from "it is hung".
+/// Reasoning is carried separately from the answer because it arrives first and finishes first; collapsing
+/// them would leave the reader unable to tell "still thinking" from "hung".
 /// </para>
 /// </summary>
 /// <param name="ItemId">The queued item this turn belongs to.</param>

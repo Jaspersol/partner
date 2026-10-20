@@ -12,13 +12,11 @@ namespace Partner.Api.Settings;
 public sealed record AgentScenario(string Key, string Name, string When, string DefaultPrompt);
 
 /// <summary>
-/// The closed list of scenarios. There are exactly three, and that is a decision rather than a placeholder:
-/// each one names a capability with its own switch, its own tools and its own safety story, so a free-form
-/// scenario would be a promise of a tool set nobody has built.
+/// The closed list of scenarios. There are exactly three: each names a capability with its own switch, its own
+/// tools and its own safety story, so a free-form scenario would promise a tool set nobody has built.
 /// <para>
-/// Names and descriptions live here and are not editable. They are what the main agent reads to decide whether
-/// to delegate; letting them drift from the scenario table (or from each other) is how a request gets handed to
-/// the wrong place.
+/// Names and descriptions live here and are not editable: the main agent reads them to decide whether to
+/// delegate, so they must not drift from the scenario table.
 /// </para>
 /// </summary>
 public static class AgentScenarios

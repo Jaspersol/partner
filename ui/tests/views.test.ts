@@ -685,9 +685,9 @@ describe('context meter', () => {
 })
 
 describe('a view that has not read yet', () => {
-  // The defect: every list starts with empty data, and the empty state was the same row as the pending state.
-  // So the first thing a reader saw was a confident wrong answer — 「（无匹配事件）」 on a session that had not
-  // been asked about yet — said before the request that would have contradicted it even went out.
+  // Every list starts with empty data, and the empty state must not double as the pending state: a reader
+  // would see a confident wrong answer — 「（无匹配事件）」 on a session not yet asked about — before the request
+  // that would contradict it goes out.
 
   it('holds a placeholder while the first read is in flight, and claims nothing when it lands empty', async () => {
     // Assigned inside the executor, which TypeScript cannot see — so the definite-assignment form rather
@@ -1001,8 +1001,7 @@ describe('session removal', () => {
   })
 
   it('no longer mentions 删除之后 anywhere', async () => {
-    // The label moved to 撤回 and changed meaning; leaving the old wording on screen would name an action that
-    // no longer exists.
+    // 撤回 is the label and the meaning: 删除之后 would name an action that does not exist.
     const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -1237,9 +1236,8 @@ describe('memory view', () => {
   })
 
   it('filters hits the way it filters records, because a hit is one of those records', async () => {
-    // The regression: a hit used to arrive as tier 'recall' and scope '-', so any filter the reader had set
-    // matched nothing — the list emptied under a summary that still said there were hits, and the empty state
-    // said 无记忆. The server now sends the record's own tier and scope, so the filters mean something here.
+    // A hit carries the record's own tier and scope; a placeholder tier ('recall') and scope ('-') match no
+    // filter, leaving an empty list under a summary that still reports hits and an empty state that says 无记忆.
     const { stub } = createStub({
       recall: vi.fn(async () => [
         { recordId: 'm1', body: '部署在阿里云上', total: 0.9, reasons: ['lexical'], tier: 'Semantic', scope: 'Retain', createdAt: '2026-09-26T10:00:00+00:00' },
@@ -1287,9 +1285,8 @@ describe('memory view', () => {
   })
 
   it('keeps the summary honest when the filter changes after the search', async () => {
-    // The summary used to be a ref written by whichever call finished last, so a filter change left the
-    // pre-filter count on screen. It is computed now: there is no path by which the sentence and the rows
-    // disagree.
+    // The summary is computed from the rows, so a filter change cannot leave the pre-filter count on screen:
+    // there is no path by which the sentence and the rows disagree.
     const { stub } = createStub({
       recall: vi.fn(async () => [
         { recordId: 'm1', body: '一', total: 0.9, reasons: ['lexical'], tier: 'Semantic', scope: 'Retain', createdAt: '2026-09-26T10:00:00+00:00' },
@@ -1422,7 +1419,7 @@ describe('memory view', () => {
     await flushPromises()
 
     expect(calls.tierChanges).toEqual([{ recordId: 'm1', tier: 'Procedural' }])
-    // The norm (ui.md): what is on screen is what the server kept, not what was sent.
+    // What is on screen is what the server kept, not what was sent.
     expect(stub.memoryAll).toHaveBeenCalledTimes(2)
   })
 
@@ -1434,9 +1431,9 @@ describe('memory view', () => {
     const options = wrapper.findAll('[data-test="memory-tier"] button').map((option) => option.text())
     expect(options).toHaveLength(5) // 全部 + 四类
 
-    // The list used to build this from the tiers the loaded rows happened to have, so an empty tier could not be
-    // selected and the rest showed a bare enum name. "This tier is empty" and "this tier does not exist" are
-    // different facts.
+    // Every tier is listed even with no rows: building the list from the loaded rows makes an empty tier
+    // unselectable and shows a bare enum name for the rest, though "this tier is empty" and "this tier does not
+    // exist" are different facts.
     expect(options[1]).toContain('刚记下')
     expect(options[2]).toContain('经历')
     expect(options[3]).toContain('事实')
@@ -1695,8 +1692,8 @@ describe('mcp view', () => {
 
 describe('settings view', () => {
   it('says nothing for the top bar to repeat', async () => {
-    // The bar's middle line named the view and the fact that it had been read — 「设置 · 运行时」 — which is what
-    // the sidebar and the page below it already say, in full. Only the session view has something to put there.
+    // The bar's middle line would repeat the view name the sidebar and the page heading already give. Only the
+    // session view has something to put there.
     const { stub } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
@@ -2327,9 +2324,8 @@ describe('settings view', () => {
   })
 
   it('waits for the button for every field, including the switches', async () => {
-    // Four toggles saved themselves the moment they were flipped while the rest waited for the button at the
-    // bottom. Nothing on the page said which was which, so "why did this one apply and that one not" had no
-    // answer available to the reader. Now the page saves or it does not.
+    // Every field, including the switches, waits for the button: a page where some controls save themselves
+    // and others do not has no visible rule.
     const { stub, calls } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
@@ -2389,7 +2385,7 @@ describe('settings view', () => {
     await flushPromises()
 
     expect(calls.saves).toEqual([expect.objectContaining({ input: expect.objectContaining({ utteranceGapMs: 750 }) })])
-    // ui.md §5.6: the status carries a timestamp, so the exact wording is no longer a fixed string.
+    // The status carries a timestamp, so the exact wording is not fixed.
     const status = wrapper.find('[data-test="settings-status"]').text()
     expect(status).toContain('已保存')
     expect(status).toMatch(/\d{2}:\d{2}:\d{2}/)
@@ -2516,8 +2512,8 @@ describe('settings view', () => {
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    // The sentence is still in the document and still reachable — what changed is that it no longer stands as
-    // a line of its own, so the control above it and the control below it are one row closer.
+    // The sentence lives behind a mark rather than as a line of its own, so the controls above and below it
+    // stay one row closer.
     const field = wrapper.findAll('label.g-row').find((label) => label.text().includes('多小声算安静'))
     expect(field).toBeDefined()
     expect(field!.find('[data-icon="info"]').exists()).toBe(true)

@@ -199,7 +199,7 @@ public sealed class WebFanout
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             // An engine that throws is a bug in that engine, and it must cost that engine's turn rather than the
-            // whole search. Reported with a prefix the job engine already classifies as retryable.
+            // whole search. Reported with a prefix the job engine classifies as retryable.
             return new EngineAttempt(
                 engine,
                 planned.Why,

@@ -1,7 +1,7 @@
 namespace Partner.Core.Contracts;
 
 /// <summary>
-/// Where an input item came from. Three kinds a person or the clock can produce (see doc §2.2), plus
+/// Where an input item came from. Three kinds a person or the clock can produce, plus
 /// <see cref="Agent"/>, which only the runtime itself may enqueue.
 /// </summary>
 public enum InputSource

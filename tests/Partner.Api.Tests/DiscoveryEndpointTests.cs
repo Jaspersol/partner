@@ -94,7 +94,6 @@ public sealed class DiscoveryEndpointTests : ApiFixture
         using var stored = new FakeModelList(FreePort(), """{"data":[{"id":"a"}]}""");
         using var elsewhere = new FakeModelList(FreePort(), """{"data":[{"id":"b"}]}""");
 
-        // Configure and store a key for the first endpoint.
         var put = await _http.PutAsJsonAsync("/api/settings", new
         {
             model = new
@@ -106,11 +105,10 @@ public sealed class DiscoveryEndpointTests : ApiFixture
         });
         put.EnsureSuccessStatusCode();
 
-        // Probing the stored endpoint sends the key…
+        // The stored key is sent only to the endpoint it was stored for.
         await _http.PostAsJsonAsync("/api/models", new { baseUrl = $"http://127.0.0.1:{stored.Port}/v1" });
         Assert.Equal("Bearer stored-key", stored.LastAuthorization);
 
-        // …and probing a different one does not.
         await _http.PostAsJsonAsync("/api/models", new { baseUrl = $"http://127.0.0.1:{elsewhere.Port}/v1" });
         Assert.Null(elsewhere.LastAuthorization);
     }

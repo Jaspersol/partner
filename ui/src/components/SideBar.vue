@@ -199,9 +199,6 @@ function choose(index: number): void {
   text-overflow: ellipsis;
 }
 
-/* ---- the rail --------------------------------------------------------------------------------
-   Collapsed is the *normal* narrow state, so it gets the same care as the open panel: centred icons, a square
-   hit target, and no half-measures like a heading squeezed to three characters. */
 .sidebar.is-collapsed {
   padding-inline: var(--space-2);
   align-items: center;

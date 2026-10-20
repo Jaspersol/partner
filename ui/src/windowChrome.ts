@@ -1,5 +1,5 @@
 /**
- * The window buttons the native title bar used to provide.
+ * The window buttons the native title bar would otherwise provide.
  *
  * <para>
  * Calls the shell's window commands through the internals object Tauri injects into every webview, rather than

@@ -34,7 +34,7 @@ public sealed class ScriptedLlmClientTests
         Assert.Equal("call-1", Assert.Single(r2.ToolCalls).Id);
         Assert.Equal("{\"text\":\"hi\"}", r2.ToolCalls[0].ArgumentsJson);
 
-        // 每个请求都被记录：角色、内容、工具清单都保留下来。
+        // Every request is recorded, including role, content and tool list.
         Assert.Equal(2, client.Requests.Count);
         Assert.Equal(new[] { "system", "user" }, client.Requests[0].Messages.Select(m => m.Role));
         Assert.Equal("you are a scripted test", client.Requests[0].Messages[0].Content);
@@ -68,7 +68,7 @@ public sealed class ScriptedLlmClientTests
         Assert.False(string.IsNullOrWhiteSpace(ex.Message));
         Assert.Equal(0, client.Remaining);
 
-        // 耗尽后再调用仍然失败，绝不凭空编造响应。
+        // Calls after the script is exhausted still fail; no response is invented.
         await Assert.ThrowsAsync<InvalidOperationException>(() => client.CompleteAsync(Request()));
     }
 
@@ -81,7 +81,7 @@ public sealed class ScriptedLlmClientTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.CompleteAsync(Request(), cts.Token));
 
-        // 队列未被消耗：下一次正常调用仍拿到同一条脚本响应。
+        // The queue is untouched, so the next normal call still gets the same scripted response.
         Assert.Equal(1, client.Remaining);
         Assert.Equal("ok", (await client.CompleteAsync(Request())).Text);
     }

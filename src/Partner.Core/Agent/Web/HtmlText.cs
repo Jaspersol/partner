@@ -9,10 +9,9 @@ namespace Partner.Core.Agent.Web;
 /// Turning a page into text: the article extraction <c>web_fetch</c> returns, and the small helpers the HTML
 /// engines need to read a result page.
 /// <para>
-/// The whole file is one heuristic, and it is written to fail loudly rather than silently: preference order first
-/// (<c>article</c>, <c>main</c>, then the body minus the furniture), then a length check that says whether the
-/// preferred block was really an article. A page whose <c>article</c> element holds navigation renders as
-/// navigation if this trusts the tag alone.
+/// Preference order first (<c>article</c>, <c>main</c>, then the body minus the furniture), then a length check
+/// that says whether the preferred block was really an article: a page whose <c>article</c> element holds
+/// navigation renders as navigation if the tag is trusted alone.
 /// </para>
 /// </summary>
 public static class HtmlText

@@ -119,8 +119,8 @@ public sealed class ContextAssemblerTests : IDisposable
     [Fact]
     public async Task A_hand_off_to_a_sub_agent_is_replayed_as_the_call_it_was()
     {
-        // Replayed only as text, 「已经交给桌面操控子 agent 了」 is all the model ever sees of a hand-off, so it
-        // learns that saying it is doing it — and on the next request says it without calling anything.
+        // Replayed as the call, not just its text: otherwise the model learns that saying a hand-off is doing
+        // it, and on the next request says it without calling anything.
         var store = await SessionWithMetaAsync(
             (SessionEventKind.User, "open the music app", null),
             (SessionEventKind.Assistant, "handing that to the desktop agent", null),
@@ -131,7 +131,6 @@ public sealed class ContextAssemblerTests : IDisposable
         var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
             .AssembleInitialAsync(Input("next"), Array.Empty<string>());
 
-        // system, user, assistant(text + call), tool, assistant, current input
         Assert.Equal(new[] { "system", "user", "assistant", "tool", "assistant", "user" }, messages.Select(m => m.Role));
 
         var call = Assert.Single(messages[2].ToolCalls!);
@@ -176,8 +175,8 @@ public sealed class ContextAssemblerTests : IDisposable
     [Fact]
     public async Task Measuring_occupancy_never_reaches_the_model()
     {
-        // The session view reports occupancy on every load. If that path could do I/O, a slow or dead model
-        // endpoint would hang the view — which is exactly what it did before this split.
+        // The session view reports occupancy on every load. That path must not do I/O, or a slow or dead model
+        // endpoint would hang the view.
         var store = await SessionAsync(
             (SessionEventKind.User, "turn on the lamp"),
             (SessionEventKind.Assistant, "done"));
@@ -220,7 +219,6 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.Equal("system", messages[0].Role);
         Assert.DoesNotContain(messages.Skip(1), m => m.Role == "system");
 
-        // The turn structure survives as roles: user, assistant, and the current input last.
         Assert.Equal(new[] { "system", "user", "assistant", "user" }, messages.Select(m => m.Role));
         Assert.Equal("and the curtains", messages[^1].Content);
     }
@@ -242,7 +240,6 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.Contains("#2 [System] Available skills: smoke", system, StringComparison.Ordinal);
         Assert.Contains("#3 [Tool] lamp.set(study, on)", system, StringComparison.Ordinal);
 
-        // The user turn stays a turn — only non-conversational entries move.
         Assert.DoesNotContain("turn on the lamp", system, StringComparison.Ordinal);
         Assert.Contains(messages, m => m.Role == "user" && m.Content == "turn on the lamp");
     }

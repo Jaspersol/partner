@@ -76,8 +76,7 @@ internal sealed class TestClock(DateTimeOffset now) : TimeProvider
 }
 
 /// <summary>
-/// The reflex engine (design doc §2.7). The slot lock is the piece the doc calls out as mandatory: an async
-/// behavior owns the body for its whole run.
+/// The reflex engine. The slot lock is mandatory: an async behavior owns the body for its whole run.
 /// </summary>
 public sealed class ReflexEngineTests
 {
@@ -280,7 +279,7 @@ public sealed class ReflexEngineTests
     }
 }
 
-/// <summary>Perception debounce rules (design doc §2.6.1 ③): sensors debounce, action paths never do.</summary>
+/// <summary>Perception debounce rules: sensors debounce, action paths never do.</summary>
 public sealed class SensorHubTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 26, 12, 0, 0, TimeSpan.Zero);

@@ -42,13 +42,13 @@ public sealed class VoiceHostTests : ApiFixture
         string? asrBaseUrl = "http://127.0.0.1:45101",
         string? ttsBaseUrl = "http://127.0.0.1:45102",
         object? model = null) => new
-    {
-        input = new { enabled = true, utteranceGapMs = 200 },
-        output = new { enabled = true },
-        asr = new { baseUrl = asrBaseUrl, model = "test-asr" },
-        tts = new { baseUrl = ttsBaseUrl, lang = "zh" },
-        model = model ?? new { baseUrl = (string?)null, model = (string?)null },
-    };
+        {
+            input = new { enabled = true, utteranceGapMs = 200 },
+            output = new { enabled = true },
+            asr = new { baseUrl = asrBaseUrl, model = "test-asr" },
+            tts = new { baseUrl = ttsBaseUrl, lang = "zh" },
+            model = model ?? new { baseUrl = (string?)null, model = (string?)null },
+        };
 
     [Fact]
     public async Task Both_halves_are_off_by_default_and_say_so()

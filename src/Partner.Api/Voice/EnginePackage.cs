@@ -27,13 +27,12 @@ public sealed record EnginePackageStatus(
     EngineDownloadState Download);
 
 /// <summary>
-/// The local-engine module as a unit that lives next to the app instead of inside the installer: detects whether
-/// the runtimes and models are on disk, fetches them from the published archives, and lets the user point at an
-/// existing copy instead.
+/// The local-engine module that lives next to the app instead of inside the installer: detects whether runtimes
+/// and models are on disk, fetches them from published archives, and lets the user point at an existing copy.
 /// <para>
 /// The installer ships only the small server scripts (<c>asr-server.py</c>, <c>tts-server.py</c>); the interpreter,
-/// the inference packages and the models (~3GB) arrive here. An archive is expected to contain paths relative to
-/// the engines root (<c>tts/…</c> or <c>kws-asr/…</c>), so extraction is a plain unzip into that root.
+/// inference packages and models (~3GB) arrive here. An archive contains paths relative to the engines root
+/// (<c>tts/…</c> or <c>kws-asr/…</c>), so extraction is a plain unzip into that root.
 /// </para>
 /// </summary>
 public sealed class EnginePackage
@@ -54,7 +53,7 @@ public sealed class EnginePackage
     private const string KwsArchiveSha256 = "";
 
     // The interpreter is looked up in order: a relocatable runtime shipped inside the archive wins over a venv,
-    // which keeps an absolute path to the machine that built it in pyvenv.cfg and is only usable where it was made.
+    // whose pyvenv.cfg holds an absolute path and only works on the machine that built it.
     private static readonly string[] TtsPython = ["tts/python/python.exe", "tts/.venv/Scripts/python.exe"];
     private static readonly string[] KwsPython = ["kws-asr/python/python.exe", "kws-asr/sherpa-onnx/Scripts/python.exe"];
 
@@ -159,9 +158,9 @@ public sealed class EnginePackage
     }
 
     /// <summary>
-    /// Points the app at an engines folder the user already has. Null resets to the default location.
-    /// Returns false with a reason when the folder holds no complete engine, so a typo never silently replaces a
-    /// working location.
+    /// Points the app at an engines folder the user already has. Null resets to the default location. Returns
+    /// false with a reason when the folder holds no complete engine, so a typo never silently replaces a working
+    /// location.
     /// </summary>
     public bool TrySetRoot(string? root, out string error)
     {
@@ -198,7 +197,7 @@ public sealed class EnginePackage
         return true;
     }
 
-    /// <summary>Starts fetching the archives of every engine that is not installed yet. One download at a time.</summary>
+    /// <summary>Starts fetching the archives of every engine not yet installed. One download at a time.</summary>
     public bool TryStartDownload(out string error)
     {
         error = string.Empty;
@@ -305,7 +304,7 @@ public sealed class EnginePackage
         }
         catch (OperationCanceledException)
         {
-            // The .part file stays: the next attempt resumes from it.
+            // The .part file stays so the next attempt can resume from it.
             SetState(new EngineDownloadState("cancelled", null, 0, null, null));
         }
         catch (Exception error)
@@ -330,7 +329,7 @@ public sealed class EnginePackage
 
         if (response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
         {
-            // The part file is longer than (or unrelated to) the remote file; start over rather than guess.
+            // The part file is longer than (or unrelated to) the remote file; start over.
             File.Delete(part);
             await DownloadAsync(source, archive, label, ct).ConfigureAwait(false);
             return;
@@ -338,7 +337,7 @@ public sealed class EnginePackage
 
         response.EnsureSuccessStatusCode();
 
-        // 206 appends; a server that ignored the Range header answers 200 with the whole body, which replaces it.
+        // 206 appends; a server that ignored the Range header answers 200 with the whole body, replacing it.
         var resumed = response.StatusCode == System.Net.HttpStatusCode.PartialContent;
         var done = resumed ? have : 0L;
         var total = response.Content.Headers.ContentLength is { } length ? length + done : (long?)null;

@@ -4,7 +4,7 @@ namespace Partner.Api.Tests;
 
 /// <summary>
 /// The settings page's "test" verdicts. Only the pure part is pinned here: the device and the engine
-/// round-trip need real hardware, the rule they feed does not — and the rule is the part that used to lie.
+/// round-trip need real hardware; the rule they feed does not, and that rule decides the verdict.
 /// </summary>
 public sealed class VoiceTestEndpointTests
 {
@@ -88,8 +88,9 @@ public sealed class VoiceTestEndpointTests
     }
 
     /// <summary>
-    /// 有信号但低于阈值（引擎都转出来了）不是「设备无信号」——是音量/阈值配错。话术必须区分，
-    /// 否则「引擎却转出」跟在「设备无信号」后面自相矛盾。
+    /// A signal below the threshold is not "no device signal"; it means the level or threshold is misconfigured,
+    /// even when the engine did transcribe. The message must say so, or "the engine transcribed anyway" sits
+    /// next to "no device signal" and contradicts itself.
     /// </summary>
     [Fact]
     public void Quiet_speech_with_a_transcript_is_too_quiet_not_no_signal()
@@ -109,8 +110,8 @@ public sealed class VoiceTestEndpointTests
     }
 
     /// <summary>
-    /// 一句话只占 2 s 里的一小段：整段 RMS 被静音稀释到阈值以下，但最响帧够得着阈值——必须按峰值判，
-    /// 否则正常响度的短命令在设置页上是假红。
+    /// A sentence occupies only part of the 2 s clip, so whole-clip RMS falls below the threshold while the
+    /// loudest frame reaches it. The check must use the peak, or a normal short command shows as failing.
     /// </summary>
     [Fact]
     public void A_brief_loud_burst_is_not_diluted_by_silence()

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Partner.Core.Manifest;
 
-/// <summary>Capability level, ordered from weakest to strongest (design doc §2.6).</summary>
+/// <summary>Capability level, ordered from weakest to strongest.</summary>
 public enum CapabilityLevel
 {
     /// <summary>Not proven by any smoke check.</summary>
@@ -45,7 +45,7 @@ public static class CapabilityLevels
     }
 }
 
-/// <summary>Serializes <see cref="CapabilityLevel"/> in the wire form the design doc uses (kebab-case).</summary>
+/// <summary>Serializes <see cref="CapabilityLevel"/> in the kebab-case wire form.</summary>
 public sealed class CapabilityLevelConverter : JsonConverter<CapabilityLevel>
 {
     public override CapabilityLevel Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -91,7 +91,7 @@ public sealed record CapabilityManifest
 
     /// <summary>
     /// Compares a previously committed baseline against what smoke just observed.
-    /// Any capability that disappeared or dropped a level is a regression (design doc Phase 0).
+    /// Any capability that disappeared or dropped a level is a regression.
     /// </summary>
     public static ManifestGateReport Compare(CapabilityManifest baseline, CapabilityManifest current)
     {
@@ -113,12 +113,10 @@ public sealed record CapabilityManifest
 
             if (after.Level < before.Level)
             {
-                // A drop caused only by checks that did not run because they were opted out is not a
-                // regression: it is the run saying "I did not check this". Reporting it as a regression is
-                // what makes a gate untrustworthy — a developer who runs it on a busy desktop gets a red build
-                // that has nothing to do with the code, and the next red build stops meaning anything. So the
-                // capability is named as not verified, with the count, and the regression list stays for
-                // evidence that actually failed or went missing.
+                // A drop caused only by checks that were opted out is not a regression: it is the run saying
+                // "I did not check this". Reporting it as a regression makes the gate untrustworthy, because a
+                // busy desktop then produces a red build unrelated to the code. The capability is named as not
+                // verified instead; the regression list stays for evidence that failed or went missing.
                 //
                 // Every clause matters: a check that ran and failed is evidence however many others were
                 // skipped, and a check that neither ran nor was skipped has vanished, which is worse.

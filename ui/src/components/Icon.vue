@@ -5,22 +5,15 @@ import { iconPaths, type IconName } from '../icons'
 /**
  * One icon.
  *
- * <para>
- * Stroke-based and `currentColor`, so it takes the colour of whatever it sits in and cannot end up a
- * different weight from the text beside it — which was the whole problem with the Unicode glyphs this
- * replaced.
- * </para>
+ * Stroke-based and `currentColor`, so it takes the colour of whatever it sits in.
  *
- * <para>
  * Decorative by default: `aria-hidden`, because every icon here sits beside or inside a control that already
- * carries the name in text. Passing `label` is for the case where it does not, and that is the only thing
- * that changes about the accessibility of this element.
- * </para>
+ * carries the name in text. Passing `label` makes the icon the accessible name.
  */
 const props = withDefaults(
   defineProps<{
     name: IconName
-    /** Rendered size in pixels. Icons are drawn on a 24-unit grid, so this is a scale, not a design. */
+    /** Rendered size in pixels. Icons are drawn on a 24-unit grid, so this is a scale. */
     size?: number
     /** Makes the icon the accessible name. Omit it wherever text already says what this is. */
     label?: string | undefined
@@ -54,7 +47,7 @@ const paths = computed(() => iconPaths(props.name))
 
 <style scoped>
 /* Inline by default so it sits on the text baseline inside a button or a line of prose. `flex: none`
-   everywhere else: an SVG is a flex item by default and will happily shrink to nothing inside a row. */
+   elsewhere: an SVG is a flex item by default and will shrink to nothing inside a row. */
 .icon {
   display: inline-block;
   flex: none;

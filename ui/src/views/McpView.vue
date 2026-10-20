@@ -9,17 +9,8 @@ import SettingRow from '../components/SettingRow.vue'
 /**
  * The MCP servers this installation starts, and how the model is allowed to call them.
  *
- * <para>
- * Editing is a settings save like any other (ui.md): nothing here is optimistic, and the list on screen is
- * what the server kept. The alternative — a separate store — would mean two places where "which servers are
- * running" is answered.
- * </para>
- *
- * <para>
- * The 「免审批」 switch that used to live in a separate list at the top of the page is now on the server it
- * belongs to. The stored shape is unchanged — it is still the `mcp_<name>_*` entry in `allowedTools` — only the
- * place a person finds it moved.
- * </para>
+ * Editing is a settings save like any other: nothing here is optimistic, and the list on screen is what the
+ * server kept.
  */
 const props = defineProps<{ api: PartnerApiSurface }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -104,7 +95,6 @@ function toggleOpen(index: number) {
   open.value = open.value.map((value, at) => (at === index ? !value : value))
 }
 
-/** A one-line description of what a server runs, for the folded card. */
 function commandLine(server: McpServerSettings): string {
   return [server.command, ...server.arguments].join(' ').trim()
 }

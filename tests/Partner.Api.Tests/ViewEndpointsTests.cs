@@ -217,10 +217,9 @@ public sealed partial class ViewEndpointsTests : ApiFixture
     [Fact]
     public async Task A_recall_hit_carries_the_record_it_matched()
     {
-        // The hit used to be four fields: an id, a body, a score and its reasons. That made a hit impossible to
-        // compare with the list it came from — the filters matched nothing, the tier picker showed no selection,
-        // and the retention checkbox said no to a record that was retained. The tier and scope are already on
-        // the record, so the endpoint was simply not passing them on.
+        // A hit carries the record's tier and scope so it can be compared with the list it came from; without
+        // them the filters match nothing, the tier picker shows no selection, and the retention checkbox says no
+        // to a record that is retained.
         await _context.Memory.WriteAsync(new MemoryRecord
         {
             RecordId = "m1",
@@ -319,9 +318,8 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         var response = await _http.PostAsync("/api/queue/i1/cancel", content: null);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        // The queue is what is still in play, so a cancelled item is simply not there any more. This
-        // used to assert "one entry per item, showing the transitioned state"; it now asserts the absence,
-        // which is the same fact stated more strongly — there is no state left in which it could still run.
+        // The queue is what is still in play, so a cancelled item is absent: no state remains in which it
+        // could still run.
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/queue");
         var items = view.GetProperty("items").EnumerateArray().ToList();
 
@@ -368,7 +366,6 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         Assert.Equal(RuntimeSettings.Default, loaded);
     }
 
-    // ---- authentication (fail-closed) ------------------------------------------------------------
 
     [Theory]
     [InlineData("/api/health")]
@@ -467,7 +464,6 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         }
     }
 
-    // ---- CORS (the shell's origin is not the API's) ------------------------------------------------
 
     [Fact]
     public async Task A_preflight_from_the_shell_origin_is_answered_without_a_token()

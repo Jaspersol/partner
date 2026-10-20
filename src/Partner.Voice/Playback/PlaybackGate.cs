@@ -1,10 +1,9 @@
 namespace Partner.Voice.Playback;
 
 /// <summary>
-/// The seven signals the gate waits on (design doc §2.8.4 I3). Six of them are "is anything still in
-/// flight"; the seventh — a submitted-but-not-yet-absorbed block — is the one that cannot be inferred from
-/// the others, and leaving it out reopens the gate in the middle of the segment's own transcription, so the
-/// assistant transcribes itself.
+/// The seven signals the gate waits on. Six of them are "is anything still in flight"; the seventh — a
+/// submitted-but-not-yet-absorbed block — is the one that cannot be inferred from the others, and leaving it
+/// out reopens the gate in the middle of the segment's own transcription, so the assistant transcribes itself.
 /// </summary>
 public sealed record GateConditions(
     bool PendingBlock,
@@ -65,7 +64,7 @@ public sealed record GateConditions(
 }
 
 /// <summary>
-/// The playback gate (design doc §2.8.2): while the assistant is speaking, input is discarded wholesale —
+/// The playback gate: while the assistant is speaking, input is discarded wholesale —
 /// the assistant's own voice would otherwise be transcribed. Discarding must be visible: a silent drop reads
 /// exactly like a dead pipeline.
 /// </summary>

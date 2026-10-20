@@ -6,8 +6,7 @@ namespace Partner.Core.Tests.Memory;
 /// What turns into a memory, and what does not.
 /// <para>
 /// The distiller is the only automatic writer, so every one of its refusals is a decision about what the store
-/// will be full of. It had no direct tests at all until this file, which is why a two-character greeting turned
-/// out to be the difference between "the store has memories" and "the store is empty".
+/// will be full of.
 /// </para>
 /// </summary>
 public sealed class ConversationDistillerTests
@@ -18,13 +17,13 @@ public sealed class ConversationDistillerTests
         ConversationDistiller.Distill(user, answer, 7, Now);
 
     [Theory]
-    [InlineData("你好")]           // Two characters — the case that made the store look broken.
+    [InlineData("你好")]
     [InlineData("嗯")]
     [InlineData("  ")]
     public async Task A_greeting_too_short_to_carry_anything_is_not_written(string user)
     {
         // A greeting is not a statement about the person, so nothing should be kept. This one is caught by the
-        // length gate rather than the chitchat list, which matters because the two lists do not agree.
+        // length gate rather than the chitchat list.
         Assert.Null(Distill(user));
         await Task.CompletedTask;
     }
@@ -93,8 +92,7 @@ public sealed class ConversationDistillerTests
     [Fact]
     public void Stated_preferences_are_worth_more_than_a_one_off_answer()
     {
-        // Everything here is read off the wording. Nothing guesses importance from length, which is why a long
-        // one-off answer and a short stated preference do not trade places.
+        // Everything here is read off the wording. Nothing guesses importance from length.
         var preference = Distill("我喜欢用深色模式")!.Importance;
         var oneOff = Distill("今天下午三点的会议改到四点了")!.Importance;
 

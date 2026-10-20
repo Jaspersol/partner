@@ -22,15 +22,15 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let port = free_port()?;
-            // The shell owns the token now: generated here, passed to the sidecar through the environment
-            // (never argv, never a file), and injected into the webview. Because it no longer arrives from the
-            // sidecar's stdout, the window does not wait for the API to finish starting — it appears at once
-            // and the UI retries until /api/health answers.
+            // The shell owns the token: generated here, passed to the sidecar through the environment (never
+            // argv, never a file), and injected into the webview. The window does not wait for the API to finish
+            // starting; it appears at once and the UI retries until /api/health answers.
             let token = generate_token();
             let child = start_api(port, &token)?;
 
             // The UI reads these two globals; it never has a token of its own.
-            let script = format!("window.__PARTNER_TOKEN__ = {token:?}; window.__PARTNER_PORT__ = {port};");
+            let script =
+                format!("window.__PARTNER_TOKEN__ = {token:?}; window.__PARTNER_PORT__ = {port};");
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Partner")
@@ -63,7 +63,10 @@ pub fn run() {
 /// Asks the OS for an unused port. The listener is dropped immediately; the API binds it moments later.
 fn free_port() -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-    let port = listener.local_addr().map_err(|error| error.to_string())?.port();
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     drop(listener);
     Ok(port)
 }
@@ -97,12 +100,16 @@ fn start_api(port: u16, token: &str) -> Result<Child, String> {
     // Drain both pipes for the lifetime of the process: the API logs to stdout, and an unread pipe fills up
     // and blocks the server. Nothing is read back for startup — the token is already ours, and the UI retries
     // /api/health instead of waiting on a line here.
-    std::thread::spawn(move || {
-        for _ in BufReader::new(stdout).lines().map_while(Result::ok) {}
-    });
-    std::thread::spawn(move || {
-        for _ in BufReader::new(stderr).lines().map_while(Result::ok) {}
-    });
+    std::thread::spawn(
+        move || {
+            for _ in BufReader::new(stdout).lines().map_while(Result::ok) {}
+        },
+    );
+    std::thread::spawn(
+        move || {
+            for _ in BufReader::new(stderr).lines().map_while(Result::ok) {}
+        },
+    );
 
     Ok(child)
 }
@@ -120,9 +127,11 @@ fn generate_token() -> String {
 /// prefers the newest .NET build output, so editing the API and re-running the shell picks up the change
 /// instead of silently using whatever the last `dotnet publish` produced.
 fn api_exe_path() -> Result<PathBuf, String> {
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|current| current.parent().map(|directory| directory.join("api").join("partner-api.exe")));
+    let bundled = std::env::current_exe().ok().and_then(|current| {
+        current
+            .parent()
+            .map(|directory| directory.join("api").join("partner-api.exe"))
+    });
 
     let debug_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -242,6 +251,9 @@ mod tests {
 
     #[test]
     fn a_missing_build_root_is_not_an_error() {
-        assert_eq!(newest_api_build(&PathBuf::from("no-such-directory-here")), None);
+        assert_eq!(
+            newest_api_build(&PathBuf::from("no-such-directory-here")),
+            None
+        );
     }
 }

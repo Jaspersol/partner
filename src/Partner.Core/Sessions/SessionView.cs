@@ -3,8 +3,8 @@ using Partner.Core.Contracts;
 namespace Partner.Core.Sessions;
 
 /// <summary>
-/// One entry of the projected session view. The view is derived from the append-only log
-/// and can always be rebuilt from it (design doc §2.5.5 constraint 4).
+/// One entry of the projected session view. The view is derived from the append-only log and can always be
+/// rebuilt from it.
 /// </summary>
 /// <param name="Seq">Seq of the event this entry represents (never a revision's own seq).</param>
 /// <param name="Body">Effective body — the latest revision when the event has been edited.</param>

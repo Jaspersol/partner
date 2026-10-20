@@ -9,8 +9,8 @@ import Icon from './Icon.vue'
 import Segmented from './Segmented.vue'
 
 /**
- * The delivery entry point (ui.md §6, design doc §2.3.1). Submitting never inserts locally: the answer is
- * re-read from the server, and what the user sees afterwards is the queue, not an optimistic row.
+ * The delivery entry point. Submitting never inserts locally: the queue is re-read from the server, not
+ * optimistically patched.
  */
 const props = defineProps<{
   api: PartnerApiSurface
@@ -22,7 +22,7 @@ const props = defineProps<{
   approval?: string | null | undefined
   /**
    * The gears on offer, and the one new messages use unless the sender picks another. Read once per
-   * settings save: the composer never writes settings, so it has nothing to re-read after a send.
+   * settings save; the composer never writes settings.
    */
   gears?: readonly string[] | undefined
   defaultGear?: string | undefined
@@ -54,9 +54,7 @@ const uploading = ref(false)
 /**
  * Whether the waiting items are folded away.
  *
- * Open by default: the queue is short and what is in it is the answer to "did my message get through".
- * Folding is for the case it is worth folding — two or more entries, when the list has grown into a block
- * between the status line and the box.
+ * Open by default; folding only matters for two or more entries.
  */
 const queueCollapsed = ref(false)
 const dragging = ref(false)
@@ -64,18 +62,16 @@ const dragging = ref(false)
 /**
  * An attachment, with a local preview URL when it is an image.
  *
- * The name shown is the server's: it sanitised what the browser sent, and the model is told that same name, so
- * the card and the prompt cannot disagree.
+ * The name shown is the server's sanitised name, which is also what the model is told.
  */
 type Attachment = { media: UploadedMedia; preview: string | null }
 const attachments = ref<Attachment[]>([])
 
 /**
- * The gear the next message will be sent with. Held here rather than in the shell because it belongs to
- * one message: it is not a setting, it is not persisted, and it is what the send actually carries.
+ * The gear the next message will be sent with. Held here rather than in the shell because it belongs to one
+ * message: it is not a setting and is not persisted.
  *
- * Re-synced from the props so a settings save that changes the default takes effect on the next message
- * rather than being shadowed by a stale local choice.
+ * Re-synced from the props so a changed default applies to the next message rather than a stale local choice.
  */
 const gear = ref('')
 watch(
@@ -87,9 +83,8 @@ watch(
 )
 
 /**
- * A value the menu does not carry is still offered rather than dropped: the gear is free text (an endpoint
- * can name its own levels), and a select that silently excludes the configured default would send
- * something the user did not choose.
+ * A value the menu does not carry is still offered rather than dropped: the gear is free text, and a select
+ * that silently excluded the configured default would send something the user did not choose.
  */
 const gearOptions = computed(() =>
   gear.value !== '' && !(props.gears ?? []).includes(gear.value) ? [...(props.gears ?? []), gear.value] : props.gears ?? [],
@@ -98,9 +93,7 @@ const gearOptions = computed(() =>
 /**
  * The items still waiting their turn, oldest first — the order the queue will run them in.
  *
- * Only what has not started. A running turn is not waiting, and it is already visible in the conversation
- * itself: the reply being written is on screen while it happens. A count of the whole queue is worse than the
- * list, so it is not said as well; the top bar's badge is where the number lives.
+ * Only items that have not started; a running turn is already visible in the conversation.
  */
 const waiting = computed(() =>
   [...(props.queueItems ?? [])]
@@ -108,16 +101,10 @@ const waiting = computed(() =>
     .sort((left, right) => left.seq - right.seq),
 )
 
-/**
- * Whether the entries are on screen. One entry is never folded — the toggle only exists for two or more, and
- * folding the only line that says what is waiting would hide the one thing this area is for.
- */
+/** Whether the entries are on screen. One entry is never folded. */
 const queueShown = computed(() => waiting.value.length === 1 || !queueCollapsed.value)
 
-/**
- * Why nothing will move. Rendered independently of the queue summary: when the summary is unavailable the
- * explanation matters more, not less.
- */
+/** Why nothing will move; shown even when the queue summary is unavailable. */
 const modelName = computed(() => props.consumer?.model ?? '')
 
 const consumerNote = computed(() => {
@@ -126,9 +113,7 @@ const consumerNote = computed(() => {
 })
 
 /**
- * Which pill's popover is open. The two pickers are choices, not configuration, so they open in place above the
- * dock and close on a click anywhere else or on Esc — a native `<select>` would have been a second kind of
- * dropdown in an app that is trying to have one.
+ * Which pill's popover is open. Opens in place above the dock; closes on an outside click or Esc.
  */
 const picker = ref<'gear' | 'approval' | null>(null)
 const dock = ref<HTMLElement | null>(null)
@@ -182,14 +167,9 @@ const hasContent = computed(() => draft.value.trim() !== '' || attachments.value
 /**
  * What the one button on the right is, given what is in the box and what the queue is doing.
  *
- * <para>
- * The box being empty is the signal that decides it, not a separate control. A reader who has just typed
- * nothing has nothing to queue, so the button they can see is the one that interrupts the turn they are
- * watching. The moment they start typing, interrupting stops being what they want — and the same button
- * becomes "add to queue", because the queue is strictly FIFO and this message is going to wait anyway. That
- * is worth saying out loud in the label: "发送" during a turn reads as "go now", which the runtime does not
- * promise (see ui.md §6).
- * </para>
+ * The box being empty decides it: with nothing typed the button interrupts the running turn. Once the reader
+ * types, the same button queues, because the queue is strictly FIFO — so "发送" during a turn would promise a
+ * "go now" the runtime does not provide.
  */
 const action = computed<{ kind: 'send' | 'queue' | 'interrupt'; label: string }>(() => {
   if (runningId.value === null) {
@@ -204,18 +184,10 @@ const action = computed<{ kind: 'send' | 'queue' | 'interrupt'; label: string }>
 /**
  * Interrupts the running turn.
  *
- * <para>
- * This calls the API directly, exactly as `send` does — the composer is handed the API surface and uses it for
- * submissions, uploads and media fetches, and routing one call through the shell for the sake of a tidier
- * story would be the odd one out. What the shell owns is the *queue state*, so it is told afterwards, and
- * that is the only reason it hears about this at all.
- * </para>
+ * Calls the API directly like `send`; the shell is told afterwards because it owns the queue state.
  *
- * <para>
- * Cancel has a real failure mode worth reporting rather than swallowing: an item that finished between the
- * last poll and this click cannot be cancelled, and the API says so by returning false rather than throwing.
- * "I pressed stop and nothing happened" is precisely the case where silence is worst.
- * </para>
+ * Cancel has a real failure mode: an item that finished between the last poll and this click cannot be
+ * cancelled, and the API returns false rather than throwing. That is reported, not swallowed.
  */
 async function interrupt() {
   const itemId = runningId.value
@@ -271,11 +243,7 @@ function release(attachment: Attachment) {
   }
 }
 
-/**
- * Uploads a set of files, whichever entrance they came through. Picking, dropping and pasting all end here:
- * three entrances to one door, because a door that only opens for the file picker is a door most people walk
- * past.
- */
+/** Uploads a set of files from the picker, drag-drop or paste. */
 function takeFiles(files: FileList | File[] | null) {
   if (files === null || files.length === 0 || uploading.value) {
     return
@@ -285,12 +253,10 @@ function takeFiles(files: FileList | File[] | null) {
   void (async () => {
     try {
       for (const file of Array.from(files)) {
-        // The name goes up with the bytes so the server can sanitise it and hand back the one the model will
-        // be told; what is rendered is the server's name, not the browser's.
+        // The name goes up with the bytes so the server can sanitise it; what is rendered is the server's name.
         const media = await props.api.uploadMedia(file, file.type, file.name)
 
-        // Only an image can be previewed as an image. Fetching the bytes of a PDF to hang them off an <img>
-        // would show a broken picture and cost the download.
+        // Only an image can be previewed as an image.
         const preview = media.contentType.startsWith('image/')
           ? URL.createObjectURL(await props.api.mediaBlob(media.mediaId))
           : null
@@ -338,10 +304,8 @@ async function send() {
   busy.value = true
   try {
     const media = attachments.value.map((attachment) => attachment.media.mediaId)
-    // The source is what the message *is*, not something the user picks: typing here is always text, the
-    // microphone enqueues its own items, and a scheduled task comes from the scheduler.
-    // The gear rides this message, not the send: the choice is per turn, so it is sent with the payload and
-    // never reset afterwards — the next message starts from the configured default again.
+    // The source is what the message is, not something the user picks: typing here is always text.
+    // The gear rides this message only, so it is never reset afterwards; the next message uses the default.
     const result = await props.api.submitInput(payload, 'text', { media, reasoningEffort: gear.value })
 
     attachments.value.forEach(release)
@@ -358,10 +322,8 @@ async function send() {
 /**
  * Runs the box's contents as a command if that is what they are, and says whether it consumed them.
  *
- * <para>
  * A command is a whole line: "搜一下 /status 的实现" is a sentence about a command, not the command, and
- * swallowing it would send nothing at all. Getting that backwards is the failure this anchoring prevents.
- * </para>
+ * swallowing it would send nothing at all.
  */
 function tryCommand(): boolean {
   const command = parseComposerCommand(draft.value)
@@ -395,11 +357,8 @@ function focus() {
 /**
  * Puts a removed message back in the box rather than making it be retyped.
  *
- * <para>
- * A retraction is physical: the text leaves the log the moment it is confirmed, and the tombstone left behind
- * (`purge #a..#b`) records the range, not the words. Without this, "撤回" on your own message means retyping
- * it from memory — the one destructive action with no way back at all.
- * </para>
+ * A retraction is physical: the text leaves the log, and the tombstone (`purge #a..#b`) records the range,
+ * not the words. Without this, "撤回" on your own message means retyping it from memory.
  */
 function restore(body: string) {
   draft.value = body
@@ -425,10 +384,7 @@ defineExpose({ focus, restore })
     @paste="onPaste"
     @keydown.escape="picker = null"
   >
-    <!--
-      Why nothing will move, and nothing at all when something will: a standing status line on a healthy
-      composer is a sentence about nothing.
-    -->
+    <!-- Why nothing will move; absent when something will. -->
     <div v-if="consumerNote" class="dock-note" data-test="composer-strip">
       <span data-test="composer-consumer">{{ consumerNote }}</span>
     </div>
@@ -459,8 +415,7 @@ defineExpose({ focus, restore })
       </div>
 
       <!--
-        What is waiting, in the order it will run — only while there is anything, and only the waiting ones. The
-        arrow folds the list when there is more than one entry to fold, and folds nothing when there is one.
+        What is waiting, in the order it will run. The arrow folds the list only when there is more than one entry.
       -->
       <div v-if="waiting.length > 0" class="queue" data-test="composer-queue">
         <ol v-if="queueShown" class="queue-items" data-test="composer-queue-list">
@@ -502,8 +457,8 @@ defineExpose({ focus, restore })
         </label>
 
         <!--
-          The two pickers sit next to the send button, where the choice they carry lands: they are read at the moment
-          of sending, so they belong on the same side as the button rather than across the row from it.
+          The two pickers sit next to the send button, where the choice they carry lands: they are read at the
+          moment of sending.
         -->
         <span v-if="approval" class="pill-wrap">
           <button
@@ -530,8 +485,7 @@ defineExpose({ focus, restore })
 
         <span class="spacer" />
 
-        <!-- The model that answers, read off the consumer: it sits with the gear and the ring because the three
-             together say how the next message will be handled. -->
+        <!-- The model that answers, read off the consumer, beside the gear and the ring. -->
         <span v-if="modelName" class="model" :title="`当前模型：${modelName}`" data-test="composer-model">{{ modelName }}</span>
 
         <span v-if="gearOptions.length > 0" class="pill-wrap">
@@ -557,8 +511,7 @@ defineExpose({ focus, restore })
           </div>
         </span>
 
-        <!-- Memory occupancy: a ring that fills as the history grows and turns amber near the limit. The detail
-             the ring has no room for is the tooltip. -->
+        <!-- Memory occupancy: a ring that fills as the history grows and turns amber near the limit. -->
         <span
           v-if="context"
           class="ctx"
@@ -576,9 +529,8 @@ defineExpose({ focus, restore })
 
         <!--
           One button, three states, decided by whether the box has anything in it and whether a turn is running.
-          `composer-send` stays on the two states that submit, because that is what the tests drive; the
-          interrupt is a different action and gets its own hook rather than overloading one. The words stay in
-          the DOM (and in the accessible name) even though the shape is a circle with an arrow.
+          `composer-send` stays on the two states that submit; the interrupt gets its own hook. The words stay in
+          the accessible name even though the shape is a circle with an arrow.
         -->
         <button
           v-if="action.kind === 'interrupt'"
@@ -615,7 +567,7 @@ defineExpose({ focus, restore })
   inline-size: 100%;
 }
 
-/* The drop target has to announce itself: a paste that silently fails is worse than one that is refused. */
+/* The drop target must announce itself. */
 .composer-root.is-dragging .dock {
   outline: 2px dashed var(--accent);
   outline-offset: 2px;
@@ -635,7 +587,7 @@ defineExpose({ focus, restore })
   white-space: nowrap;
 }
 
-/* The dock: a floating glass bar. The message list scrolls underneath it, which is where the blur is visible. */
+/* The dock: a floating glass bar. The message list scrolls underneath it. */
 .dock {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -690,7 +642,6 @@ defineExpose({ focus, restore })
   max-inline-size: 14rem;
 }
 
-/* ---- what is waiting ------------------------------------------------------------------------------ */
 .queue {
   display: flex;
   align-items: flex-start;
@@ -707,8 +658,7 @@ defineExpose({ focus, restore })
   gap: var(--space-1);
   flex: 1;
   min-inline-size: 0;
-  /* A scroll container, which ui.md §2 otherwise forbids — and deliberately so: capped so a fifty-deep queue
-     cannot push the input off the window. */
+  /* A scroll container, deliberately: capped so a deep queue cannot push the input off the window. */
   max-block-size: 5rem;
   overflow-y: auto;
 }
@@ -737,7 +687,6 @@ defineExpose({ focus, restore })
   border-radius: var(--radius-sm);
 }
 
-/* ---- the box ------------------------------------------------------------------------------------- */
 .composer-input {
   position: relative;
 }
@@ -762,7 +711,6 @@ defineExpose({ focus, restore })
   transition: box-shadow var(--motion-fast) var(--ease);
 }
 
-/* Focus is a deeper, longer shadow, not a grey ring. */
 .dock.g-float:has(textarea:focus) {
   box-shadow:
     var(--glass-hi),
@@ -770,7 +718,6 @@ defineExpose({ focus, restore })
     0 12px 32px rgb(0 0 0 / 10%);
 }
 
-/* On pure black a black shadow is invisible, so the dark deepening is a faint light spread instead. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) .dock.g-float:has(textarea:focus) {
     box-shadow:
@@ -793,7 +740,6 @@ defineExpose({ focus, restore })
   inset-inline-end: var(--space-2);
 }
 
-/* ---- the row under the box ---------------------------------------------------------------------- */
 .composer-tools {
   display: flex;
   align-items: center;
@@ -891,7 +837,6 @@ defineExpose({ focus, restore })
   font-size: var(--fs-meta);
 }
 
-/* The occupancy ring. */
 .ctx {
   display: inline-flex;
   align-items: center;

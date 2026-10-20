@@ -16,7 +16,6 @@ public sealed class HostGateTests
     [Fact]
     public void Wait_ReturnsAtOnceForAHostItHasNotSeen()
     {
-        // The ordinary case: the first request of a session, and every host the fanout only touches once.
         var clock = new Clock();
         var waits = new DelayLog();
         var gate = new HostGate(random: () => 0.5, clock: () => clock.Now, delay: waits.Wait);
@@ -47,8 +46,7 @@ public sealed class HostGateTests
     [Fact]
     public async Task Wait_MovesTheGapByUpToAFifthEitherWay()
     {
-        // Requests sent exactly the same distance apart are as regular as a metronome, and regularity is a signal
-        // in itself. The gap varies; it does not collapse and it does not grow.
+        // Regular spacing is itself a scraper signal; the gap varies but never collapses or grows.
         var low = await GapAsync(() => 0.0);
         var middle = await GapAsync(() => 0.5);
         var high = await GapAsync(() => 1.0);

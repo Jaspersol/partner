@@ -10,9 +10,9 @@ using Partner.Voice.Tts;
 namespace Partner.Api.Voice;
 
 /// <summary>
-/// Maps the editable settings onto the option records the voice halves consume. Field names are identical on
-/// both sides on purpose, so this reads as a copy rather than a translation — and a rename on one side fails
-/// to compile here instead of silently dropping a setting.
+/// Maps editable settings onto the option records the voice halves consume. Field names are identical on both
+/// sides on purpose, so this reads as a copy rather than a translation — and a rename on one side fails to
+/// compile here instead of silently dropping a setting.
 /// </summary>
 public static class VoiceSettingsMapping
 {
@@ -35,8 +35,9 @@ public static class VoiceSettingsMapping
             MaxSplitChars = settings.MaxSplitChars,
         };
 
-        // 唤醒门只在本地引擎托管开启时生效：宿主自己不跑 KWS 模型，它是个服务。
-        // 地址跟 asr 段（同一引擎的伴生接口），端口由引擎托管那边配。
+        // The wake gate only applies when the local engine host is enabled: the host does not run the KWS model,
+        // it is a service. The address follows the asr section (a companion endpoint of the same engine); the port
+        // is configured on the engine-host side.
         if (wakeEngine is { Enabled: true } && wakeEngine.Port > 0 && wakeEngine.Port <= 65535)
         {
             setting = setting with
@@ -114,8 +115,8 @@ public static class VoiceSettingsMapping
 }
 
 /// <summary>
-/// Everything the voice host reaches outside itself: audio devices and the two service clients. One seam, so
-/// the whole pipeline can be driven with synthetic audio and a scripted ASR/TTS — the only way to test pause
+/// Everything the voice host reaches outside itself: audio devices and the two service clients. One seam, so the
+/// whole pipeline can be driven with synthetic audio and a scripted ASR/TTS — the only way to test pause
 /// boundaries and playback without a microphone and a speaker.
 /// </summary>
 public interface IVoiceComponents
@@ -168,9 +169,9 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
 public sealed record VoiceHalfState(bool Running, string Reason, string? Device, int Count);
 
 /// <summary>
-/// The input half adds what only a microphone can answer: how loud it is right now. A dead device, a quiet
-/// room and speech below the gate's threshold used to look identical in the UI — the level, the floor it was
-/// measured against, and whether the gate considers it noise are what tell them apart.
+/// The input half adds what only a microphone can answer: how loud it is right now. A dead device, a quiet room
+/// and speech below the gate's threshold would otherwise look identical in the UI — the level, the floor it was
+/// measured against, and whether the gate considers it noise tell them apart.
 /// </summary>
 public sealed record VoiceInputState(
     bool Running,
@@ -190,21 +191,21 @@ public sealed record VoiceState(VoiceInputState Input, VoiceHalfState Output)
 }
 
 /// <summary>
-/// Hosts the two voice halves (design doc §2.8) inside the API process.
+/// Hosts the two voice halves inside the API process.
 /// <para>
-/// Same process is not a shortcut: the input queue has a single in-process consumer and no cross-process
-/// lock, so a separate voice process would both consume and produce against the same log.
+/// Same process is not a shortcut: the input queue has a single in-process consumer and no cross-process lock, so
+/// a separate voice process would both consume and produce against the same log.
 /// </para>
 /// <para>
-/// Each half reports its own state. Opening a device can fail (no microphone, device in use), and that must
-/// read as "voice input is off, because X" rather than as a silently dead feature.
+/// Each half reports its own state. Opening a device can fail (no microphone, device in use), and that must read
+/// as "voice input is off, because X" rather than as a silently dead feature.
 /// </para>
 /// </summary>
 public sealed class VoiceHost : IAsyncDisposable
 {
     /// <summary>
-    /// Capture runs on the frame cadence the pipeline expects (the smoke drives it one 20 ms frame per tick);
-    /// the output half only needs to notice new text, so it polls far less often.
+    /// Capture runs on the frame cadence the pipeline expects; the output half only needs to notice new text, so
+    /// it polls far less often.
     /// </summary>
     private static readonly TimeSpan InputTickInterval = TimeSpan.FromMilliseconds(20);
 
@@ -234,7 +235,8 @@ public sealed class VoiceHost : IAsyncDisposable
     private VoiceInputState _inputState = VoiceState.Idle.Input;
     private VoiceHalfState _outputState = VoiceState.Idle.Output;
 
-    /// <summary>输出设置里配的播放采样率。唤醒提示音按它合成，与 TTS 同档才不会被 sink 分到另一个流。</summary>
+    /// <summary>The playback sample rate configured in output settings. The wake tone is synthesized at this rate
+    /// so the sink does not split it onto another stream.</summary>
     private int _toneSampleRate = 24_000;
 
     private VoiceHost(ApiContext context, IVoiceComponents components, Func<LiveAssistant?>? live)
@@ -281,8 +283,9 @@ public sealed class VoiceHost : IAsyncDisposable
     {
         _stop = new CancellationTokenSource();
 
-        // 输出先起：输入半区的唤醒提示音要往 sink 里灌音，输入建在输出之前就永远拿不到 sink
-        // （_sink 还是 null），提示音静默失效。反过来没有依赖，所以这个顺序不许换。
+        // Output starts first: the input half's wake tone writes into the sink, and an input built before output
+        // would never see the sink (_sink is still null), silently losing the tone. There is no dependency the
+        // other way, so this order must not change.
         StartOutput(settings);
         StartInput(settings);
     }
@@ -316,7 +319,8 @@ public sealed class VoiceHost : IAsyncDisposable
 
         _asr = _components.CreateAsr(asrOptions);
 
-        // 唤醒提示音：在输出设备上短促一声。输出未启用（无 sink）时自然没有提示——输入开关照常工作。
+        // The wake tone plays briefly on the output device. With output disabled (no sink) there is no tone;
+        // input toggling still works.
         _input = new VoiceInputHalf(
             inputSetting,
             _source,
@@ -341,13 +345,13 @@ public sealed class VoiceHost : IAsyncDisposable
     private static void VoiceLog(string message) => Console.Error.WriteLine(message);
 
     /// <summary>
-    /// 唤醒提示音：短促两音（880→1320 Hz，各 80 ms，能量 0.18）——高音在后的双音比单音更像「叮咚」，
-    /// 也更容易和 TTS 的开口区分开。
+    /// The wake tone: two short notes (880 then 1320 Hz, 80 ms each, amplitude 0.18). A rising pair reads as a
+    /// doorbell and is easier to tell apart from the start of TTS.
     /// <para>
-    /// 采样率必须跟 TTS 输出同一档：<see cref="WasapiAudioSink"/> 是「一种速率一个
-    /// <c>WaveOutEvent</c>」，频率不同就另外开一个流，而旧的那个还在播——同一句就会
-    /// 「前半段放到一半，第二段从头重叠」（用户报的双声 bug）。sink 在被首次写入前并不知道
-    /// 自己会开成什么速率，所以这里用输出设置里配好的那个值，不用 sink 的当前状态。
+    /// The sample rate must match TTS output: <see cref="WasapiAudioSink"/> opens one <c>WaveOutEvent</c> per
+    /// rate, and a second rate starts another stream while the first is still playing, so the same sentence
+    /// repeats from the start. The sink does not know its rate before the first write, so use the configured
+    /// output rate rather than the sink's current state.
     /// </para>
     /// </summary>
     private void PlayWakeTone()
@@ -401,8 +405,8 @@ public sealed class VoiceHost : IAsyncDisposable
         _tts = _components.CreateTts(ttsOptions);
         _sink.Start();
 
-        // 提示音的采样率跟着这里定：之后任何一路（TTS 块、提示音）都得用这一档，
-        // 否则 sink 会为不同速率各开一个设备流，正在播的那段会被从头再放一遍。
+        // The tone sample rate is fixed here: every later path (TTS chunks, tone) must use this rate, or the
+        // sink opens one device stream per rate and replays what is currently playing.
         _toneSampleRate = outputSetting.SampleRate;
 
         _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate, maxSplitChars: settings.Input.MaxSplitChars);

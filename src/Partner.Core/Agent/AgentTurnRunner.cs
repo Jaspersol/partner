@@ -15,27 +15,17 @@ public sealed record AgentTurnOptions
     public int MaxSteps { get; init; } = 8;
 
     /// <summary>
-    /// Step budgets beyond <see cref="MaxSteps"/>, by tool-name prefix.
-    /// <para>
-    /// One number for every family says a GUI task and a “what time is it” need the same room. They don’t:
-    /// a real desktop task runs 20–40 steps of look, act, look — while a chat turn ends as soon as the answer
-    /// is written either way, so a larger ceiling only binds premises that were never going to finish. Keys
-    /// are prefixes applied to tool names: <c>desktop</c> covers every <c>desktop_*</c> tool,
-    /// <c>mcp_</c> covers the server-bridged ones.
-    /// </para>
+    /// Step budgets beyond <see cref="MaxSteps"/>, by tool-name prefix. Keys are prefixes applied to tool names:
+    /// <c>desktop</c> covers every <c>desktop_*</c> tool, <c>mcp_</c> covers the server-bridged ones. A larger
+    /// ceiling only binds turns that were never going to finish.
     /// </summary>
     public IReadOnlyDictionary<string, int> ToolStepBudgets { get; init; } =
         new Dictionary<string, int>(StringComparer.Ordinal) { ["desktop"] = 32, ["mcp_"] = 32, ["file_"] = 24, ["web_"] = 24 };
 
     /// <summary>
     /// The budget this turn runs under: the largest family budget among the tools <b>registered</b>, or
-    /// <see cref="MaxSteps"/> when none of the keys matches.
-    /// <para>
-    /// Keyed on the registry, not on what the model has called so far. Extending the budget only after a
-    /// family tool actually ran would mean a desktop task that spends its first few steps reading the
-    /// desktop dies on the old number before its first action; and a registration is a statement about what
-    /// kind of work this toolset is for all the same.
-    /// </para>
+    /// <see cref="MaxSteps"/> when none of the keys matches. Keyed on the registry, not on what the model has
+    /// called so far: the budget must apply from the first step.
     /// </summary>
     public int StepsAllowedFor(IEnumerable<string> registeredToolNames)
     {
@@ -58,7 +48,7 @@ public sealed record AgentTurnOptions
 
     public int MaxTokens { get; init; } = 4096;
 
-    /// <summary>Upper bound on concurrently dispatched tool calls (design doc §2.9.5: bounded rolling pool).</summary>
+    /// <summary>Upper bound on concurrently dispatched tool calls.</summary>
     public int MaxParallelToolCalls { get; init; } = 4;
 
     public TimeSpan ToolTimeout { get; init; } = TimeSpan.FromSeconds(30);
@@ -73,11 +63,9 @@ public sealed record AgentTurnOptions
     /// <summary>
     /// The ceiling on one step's whole tool dispatch — every call, in parallel, including the wait for a human.
     /// <para>
-    /// Not redundant with <see cref="ToolTimeout"/>. Results are gathered with <c>Task.WhenAll</c>, which
-    /// returns when the <i>slowest</i> call returns, and a per-call budget only binds a call that honours its
-    /// own token. One tool that awaits something unbounded therefore withholds every result, and with it the
-    /// step, the turn, and the single-reader consumer behind that — which is how a queue ends up reporting
-    /// "running" with nothing running. This is the bound that does not assume the tools are well behaved.
+    /// Not redundant with <see cref="ToolTimeout"/>: results are gathered with <c>Task.WhenAll</c>, which returns
+    /// when the <i>slowest</i> call returns, and a per-call budget only binds a call that honours its own token.
+    /// One tool that awaits something unbounded withholds every result, and with it the step and the turn.
     /// </para>
     /// </summary>
     public TimeSpan ToolDispatchTimeout { get; init; } = TimeSpan.FromSeconds(180);
@@ -87,22 +75,17 @@ public sealed record AgentTurnOptions
     public int ContextWindowTokens { get; init; } = 32768;
 
     /// <summary>
-    /// A ceiling on one turn, enforced by the consumer loop rather than from in here.
-    /// <para>
-    /// Eight steps of a model call plus a tool call is minutes of legitimate work, so this is set well above
-    /// what a real turn costs and exists only to catch the wedge: no inner budget is a guarantee, and the
-    /// queue is single-reader, so a turn that never returns parks every message behind it with no way out but
-    /// killing the process. Exposed for <see cref="Hosting.TurnLoop"/> to apply.
-    /// </para>
+    /// A ceiling on one turn, enforced by the consumer loop rather than from in here. The queue is
+    /// single-reader, so a turn that never returns parks every message behind it. Exposed for
+    /// <see cref="Hosting.TurnLoop"/> to apply.
     /// </summary>
     public TimeSpan TurnTimeout { get; init; } = TimeSpan.FromMinutes(10);
 
     public string? BaseSystemPrompt { get; init; }
 
     /// <summary>
-    /// The system prompt, read at the start of every turn. When set it wins over <see cref="BaseSystemPrompt"/>:
-    /// an edit to the prompt then reaches the next turn without restarting the consumer (a restart resets the
-    /// turn counters and stops the MCP child processes, which is far too much for a wording change).
+    /// The system prompt, read at the start of every turn. When set it wins over <see cref="BaseSystemPrompt"/>,
+    /// so an edit reaches the next turn without restarting the consumer.
     /// </summary>
     public Func<string?>? PromptSource { get; init; }
 
@@ -122,7 +105,7 @@ public sealed record TurnResult(
     long TurnEndSeq);
 
 /// <summary>
-/// Runs one turn for one already-claimed <see cref="InputItem"/> (design doc §2.9).
+/// Runs one turn for one already-claimed <see cref="InputItem"/>.
 /// <para>
 /// Invariants enforced here:
 /// <list type="bullet">
@@ -180,7 +163,6 @@ public sealed class AgentTurnRunner
             promptSource: _options.PromptSource);
 
         // Optional: a caller that wants the summary supplies a log, and one that does not pays nothing for it.
-        // The clock is here for the same reason — "last seen" has to be a real instant, not a guess.
         _failures = failures;
         _clock = clock ?? TimeProvider.System;
     }
@@ -194,7 +176,7 @@ public sealed class AgentTurnRunner
     {
         ArgumentNullException.ThrowIfNull(item);
 
-        // The queue owns claiming (design doc §2.9.2): a turn may only run an item the queue handed out.
+        // The queue owns claiming: a turn may only run an item the queue handed out.
         if (item.Status != InputItemStatus.Running)
         {
             throw new InvalidOperationException(
@@ -203,22 +185,10 @@ public sealed class AgentTurnRunner
 
         _hooks.ResetTurn();
 
-        // Whether this turn's own message is already in the log, **read from the log** rather than from a
-        // local flag.
-        //
-        // The input queue re-runs an interrupted `Running` item on restart (that is what at-least-once means
-        // here), and a re-run is not a resume: nothing records which tool calls already happened, so the turn
-        // starts over. With a local flag the re-run appended a *second* `User` event — same payload, same
-        // meta.itemId, new seq — and that broke two things at once:
-        //
-        //   - the conversation showed the reader's message twice;
-        //   - memory's at-least-once guard, which asks "is there already a record distilled from this event
-        //     seq?", stopped matching, because the seq had moved. The fact was then stored twice and recall
-        //     returned it as two independent pieces of evidence.
-        //
-        // Deriving it means a re-run reuses the original seq, so the guard matches again and nothing is
-        // appended twice. The cost is one projection scan, and the memory hook in the same turn already does
-        // exactly this scan.
+        // Whether this turn's own message is already in the log, read from the log rather than from a local flag.
+        // The input queue re-runs an interrupted Running item on restart, and nothing records which tool calls
+        // already happened. A local flag would append a second User event with the same itemId but a new seq,
+        // which shows the message twice and breaks memory's at-least-once guard (keyed on the event seq).
         var projected = await _session.ProjectAsync(ct).ConfigureAwait(false);
         var messageAlreadyLogged = false;
         foreach (var logged in projected.Items)
@@ -272,7 +242,7 @@ public sealed class AgentTurnRunner
                     .AssembleInitialAsync(item, ctx.InjectedPrompts, ctx.InjectedLabels, ct)
                     .ConfigureAwait(false)).ToList();
 
-                // What the tool loop may grow the conversation to. The assembler only fitted the history the turn
+                // What the tool loop may grow the conversation to: the assembler only fitted the history the turn
                 // started from; from here every tool result is appended by this loop, so this loop prices them.
                 var promptBudget = Math.Max(
                     1,
@@ -286,8 +256,8 @@ public sealed class AgentTurnRunner
                 // Empty means the message did not choose one, which leaves the configured default in place.
                 var gear = string.IsNullOrWhiteSpace(item.ReasoningEffort) ? null : item.ReasoningEffort;
 
-                // Seeded from the log, not from zero: this is the line that makes a retried turn reuse the
-                // message it already logged instead of appending a second copy of it.
+                // Seeded from the log, not from zero: a retried turn reuses the message it already logged instead
+                // of appending a second copy.
                 var userLoggedHere = messageAlreadyLogged;
                 var systemLogged = false;
 
@@ -312,10 +282,9 @@ public sealed class AgentTurnRunner
 
                     if (!systemLogged && ctx.InjectedPrompts.Count > 0)
                     {
-                        // One event per injected block, not one joined line. The label is what lets the session
-                        // page show a block as the thing it is — a recall, a skill list — instead of as an
-                        // anonymous system line; a joined body could carry the label only as text the model
-                        // would then also read.
+                        // One event per injected block, not one joined line. The label lets the session page show
+                        // a block as the thing it is — a recall, a skill list — instead of an anonymous system
+                        // line; a joined body could carry the label only as text the model would then also read.
                         var labels = ctx.InjectedLabels;
                         for (var at = 0; at < ctx.InjectedPrompts.Count; at++)
                         {
@@ -353,8 +322,8 @@ public sealed class AgentTurnRunner
                         ? await _llm.CompleteAsync(request, ct).ConfigureAwait(false)
                         : await _llm.StreamWithReasoningAsync(request, streamed, reasoningDelta!, ct).ConfigureAwait(false);
 
-                    // The server's own count is the only ground truth for the estimate; fed back so the next budget is
-                    // closer. Taken before the answer is appended, because it describes what was sent.
+                    // The server's own count is the only ground truth for the estimate; fed back so the next
+                    // budget is closer. Taken before the answer is appended, because it describes what was sent.
                     if (response.PromptTokens > 0 && _tokens is ICalibratedTokenCounter calibrated)
                     {
                         calibrated.Calibrate(
@@ -362,9 +331,8 @@ public sealed class AgentTurnRunner
                             response.PromptTokens);
                     }
 
-                    // Reasoning is recorded, not just shown live. A thinking row that only existed while the
-                    // model was writing it would vanish the moment it answered — and "why did it do that" is
-                    // exactly the question a reader has afterwards.
+                    // Reasoning is recorded, not just shown live: a thinking row that existed only while the
+                    // model was writing would vanish the moment it answered.
                     if (!string.IsNullOrWhiteSpace(response.Reasoning))
                     {
                         await _session.AppendAsync(
@@ -410,8 +378,8 @@ public sealed class AgentTurnRunner
                         for (var i = 0; i < response.ToolCalls.Count; i++)
                         {
                             var call = response.ToolCalls[i];
-                            // Capped before it is logged as well as before it is sent: the next turn replays this log,
-                            // and one oversized entry would make the assembler drop everything older than it.
+                            // Capped before it is logged as well as before it is sent: the next turn replays this
+                            // log, and one oversized entry would make the assembler drop everything older.
                             var result = results[i] with
                             {
                                 Content = ToolResultBudget.Clamp(results[i].Content, resultCap, _tokens),
@@ -425,16 +393,14 @@ public sealed class AgentTurnRunner
                                     ["ok"] = result.Ok ? "true" : "false",
                                 }), ct).ConfigureAwait(false);
 
-                            // Counted here, not in the tool: `Ok == false` is the runtime saying the call did
-                            // not happen the way it was asked to. A command that ran and exited non-zero is
-                            // a *result* — that is the answer to a question, not a broken tool — so only
-                            // what reaches this as a failure is a failure.
+                            // Counted here, not in the tool: `Ok == false` means the call did not happen the way
+                            // it was asked to. A command that ran and exited non-zero is a *result*, not a broken
+                            // tool.
                             if (!result.Ok)
                             {
-                                // The item id rides along so a summary row can be tied to the durable record of the
-                                // same moment — the ToolResult event in the session log, whose `at` is within
-                                // milliseconds of this. The queue log is not that record: a tool failing does
-                                // not finish the turn, so the item stays Running and has no finishedAt at all.
+                                // The item id rides along so a summary row can be tied to the ToolResult event
+                                // in the session log. The queue log is not that record: a tool failing does not
+                                // finish the turn, so the item stays Running and has no finishedAt at all.
                                 _failures?.Record(
                                     call.Name,
                                     ToolFailureReason.From(result.Content),
@@ -445,9 +411,9 @@ public sealed class AgentTurnRunner
 
                             conversation.Add(new LlmMessage("tool", result.Content, ToolCallId: call.Id, Name: call.Name));
 
-                            // Pictures a tool returned ride in a user message: the tool role carries text only, and
-                            // the model has to see the image as an image. The bytes are not in the log — the result
-                            // body names the media id, and the request carries the data URI.
+                            // Pictures a tool returned ride in a user message: the tool role carries text only,
+                            // and the model has to see the image as an image. The bytes are not in the log — the
+                            // result body names the media id, and the request carries the data URI.
                             if (result.Images is { Count: > 0 })
                             {
                                 conversation.Add(new LlmMessage(
@@ -494,8 +460,8 @@ public sealed class AgentTurnRunner
                 Event(SessionEventKind.TurnEnd, item.Source, $"turn {reason}", item, endMeta), ct).ConfigureAwait(false);
             turnEnded = true;
 
-            // Durability barrier for the whole turn (design doc §2.9.7): a turn that cannot be committed
-            // must not be reported as successful, regardless of the store's append mode.
+            // Durability barrier for the whole turn: a turn that cannot be committed must not be reported as
+            // successful, regardless of the store's append mode.
             await _session.FlushAsync(ct).ConfigureAwait(false);
 
             return new TurnResult(reason, steps, assistantMessages, toolCalls, turnStartSeq, turnEndSeq);
@@ -517,7 +483,7 @@ public sealed class AgentTurnRunner
 
             if (!turnEnded)
             {
-                // The error text goes into the session so the failure is visible (design doc §2.9.1).
+                // The error text goes into the session so the failure is visible.
                 // Both appends are best-effort: a faulted store must not mask the original exception.
                 try
                 {
@@ -565,8 +531,7 @@ public sealed class AgentTurnRunner
     ///
     /// <para>
     /// Kept in the event's meta rather than folded into the body, because the body is what a reader scans
-    /// and these are what a reader looks up. Null for anything that is not a model failure — the keys must not
-    /// exist when there is nothing behind them.
+    /// and these are what a reader looks up. Null for anything that is not a model failure.
     /// </para>
     /// </summary>
     private static IReadOnlyDictionary<string, string>? ErrorMetaOf(Exception error)
@@ -600,7 +565,7 @@ public sealed class AgentTurnRunner
 
     /// <summary>
     /// Dispatches all tool calls with bounded parallelism, then returns results in <b>model order</b>.
-    /// Governance runs before every dispatch: deny is a result, not an exception (design doc §2.9.6).
+    /// Governance runs before every dispatch: deny is a result, not an exception.
     /// </summary>
     private async Task<IReadOnlyList<ToolResult>> ExecuteToolsAsync(
         IReadOnlyList<LlmToolCall> calls,
@@ -634,11 +599,9 @@ public sealed class AgentTurnRunner
 
         try
         {
-            // Bounded <i>wait</i>, not just a cancelled token. Cancelling asks a tool to stop; it does not
-            // make a tool that is parked on something unbounded come back, and `Task.WhenAll` returns only
-            // when the slowest call does. So the aggregate is waited on alongside the clock: whichever arrives
-            // first decides. Without this, one tool with an unbounded await withholds every result in the
-            // step, and with it the turn and the queue behind the turn — which is the hang, exactly.
+            // Bounded <i>wait</i>, not just a cancelled token. Cancelling asks a tool to stop; it does not make
+            // a tool parked on something unbounded come back, and `Task.WhenAll` returns only when the slowest
+            // call does. So the aggregate is waited on alongside the clock: whichever arrives first decides.
             var all = Task.WhenAll(tasks);
             var finished = await Task
                 .WhenAny(all, Task.Delay(_options.ToolDispatchTimeout, CancellationToken.None))
@@ -652,7 +615,7 @@ public sealed class AgentTurnRunner
                 }
 
                 // Whatever finished in time is still a real answer and is kept: reporting a timeout for a
-                // call that demonstrably happened would be its own kind of lie to the model.
+                // call that happened would be a lie to the model.
                 return Settled(tasks, calls, $"timeout after {_options.ToolDispatchTimeout.TotalSeconds:0}s: ");
             }
 
@@ -660,7 +623,7 @@ public sealed class AgentTurnRunner
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // Cancellation never fabricates success (design doc §2.9.5).
+            // Cancellation never fabricates success.
             return calls.Select(c => new ToolResult(false, $"canceled before completion: {c.Name}")).ToList();
         }
         finally
@@ -673,8 +636,7 @@ public sealed class AgentTurnRunner
 
     /// <summary>
     /// Keeps a tool call that will not finish from resurfacing as an unobserved task exception. Deliberately
-    /// not awaited: the dispatch has moved on, and a fault on a task nobody is waiting for would otherwise be
-    /// reported to nobody while still being reported somewhere.
+    /// not awaited: the dispatch has moved on.
     /// </summary>
     private static void Forget(Task abandoned) =>
         abandoned.ContinueWith(
@@ -712,8 +674,8 @@ public sealed class AgentTurnRunner
                 return new ToolResult(false, $"denied: {decision.Reason}");
 
             case ToolDecision.Ask:
-                // Bounded here as well as in the handler: the handler's own clock is a default, and a caller
-                // that injected a handler without one must not be able to park the dispatch indefinitely.
+                // Bounded here as well as in the handler: a caller that injected a handler without its own clock
+                // must not be able to park the dispatch indefinitely.
                 bool approved;
                 using (var question = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
@@ -735,7 +697,7 @@ public sealed class AgentTurnRunner
         }
 
         // A tool with a time budget of its own is given that budget (never less than the default), so the runner
-        // does not cancel it a moment before it would have returned what it had.
+        // does not cancel it just before it would have returned.
         var limit = tool is ITimedTool timed && timed.Timeout > _options.ToolTimeout ? timed.Timeout : _options.ToolTimeout;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);

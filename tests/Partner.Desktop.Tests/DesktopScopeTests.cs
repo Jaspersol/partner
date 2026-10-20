@@ -15,7 +15,6 @@ namespace Partner.Desktop.Tests;
 /// </summary>
 public sealed class DesktopScopeTests
 {
-    // ---- the marks, pure geometry ---------------------------------------------------------------
 
     [Fact]
     public void Every_real_window_gets_a_mark_that_names_its_id_and_its_centre()
@@ -68,7 +67,6 @@ public sealed class DesktopScopeTests
         Assert.Empty(marks);
     }
 
-    // ---- the picture, end to end ----------------------------------------------------------------
 
     [Fact]
     public async Task The_desktop_picture_is_recorded_under_an_id_the_act_can_map()

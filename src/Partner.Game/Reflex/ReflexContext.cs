@@ -1,10 +1,10 @@
 namespace Partner.Game.Reflex;
 
 /// <summary>
-/// The six state domains a reflex layer reads (design doc §2.7, borrowed from the reference design).
+/// The six state domains a reflex layer reads.
 /// <para>
-/// The <b>domain split</b> is the portable part — it is what keeps reflex rules from growing into an
-/// unstructured pile of if-statements. The fields inside each domain are the ones this project's games need.
+/// The <b>domain split</b> is what keeps reflex rules from growing into an unstructured pile of if-statements.
+/// The fields inside each domain are the ones this project's games need.
 /// </para>
 /// </summary>
 public sealed record SelfState(double X, double Y, double Health, double MaxHealth, string? Holding);

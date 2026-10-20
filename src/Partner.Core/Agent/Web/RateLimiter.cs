@@ -3,9 +3,9 @@ namespace Partner.Core.Agent.Web;
 /// <summary>
 /// A token bucket per engine, kept in memory.
 /// <para>
-/// Its whole design is in what it does not do: it never blocks the fanout. The buckets refill on their own and a
-/// caller that cannot get a token is told how long it would have to wait — the fanout then decides whether that
-/// wait is worth adding to everyone else's answer, and for a breadth engine it usually is not.
+/// It never blocks the fanout. The buckets refill on their own and a caller that cannot get a token is told how
+/// long it would have to wait — the fanout then decides whether that wait is worth adding to everyone else's
+/// answer, and for a breadth engine it usually is not.
 /// </para>
 /// </summary>
 public sealed class RateLimiter

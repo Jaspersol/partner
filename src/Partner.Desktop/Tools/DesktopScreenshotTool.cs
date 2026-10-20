@@ -96,8 +96,7 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         var handle = ParseHandle(entity.EntityId);
 
         // Asked of the window, not of the observation: a focus that restored it may have happened after the
-        // observation was taken, and the log showed exactly that — restored at one step, still "minimized" at
-        // the next, because the picture was refused from a stale snapshot.
+        // observation was taken, so a stale snapshot would refuse the capture.
         if (NativeMethods.IsIconic(handle))
         {
             // Windows reports a minimized window as a 160×28 stub at -32000,-32000. Capturing that returns a
@@ -166,8 +165,8 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
             return new ToolResult(false, $"编码截图失败：{error.Message}");
         }
 
-        // JPEG when asked: a picture with grid lines and number marks survives the loss, and is a fraction of the
-        // size — which is what the model pays for in tokens and the upload in time.
+        // JPEG when asked: a picture with grid lines and number marks survives the loss, and is a fraction of
+        // the size — which is what the model pays for in tokens and the upload in time.
         var contentType = "image/png";
         if (string.Equals(arguments.Format, "jpeg", StringComparison.OrdinalIgnoreCase))
         {
@@ -225,12 +224,11 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     /// <summary>
     /// The visible state after an action, as the act tool's answer itself.
     /// <para>
-    /// An action's result used to be text only, so the model had to spend a second tool call guessing what
-    /// the result looked like — and a GUI task is precisely the case where wanting to see is the norm, not
-    /// the exception. This is the same pipeline <see cref="InvokeAsync"/> runs, aimed at the window that was
-    /// just acted on: capture, scale to the token budget, draw the grid and the element marks, store under a
-    /// media id, and return the data URI for the wire. Every step degrades silently to "no picture" rather
-    /// than failing the action that already succeeded: a missing picture costs the model one
+    /// An action's result is text only, so the model would otherwise spend a second tool call guessing what
+    /// the result looked like. This is the same pipeline <see cref="InvokeAsync"/> runs, aimed at the window
+    /// that was just acted on: capture, scale to the token budget, draw the grid and the element marks, store
+    /// under a media id, and return the data URI for the wire. Every step degrades silently to "no picture"
+    /// rather than failing the action that already succeeded: a missing picture costs the model one
     /// <c>desktop_screenshot</c> call, a failed action costs the whole turn.
     /// </para>
     /// <para>
@@ -478,10 +476,8 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     /// What the model needs in order to act on what it just saw: which window, where that window is on screen,
     /// how the picture maps onto it, what the marks mean, and the call to make.
     /// <para>
-    /// The instructions about the grid are part of the contract, not decoration. A measured failure had the
-    /// model describe a play button correctly in words and then ask for it 334 px away in empty background —
-    /// it had nothing to measure against, and arithmetic against a window offset was the only path from the
-    /// picture to a coordinate.
+    /// The instructions about the grid are part of the contract, not decoration: without them arithmetic
+    /// against a window offset is the only path from the picture to a coordinate.
     /// </para>
     /// </summary>
     private static string Describe(
@@ -536,9 +532,9 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
     }
 
     /// <summary>
-    /// One mark in the legend: its number, name and elementId, and nothing else. The click point is left out on
-    /// purpose — an action given the elementId computes it on the server, and the same coordinates repeated for
-    /// twenty-four marks are most of what the legend used to cost.
+    /// One mark in the legend: its number, name and elementId, and nothing else. The click point is left out
+    /// on purpose — an action given the elementId computes it on the server, and repeating the same
+    /// coordinates for twenty-four marks is most of what the legend costs.
     /// </summary>
     private static string Describe(ScreenshotMark mark) => $"{mark.Index}={mark.Label}({mark.ElementId})";
 
@@ -702,7 +698,6 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         return string.Join("\n", lines);
     }
 
-    /// <summary>The window handle behind an entity id, which the observation wrote as hex.</summary>
     /// <summary>The same picture as a JPEG (quality 82).</summary>
     internal static byte[] RecodeAsJpeg(byte[] png)
     {

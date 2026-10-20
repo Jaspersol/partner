@@ -7,11 +7,12 @@ using System.Text.Json;
 namespace Partner.Voice.Asr;
 
 /// <summary>
-/// ASR HTTP 客户端：<c>POST {BaseUrl}/v1/chat/completions</c>，音频以 16-bit PCM WAV 内联 base64 发送。
+/// ASR HTTP client: <c>POST {BaseUrl}/v1/chat/completions</c> with 16-bit PCM WAV inlined as base64.
 /// <para>
-/// 连接超时与读取超时分开：<see cref="HttpClient.Timeout"/> 为无限，连接阶段用
-/// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>，响应阶段用 <see cref="Task.WaitAsync(TimeSpan, CancellationToken)"/>。
-/// 两种超时都抛 <see cref="AsrTimeoutException"/>，调用方据此重试整块音频。
+/// Connect and read timeouts are separate: <see cref="HttpClient.Timeout"/> is infinite, the connect phase uses
+/// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>, and the response phase uses
+/// <see cref="Task.WaitAsync(TimeSpan, CancellationToken)"/>.
+/// Both timeouts throw <see cref="AsrTimeoutException"/>, and the caller retries the whole audio block.
 /// </para>
 /// </summary>
 public sealed class HttpAsrClient : IAsrClient
@@ -84,7 +85,7 @@ public sealed class HttpAsrClient : IAsrClient
 
             if (!line.StartsWith("data:", StringComparison.Ordinal))
             {
-                continue; // 空行、SSE 注释（": ..."）与其他字段
+                continue; // blank line, SSE comment (": ..."), or another field
             }
 
             var payload = line[5..].Trim();
@@ -138,7 +139,7 @@ public sealed class HttpAsrClient : IAsrClient
 
     private static readonly JsonWriterOptions WriterOptions = new()
     {
-        // base64 与 <asr_text> 里的 + / < / > 不必转义成 \uXXXX：既省字节，也让线上载荷与设计文档一致。
+        // Base64 and the + / < / > in <asr_text> need no \uXXXX escaping: saves bytes and keeps the wire payload compact.
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
@@ -167,7 +168,7 @@ public sealed class HttpAsrClient : IAsrClient
 
             if (_options.Language is not null)
             {
-                // 预填助手回合，让模型直接产出转写文本而不是 "language X<asr_text>" 元数据。
+                // Prefill the assistant turn so the model emits the transcript directly instead of "language X<asr_text>" metadata.
                 writer.WriteStartObject();
                 writer.WriteString("role", "assistant");
                 writer.WriteStartArray("content");
@@ -198,7 +199,7 @@ public sealed class HttpAsrClient : IAsrClient
         }
         catch (TimeoutException ex)
         {
-            connectCts.Cancel(); // 放弃这次卡死的请求，别把连接留在池里
+            connectCts.Cancel(); // abandon the stalled request rather than leave the connection in the pool
             throw new AsrTimeoutException(
                 $"ASR response timed out after {_options.ReadTimeout.TotalMilliseconds:0} ms.", ex);
         }

@@ -1,23 +1,23 @@
 namespace Partner.Core.Agent.Llm;
 
 /// <summary>
-/// 模型请求的一次工具调用（设计文档 §2.9.5）。<see cref="ArgumentsJson"/> 是模型给出的原始 JSON 字符串，
-/// 本层不解析、不校验——由工具自身与治理层负责。
+/// One tool call requested by the model. <see cref="ArgumentsJson"/> is the raw JSON string the model produced;
+/// this layer neither parses nor validates it — the tool itself and the governance layer do.
 /// </summary>
-/// <param name="Id">模型给出的调用标识，回填 <c>role = "tool"</c> 的消息时使用。</param>
-/// <param name="Name">工具名。</param>
-/// <param name="ArgumentsJson">工具参数（原始 JSON 文本）。</param>
+/// <param name="Id">The call id given by the model; used when filling in a <c>role = "tool"</c> message.</param>
+/// <param name="Name">Tool name.</param>
+/// <param name="ArgumentsJson">Tool arguments (raw JSON text).</param>
 public sealed record LlmToolCall(string Id, string Name, string ArgumentsJson);
 
 /// <summary>
-/// 一次对话消息（设计文档 §2.9.5）。不可变值对象。
+/// One conversation message. Immutable value object.
 /// </summary>
-/// <param name="Role">角色：<c>"system"</c> / <c>"user"</c> / <c>"assistant"</c> / <c>"tool"</c>。</param>
-/// <param name="Content">文本内容；纯工具调用消息可以为 <see langword="null"/>。</param>
-/// <param name="ToolCalls">助手消息携带的工具调用；无则为 <see langword="null"/>。</param>
-/// <param name="ToolCallId">仅 <c>role == "tool"</c> 时设置：对应 <see cref="LlmToolCall.Id"/>。</param>
-/// <param name="Name">可选名字（例如 <c>role == "tool"</c> 时的工具名）。</param>
-/// <param name="Images">附图的 data URI，按附加顺序；无则为 <see langword="null"/>。</param>
+/// <param name="Role">Role: <c>"system"</c> / <c>"user"</c> / <c>"assistant"</c> / <c>"tool"</c>.</param>
+/// <param name="Content">Text content; may be <see langword="null"/> for a tool-call-only message.</param>
+/// <param name="ToolCalls">Tool calls carried by an assistant message; <see langword="null"/> when none.</param>
+/// <param name="ToolCallId">Set only when <c>role == "tool"</c>: the matching <see cref="LlmToolCall.Id"/>.</param>
+/// <param name="Name">Optional name (for example the tool name when <c>role == "tool"</c>).</param>
+/// <param name="Images">Data URIs of attached images, in attach order; <see langword="null"/> when none.</param>
 public sealed record LlmMessage(
     string Role,
     string? Content,

@@ -5,12 +5,11 @@ public sealed record LatencySummary(string Name, int Count, double P50Ms, double
 
 /// <summary>
 /// The latencies a person feels, in one place: first sound after a reply starts, a search, an action, a hand-off,
-/// a whole turn. Each is measured where it happens and read here, so "is it slower than last week" has an answer
-/// that is not a feeling.
+/// a whole turn.
 /// <para>
-/// Process-wide on purpose. These are diagnostics written from half a dozen unrelated components, none of which
-/// should have to be handed a tracker to be measured; the cost of that convenience is that tests must use
-/// distinct names (or <see cref="Reset"/>). Each name keeps its latest <see cref="Samples"/> values.
+/// Process-wide on purpose. These are diagnostics written from unrelated components, none of which should have
+/// to be handed a tracker to be measured; the cost is that tests must use distinct names (or <see cref="Reset"/>).
+/// Each name keeps its latest <see cref="Samples"/> values.
 /// </para>
 /// </summary>
 public static class LatencyTracker

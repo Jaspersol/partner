@@ -4,12 +4,12 @@ import ThinkingRow from '../src/components/ThinkingRow.vue'
 import { sharedTickSubscribers } from '../src/clock'
 
 /**
- * One clock for the whole app (P4 #30).
+ * One clock for the whole app.
  *
  * <para>
- * The two consumers each used to own a one-second interval, so a turn that thought in three stretches while a
- * queue item ran had four timers firing in the same millisecond to display the same second count several times
- * over. The shared clock is started by the first caller and stopped by the last.
+ * Per-consumer intervals would make a turn that thought in three stretches while a queue item ran fire four
+ * timers in the same millisecond to display the same second count several times over. The shared clock is
+ * started by the first caller and stopped by the last.
  * </para>
  *
  * <para>
@@ -40,8 +40,7 @@ describe('the shared clock', () => {
     expect(afterFirst).toBeGreaterThan(0)
 
     // A second stretch of reasoning. The event log renders every one of them at once, so this is the ordinary
-    // case, not a corner: before the change each row ran its own interval, all firing in the same millisecond
-    // to display the same second count.
+    // case, not a corner: a per-row interval would fire repeatedly to display the same second count.
     const second = mount(ThinkingRow, { props: { body: '第二段', running: true, since: startedAt } })
 
     expect(vi.getTimerCount()).toBe(afterFirst)

@@ -6,8 +6,7 @@ namespace Partner.Game.Tests.Adapter;
 
 /// <summary>
 /// End-to-end tests of <see cref="ProcessGameAdapter"/> against the real
-/// <c>partner-game-testserver</c> child process (design doc §2.7: the adapter is only
-/// interesting across a process boundary).
+/// <c>partner-game-testserver</c> child process: the adapter is only interesting across a process boundary.
 /// </summary>
 public sealed class ProcessGameAdapterTests : IDisposable
 {

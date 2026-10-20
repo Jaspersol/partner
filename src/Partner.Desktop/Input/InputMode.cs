@@ -13,8 +13,7 @@ public enum InputMode
 {
     /// <summary>
     /// Everything as before: a channel that needs no foreground is used when the action names a control it
-    /// supports, anything else takes the screen over. The default, because it is what every earlier session
-    /// was tested against.
+    /// supports, anything else takes the screen over.
     /// </summary>
     Foreground,
 
@@ -45,9 +44,8 @@ public static class InputModes
         value is Foreground or Auto or Background;
 
     /// <summary>
-    /// The mode a setting names. An unknown or missing value is <see cref="InputMode.Foreground"/> — the
-    /// behaviour that existed before the setting did — rather than an error: a settings file written by an
-    /// older build must keep working.
+    /// The mode a setting names. An unknown or missing value parses as <see cref="InputMode.Foreground"/> rather
+    /// than throwing, so a settings file written by an older build keeps working.
     /// </summary>
     public static InputMode Parse(string? value) => value switch
     {

@@ -1,29 +1,30 @@
 namespace Partner.Core.Agent.Skills;
 
-/// <summary>一次工作区技能扫描的结果。</summary>
-/// <param name="Skills">已应用数量上限、按 <see cref="SkillDefinition.SkillId"/> 升序排列的技能。</param>
+/// <summary>The result of one workspace skill scan.</summary>
+/// <param name="Skills">Skills after the count limit is applied, ordered by <see cref="SkillDefinition.SkillId"/> ascending.</param>
 /// <param name="Warnings">
-/// 跳过或丢弃的原因说明。顺序确定：逐路径的警告按路径序号（<see cref="StringComparer.Ordinal"/>）排列，
-/// 数量上限警告追加在最后。
+/// Why a skill was skipped or dropped. Order is deterministic: per-path warnings sort by path ordinal
+/// (<see cref="StringComparer.Ordinal"/>), and the count-limit warning is appended last.
 /// </param>
 public sealed record SkillLoadResult(IReadOnlyList<SkillDefinition> Skills, IReadOnlyList<string> Warnings);
 
 /// <summary>
-/// 工作区技能扫描器（设计文档缺口 C：Skills 的注入格式与工作区扫描规则）。
+/// Workspace skill scanner.
 /// <para>
-/// 只识别 <c>&lt;workspaceDirectory&gt;/skills/&lt;skillId&gt;/SKILL.md</c> 这一种形态：
-/// <c>skills</c> 目录不存在时返回空结果且<b>不产生警告</b>；
-/// 目录名不匹配 <c>^[a-z0-9][a-z0-9._-]*$</c>、缺少 <c>SKILL.md</c>、
-/// 前置元数据缺失或未闭合、必填字段缺失或为空时，记一条警告并跳过该技能。
+/// Recognises only <c>&lt;workspaceDirectory&gt;/skills/&lt;skillId&gt;/SKILL.md</c>. When the <c>skills</c>
+/// directory is absent it returns an empty result with <b>no warning</b>. A directory name not matching
+/// <c>^[a-z0-9][a-z0-9._-]*$</c>, a missing <c>SKILL.md</c>, missing or unclosed front matter, or a missing or
+/// empty required field records a warning and skips that skill.
 /// </para>
 /// <para>
-/// <b>文件格式</b>：首行必须恰为 <c>---</c>，前置元数据在下一个恰为 <c>---</c> 的行结束。
-/// 键为 <c>name</c> 与 <c>description</c>（键名大小写不敏感，值去除首尾空白），两者必填；
-/// 未知键、空行以及不含 <c>:</c> 的行一律静默忽略（保持宽容）。
-/// <c>description</c> 由构造保证单行；超过 <c>maxDescriptionChars</c> 时截断并追加 <c>…</c>。
-/// <see cref="SkillDefinition.Instructions"/> 为结束分隔线之后的全部内容，至多剥离一个前导换行。
+/// <b>File format</b>: the first line must be exactly <c>---</c>, and the front matter ends at the next line
+/// that is exactly <c>---</c>. Keys are <c>name</c> and <c>description</c> (case-insensitive, values trimmed),
+/// both required; unknown keys, blank lines, and lines without <c>:</c> are silently ignored.
+/// <c>description</c> is single-line by construction; longer than <c>maxDescriptionChars</c> it is truncated and
+/// <c>…</c> appended. <see cref="SkillDefinition.Instructions"/> is everything after the closing delimiter, with
+/// at most one leading newline stripped.
 /// </para>
-/// <para>内容不合法绝不抛异常，一律降级为警告；文件本身的 I/O 失败则照常抛出。</para>
+/// <para>Invalid content never throws; it degrades to a warning. I/O failures on the files themselves still throw.</para>
 /// </summary>
 public sealed class SkillLoader
 {
@@ -37,11 +38,11 @@ public sealed class SkillLoader
     private readonly int _maxSkills;
     private readonly int _maxDescriptionChars;
 
-    /// <summary>创建扫描器。</summary>
-    /// <param name="maxSkills">最多返回的技能数；多余的按 <see cref="SkillDefinition.SkillId"/> 升序丢弃并记一条警告。</param>
-    /// <param name="maxDescriptionChars">描述的最大字符数，超出部分截断并追加 <c>…</c>。</param>
+    /// <summary>Creates the scanner.</summary>
+    /// <param name="maxSkills">Maximum number of skills returned; the excess is dropped in <see cref="SkillDefinition.SkillId"/> ascending order with one warning.</param>
+    /// <param name="maxDescriptionChars">Maximum description length; the excess is truncated and <c>…</c> appended.</param>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// <paramref name="maxSkills"/> 为负，或 <paramref name="maxDescriptionChars"/> 小于 1。
+    /// <paramref name="maxSkills"/> is negative, or <paramref name="maxDescriptionChars"/> is less than 1.
     /// </exception>
     public SkillLoader(int maxSkills = 50, int maxDescriptionChars = 200)
     {
@@ -52,24 +53,25 @@ public sealed class SkillLoader
         _maxDescriptionChars = maxDescriptionChars;
     }
 
-    /// <summary>扫描 <c>&lt;workspaceDirectory&gt;/skills/*/SKILL.md</c>。内容不合法时不抛异常。</summary>
-    /// <exception cref="ArgumentException"><paramref name="workspaceDirectory"/> 为 null、空或纯空白。</exception>
+    /// <summary>Scans <c>&lt;workspaceDirectory&gt;/skills/*/SKILL.md</c>. Invalid content does not throw.</summary>
+    /// <exception cref="ArgumentException"><paramref name="workspaceDirectory"/> is null, empty, or whitespace.</exception>
     public SkillLoadResult Load(string workspaceDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceDirectory);
 
-        // 结果里的 Directory 必须是绝对路径，因此先规范化根目录。
+        // Directory in the result must be absolute, so normalise the root first.
         var skillsDirectory = Path.GetFullPath(Path.Combine(workspaceDirectory, SkillsDirectoryName));
         if (!Directory.Exists(skillsDirectory))
         {
-            // 没有 skills 目录不是错误，也不产生警告。
+            // A missing skills directory is not an error and produces no warning.
             return new SkillLoadResult(Array.Empty<SkillDefinition>(), Array.Empty<string>());
         }
 
         var warnings = new List<string>();
         var skills = new List<SkillDefinition>();
 
-        // 目录名即 SkillId；先按路径序号排序，保证警告顺序确定（枚举顺序取决于文件系统）。
+        // The directory name is the SkillId; sort by path ordinal first so warning order is deterministic
+        // (enumeration order depends on the file system).
         var directories = Directory
             .EnumerateDirectories(skillsDirectory)
             .OrderBy(static directory => directory, StringComparer.Ordinal);
@@ -109,13 +111,13 @@ public sealed class SkillLoader
     }
 
     /// <summary>
-    /// 解析单个 <c>SKILL.md</c>；内容不合法时记一条警告并返回 <see langword="null"/>。
+    /// Parses one <c>SKILL.md</c>; invalid content records a warning and returns <see langword="null"/>.
     /// </summary>
     private SkillDefinition? Parse(string skillId, string directory, string skillFile, List<string> warnings)
     {
         var text = File.ReadAllText(skillFile);
 
-        // 容忍 UTF-8 BOM：否则首行不会是恰好 ---。
+        // Tolerate a UTF-8 BOM: otherwise the first line would not be exactly ---.
         if (text.Length > 0 && text[0] == '\uFEFF')
         {
             text = text[1..];
@@ -148,7 +150,7 @@ public sealed class SkillLoader
         string? description = null;
         for (var i = 1; i < closingIndex; i++)
         {
-            // 空行与不含 ':' 的行静默忽略（保持宽容）。
+            // Blank lines and lines without ':' are silently ignored.
             var line = lines[i].Text.Trim();
             var separator = line.IndexOf(':');
             if (line.Length == 0 || separator < 0)
@@ -159,7 +161,7 @@ public sealed class SkillLoader
             var key = line[..separator].Trim();
             var value = line[(separator + 1)..].Trim();
 
-            // 键名大小写不敏感；未知键忽略。重复键以后者为准。
+            // Keys are case-insensitive; unknown keys are ignored. A duplicate key takes the later value.
             if (key.Equals(NameKey, StringComparison.OrdinalIgnoreCase))
             {
                 name = value;
@@ -197,7 +199,7 @@ public sealed class SkillLoader
         };
     }
 
-    /// <summary>取结束分隔线之后的全部内容，至多剥离一个前导换行（即结束行的行终止符）。</summary>
+    /// <summary>Everything after the closing delimiter, with at most one leading newline (the closing line's terminator) stripped.</summary>
     private static string ExtractInstructions(string text, SourceLine closingLine)
     {
         var start = closingLine.Start + FrontMatterDelimiter.Length;
@@ -215,7 +217,7 @@ public sealed class SkillLoader
         return text[start..];
     }
 
-    /// <summary>按行切分，记录每行去掉行终止符后的内容与行首下标（兼容 <c>\n</c> 与 <c>\r\n</c>）。</summary>
+    /// <summary>Splits into lines, recording each line's text without its terminator and its start index (handles <c>\n</c> and <c>\r\n</c>).</summary>
     private static List<SourceLine> SplitLines(string text)
     {
         var lines = new List<SourceLine>();
@@ -240,11 +242,11 @@ public sealed class SkillLoader
         return lines;
     }
 
-    /// <summary>该行是否恰为前置元数据分隔线（允许行尾的 <c>\r</c>）。</summary>
+    /// <summary>Whether the line is exactly the front-matter delimiter (a trailing <c>\r</c> is already removed).</summary>
     private static bool IsDelimiter(SourceLine line) =>
         line.Text.AsSpan().SequenceEqual(FrontMatterDelimiter);
 
-    /// <summary>技能标识校验：等价于 <c>^[a-z0-9][a-z0-9._-]*$</c>。</summary>
+    /// <summary>Skill-id check: equivalent to <c>^[a-z0-9][a-z0-9._-]*$</c>.</summary>
     private static bool IsValidSkillId(string skillId)
     {
         if (skillId.Length == 0 || !IsLowerAlphaNumeric(skillId[0]))
@@ -266,6 +268,6 @@ public sealed class SkillLoader
 
     private static bool IsLowerAlphaNumeric(char c) => c is >= 'a' and <= 'z' or >= '0' and <= '9';
 
-    /// <summary>一行源文本：<see cref="Text"/> 去掉行终止符，<see cref="Start"/> 为行首在原文中的下标。</summary>
+    /// <summary>One source line: <see cref="Text"/> without its terminator, <see cref="Start"/> its index in the source.</summary>
     private readonly record struct SourceLine(string Text, int Start);
 }

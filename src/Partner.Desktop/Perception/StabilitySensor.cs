@@ -4,18 +4,12 @@ using Partner.Desktop.Capture;
 namespace Partner.Desktop.Perception;
 
 /// <summary>
-/// Watches one window until its pixels stop moving.
+/// Watches one window until its pixels stop moving: a slow dialog, a loading pane, a spinner. Waiting is one
+/// call with a deadline, not repeated observations.
 /// <para>
-/// The same primitive the post-action verifier uses internally (`NoChange` rechecks, dirty-region
-/// comparison), exposed as something a model can call: a slow dialog, a loading pane, a spinner — the
-/// model's only old answer for those was "observe again" on a loop until either it saw what it wanted or
-/// the turn budget died. Waiting is one call with a deadline, not N observations.
-/// </para>
-/// <para>
-/// Stability is <b>two consecutive identical frames</b> spaced a hard delay apart, not one: a frame
-/// sampled mid-repaint looks still and a frame sampled after the first click looks still ~30 % of the
-/// time in a measured run. One identical hash proves nothing; two hash-identical rounds in a row are the
-/// pause that a human would call "it settled".
+/// Stability is <b>two consecutive identical frames</b> spaced a hard delay apart, not one: a frame sampled
+/// mid-repaint looks still, and a frame sampled right after the first click looks still about 30% of the time.
+/// Two hash-identical rounds in a row are the pause a human would call "it settled".
 /// </para>
 /// </summary>
 public sealed class StabilitySensor(IScreenCapture capture, TimeProvider? clock = null)
@@ -23,8 +17,8 @@ public sealed class StabilitySensor(IScreenCapture capture, TimeProvider? clock 
     private readonly IScreenCapture _capture = capture;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
-    /// <summary>Interval between rounds: short enough to beat a human's patience, long enough that the
-    /// three rounds fit inside almost any scene's repaint cadence.</summary>
+    /// <summary>Interval between rounds: short enough to beat a human's patience, long enough that the rounds
+    /// fit inside most scenes' repaint cadence.</summary>
     internal static readonly TimeSpan RoundDelay = TimeSpan.FromMilliseconds(300);
 
     /// <summary>The deadline a caller can request, as the sensor enforces it.</summary>
@@ -35,16 +29,15 @@ public sealed class StabilitySensor(IScreenCapture capture, TimeProvider? clock 
 
     private static string Hash(CaptureResult frame)
     {
-        // A hash, not the bytes: the comparison is equal/unequal, and keeping whole frames alive between
-        // rounds is memory the sensor does not need to spend.
+        // A hash, not the bytes: the comparison is equal/unequal, and keeping whole frames alive between rounds
+        // is memory the sensor does not need to spend.
         var bytes = MD5.HashData(frame.Bgra);
         return Convert.ToHexString(bytes);
     }
 
     /// <summary>
-    /// Waits until two consecutive captures of the window hash identically, or the deadline passes.
-    /// Returns the settled state: how long it took, whether it settled, and the last frame's shape —
-    /// the caller's answer grows from this, not from the sensor guessing what "good" means.
+    /// Waits until two consecutive captures of the window hash identically, or the deadline passes. Returns how
+    /// long it took, whether it settled, and the last frame's shape.
     /// </summary>
     public async Task<(bool Stable, double WaitedMs, int Width, int Height, int Rounds)> WaitStillAsync(
         nint handle, TimeSpan timeout, CancellationToken ct = default)

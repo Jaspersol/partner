@@ -34,7 +34,7 @@ public sealed class OpenAiAsrClientTests
         Assert.Contains("filename", body);
         Assert.Contains("audio/wav", body);
 
-        // WAV 正文真实在 multipart 里，头是 PCM 16-bit 单声道。
+        // The WAV bytes are really in the multipart body, with a 16-bit mono PCM header.
         Assert.Contains("RIFF", body);
         Assert.Contains("WAVE", body);
         Assert.DoesNotContain("language Chinese<asr_text>", body);

@@ -7,13 +7,10 @@ using Partner.Desktop.Perception;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// The page's debug protocol, spoken to a stand-in for a browser.
-/// <para>
-/// The stand-in is a loopback HTTP listener that serves the target list and upgrades the page socket, then
-/// answers every command and writes down what it was sent. That is enough to pin the part that matters — the
-/// commands and their order on the wire, the one-time focus emulation, a refusal reported as a refusal and an
-/// unreachable page reported as unreachable — without a browser or a window.
-/// </para>
+/// The page's debug protocol, spoken to a stand-in for a browser: a loopback HTTP listener that serves the
+/// target list, upgrades the page socket, answers every command and records what it was sent. This pins the
+/// commands and their order on the wire, the one-time focus emulation, a refusal reported as a refusal, and an
+/// unreachable page reported as unreachable, without a browser or a window.
 /// </summary>
 public sealed class CdpInputWireTests
 {
@@ -202,7 +199,7 @@ public sealed class CdpInputWireTests
 
         var result = await source.ClickAsync(target.Port, "stand-in", 10, 10, right: false, count: 1);
 
-        // Not null: the channel was up and the page said no, which is an answer. Null is for a page that is gone.
+        // Not null: the channel was up and the page said no, which is an answer. Null means the page is gone.
         Assert.NotNull(result);
         Assert.False(result!.Ok);
         Assert.Contains("refused by the page", result.Detail, StringComparison.Ordinal);

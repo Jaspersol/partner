@@ -22,24 +22,13 @@ public enum WalkStopReason
 }
 
 /// <summary>
-/// What bounds one window's UI Automation walk.
+/// What bounds one window's UI Automation walk: nodes visited, controls produced, depth and elapsed time. A
+/// produced-elements cap alone bounds nothing when a window has few interesting controls; a Chromium window is
+/// mostly <c>Custom</c> elements the walk skips, so it would keep descending the whole tree and paying a
+/// cross-process RPC per node. The time budget bounds a provider that never answers; the visited cap bounds a
+/// tree that is merely large.
 /// <para>
-/// The walk used to be bounded by depth and by how many elements it had <i>produced</i> — and the second of
-/// those bounds nothing at all when the window has few interesting controls. A Chromium window is mostly
-/// <c>Custom</c> elements that the walk skips, so the element count never reaches its cap and the walk keeps
-/// descending through the entire tree, paying a cross-process RPC per node. The number that actually costs
-/// time is the number of nodes <b>visited</b>, and that is what this counts.
-/// </para>
-/// <para>
-/// The time budget is the other half of it: depth and element caps say nothing about a window whose provider
-/// simply does not answer, and one such window is enough to hold the whole observation. It is deliberately
-/// generous — it exists for a provider that hangs, not for a tree that is merely large, and the visited cap
-/// is what handles the latter.
-/// </para>
-/// <para>
-/// A record with a pure <see cref="Stop"/>, deliberately: the walk itself needs a real window, and a rule
-/// that can only be checked by watching a stopwatch is a rule that drifts. Each field here is a number that
-/// can be asserted without a desktop.
+/// A record with a pure <see cref="Stop"/> so the rule can be asserted without a real window.
 /// </para>
 /// </summary>
 public sealed record WalkBudget
@@ -58,26 +47,18 @@ public sealed record WalkBudget
     public int MaxDepth { get; init; } = 6;
 
     /// <summary>
-    /// How long one window may take.
-    /// <para>
-    /// Deliberately above the slowest window measured on a real desktop — 3.4 s for a window when this
-    /// application's own WebView2 window was open — because a budget that cuts off a merely slow window turns
-    /// a working one into a blind one, which is the opposite of what this is for. It bounds a provider that
-    /// never answers, not one that is busy; the visited cap is what handles a tree that is merely large.
-    /// </para>
+    /// How long one window may take. Deliberately generous: it bounds a provider that never answers, not one
+    /// that is busy, and cutting off a merely slow window turns a working one into a blind one. The visited cap
+    /// handles a tree that is merely large.
     /// </summary>
     public TimeSpan TimeBudget { get; init; } = TimeSpan.FromMilliseconds(5000);
 
     public static WalkBudget Default { get; } = new();
 
     /// <summary>
-    /// Whether the walk may take one more node, and why not when it may not.
-    /// <para>
-    /// Order matters only for which reason gets reported; every one of them stops the walk. Depth is checked
-    /// first because it is the cheapest and the most specific, then the produced cap (the original bound,
-    /// kept — it is what stops one app from filling the answer), then the two that bound work rather than
-    /// output.
-    /// </para>
+    /// Whether the walk may take one more node, and why not when it may not. Order matters only for which
+    /// reason gets reported; every check stops the walk. Depth is first because it is cheapest and most
+    /// specific, then the produced cap, then the two bounds on work rather than output.
     /// </summary>
     public WalkStopReason Stop(int depth, int produced, int visited, double elapsedMs)
     {
@@ -105,12 +86,9 @@ public sealed record WalkBudget
 }
 
 /// <summary>
-/// The mutable half of a walk: what has been visited so far and whether it has already stopped.
-/// <para>
-/// Split out from <see cref="WalkBudget"/> so the rules stay a pure function that a test can pin, while the
-/// recursion carries only counters. Once stopped it stays stopped: a walk that kept going after hitting its
-/// budget would report a reason it then stopped honouring.
-/// </para>
+/// The mutable half of a walk: what has been visited so far and whether it has already stopped. Split from
+/// <see cref="WalkBudget"/> so the rules stay pure, while the recursion carries only counters. Once stopped it
+/// stays stopped.
 /// </summary>
 internal sealed class WalkState(WalkBudget budget, Stopwatch clock)
 {

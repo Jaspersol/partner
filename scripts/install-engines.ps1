@@ -51,7 +51,6 @@ function Get-Url {
     Move-Item -Force $tempPath $Destination
 }
 
-# ---- TTS: HaujetZhao/Qwen3-TTS-GGUF pre-built (Vulkan, no CUDA runtime required) ----
 if ($Engine -in 'both', 'tts') {
     $tts = Join-Path $engines 'tts'
     if ($CleanTts -and (Test-Path $tts)) {
@@ -122,7 +121,6 @@ run it with:
 "@
 }
 
-# ---- KWS+ASR: sherpa-onnx runtime + SenseVoice + zipformer KWS ----
 if ($Engine -in 'both', 'kws') {
     $kws = Join-Path $engines 'kws-asr'
     $models = Join-Path $kws 'models'

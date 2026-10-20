@@ -5,12 +5,11 @@ using System.Text.Json;
 namespace Partner.Voice.Asr;
 
 /// <summary>
-/// 通用 ASR HTTP 客户端：OpenAI 标准 <c>POST {BaseUrl}/audio/transcriptions</c>，
-/// WAV 以 multipart/form-data 上传，解析 <c>{ "text": "..." }</c> 响应。
+/// Generic ASR HTTP client: OpenAI standard <c>POST {BaseUrl}/audio/transcriptions</c>, WAV uploaded as
+/// multipart/form-data, parsing a <c>{ "text": "..." }</c> response.
 /// <para>
-/// 与 <see cref="HttpAsrClient"/> 的差别：不带 <c>language X&lt;asr_text&gt;</c> 元数据，
-/// 不预填助手回合——whisper / funasr 等标准端点只认这三种字段：<c>file</c>、<c>model</c>、<c>language</c>。
-/// 流式（<see cref="TranscribeStreamAsync"/>）端到端其实就是一次完整转写，所以非流式与流式行为一致。
+/// Unlike <see cref="HttpAsrClient"/> it carries no <c>language X&lt;asr_text&gt;</c> metadata and prefills no assistant
+/// turn — standard endpoints such as whisper / funasr accept only <c>file</c>, <c>model</c> and <c>language</c>.
 /// </para>
 /// </summary>
 public sealed class OpenAiAsrClient : IAsrClient
@@ -57,7 +56,7 @@ public sealed class OpenAiAsrClient : IAsrClient
         float[] pcm,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        // 标准端点没有 SSE 流式转写：一次给全文，调用方当增量用。
+        // The standard endpoint has no SSE streaming transcription: return the full text once and let the caller treat it as a delta.
         var text = await TranscribeAsync(pcm, ct).ConfigureAwait(false);
         if (text.Length > 0)
         {

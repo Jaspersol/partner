@@ -10,9 +10,8 @@ namespace Partner.Api.Settings;
 /// It is deliberately <b>not</b> the observation lease (<c>LeaseStore</c>): that one is about
 /// <i>what the model saw</i> — identity, generation, TTL measured in seconds. This one is about
 /// <i>what the human approved</i> — it carries no geometry and answers to nothing but the window handle,
-/// the kinds the model asked for, and the human's patience measured in steps. Approval that had to be
-/// re-asked for every single click was the friction this replaces; the danger classes never enter it, which
-/// is what keeps it from becoming a general bypass.
+/// the kinds the model asked for, and the human's patience measured in steps. The danger classes never enter
+/// it, which keeps it from becoming a general bypass.
 /// </para>
 /// </summary>
 public sealed record TaskLeaseState(string EntityId, IReadOnlySet<string> Kinds, int RemainingSteps, DateTimeOffset ExpiresAt);
@@ -27,8 +26,8 @@ public sealed record TaskLeaseState(string EntityId, IReadOnlySet<string> Kinds,
 public sealed class TaskLeaseStore
 {
     /// <summary>
-    /// How much one approval buys: ten more steps on that window. Enough for a real GUI exchange (look,
-    /// act, look, act…), short enough that a model wandering off the approved target is stopped quickly.
+    /// How much one approval buys: ten more steps on that window. Enough for a real GUI exchange (look, act,
+    /// look, act), short enough that a model wandering off the approved target is stopped quickly.
     /// </summary>
     public const int DefaultSteps = 10;
 
@@ -36,9 +35,8 @@ public sealed class TaskLeaseStore
     /// shorter than "this session".</summary>
     public static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(10);
 
-    // Every ActionKind the act tool exposes: a grant is "as before, on this window", and the kinds arrive
-    // from the call that earned the grant. The dangerous tools never query here at all, so listing them
-    // would be decorative.
+    // Every ActionKind the act tool exposes: the kinds arrive from the call that earned the grant. The dangerous
+    // tools never query here, so listing them would be decorative.
     private static readonly IReadOnlySet<string> EveryActKind = new HashSet<string>(
         Enum.GetNames<ActionKind>(), StringComparer.Ordinal);
 

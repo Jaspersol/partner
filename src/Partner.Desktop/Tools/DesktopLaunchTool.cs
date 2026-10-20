@@ -10,11 +10,11 @@ namespace Partner.Desktop.Tools;
 /// <summary>
 /// Starts a program or opens a URI.
 /// <para>
-/// A bare name is resolved through the **Start Menu** first, and that is the whole point of this tool's
-/// resolution step: <c>Process.Start</c> goes through ShellExecute, which searches <c>PATH</c> and App Paths but
-/// <b>not</b> the Start Menu. So <c>notepad</c> works and <c>网易云音乐</c> — a shortcut in the Start Menu whose
-/// executable lives at <c>C:\game\WangYi\CloudMusic\cloudmusic.exe</c> — does not. A person would just click the
-/// shortcut; the tool has to find it.
+/// A bare name is resolved through the **Start Menu** first: <c>Process.Start</c> goes through ShellExecute,
+/// which searches <c>PATH</c> and App Paths but <b>not</b> the Start Menu. So <c>notepad</c> works and
+/// <c>网易云音乐</c> — a shortcut in the Start Menu whose executable lives at
+/// <c>C:\game\WangYi\CloudMusic\cloudmusic.exe</c> — does not. A person would just click the shortcut; the
+/// tool has to find it.
 /// </para>
 /// </summary>
 public sealed class DesktopLaunchTool : ITool
@@ -32,15 +32,14 @@ public sealed class DesktopLaunchTool : ITool
     private readonly IReadOnlyList<string> _roots;
 
     /// <summary>
-    /// Where launched debug ports are recorded. Null leaves the DOM path off, which is the honest default for a
-    /// tool built without one: a window launched with a flag nobody recorded has an unreachable DOM, and that
-    /// looks exactly like an application with no controls.
+    /// Where launched debug ports are recorded. Null leaves the DOM path off: a window launched with a flag
+    /// nobody recorded has an unreachable DOM, and that looks exactly like an application with no controls.
     /// </summary>
     private readonly CdpRegistry? _ports;
 
     /// <summary>
     /// Whether this launch may take the screen. Read at launch time, not construction: the mode is a setting
-    /// and it can change while the process runs. Null is the foreground behaviour every earlier build had.
+    /// and it can change while the process runs.
     /// </summary>
     private readonly Func<InputMode>? _inputMode;
 
@@ -96,35 +95,34 @@ public sealed class DesktopLaunchTool : ITool
     }
 
     /// <summary>
-/// The port a caller already asked for, if the arguments carry one.
-/// <para>
-/// This is what makes an Electron application reachable whatever it is called. The names
-/// <see cref="CdpRegistry.IsChromiumFamily"/> recognises are only the ones that can be told on sight; an
-/// Electron app is named after its product — 网易云音乐 is <c>cloudmusic.exe</c>, and nothing in that string
-/// says Chromium — so without reading the flag here that application's DOM stays unreachable however many
-/// names are added to a list. It is also the honest way to reach an application the user chose to start with
-/// the flag themselves.
-/// </para>
-/// </summary>
-internal static int? RequestedPort(string? arguments)
-{
-    if (string.IsNullOrWhiteSpace(arguments))
+    /// The port a caller already asked for, if the arguments carry one.
+    /// <para>
+    /// This is what makes an Electron application reachable whatever it is called. The names
+    /// <see cref="CdpRegistry.IsChromiumFamily"/> recognises are only the ones that can be told on sight; an
+    /// Electron app is named after its product — 网易云音乐 is <c>cloudmusic.exe</c>, and nothing in that string
+    /// says Chromium — so without reading the flag here that application's DOM stays unreachable however many
+    /// names are added to a list.
+    /// </para>
+    /// </summary>
+    internal static int? RequestedPort(string? arguments)
     {
-        return null;
+        if (string.IsNullOrWhiteSpace(arguments))
+        {
+            return null;
+        }
+
+        // Both spellings exist in the wild: --remote-debugging-port=9222 and --remote-debugging-port 9222.
+        var match = System.Text.RegularExpressions.Regex.Match(
+            arguments,
+            @"--remote-debugging-port[= ](\d{1,5})",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        return match.Success && int.TryParse(match.Groups[1].Value, out var port) && port is > 0 and <= 65535
+            ? port
+            : null;
     }
 
-    // Both spellings exist in the wild: --remote-debugging-port=9222 and --remote-debugging-port 9222.
-    var match = System.Text.RegularExpressions.Regex.Match(
-        arguments,
-        @"--remote-debugging-port[= ](\d{1,5})",
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-    return match.Success && int.TryParse(match.Groups[1].Value, out var port) && port is > 0 and <= 65535
-        ? port
-        : null;
-}
-
-/// <summary>
+    /// <summary>
     /// Starts the program and, for a browser, waits for the port it was asked to open.
     /// <para>
     /// The wait is bounded and its failure is reported, because the likeliest reason is not a bug: a
@@ -355,9 +353,9 @@ internal static int? RequestedPort(string? arguments)
     }
 
     /// <summary>
-    /// What to say when nothing matched. A model that typed "网易云" should hear "网易云音乐" back — the
-    /// alternative is it guessing executable paths, which is how a launch turns into an error about a file that
-    /// does not exist.
+    /// What to say when nothing matched. A model that typed "网易云" should hear "网易云音乐" back: the
+    /// alternative is it guessing executable paths, which is how a launch turns into an error about a file
+    /// that does not exist.
     /// </summary>
     private string NotFound(string target)
     {

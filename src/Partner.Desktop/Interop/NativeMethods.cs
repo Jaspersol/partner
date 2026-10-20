@@ -3,19 +3,16 @@ using System.Runtime.InteropServices;
 namespace Partner.Desktop.Interop;
 
 /// <summary>
-/// The Win32 surface M9 needs (design doc §2.6 L1): window enumeration, foreground control, input
-/// injection and GDI capture.
+/// The Win32 surface used for window enumeration, foreground control, input injection and GDI capture.
 /// <para>
 /// Capture uses GDI (<c>PrintWindow</c> with a screen-DC <c>BitBlt</c> fallback) rather than
 /// <c>Windows.Graphics.Capture</c>: the .NET 8 Windows SDK projection exposes no
 /// <c>GraphicsCaptureItem.CreateFromWindowId</c> / <c>Win32Interop</c>, so WGC would require hand-written
-/// COM interop plus a D3D11 device — not justified while no consumer needs more than ~10 fps
-/// (frame-level loops are explicitly out of scope, Phase 5c).
+/// COM interop plus a D3D11 device.
 /// </para>
 /// </summary>
 internal static class NativeMethods
 {
-    // ---- window enumeration / geometry -----------------------------------------------------------
     internal delegate bool EnumWindowsProc(nint hWnd, nint lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -40,12 +37,9 @@ internal static class NativeMethods
     internal static extern nint GetForegroundWindow();
 
     /// <summary>
-    /// A window's client area in screen coordinates — where its content starts.
-    /// <para>
-    /// The frame's top-left is not this: a window's content sits inside its borders and title bar, by an amount
-    /// that varies with the theme and the DPI. A page reports its own elements relative to the viewport, which
-    /// begins at the client area, so this is the one number that can convert between the two.
-    /// </para>
+    /// A window's client area in screen coordinates — where its content starts. The frame's top-left is not
+    /// this: the content sits inside the borders and title bar by an amount that varies with theme and DPI. A
+    /// page reports elements relative to the viewport, which begins at the client area.
     /// </summary>
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -121,7 +115,6 @@ internal static class NativeMethods
         public readonly int Height => Bottom - Top;
     }
 
-    // ---- capture --------------------------------------------------------------------------------
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool PrintWindow(nint hWnd, nint hdc, uint flags);
@@ -193,11 +186,9 @@ internal static class NativeMethods
         public uint Colors;
     }
 
-    // ---- focus ----------------------------------------------------------------------------------
-
     /// <summary>
     /// Opts the process into per-monitor DPI awareness. Must be the process's first DPI decision: Windows
-    /// fixes the mode once and answers <c>E_ACCESSDENIED</c> (returning false) to every later attempt.
+    /// fixes the mode once and returns false to every later attempt.
     /// </summary>
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -235,7 +226,6 @@ internal static class NativeMethods
     internal const uint SwpNomove = 0x0002;
     internal const uint SwpNoactivate = 0x0010;
 
-    // ---- clipboard ------------------------------------------------------------------------------
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool OpenClipboard(nint owner);
 
@@ -263,7 +253,6 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern nint GlobalFree(nint handle);
 
-    // ---- input injection ------------------------------------------------------------------------
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(uint count, [In] Input[] inputs, int size);
 
@@ -279,10 +268,9 @@ internal static class NativeMethods
     internal const uint MouseeventfVirtualdesk = 0x4000;
 
     /// <summary>
-    /// Makes <c>dx</c>/<c>dy</c> mean "a position in the 0..65535 coordinate range" instead of "how far to
-    /// move". Required for <see cref="MouseeventfVirtualdesk"/> to have any effect: the documentation for
-    /// that flag says it must be combined with this one, and without it a screen coordinate is applied as
-    /// a relative mouse delta.
+    /// Makes <c>dx</c>/<c>dy</c> mean a position in the 0..65535 coordinate range instead of a relative
+    /// delta. Required for <see cref="MouseeventfVirtualdesk"/> to have any effect; without it a screen
+    /// coordinate is applied as a relative mouse delta.
     /// </summary>
     internal const uint MouseeventfAbsolute = 0x8000;
 
@@ -306,13 +294,10 @@ internal static class NativeMethods
         public KeyboardInput Keyboard;
     }
 
-    // ---- token integrity level ------------------------------------------------------------------
-
     /// <summary>
     /// Reads the integrity level of the process owning a window, for the UIPI gate. Every call used here is
     /// documented against <c>PROCESS_QUERY_LIMITED_INFORMATION</c>, so a query succeeds across integrity
-    /// levels (that is the point of the limited right): what it cannot read is not "nobody may know the
-    /// level" but a protected process, which the gate treats as undetermined rather than elevated.
+    /// levels. A protected process cannot be read; the gate treats that as undetermined, not elevated.
     /// </summary>
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern nint OpenProcess(uint access, bool inherit, uint processId);
@@ -327,10 +312,9 @@ internal static class NativeMethods
     internal const uint TokenIntegrityLevel = 25;
 
     /// <summary>
-    /// Reads one token information class into an unmanaged buffer. Called first with a null buffer to size
-    /// the answer, then with it — the standard two-step. Buffer is allocated by the caller with
-    /// <c>Marshal.AllocHGlobal</c> because the SID pointer read out of it must stay in unmanaged memory for
-    /// the <c>GetSidSubAuthority</c> calls that follow.
+    /// Reads one token information class into an unmanaged buffer. Call first with a null buffer to size the
+    /// answer, then with the buffer. The caller allocates with <c>Marshal.AllocHGlobal</c> because the SID
+    /// pointer read out of it must stay in unmanaged memory for the <c>GetSidSubAuthority</c> calls.
     /// </summary>
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -346,9 +330,7 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool CloseHandle(nint handle);
 
-    // ---- launching without taking the foreground ------------------------------------------------
-
-    /// <summary>The client area's size (origin is always 0,0 — <see cref="ClientToScreen"/> places it).</summary>
+    /// <summary>The client area's size; origin is always 0,0, and <see cref="ClientToScreen"/> places it.</summary>
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetClientRect(nint hWnd, out Rect rect);

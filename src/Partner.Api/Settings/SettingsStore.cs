@@ -7,7 +7,7 @@ namespace Partner.Api.Settings;
 
 /// <summary>
 /// Persists the runtime's editable settings. Writes go through a temp file + atomic replace so a crash cannot
-/// leave a half-written configuration behind — the same discipline the session log uses.
+/// leave a half-written configuration behind.
 /// </summary>
 public sealed class SettingsStore
 {
@@ -49,7 +49,7 @@ public sealed class SettingsStore
     }
 
     /// <summary>
-    /// Fills in what an older or hand-edited file leaves out. The built-in desktop agent is restored here rather
+    /// Fills in what a hand-edited or partial file leaves out. The built-in desktop agent is restored here rather
     /// than refused, because a file that cannot be loaded cannot be fixed from the UI either.
     /// </summary>
     private static RuntimeSettings Repaired(RuntimeSettings loaded) => loaded with
@@ -61,9 +61,8 @@ public sealed class SettingsStore
     };
 
     /// <summary>
-    /// An earlier default stored the speech client as <c>native</c> (POST /tts) while pointing it at the managed local
-    /// engine, which only serves /audio/speech: every request came back 404. A client aimed at that engine's own port
-    /// is the local one, whatever an old file says.
+    /// The managed local engine only serves /audio/speech, so a client aimed at that engine's own port speaks the
+    /// local protocol whatever the stored value says; the native protocol against it would 404.
     /// </summary>
     private static TtsSettings LocalTtsMigrated(RuntimeSettings loaded)
     {
@@ -79,8 +78,7 @@ public sealed class SettingsStore
     /// Applies <paramref name="incoming"/> on top of what is stored and persists the result.
     /// <para>
     /// The API key is the one field that is not a plain replace: <see langword="null"/> keeps the stored key,
-    /// an empty string clears it, and a value replaces it. Without that rule a full-object PUT would wipe the
-    /// key every time a client edited an unrelated field.
+    /// an empty string clears it, and a value replaces it.
     /// </para>
     /// </summary>
     /// <exception cref="SettingsValidationException">The merged settings are not usable.</exception>
@@ -100,10 +98,9 @@ public sealed class SettingsStore
                 // so only its shape is normalized here — casing and stray spaces are not a different setting.
                 ReasoningEffort = ReasoningEfforts.Normalize(incoming.Model.ReasoningEffort),
 
-                // Same rule for the list: normalize, drop blanks, and de-duplicate while keeping the order
-                // the user arranged — the order is the menu order, so preserving it is the point.
-                // An empty list falls back to the built-in one: an empty menu is not a usable setting. The
-                // default is re-added if the user dropped it, so the value stays selectable in the picker.
+                // Normalize, drop blanks, and de-duplicate while keeping the user's order — the order is the menu
+                // order. An empty list falls back to the built-in one. The default is re-added if the user dropped
+                // it, so the value stays selectable in the picker.
                 ReasoningGears = gears,
                 ReasoningLabels = NormalizeLabels(incoming.Model.ReasoningLabels, gears),
             },
@@ -153,12 +150,10 @@ public sealed class SettingsStore
 
     /// <summary>
     /// Trims, lower-cases and de-duplicates the gear list while keeping the user's order, which is the menu
-    /// order. An entry blank after trimming is dropped rather than stored as a gap in the menu, and an
-    /// emptied list falls back to the built-in one: an empty menu is not a usable setting.
+    /// order. An entry blank after trimming is dropped, and an emptied list falls back to the built-in one.
     /// <para>
     /// The default gear is appended when the user removed it from the list, so the value the model is
-    /// configured with always stays selectable — otherwise renaming a gear would leave the default
-    /// pointing at something the picker cannot show.
+    /// configured with always stays selectable in the picker.
     /// </para>
     /// </summary>
     private static IReadOnlyList<string> NormalizeGears(IReadOnlyList<string> gears, string defaultGear)
@@ -180,7 +175,7 @@ public sealed class SettingsStore
 
     /// <summary>
     /// Keys are normalized like the gears they name, labels are trimmed, and a label for a word that is not in the
-    /// list (or a blank one) is dropped: a name for nothing is clutter that would outlive the row it described.
+    /// list (or a blank one) is dropped.
     /// </summary>
     private static IReadOnlyDictionary<string, string> NormalizeLabels(
         IReadOnlyDictionary<string, string>? labels,

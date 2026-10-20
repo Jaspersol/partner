@@ -3,7 +3,8 @@ using Partner.Core.Agent.Skills;
 namespace Partner.Core.Tests.Agent.Skills;
 
 /// <summary>
-/// 工作区技能扫描与注册表（设计文档缺口 C）：目录规则、前置元数据解析、截断、数量上限、警告确定性与查找语义。
+/// Workspace skill scanning and the registry: directory rules, front-matter parsing, truncation, the count
+/// limit, warning determinism and lookup semantics.
 /// </summary>
 public sealed class SkillLoaderTests : IDisposable
 {
@@ -23,7 +24,7 @@ public sealed class SkillLoaderTests : IDisposable
     [Fact]
     public void Load_ReturnsSkillsOrderedBySkillId_WithVerbatimInstructions()
     {
-        // 故意先写 zeta 再写 alpha：结果必须按 SkillId 排序。
+        // zeta is written before alpha on purpose: the result must still sort by SkillId.
         WriteSkill("zeta", SkillFile("Zeta", "Last one", "# Zeta\n\nStep 1.\nStep 2.\n"));
         WriteSkill("alpha", SkillFile("Alpha", "First one", "# Alpha\n\n- a\n- b\n"));
 
@@ -158,7 +159,7 @@ public sealed class SkillLoaderTests : IDisposable
         Assert.Equal(first, second);
         Assert.Equal(3, first.Count);
 
-        // 逐路径的警告按路径序号（Ordinal）排列。
+        // Per-path warnings are ordered by ordinal path comparison.
         var expectedOrder = new[]
         {
             Path.Combine(SkillsRoot, "UPPER"),
@@ -207,7 +208,7 @@ public sealed class SkillLoaderTests : IDisposable
         Assert.Null(registry.Find("alpha"));
     }
 
-    /// <summary>写一个技能目录及其 <c>SKILL.md</c>，返回该目录的路径。</summary>
+    /// <summary>Writes a skill directory and its <c>SKILL.md</c>, then returns the directory path.</summary>
     private string WriteSkill(string directoryName, string content)
     {
         var directory = Path.Combine(SkillsRoot, directoryName);

@@ -2,8 +2,8 @@
  * Thinking-gear words, as a reader sees them.
  *
  * The stored value is always the original word (that is what goes on the wire as `reasoning_effort`); only the
- * six common ones get a Chinese name. An unknown word — an endpoint's own `minimal`, `none` — is shown verbatim,
- * for the same reason `sessionKind.ts` falls through to the raw kind: it is the one a reader cannot guess.
+ * six common ones get a Chinese name. An unknown word is shown verbatim, like `sessionKind.ts` does for unknown
+ * kinds.
  */
 import { ref } from 'vue'
 

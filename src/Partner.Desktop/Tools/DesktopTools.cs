@@ -9,9 +9,9 @@ namespace Partner.Desktop.Tools;
 /// <summary>
 /// Which windows the model may act on.
 /// <para>
-/// An empty list means any window. The gate that actually protects the user is the approval gear; a title
-/// filter that matched nothing would look like a broken tool rather than a policy, so this is for narrowing
-/// an installation, not for being the only guard.
+/// An empty list means any window. The approval gear is the guard that protects the user; a title filter
+/// that matched nothing would look like a broken tool rather than a policy, so this narrows an
+/// installation rather than serving as the only guard.
 /// </para>
 /// </summary>
 public sealed record DesktopToolPolicy(IReadOnlyList<string> AllowedWindowTitles)
@@ -41,8 +41,8 @@ public sealed record DesktopToolPolicy(IReadOnlyList<string> AllowedWindowTitles
 /// Looks at the desktop: the windows, and the controls inside them.
 /// <para>
 /// This is the discover half of discover-then-act. Returning controls — with names and click points — is what
-/// makes "click 播放" possible instead of "click at (412,338)", which is how a model ends up clicking whatever
-/// happens to be at those coordinates. Read-only, so it never needs approval.
+/// makes "click 播放" possible instead of "click at (412,338)".
+/// Read-only, so it never needs approval.
 /// </para>
 /// </summary>
 public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopToolPolicy policy) : ITool
@@ -195,13 +195,12 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         value is null || value.Length <= DesktopObserveFilter.ValueChars ? value : value[..DesktopObserveFilter.ValueChars] + "…";
 
     /// <summary>
-    /// A window whose UIA walk came back almost empty is, usually, a Chromium/Electron surface — the one
+    /// A window whose UIA walk came back almost empty is usually a Chromium/Electron surface: the one
     /// element it exposes is the webview's document plane. The model standing in front of it can only read
-    /// coordinates off screenshots, which is exactly the 17-step spiral a real session spent on one music
-    /// player. The escape hatch exists and the model just has to know it: relaunch with a debug port and
-    /// the page's nodes become addressable controls. Said once per window, only when this process launched
-    /// the app at least once before (a port nobody recorded would not answer, so the hint would promise
-    /// what it cannot keep).
+    /// coordinates off screenshots. The escape hatch exists and the model just has to know it: relaunch with
+    /// a debug port and the page's nodes become addressable controls. Said once per window, only when this
+    /// process launched the app at least once before (a port nobody recorded would not answer, so the hint
+    /// would promise what it cannot keep).
     /// </summary>
     internal static string BlindWindows(DesktopObservation observation)
     {
@@ -414,8 +413,8 @@ public sealed class DesktopActTool(
             return new ToolResult(false, "还没有观察过：先调用 desktop_observe");
         }
 
-        // A control named instead of numbered. Exactly one match is the control; none or several is a refusal that
-        // says what there is, because guessing between two "确定" buttons is how the wrong one gets pressed.
+        // A control named instead of numbered. Exactly one match is the control; none or several is a refusal
+        // that says what there is, because guessing between two "确定" buttons is how the wrong one gets pressed.
         if (arguments.ElementId is not { Length: > 0 } && arguments.Target is { } wanted)
         {
             var found = ResolveByName(before, arguments.EntityId, wanted);
@@ -436,9 +435,9 @@ public sealed class DesktopActTool(
 
         var point = arguments.X is { } x && arguments.Y is { } y ? (x, y) : ((int X, int Y)?)null;
 
-        // A picture pixel, plus the picture it belongs to. The server owns the conversion — reading a
-        // position off a picture is what the model is good at; turning it into a screen coordinate is
-        // arithmetic against a window offset, which is exactly where the measured 334 px miss came from.
+        // A picture pixel, plus the picture it belongs to. The server owns the conversion: reading a position
+        // off a picture is what the model is good at; turning it into a screen coordinate is arithmetic
+        // against a window offset.
         ShownPicture? picture = null;
         var picturePoint = arguments.Px is { } px && arguments.Py is { } py
             ? (X: px, Y: py)
@@ -492,8 +491,8 @@ public sealed class DesktopActTool(
         if (string.IsNullOrWhiteSpace(entityId))
         {
             // No window named, but a point is: the point itself says where the click lands, so derive the window
-            // from it. Models do this — they look at the picture, then click the coordinates they worked out —
-            // and refusing that on a technicality is how "operate the app" turns into a loop of refusals.
+            // from it. Models look at the picture, then click the coordinates they worked out, and refusing that
+            // on a technicality turns "operate the app" into a loop of refusals.
             entityId = ResolveByPoint(before, point, "desktop".Equals(automation.LastShownEntityId, StringComparison.Ordinal)
                 ? null
                 : automation.LastShownEntityId)?.EntityId;
@@ -570,13 +569,12 @@ public sealed class DesktopActTool(
             point = MapPicturePoint(picture, pp.X, pp.Y);
         }
 
-        // The snap: a pixel read off a picture carries a couple of pixels of double rounding (a
-        // downscaled full-window or full-desktop picture cannot avoid it), and a vision model's read
-        // adds its own — a measured miss was 5 px, which on a 3 px control is the neighbour. When no
-        // element was named, a point that lands within a control's neighbourhood is upgraded to that
-        // control: the click goes to the centre the server computed, where the pattern or the
-        // verification knows exactly what it is acting on. Beyond the radius the point keeps its own
-        // coordinate — snapping to a control the model did not aim at would be a different click.
+        // The snap: a pixel read off a picture carries a couple of pixels of double rounding (a downscaled
+        // full-window or full-desktop picture cannot avoid it), and a vision model's read adds its own. When
+        // no element was named, a point that lands within a control's neighbourhood is upgraded to that
+        // control: the click goes to the centre the server computed, where the pattern or the verification
+        // knows exactly what it is acting on. Beyond the radius the point keeps its own coordinate — snapping
+        // to a control the model did not aim at would be a different click.
         if (point is { } mapped && seenElement is null)
         {
             seenElement = SnapToElement(fresh, entityId, mapped);
@@ -609,9 +607,8 @@ public sealed class DesktopActTool(
             : Within(element, arguments.Offset);
 
         // A scroll with no coordinates and no control means "scroll this window": the wheel lands on whoever
-        // owns the cursor today, so an empty point is not refused, it is defaulted to the window's centre —
-        // the position the model is looking at. Refusing it made the model spend a whole turn working out
-        // coordinates it should never have needed.
+        // owns the cursor, so an empty point defaults to the window's centre — the position the model is
+        // looking at — rather than being refused.
         if (kind is ActionKind.Scroll && resolved is null)
         {
             resolved = (target.Rect.X + target.Rect.Width / 2, target.Rect.Y + target.Rect.Height / 2);
@@ -633,7 +630,7 @@ public sealed class DesktopActTool(
             // The refusal names the control that was resolved, when one was: the model's next decision
             // turns on whether it was aiming at that control — snap or named — not at the window overall.
             // A point-outside refusal also names the nearest interactive control the fresh observation
-            // holds: without it the model spent a whole turn re-observing to find where to aim instead.
+            // holds, so the model need not re-observe to find where to aim instead.
             var near = element is null && resolved is not null
                 ? NearestControl(fresh, entityId, resolved.Value)
                 : null;
@@ -714,9 +711,9 @@ public sealed class DesktopActTool(
     }
 
     /// <summary>
-    /// Writes one act event, when telemetry is wired. The fields are what the result text already says —
-    /// the point of the event is that aggregates do not have to parse result strings back. Silent on a
-    /// null sink and never throws into the result path.
+    /// Writes one act event, when telemetry is wired. The fields are what the result text already says, so
+    /// aggregates do not have to parse result strings back. Silent on a null sink and never throws into the
+    /// result path.
     /// </summary>
     private void RecordAct(
         DesktopAction action,
@@ -757,14 +754,13 @@ public sealed class DesktopActTool(
     /// Whether a fresh observation still shows the same window the decision was made on. Returns the reason it
     /// does not, or null when it is safe to act.
     /// <para>
-    /// The bar is identity, not immobility. The window must still be the same window — same handle, same
-    /// process, same process start time — so a recycled handle (the old window closed and Windows handed the
-    /// handle to a new one) is caught. It is <b>not</b> required to have kept its title or its rectangle: a
-    /// music player retitles itself on every track, a browser on every tab change, an editor on its dirty
-    /// marker, and restoring a minimized window moves it by definition. Treating those as a mismatch is how
-    /// "act only on what you saw" degenerates into "you may never act" on exactly the applications the model
-    /// is pointed at. What did change is reported by <see cref="DescribeDrift"/>; the coordinates are
-    /// recomputed from the fresh rectangle wherever that matters.
+    /// The bar is identity, not immobility: same handle, same process, same process start time, so a recycled
+    /// handle is caught. It is <b>not</b> required to have kept its title or its rectangle: a music player
+    /// retitles itself on every track, a browser on every tab change, an editor on its dirty marker, and
+    /// restoring a minimized window moves it by definition. Treating those as a mismatch would make "act only
+    /// on what you saw" mean "you may never act" on exactly the applications the model is pointed at. What did
+    /// change is reported by <see cref="DescribeDrift"/>; the coordinates are recomputed from the fresh
+    /// rectangle wherever that matters.
     /// </para>
     /// </summary>
     public static string? Revalidate(UiEntity seen, DesktopObservation fresh)
@@ -789,8 +785,8 @@ public sealed class DesktopActTool(
     /// <para>
     /// Deliberately not a refusal. A screen coordinate stays valid as long as it still lands inside the window
     /// it names — which the guard checks against the <i>fresh</i> rectangle — and an element-addressed action
-    /// recomputes its click point from the fresh rectangle as well. Saying it out loud is what lets the model
-    /// notice that its picture is stale, without costing it a step.
+    /// recomputes its click point from the fresh rectangle as well. Saying it out loud lets the model notice
+    /// that its picture is stale without spending a step.
     /// </para>
     /// </summary>
     public static string? DescribeDrift(UiEntity seen, UiEntity now)
@@ -917,15 +913,6 @@ public sealed class DesktopActTool(
     };
 
     /// <summary>
-    /// Where inside a control to click, given as a fraction of its size.
-    /// <para>
-    /// Both ends are inside the control by construction — a fraction below 0 or above 1 is not clamped but
-    /// refused by the guard, because a clamped offset is an offset the caller did not ask for, landing
-    /// somewhere they did not name. And the fallback is the centre, never a corner of the screen: "this
-    /// control" with no position in it means the middle of the control.
-    /// </para>
-    /// </summary>
-    /// <summary>
     /// The interactive control whose centre is nearest to the point, inside the named window and within
     /// <see cref="SnapRadius"/>. Static text (a <c>Document</c>) is skipped for the same reason the
     /// screenshot marks skip it: its rectangle is the whole content area, so "snap to its centre" is
@@ -1003,12 +990,9 @@ public sealed class DesktopActTool(
     }
 
     /// <summary>
-    /// The modifier names a caller wrote, as virtual keys — and the ones that are not modifiers are refused
-    /// rather than passed on.
-    /// <para>
-    /// Silently dropping a misspelt modifier would send a plain "C" and report a Ctrl+C; and a name that is a
-    /// real key ("a") is not a modifier at all, so it must not become "Ctrl held down, then nothing".
-    /// </para>
+    /// The modifier names a caller wrote, as virtual keys. Names that are not modifiers are refused rather
+    /// than passed on: silently dropping a misspelt modifier would send a plain "C" and report a Ctrl+C, and
+    /// a name that is a real key ("a") is not a modifier at all.
     /// </summary>
     public static IReadOnlyList<ushort> Modifiers(IReadOnlyList<string>? names)
     {
@@ -1031,10 +1015,9 @@ public sealed class DesktopActTool(
 
     /// <summary>
     /// The refusal for a picture that no longer shows the window where it is. A pixel on the picture maps to
-    /// a screen position through the rectangle the picture was taken at — and when the window has moved or
-    /// changed shape since, that map points somewhere else with no error on either side. The picture that no
-    /// longer matches the fresh rectangle is refused outright rather than remapped somewhere it was not
-    /// taken: remapping is the arithmetic this path exists to keep away from the model.
+    /// a screen position through the rectangle the picture was taken at; when the window has moved or changed
+    /// shape since, that map points somewhere else with no error on either side. Such a picture is refused
+    /// outright rather than remapped: remapping is the arithmetic this path exists to keep away from the model.
     /// </summary>
     public static string? StalePicture(PixelRect now, ShownPicture picture)
     {
@@ -1157,12 +1140,11 @@ public sealed class DesktopActTool(
     /// Whether this action's answer carries the post-action picture, and why not when it does not: a refusal
     /// injected nothing, so there is nothing new to see; kinds without a visual consequence walk the pointer
     /// or prepare an aim without changing anything; a caller who said off, or a model that cannot take
-    /// pictures, gets no picture at all. Called before the render, so the matrix is what the result shows.
+    /// pictures, gets no picture at all.
     /// <para>
     /// <c>on-failure</c> narrows the third axis: the picture is only for the result where seeing matters —
     /// the action ran but the verification could not confirm the effect. A verified action does not need
-    /// its after-picture; the model asked to save tokens gets precisely the cases it would otherwise have
-    /// spent a <c>desktop_screenshot</c> call on, and keeps saving on the rest.
+    /// its after-picture.
     /// </para>
     /// </summary>
     internal static bool WantsPicture(
@@ -1180,7 +1162,7 @@ public sealed class DesktopActTool(
 
     /// <summary>
     /// The result, with injection and verification kept apart: they answer different questions, and collapsing
-    /// them into one word is how "it clicked" and "nothing visibly happened" end up looking identical.
+    /// them into one word makes "it clicked" and "nothing visibly happened" look identical.
     /// </summary>
     private static string Describe(DesktopAction action, ActionKind kind, UiEntity target, UiElement? element)
     {
@@ -1212,8 +1194,7 @@ public sealed class DesktopActTool(
 
             // The one sentence an agent cannot act on, so it carries what to do about it. "Nothing changed" is
             // three different problems — the click missed, the control needs a hover first, or the effect is
-            // somewhere this measurement does not look — and the result says which to try rather than leaving
-            // the next turn to guess.
+            // somewhere this measurement does not look — and the result says which to try.
             VerifyDecision.NoChange => action.PostVerify?.IntersectedAreaRatio > 0
                 ? "校验：画面有变化但不在目标控件上（点偏了或效果在别处）"
                 : "校验：画面无变化（效果未被确认）· 可以试：先 movePointer 到它再点；或用 scrollIntoView 先滚进视野再点；或重新 desktop_observe 拿新的点击点",
@@ -1225,10 +1206,10 @@ public sealed class DesktopActTool(
         return $"{kind} · {injected}{raised} · {verified} · 目标 {who}";
     }
 
-    /// <summary>What the model asked for, as it arrives from the model.</summary>
+    /// <summary>What the model asked for.</summary>
     /// <remarks>
-    /// The coordinates are nullable because "absent" and "zero" are different answers, and the difference is
-    /// the whole safety story: a click with no point is a malformed call, not a click at the screen corner.
+    /// The coordinates are nullable because "absent" and "zero" are different answers: a click with no point
+    /// is a malformed call, not a click at the screen corner.
     /// </remarks>
     public sealed record DesktopActArguments(
         string? EntityId,
@@ -1251,6 +1232,6 @@ public sealed class DesktopActTool(
         string? ToElementId = null,
         ElementTarget? Target = null);
 
-    /// <summary>A control named by what it is called rather than by an id: for a model that remembers a button's name better than its number.</summary>
+    /// <summary>A control named by what it is called rather than by an id, for a model that remembers a button's name better than its number.</summary>
     public sealed record ElementTarget(string? Name, string? Role);
 }

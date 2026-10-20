@@ -4,7 +4,7 @@ using Partner.Core.Contracts;
 namespace Partner.Core.Tests.Agent.Hooks;
 
 /// <summary>
-/// 钩子注册表（设计文档 §2.9.3）：排序、约束、短路、粘性跳过、注入与取消。
+/// The hook registry: ordering, constraints, short-circuiting, sticky skips, injection and cancellation.
 /// </summary>
 public sealed class HookRegistryTests
 {
@@ -44,7 +44,7 @@ public sealed class HookRegistryTests
     [Fact]
     public async Task HooksFor_HonoursBeforeAndAfterConstraints()
     {
-        // Before：B 先注册，但 A 声明必须先于 B，因此 A 排到前面。
+        // Before: B registers first, but A declares that it runs before B, so A moves ahead.
         var log = new List<string>();
         var registry = new HookRegistry();
         registry.Register(Hook("B", AgentPhase.PreDispatch, log));
@@ -55,7 +55,7 @@ public sealed class HookRegistryTests
         await registry.RunAsync(AgentPhase.PreDispatch, NewContext(), CancellationToken.None);
         Assert.Equal(new[] { "A", "B" }, log);
 
-        // After：X 先注册并声明晚于 Y，因此 Y 排到前面。
+        // After: X registers first and declares that it runs after Y, so Y moves ahead.
         var afterLog = new List<string>();
         var afterRegistry = new HookRegistry();
         afterRegistry.Register(Hook("X", AgentPhase.PreExecute, afterLog, after: new[] { "Y" }));
@@ -81,7 +81,7 @@ public sealed class HookRegistryTests
             ex.Message.Contains("A", StringComparison.Ordinal) || ex.Message.Contains("B", StringComparison.Ordinal),
             $"异常消息未提及成环钩子名：{ex.Message}");
 
-        // 失败的注册被回滚，注册表仍可用。
+        // A failed registration is rolled back and the registry stays usable.
         Assert.Equal(new[] { "A" }, registry.HooksFor(AgentPhase.PreDispatch).Select(h => h.Name));
     }
 
@@ -142,7 +142,7 @@ public sealed class HookRegistryTests
         Assert.False(registry.SkipAgent);
         Assert.Equal(new[] { "A", "B" }, registry.HooksFor(AgentPhase.PreExecute).Select(h => h.Name));
 
-        // 重置后仅 Continue 的钩子仍返回 Continue。
+        // After a reset, a hook that only contains Continue still returns Continue.
         var continueLog = new List<string>();
         var continueRegistry = new HookRegistry();
         continueRegistry.Register(Hook("only", AgentPhase.PreExecute, continueLog));
@@ -168,7 +168,7 @@ public sealed class HookRegistryTests
         Assert.Throws<ArgumentException>(() => ctx.Inject(string.Empty));
         Assert.Throws<ArgumentException>(() => ctx.Inject("   "));
 
-        // 失败的注入不改变已有内容。
+        // A failed injection leaves existing content unchanged.
         Assert.Equal(4, ctx.InjectedPrompts.Count);
     }
 
@@ -203,7 +203,7 @@ public sealed class HookRegistryTests
             () => registry.RunAsync(AgentPhase.PreExecute, NewContext(), preCancelled.Token));
         Assert.Empty(log);
 
-        // 钩子中途取消：取消穿透到调用方，后续钩子不再运行。
+        // Cancellation mid-chain propagates to the caller and later hooks do not run.
         var midLog = new List<string>();
         var midRegistry = new HookRegistry();
         using var midCancelled = new CancellationTokenSource();
@@ -235,7 +235,7 @@ public sealed class HookRegistryTests
 
         Assert.Throws<InvalidOperationException>(() => registry.Register(Hook("dup", AgentPhase.PreExecute, log)));
 
-        // 不同阶段可以同名。
+        // Different stages may share a name.
         registry.Register(Hook("dup", AgentPhase.PostResponse, log));
         Assert.Equal(new[] { "dup" }, registry.HooksFor(AgentPhase.PostResponse).Select(h => h.Name));
     }
@@ -258,7 +258,7 @@ public sealed class HookRegistryTests
         HookOutcome outcome = HookOutcome.Continue)
         => new(name, phase, priority, before, after, log, _ => ValueTask.FromResult(outcome));
 
-    /// <summary>记录调用顺序的测试钩子。</summary>
+    /// <summary>A test hook that records the call order.</summary>
     private sealed class Probe : AgentHookBase
     {
         private readonly List<string> _log;

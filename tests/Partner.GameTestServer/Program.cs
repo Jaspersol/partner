@@ -1,4 +1,4 @@
-// Synthetic game test server (design doc §2.7).
+// Synthetic game test server.
 // Reads newline-delimited JSON requests from stdin and answers one JSON object per line on stdout:
 //   {"cmd":"observe"}                                  -> {"seq":N,"values":{...}}
 //   {"cmd":"act","kind":"move","params":{"dx":"3"}}    -> {"ok":true,"detail":"moved","seq":N,"values":{...}}

@@ -49,7 +49,6 @@ public sealed class AutoCompactionTests : ApiFixture
 
         Assert.True(folded, "no summary appeared after the turn");
 
-        // And the next look at the window finds nothing left to drop.
         var usage = await _consumer.MeasureContextAsync(_context.Settings.Load());
         Assert.Equal(0, usage.FoldedItems);
     }

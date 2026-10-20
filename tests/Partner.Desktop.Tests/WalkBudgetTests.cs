@@ -6,9 +6,9 @@ namespace Partner.Desktop.Tests;
 /// What bounds one UI Automation walk.
 /// <para>
 /// These are the rules the walk itself cannot be asked about without a real desktop — and the walk is exactly
-/// where the time goes, so the rules have to be pinable on their own. The bug they exist for: the walk was
-/// bounded by elements <i>produced</i>, which bounds nothing in a window made of controls it skips, so a
-/// Chromium window was walked to its last node at a cross-process RPC apiece.
+/// where the time goes, so the rules have to be pinable on their own. A walk bounded by elements <i>produced</i>
+/// bounds nothing in a window made of controls it skips, and a Chromium window would be walked to its last node
+/// at a cross-process RPC apiece.
 /// </para>
 /// </summary>
 public sealed class WalkBudgetTests
@@ -44,8 +44,8 @@ public sealed class WalkBudgetTests
     [Fact]
     public void A_window_of_skipped_controls_is_bounded_by_nodes_visited_not_by_elements_produced()
     {
-        // The whole point: producing nothing, forever. Only the visited cap can stop this, and the old
-        // produced-only condition never reached its limit here — which is why a Chromium window cost seconds.
+        // Producing nothing, forever: only the visited cap can stop this. A produced-only condition never
+        // reaches its limit here, which is why a Chromium window costs seconds.
         for (var visited = 0; visited < WalkBudget.Default.MaxVisited; visited++)
         {
             Assert.Equal(WalkStopReason.None, Stop(WalkBudget.Default, produced: 0, visited: visited));

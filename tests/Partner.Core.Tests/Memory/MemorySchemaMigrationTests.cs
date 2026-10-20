@@ -6,7 +6,7 @@ using Partner.Core.Tests.Sessions;
 namespace Partner.Core.Tests.Memory;
 
 /// <summary>
-/// Schema versioning (todo M2.1): an old workspace still opens, a new one is stamped at the current version, and a
+/// Schema versioning: an old workspace still opens, a new one is stamped at the current version, and a
 /// workspace from the future is refused instead of half-read.
 /// </summary>
 public sealed class MemorySchemaMigrationTests : IDisposable
@@ -26,9 +26,9 @@ public sealed class MemorySchemaMigrationTests : IDisposable
     }
 
     /// <summary>
-    /// The <c>memories</c> table exactly as it was before <c>last_recalled_at</c> existed. Everything else the old
-    /// build had — the FTS table, its triggers, the indexes — is created from the real DDL below, because a store
-    /// missing those is not an old store, it is a different one.
+    /// The <c>memories</c> table as it was before <c>last_recalled_at</c> existed. The rest of the old schema —
+    /// the FTS table, its triggers, the indexes — is created from the real DDL below, because a store missing
+    /// those is not an old store, it is a different one.
     /// </summary>
     private const string OldShape = """
         CREATE TABLE memories (
@@ -59,9 +59,9 @@ public sealed class MemorySchemaMigrationTests : IDisposable
         db.Open();
         Execute(db, OldShape);
 
-        // The rest of the old build's schema. `IF NOT EXISTS` leaves the table above alone and creates the FTS
-        // index and its triggers — which matters for the row below: an UPDATE on a row the index never saw makes
-        // FTS5 report the database as corrupt, so the fixture has to put its row in the way a real store did.
+        // `IF NOT EXISTS` leaves the table above alone and creates the FTS index and its triggers. An UPDATE on
+        // a row the index never saw makes FTS5 report the database as corrupt, so the fixture inserts its row the
+        // way a real store did.
         Execute(db, MemorySchema.Ddl);
 
         if (extra is not null)
@@ -121,17 +121,15 @@ public sealed class MemorySchemaMigrationTests : IDisposable
             Assert.Equal(MemorySchema.Version, UserVersion(DbPath));
             Assert.True(HasColumn(DbPath, "memories", "last_recalled_at"), "the column the demotion clock reads");
 
-            // The record that was already there is still there — a migration that loses data is not a migration.
+            // The record that was already there is still there.
             var kept = await store.ListAsync();
             Assert.Equal("old-1", Assert.Single(kept).RecordId);
 
-            // The demotion scan is the one query that reads the migrated column, so it is also the proof that the
-            // column is not merely present but usable: a record never recalled is idle, and idleness is measured
-            // through last_recalled_at. Run before anything else touches the store, so the count is unambiguous.
+            // DemoteIdleAsync is the only query that reads the migrated column, so it proves the column is
+            // usable: a record never recalled is idle, and idleness is measured through last_recalled_at.
             Assert.Equal(1, await store.DemoteIdleAsync());
             Assert.Equal(MemoryTier.Episodic, (await store.GetAsync("old-1"))!.Tier);
 
-            // And the store works: writes and the recall path.
             await store.WriteAsync(new MemoryRecord
             {
                 RecordId = "new-1",
@@ -147,8 +145,8 @@ public sealed class MemorySchemaMigrationTests : IDisposable
     public async Task An_old_store_backfills_the_bigrams_its_rows_were_never_indexed_with()
     {
         // A store from before the bigram index has bodies but no body_cjk and nothing in memory_fts_cjk, so a
-        // Chinese question worded differently from the record is answered with nothing — the failure is silent,
-        // which is why the migration has to be proven against real content rather than against a column name.
+        // Chinese question worded differently from the record is answered with nothing. The failure is silent,
+        // so the migration is proven against real content rather than a column name.
         CreateOldStore(row:
             "INSERT INTO memories(record_id, tier, scope, body, created_at, valid_from, confidence, importance, "
             + "veracity, pending_compact) VALUES ('old-1', 'Semantic', 'Recall', '用户不喜欢被反复确认', "
@@ -172,8 +170,8 @@ public sealed class MemorySchemaMigrationTests : IDisposable
     [Fact]
     public async Task A_store_that_already_has_the_column_still_opens()
     {
-        // What the old swallowed-ALTER code left behind: the column is there, the version was never recorded. The
-        // step re-runs, SQLite refuses the duplicate, and that refusal is the expected outcome for this step only.
+        // The column is there but the version was never recorded. The step re-runs, SQLite refuses the duplicate,
+        // and that refusal is the expected outcome for this step only.
         CreateOldStore(extra: "ALTER TABLE memories ADD COLUMN last_recalled_at TEXT");
 
         await using var store = new MemoryStore(DbPath, null, _clock);
@@ -222,8 +220,6 @@ public sealed class MemorySchemaMigrationTests : IDisposable
             Execute(db, $"PRAGMA user_version = {MemorySchema.Version + 1}");
         }
 
-        // Reading it would mean guessing at a schema this build has never seen, and writing to it could drop
-        // columns the newer build added. Refusing is the only answer that cannot corrupt the workspace.
         var refused = Assert.Throws<InvalidOperationException>(() => new MemoryStore(DbPath, null, _clock));
         Assert.Contains("newer", refused.Message, StringComparison.Ordinal);
     }
@@ -231,8 +227,7 @@ public sealed class MemorySchemaMigrationTests : IDisposable
     [Fact]
     public void Every_migration_step_leads_to_a_version_this_build_knows()
     {
-        // A step numbered past the current version would run and then be refused by the guard above on the next
-        // open — the store would be migrated into a state it calls newer than itself.
+        // A step numbered past the current version would run and then be refused by the guard on the next open.
         Assert.All(MemorySchema.Migrations, step => Assert.True(
             step.To <= MemorySchema.Version,
             $"step {step.To} ({step.Description}) is past the current version {MemorySchema.Version}"));

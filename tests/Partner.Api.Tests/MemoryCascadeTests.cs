@@ -24,8 +24,7 @@ public sealed class MemoryCascadeTests : ApiFixture
     [Fact]
     public async Task Deleting_an_event_removes_the_memory_distilled_from_it()
     {
-        // The leak this closes: the person asked for it gone, and without the cascade it would still be
-        // recalled — and injected — into a conversation weeks later where they never said it.
+        // Without the cascade, a deleted event's memory would still be recalled into later conversations.
         await _context.Session.AppendAsync(new SessionEvent
         {
             Kind = SessionEventKind.User,
@@ -51,7 +50,7 @@ public sealed class MemoryCascadeTests : ApiFixture
         var body = await deleted.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, body.GetProperty("purgedMemories").GetInt32());
 
-        // Gone from the view, and gone from recall — the second is the part that matters.
+        // Gone from the view and from recall; recall is the part that matters.
         Assert.Empty((await _http.GetFromJsonAsync<JsonElement>("/api/memory")).EnumerateArray());
         Assert.Empty(await _context.Memory.RecallAsync("内网账号"));
     }
@@ -59,8 +58,7 @@ public sealed class MemoryCascadeTests : ApiFixture
     [Fact]
     public async Task A_withdrawal_keeps_its_memories_until_it_is_final_and_then_removes_every_one()
     {
-        // Withdrawing is reversible, so what was remembered stays too: cancelling it must bring back a
-        // conversation that still has its memories. Sending a new message makes it final, and then they go.
+        // Withdrawal is reversible, so memories survive a cancel; sending a new message makes it final.
         for (var i = 0; i < 3; i++)
         {
             await _context.Session.AppendAsync(new SessionEvent
@@ -85,11 +83,9 @@ public sealed class MemoryCascadeTests : ApiFixture
         Assert.True(withdrawn.IsSuccessStatusCode);
         Assert.Equal(3, (await _http.GetFromJsonAsync<JsonElement>("/api/memory")).GetArrayLength());
 
-        // Taken back: nothing was lost.
         Assert.True((await _http.PostAsync("/api/session/withdrawal/cancel", null)).IsSuccessStatusCode);
         Assert.Equal(3, (await _http.GetFromJsonAsync<JsonElement>("/api/memory")).GetArrayLength());
 
-        // Withdrawn again, and then final.
         await _http.PostAsync("/api/session/1/withdraw", null);
         var sent = await _http.PostAsJsonAsync("/api/input", new { source = "Text", payload = "换个话题" });
         Assert.True(sent.IsSuccessStatusCode);
@@ -124,8 +120,7 @@ public sealed class MemoryMaintenanceTests : ApiFixture
         var maintenance = new MemoryMaintenanceService(_context.Memory);
         var run = await maintenance.RunAsync();
 
-        // Demotion only: nothing was old-Working, nothing TTL'd, nothing soft-deleted. A count of one says
-        // the workspace store was actually walked rather than lazily skipped.
+        // A count of one shows the workspace store was actually walked rather than skipped.
         Assert.Equal(1, run.Demoted);
         Assert.Equal(0, run.Promoted);
         Assert.Equal(0, run.Trimmed);

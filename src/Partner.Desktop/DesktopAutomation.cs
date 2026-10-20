@@ -43,12 +43,10 @@ public sealed record DesktopLatency(double P50Ms, double P99Ms, double MaxMs);
 /// What one screenshot offered the model, kept so the server — not the model — owns the conversion from the
 /// picture the model is looking at to the screen the pointer moves on.
 /// <para>
-/// The model reports a position as pixels <b>on the picture it holds</b> (px/py + the picture's mediaId);
-/// the server maps it through the rectangle the picture was taken at. Reading positions off a picture is
-/// what a vision model is good at; multiplying by window offsets is not, and a measured failure had a
-/// correct verbal description of a play button land 334 px away from it in empty background. The scale for
-/// the two axes is carried separately, because a capture cropped to the visible frame and a rescale to the
-/// token budget do not have to keep the aspect they started with.
+/// The model reports a position as pixels <b>on the picture it holds</b> (px/py + the picture's mediaId); the
+/// server maps it through the rectangle the picture was taken at. The scale for the two axes is carried
+/// separately, because a capture cropped to the visible frame and a rescale to the token budget do not have to
+/// keep the aspect they started with.
 /// </para>
 /// </summary>
 /// <param name="EntityId">The window the picture is a view of.</param>
@@ -70,7 +68,7 @@ public sealed record ShownPicture(
 }
 
 /// <summary>
-/// The L1 desktop facade (design doc §2.6): observe windows → issue a lease → inject input → verify.
+/// The desktop facade: observe windows → issue a lease → inject input → verify.
 /// <para>
 /// Three rules are structural here, not advisory:
 /// <list type="bullet">
@@ -80,7 +78,7 @@ public sealed record ShownPicture(
 ///   so a point inside the target's rectangle can still be covered by another window; the point is
 ///   hit-tested first and a cover is refused by name rather than clicked through (see
 ///   <see cref="Occlusion"/>). A UI Automation pattern is exempt: it reaches the control itself, which is
-///   the one way to press a control that is covered.</item>
+///   the one way to press a covered control.</item>
 ///   <item><b>No action is reported as successful without verification.</b> The result carries the
 ///   <see cref="VerifyResult"/>, including <c>Indeterminate</c> when it could not be measured.</item>
 /// </list>
@@ -103,14 +101,14 @@ public sealed class DesktopAutomation : IDisposable
     private readonly Func<VirtualDesktop> _virtualDesktop;
 
     /// <summary>
-    /// One window's UI Automation walk. Overridable so an observation can be driven — and its truncation reason
-    /// chosen — without a real desktop, which is the only way to exercise the concurrent case.
+    /// One window's UI Automation walk. Overridable so an observation can be driven, with a chosen truncation
+    /// reason, without a real desktop.
     /// </summary>
     private readonly Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)> _walk;
 
     /// <summary>
     /// The DOM side of a Chromium window, and the ports of the ones this agent launched. Null-safe everywhere:
-    /// a window without a debug port simply has no DOM elements, which is the coordinate path's window.
+    /// a window without a debug port simply has no DOM elements, and stays on the coordinate path.
     /// </summary>
     private readonly CdpDomSource? _cdp;
 
@@ -133,13 +131,10 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>
     /// Where tool measurements land, when there is one. The automation emits only the walk side (latency,
-    /// truncation) — tool results belong to the tools — and a null sink means "no telemetry", which every
-    /// caller is expected to treat as the ordinary case.
+    /// truncation); tool results belong to the tools. A null sink means "no telemetry".
     /// </summary>
     private readonly ITelemetrySink? _telemetry;
 
-    /// <param name="cdp">The DOM source; omit it to leave Chromium windows on the coordinate path.</param>
-    /// <param name="cdpPorts">Which processes opened a debug port, recorded at launch.</param>
     public CdpDomSource? Cdp => _cdp;
 
     public CdpRegistry? CdpPorts => _cdpPorts;
@@ -149,8 +144,7 @@ public sealed class DesktopAutomation : IDisposable
     /// <para>
     /// The tool takes the registry at construction rather than being handed one afterwards: a port is recorded
     /// by the launch that opened it, and a launch tool that could not write to the registry would produce a
-    /// window whose DOM stays invisible for the rest of the process's life — a failure that looks exactly like
-    /// "this application has no controls".
+    /// window whose DOM stays invisible for the rest of the process's life.
     /// </para>
     /// </summary>
     public DesktopLaunchTool? LaunchTool => _launch
@@ -167,9 +161,10 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>The mode in force now.</summary>
     public InputMode Mode => _inputMode();
+
     /// <summary>
-    /// The latest action latencies, newest overwriting oldest. Unbounded it grew for the life of the process, and
-    /// parallel actions appended to a plain list at the same time.
+    /// The latest action latencies, newest overwriting oldest. A fixed ring buffer, so it stays bounded and
+    /// parallel actions cannot corrupt it.
     /// </summary>
     private readonly double[] _actionLatenciesMs = new double[LatencySamples];
 
@@ -182,8 +177,7 @@ public sealed class DesktopAutomation : IDisposable
     /// The last walk of each window: its numbered elements and the live controls behind them.
     /// <para>
     /// Kept so pressing a control by id does not walk the same UI Automation tree twice. The observation the
-    /// action is checked against already re-walks the target window, and that walk is the fresher of the two —
-    /// re-walking inside the act only repeated work that had just been done, at a cross-process RPC per node.
+    /// action is checked against already re-walks the target window, and that walk is the fresher one.
     /// </para>
     /// <para>
     /// Published as a unit together with the truncation reasons (<see cref="WalkSnapshot"/>) rather than written
@@ -199,9 +193,8 @@ public sealed class DesktopAutomation : IDisposable
     /// <summary>
     /// One observation's walks and truncation reasons, immutable once published.
     /// <para>
-    /// The two belong together: they are replaced at exactly the same moments — a re-observation refreshes both —
-    /// and reading one from a different observation than the other is what produced a truncation count belonging
-    /// to somebody else's walk.
+    /// The two belong together: they are replaced at exactly the same moments, and reading one from a different
+    /// observation than the other would attach a truncation count to somebody else's walk.
     /// </para>
     /// </summary>
     private sealed record WalkSnapshot(
@@ -216,10 +209,10 @@ public sealed class DesktopAutomation : IDisposable
     /// <summary>
     /// Whether a stop reason means "there may be more controls in this window".
     /// <para>
-    /// Depth and the per-window control cap are ordinary — every deep tree stops at the depth limit, and a
-    /// control-rich window stops at the cap by design — and reporting those would put a warning on almost every
-    /// window. Being cut off on nodes visited or on time is different: that is the walk running out of budget
-    /// with the tree unfinished, which is exactly where controls disappear.
+    /// Depth and the per-window control cap are ordinary: every deep tree stops at the depth limit, and a
+    /// control-rich window stops at the cap by design, so reporting those would put a warning on almost every
+    /// window. Being cut off on nodes visited or on time is different: the walk ran out of budget with the tree
+    /// unfinished, which is exactly where controls disappear.
     /// </para>
     /// </summary>
     internal static WalkStopReason? CutOff(WalkStopReason stopped) => stopped switch
@@ -266,8 +259,8 @@ public sealed class DesktopAutomation : IDisposable
         });
 
         // Both seams exist so the observation's shared state can be exercised without a real desktop: a walk
-        // that returns a chosen truncation reason is the only way to drive the concurrent case, and window
-        // enumeration is a real API that would otherwise decide which windows the test is about.
+        // that returns a chosen truncation reason drives the concurrent case, and window enumeration is a real
+        // API that would otherwise decide which windows the test is about.
         _walk = walk ?? UiaTree.ReadNumberedWithNodes;
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
@@ -287,8 +280,8 @@ public sealed class DesktopAutomation : IDisposable
         _cdp = cdp;
         _cdpPorts = cdpPorts;
 
-        // A window with a debug port can be photographed by its browser when the window system only sees grey. Only
-        // the default capture is wrapped: a caller who supplied its own (a test double) gets exactly that.
+        // A window with a debug port can be photographed by its browser when the window system only sees grey.
+        // Only the default capture is wrapped: a caller who supplied its own (a test double) gets exactly that.
         if (capture is null && cdp is not null && cdpPorts is not null)
         {
             _capture = new CdpAssistedCapture(
@@ -329,10 +322,10 @@ public sealed class DesktopAutomation : IDisposable
     /// <summary>
     /// The whole virtual desktop in one frame, wherever it starts and however it spans monitors.
     /// <para>
-    /// This is the observation level under "window": the taskbar, the tray, notification banners, desktop
-    /// icons — all the things that belong to no top-level window and therefore never appeared in an
-    /// observation. The bounds are read now (they can change with the monitor layout) and travel with the
-    /// frame as its <c>ScreenRect</c>, which is the same contract every window capture keeps
+    /// This is the observation level under "window": the taskbar, the tray, notification banners and desktop
+    /// icons belong to no top-level window, so no window capture contains them. The bounds are read now (they
+    /// can change with the monitor layout) and travel with the frame as its <c>ScreenRect</c>, which is the
+    /// same contract every window capture keeps.
     /// </para>
     /// </summary>
     public async Task<CaptureResult> CaptureDesktopAsync(CancellationToken ct = default)
@@ -347,9 +340,9 @@ public sealed class DesktopAutomation : IDisposable
     }
 
     /// <summary>
-    /// The most recent observation, or null before the first one. Exposed so a caller can check *what* it is
-    /// about to act on (a policy on window titles has to read the title) without re-observing — which would
-    /// mint a fresh lease and make the lease mechanism vacuous.
+    /// The most recent observation, or null before the first one. Exposed so a caller can check what it is about
+    /// to act on without re-observing — a fresh observation would mint a fresh lease and make the lease
+    /// mechanism vacuous.
     /// </summary>
     public DesktopObservation? LastObservation => _lastObservation;
 
@@ -367,8 +360,8 @@ public sealed class DesktopAutomation : IDisposable
         LastShownEntityId = entityId;
     }
 
-    /// <summary>How many pictures a medium id stays addressable by. The model needs the ones it is reasoning
-    /// about now; older screenshots age out rather than having the map grow with the session.</summary>
+    /// <summary>How many pictures a media id stays addressable by. Older screenshots age out rather than letting
+    /// the map grow with the session.</summary>
     private const int PictureMemory = 8;
 
     private readonly object _picturesGate = new();
@@ -404,10 +397,9 @@ public sealed class DesktopAutomation : IDisposable
         }
     }
 
-    /// <summary>The picture a media id was created from, or null when it has aged out (or was never one).
-    /// A null here is reported to the model rather than resolved against some newer picture: reporting
-    /// coordinates taken off photo A against photo B is exactly the misaligned click this mechanism exists
-    /// to prevent.</summary>
+    /// <summary>The picture a media id was created from, or null when it has aged out (or never was one).
+    /// Null is reported to the model rather than resolved against a newer picture: coordinates taken off one
+    /// picture and applied to another are the misaligned click this mechanism exists to prevent.</summary>
     public ShownPicture? PictureOf(string mediaId)
     {
         if (string.IsNullOrEmpty(mediaId))
@@ -459,9 +451,9 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>
     /// Reads one window's controls and nothing else: no window listing, no new generation, no leases. For a caller
-    /// that is only waiting to see whether something has appeared — it would otherwise re-enumerate the desktop and
-    /// re-issue every lease several times a second. Numbered by the same walk an observation uses, so an id found
-    /// here is the id that observation would give.
+    /// that is only waiting to see whether something has appeared, which would otherwise re-enumerate the desktop
+    /// and re-issue every lease several times a second. Numbered by the same walk an observation uses, so an id
+    /// found here is the id that observation would give.
     /// </summary>
     public IReadOnlyList<UiElement> ProbeElements(string entityId)
     {
@@ -475,11 +467,10 @@ public sealed class DesktopAutomation : IDisposable
     /// <param name="scope">What kind of view asked, which changes the lease TTL.</param>
     /// <param name="payloadBytes">How much was sent with it, which also changes the TTL.</param>
     /// <param name="elementsFor">
-    /// When set, only this window's UI Automation tree is read; the other windows keep the elements the model
-    /// was already shown. Reading every window's tree costs seconds (10.2 s for nine windows, measured), and
-    /// an action re-checks one window — so the walk is aimed at that one. Ids are per-window indices, so the
-    /// carried elements stay valid as references; the target's own are re-read, which is what makes a stale
-    /// element detectable.
+    /// When set, only this window's UI Automation tree is read; the other windows keep the elements the model was
+    /// already shown. Reading every window's tree costs seconds, and an action re-checks one window, so the walk
+    /// is aimed at that one. Ids are per-window indices, so the carried elements stay valid as references; the
+    /// target's own are re-read, which is what makes a stale element detectable.
     /// </param>
     public DesktopObservation Observe(
         ObserveScope scope = ObserveScope.Action,
@@ -496,14 +487,14 @@ public sealed class DesktopAutomation : IDisposable
         var walked = new HashSet<string>(StringComparer.Ordinal);
 
         // Elements are read per window and numbered inside this observation: an id is a position in this
-        // answer, not a handle that survives a new one — which is exactly what makes a stale element detectable.
+        // answer, not a handle that survives a new one, which is what makes a stale element detectable.
         var elements = new List<UiElement>();
 
         // This call's own walks and truncation reasons, seeded from the published state and published back at
         // the end. Two observations may be in flight (the step budget allows parallel tool calls), so neither
         // the dictionaries nor the entries inside them are written in place: a full walk replaces both wholesale,
-        // a one-window walk carries the other windows' entries forward untouched — which is the same lockstep
-        // pair the previous walk produced, and the invariant an element id's meaning rests on.
+        // a one-window walk carries the other windows' entries forward untouched, which is the same lockstep pair
+        // the previous walk produced and the invariant an element id's meaning rests on.
         var walks = new Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)>(StringComparer.Ordinal);
         var truncated = new Dictionary<string, WalkStopReason>(StringComparer.Ordinal);
         if (partial)
@@ -535,8 +526,8 @@ public sealed class DesktopAutomation : IDisposable
 
             walked.Add(windowId);
 
-            // Numbered by the same helper the picture's marks go through, so an id on a mark and the id in
-            // this observation are the same control — not two independent walks that happen to agree today.
+            // Numbered by the same helper the picture's marks go through, so an id on a mark and the id in this
+            // observation name the same control.
             var (numbered, nodes, stopped) = _walk(window.Handle, windowId);
             elements.AddRange(numbered);
 
@@ -570,12 +561,9 @@ public sealed class DesktopAutomation : IDisposable
         watch.Stop();
         _leases.ObservedRoundTripMs = watch.Elapsed.TotalMilliseconds;
 
-        // Stamped *after* the walk, not before it. Reading the UIA trees of nine windows takes seconds —
-        // Chromium needs a moment to publish its tree, one window hits the 40-element cap, and each window has
-        // its own node and time budget — while the window enumeration is a few milliseconds. A lease stamped before the walk
-        // begins its life already spent: TTL minus the observation, which for the 15 s base and a measured
-        // 10.2 s observation left about five seconds, and any slower round expired the lease before the model
-        // could act on it. That is the "Expired" refusal arriving on a lease the caller had just been issued.
+        // Stamped after the walk, not before it. Reading the UIA trees of nine windows takes seconds, while the
+        // window enumeration is a few milliseconds. A lease stamped before the walk begins its life already
+        // spent, and any slow round could expire it before the model acts.
         var now = _clock.GetUtcNow();
 
         // The generation must be unique per observation: two observations that collide on the same
@@ -635,7 +623,7 @@ public sealed class DesktopAutomation : IDisposable
     /// <summary>
     /// One aggregate event per observation: latency, plus a truncation reason when <i>any</i> window was
     /// cut off on nodes or time. Per-window truncation details live on the entities themselves; the
-    /// aggregate answers "how often is the walk budget losing controls", which is the tuning question.
+    /// aggregate answers how often the walk budget is losing controls, which is the tuning question.
     /// </summary>
     private void RecordTelemetry(DesktopObservation observation, double latencyMs)
     {
@@ -673,8 +661,7 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>
     /// Puts the pointer on the point first, then wheels. A wheel goes to whatever window is under the cursor,
-    /// so scrolling without moving is scrolling whatever the user's pointer happened to be over — the very
-    /// thing the guard exists to prevent.
+    /// so scrolling without moving would scroll whatever the user's pointer happened to be over.
     /// </summary>
     private InjectionResult ScrollIn(ActionParams parameters)
     {
@@ -729,9 +716,8 @@ public sealed class DesktopAutomation : IDisposable
         var handle = ParseHandle(entityId);
 
         // Focus/aim kinds change where the next action goes, not what the window paints, so there is no
-        // before-frame to keep and nothing to verify against. Capturing and diffing them anyway produced
-        // "校验：画面无变化" on actions that never promised a visual effect — and a real session read that
-        // sentence as its click having failed.
+        // before-frame to keep and nothing to verify against. Diffing them anyway reports "no change" on actions
+        // that never promised a visual effect, which reads as the click having failed.
         var verifiesAfterwards = NeedsVerification(kind);
 
         // A control that reports its own state (checked, selected, expanded, its value) is verified by asking it,
@@ -793,9 +779,9 @@ public sealed class DesktopAutomation : IDisposable
         {
             // UIPI first, before anything touches the user's window order: an elevated target swallows this
             // process's SendInput silently, so focusing and raising it would move the user's foreground for an
-            // action that was never going to land. A UI Automation pattern — the path above — crosses integrity
-            // levels fine and so is not gated; this is a gate on the one communication channel that would be
-            // swallowed, not on reaching the window at all.
+            // action that was never going to land. A UI Automation pattern, the path above, crosses integrity
+            // levels fine and so is not gated; this gates the one channel that would be swallowed, not reaching
+            // the window at all.
             if (DeliversInput(kind) && _integrity(handle) is { } uiPiDenied)
             {
                 return Refused(actionId, observation.ObsId, entityId, kind, parameters, uiPiDenied);
@@ -803,14 +789,13 @@ public sealed class DesktopAutomation : IDisposable
 
             // Before injecting: the point has to be somewhere the target can receive it. Injected input is
             // delivered by the OS to whatever window is under the point, and a point inside the target's
-            // rectangle can still be covered by another application's window — in which case the click lands
-            // there and the target's frame simply does not change, which reads as "the button did nothing".
+            // rectangle can still be covered by another application's window; the click then lands there and
+            // the target's frame does not change, which reads as "the button did nothing".
             if (Occlusion(kind, parameters, handle, _hitTest) is { } covered)
             {
-                // What the refusal used to tell the model to do, done here: the action was decided on this
-                // window, and raising it is a means to that end rather than a different action — one approval
-                // and one round trip instead of three. The result says so, because the user's foreground
-                // window changes.
+                // Raise instead of refusing: the action was decided on this window, and raising it is a means to
+                // that end rather than a different action, so one approval and one round trip replace three. The
+                // result says so, because the user's foreground window changes.
                 if (TryRaise(kind, parameters, handle, covered) is { } failed)
                 {
                     return Refused(actionId, observation.ObsId, entityId, kind, parameters, failed);
@@ -864,12 +849,12 @@ public sealed class DesktopAutomation : IDisposable
     /// Judges the action against the part of the window it could plausibly have changed.
     /// <para>
     /// A control the model named is judged by <i>that control's rectangle</i>, not the window's. The decision
-    /// is a fraction of the judged area, so a whole-window target makes a small control's change fall under
-    /// the threshold: a button that repainted 60×30 in a 1200×800 window changed 1800 pixels against a
-    /// 4800-pixel line, and the click that worked came back as "画面无变化（效果未被确认）".
+    /// is a fraction of the judged area, so a whole-window target makes a small control's change fall under the
+    /// threshold: a small button's repaint is a tiny fraction of a large window, and the click that worked comes
+    /// back as no change.
     /// </para>
     /// <para>
-    /// Two cases fall back to the whole frame, deliberately. A UI Automation pattern is not local — invoking a
+    /// Two cases fall back to the whole frame, deliberately. A UI Automation pattern is not local: invoking a
     /// menu button opens a menu anywhere in the window, and judging only the button would report the menu as
     /// "no change". And a keystroke or a typed string has no rectangle of its own at all: what it changed is
     /// wherever the text landed, which is the window.
@@ -900,8 +885,8 @@ public sealed class DesktopAutomation : IDisposable
 
     /// <summary>
     /// Verifies by the control's own state. Changed is a fact, not a guess; unchanged is also a fact. If the click
-    /// did not go through a pattern at all there is no before-frame to fall back on, which is said plainly rather
-    /// than read as "nothing happened".
+    /// did not go through a pattern at all there is no before-frame to fall back on, which is reported plainly
+    /// rather than read as "nothing happened".
     /// </summary>
     internal static async Task<VerifyResult> VerifyByStateAsync(
         System.Windows.Automation.AutomationElement node,
@@ -935,10 +920,10 @@ public sealed class DesktopAutomation : IDisposable
     /// Whether the region's pixels can be copied off the screen instead of re-rendering the whole window.
     /// <para>
     /// Only when the target is the foreground window. A screen BitBlt copies whatever is actually at those
-    /// pixels, so anything drawn on top — another application, a tooltip, this agent's own window — would be
+    /// pixels, so anything drawn on top (another application, a tooltip, this agent's own window) would be
     /// compared against the target's own content and read as a change the target never made. The foreground
     /// window is the one thing that guarantees nothing is on top of it, and it is also the state the occlusion
-    /// guard leaves a coordinate action in, so the cheap path is the common case rather than a special one.
+    /// guard leaves a coordinate action in, so the cheap path is the common case.
     /// </para>
     /// </summary>
     private bool CanCaptureRegion(nint handle, PixelRect region)
@@ -955,8 +940,8 @@ public sealed class DesktopAutomation : IDisposable
     }
 
     /// <summary>
-    /// The last walk of one window, when this process has one — so a pattern call can use it instead of
-    /// walking the same tree again. Null when the window was never walked here, and then the act walks it.
+    /// The last walk of one window, when this process has one, so a pattern call can use it instead of walking
+    /// the same tree again. Null when the window was never walked here, and then the act walks it.
     /// </summary>
     private (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? WalkOf(
         string entityId) => _walkState.Walks.TryGetValue(entityId, out var walk) ? walk : null;
@@ -966,17 +951,17 @@ public sealed class DesktopAutomation : IDisposable
     /// <para>
     /// Separate from <see cref="Observe"/> because reading a page is a network round trip and the observation
     /// is a synchronous walk over local windows. The two are also different sources: a Chromium window has one
-    /// control as far as UI Automation is concerned — the webview's document surface — and dozens as far as
-    /// its DOM is concerned, and both are wanted.
+    /// control as far as UI Automation is concerned (the webview's document surface) and dozens as far as its
+    /// DOM is concerned, and both are wanted.
     /// </para>
     /// <para>
     /// Never throws and never fails the observation. A browser that is not there, a port that never opened, a
-    /// page that navigated mid-read: all of them mean "this window has no DOM elements", which is the
-    /// coordinate path's window and exactly where it was before.
+    /// page that navigated mid-read: all of them mean "this window has no DOM elements", which leaves the
+    /// window on the coordinate path.
     /// </para>
     /// </summary>
     /// <param name="entityId">One window, or null for every window with a debug port.</param>
-    /// <returns>How many elements were added — zero everywhere means nothing changed for anyone.</returns>
+    /// <returns>How many elements were added; zero means nothing changed.</returns>
     public async Task<int> AddDomElementsAsync(
         string? entityId = null,
         CancellationToken ct = default,
@@ -1006,16 +991,16 @@ public sealed class DesktopAutomation : IDisposable
             }
 
             // One window per process. A browser's two tabs are two windows sharing one debug port, and the page
-            // on it is whichever one answered — so a second window of the same process would be handed a copy of
-            // the first one's controls at the first one's screen coordinates. That is worse than nothing: it
-            // looks like a working answer and it clicks the wrong window.
+            // on it is whichever one answered, so a second window of the same process would be handed a copy of
+            // the first one's controls at the first one's screen coordinates. That looks like a working answer
+            // and it clicks the wrong window.
             if (!claimed.Add(entity.ProcessId))
             {
                 continue;
             }
 
-            // A port this agent opened, or failing that one the person opened on a Chromium-family window (found from
-            // the system's listener table, at most once in a while per process).
+            // A port this agent opened, or failing that one the person opened on a Chromium-family window (found
+            // from the system's listener table, at most once in a while per process).
             var port = _cdpPorts.PortOf(entity.ProcessId)
                 ?? await _cdpPorts.DiscoverAsync(entity.ProcessId, entity.Value, ct).ConfigureAwait(false);
             if (port is not { } debugPort)
@@ -1052,8 +1037,8 @@ public sealed class DesktopAutomation : IDisposable
             // Only this window's own DOM elements are replaced: a fresh UI Automation walk already cleared
             // them, and adding again has to leave exactly one copy rather than accumulate.
             // Read-modify-write under a lock: two page reads finishing together would each start from the same
-            // list and one of them would lose its controls. And only while this is still the current observation —
-            // one that has been replaced is somebody else\x27s past, and adding to it is wasted at best.
+            // list and one of them would lose its controls. And only while this is still the current observation:
+            // one that has been replaced is somebody else's past, and adding to it is wasted at best.
             lock (_domGate)
             {
                 if (!ReferenceEquals(_lastObservation, observation))
@@ -1082,8 +1067,8 @@ public sealed class DesktopAutomation : IDisposable
     private const string DomMarker = "#cdp:";
 
     /// <summary>
-    /// Acts on one of a page's own controls. Null when this is not one — the caller then tries the UI
-    /// Automation path, which is also the path that decides whether the control is reachable at all.
+    /// Acts on one of a page's own controls. Null when this is not one: the caller then tries the UI Automation
+    /// path, which is also the path that decides whether the control is reachable at all.
     /// </summary>
     public async Task<UiaInvocation?> TryActDomAsync(
         nint handle,
@@ -1125,10 +1110,10 @@ public sealed class DesktopAutomation : IDisposable
         return await _cdp.ActAsync(debugPort, elementId[(marker + DomMarker.Length)..], entity.Label, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Acts on a named control through its UI Automation pattern, or null when that does not apply — the
-    /// action names no control, or the control has no pattern that means what was asked. A pattern that was
-    /// tried and failed is reported as a failure rather than retried as a blind coordinate click: if the
-    /// control refused to be invoked, clicking its centre is not going to work either.
+    /// <summary>Acts on a named control through its UI Automation pattern, or null when that does not apply: the
+    /// action names no control, or the control has no pattern that means what was asked. A pattern that was tried
+    /// and failed is reported as a failure rather than retried as a blind coordinate click, because a control that
+    /// refused to be invoked will not accept a click at its centre either.
     /// </summary>
     private static InjectionResult? ElementPattern(
         nint handle,
@@ -1154,10 +1139,10 @@ public sealed class DesktopAutomation : IDisposable
     /// Whether an action on this window can be delivered without the window being in front.
     /// <para>
     /// The tool layer asks before it applies its foreground rule for keys and text: a key sent while another
-    /// window is in front goes to that other window, which is the whole reason the rule exists. A page reached
-    /// through its debug port is addressed directly, so the rule has nothing to protect there. In
-    /// <see cref="InputMode.Background"/> every action is answered here — carried or refused with a reason — so
-    /// the foreground rule is moot rather than something to satisfy.
+    /// window is in front goes to that other window, which is why the rule exists. A page reached through its
+    /// debug port is addressed directly, so the rule has nothing to protect there. In
+    /// <see cref="InputMode.Background"/> every action is answered here, carried or refused with a reason, so the
+    /// foreground rule is moot rather than something to satisfy.
     /// </para>
     /// </summary>
     public bool DeliversInBackground(string entityId) => _inputMode() switch
@@ -1422,8 +1407,8 @@ public sealed class DesktopAutomation : IDisposable
     /// Brings the target over whatever covers the point, or explains why that did not work.
     /// <para>
     /// Focus is not only about the keyboard: a window can be the active one and still be covered, and then the
-    /// click lands on the cover. Raising it is the move the refusal used to ask the model to make, done in the
-    /// same action because the action was already decided on this window. It is not silent — the result says
+    /// click lands on the cover. Raising it is the move the refusal would otherwise ask the model to make, done
+    /// in the same action because the action was already decided on this window. It is not silent — the result says
     /// the window was raised — and it is bounded: a window that moved while being raised (a restore) makes
     /// the coordinates stale, and then the action is refused rather than aimed at a rectangle that no longer
     /// holds the point.
@@ -1497,7 +1482,7 @@ public sealed class DesktopAutomation : IDisposable
                 : string.Empty)),
     };
 
-    /// <summary>Action latency statistics (design doc: latency must be measured, never assumed).</summary>
+    /// <summary>Action latency statistics. Latency must be measured, never assumed.</summary>
     public DesktopLatency Latency()
     {
         List<double> sorted;

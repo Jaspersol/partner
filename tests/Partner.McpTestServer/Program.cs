@@ -1,4 +1,4 @@
-// Minimal MCP test-double server (design doc §2.6.3).
+// Minimal MCP test-double server.
 // Reads newline-delimited JSON-RPC 2.0 from stdin, writes responses to stdout.
 // If PARTNER_MCP_TEST_LOG is set, every received method name is appended as one line to that file.
 using System.Text;
@@ -106,19 +106,19 @@ static void HandleToolCall(StreamWriter stdout, JsonNode? id, JsonElement root)
     switch (toolName)
     {
         case "echo":
-        {
-            var text = hasArguments
-                && arguments.TryGetProperty("text", out var textElement)
-                && textElement.ValueKind == JsonValueKind.String
-                    ? textElement.GetString() ?? string.Empty
-                    : string.Empty;
-            Write(stdout, id, new JsonObject
             {
-                ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
-                ["isError"] = false,
-            });
-            break;
-        }
+                var text = hasArguments
+                    && arguments.TryGetProperty("text", out var textElement)
+                    && textElement.ValueKind == JsonValueKind.String
+                        ? textElement.GetString() ?? string.Empty
+                        : string.Empty;
+                Write(stdout, id, new JsonObject
+                {
+                    ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = text }),
+                    ["isError"] = false,
+                });
+                break;
+            }
 
         case "fail":
             Write(stdout, id, new JsonObject

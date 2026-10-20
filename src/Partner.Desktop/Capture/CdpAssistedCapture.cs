@@ -8,14 +8,11 @@ namespace Partner.Desktop.Capture;
 /// <summary>
 /// Screen capture that asks the browser when the window system cannot see the page.
 /// <para>
-/// <c>PrintWindow</c> asks a window to paint itself, and a GPU-composited browser window answers with its frame
-/// and a flat grey rectangle where the page is. The window's own border and title bar are right; the content is
-/// not. The page is then fetched from the browser itself (<c>Page.captureScreenshot</c>, which renders without
-/// needing the window to be visible, in front, or even on screen) and laid into that rectangle.
-/// </para>
-/// <para>
-/// Only for a window the agent has a debug port for, and only when the content really looks blank; an ordinary
-/// capture is passed through untouched and costs nothing extra.
+/// <c>PrintWindow</c> on a GPU-composited browser window returns a flat grey rectangle for the page content,
+/// though its border and title bar are correct. The page is fetched from the browser itself
+/// (<c>Page.captureScreenshot</c> renders without the window being visible, in front, or on screen) and laid
+/// into that rectangle. Used only for windows with a reachable debug port whose content really looks blank;
+/// other captures pass through untouched.
 /// </para>
 /// </summary>
 public sealed class CdpAssistedCapture(
@@ -57,10 +54,7 @@ public sealed class CdpAssistedCapture(
     public Task<CaptureResult> CaptureScreenRegionAsync(int x, int y, int width, int height, CancellationToken ct = default) =>
         inner.CaptureScreenRegionAsync(x, y, width, height, ct);
 
-    /// <summary>
-    /// True when a grid of points across the client area all hold one colour. A real page with that property is a
-    /// plain colour wash, for which asking the browser costs one call and changes nothing.
-    /// </summary>
+    /// <summary>True when a grid of points across the client area all hold one colour.</summary>
     internal static bool LooksBlank(CaptureResult captured, PixelRect client, PixelRect frame)
     {
         var left = client.X - frame.X;
@@ -72,8 +66,8 @@ public sealed class CdpAssistedCapture(
             return false;
         }
 
-        // Sampled inside a margin: the outermost pixels of a client area are often the window's own border or
-        // shadow, which would make a blank page look like a painted one.
+        // Inset the sample grid: the outermost client pixels are often the window border or shadow, which
+        // would make a blank page look painted.
         var insetX = Math.Min(8, client.Width / 8);
         var insetY = Math.Min(8, client.Height / 8);
 
@@ -113,7 +107,7 @@ public sealed class CdpAssistedCapture(
             return null;
         }
 
-        // The browser reports the page at its own pixel density; the window's client area is in screen pixels.
+        // The browser reports the page at its own pixel density; the client area is in screen pixels.
         if (page.PixelWidth != client.Width || page.PixelHeight != client.Height)
         {
             page = new TransformedBitmap(

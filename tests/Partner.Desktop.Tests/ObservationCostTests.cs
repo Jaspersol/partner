@@ -8,9 +8,8 @@ namespace Partner.Desktop.Tests;
 /// What a full observation costs on a window shaped like the ones this budget exists for.
 /// <para>
 /// The window here is a real one with two thousand controls the walk has no use for — the shape a Chromium or
-/// Electron window presents, where almost every node is an element the walk skips. Under the old bound, which
-/// counted only elements it <i>produced</i>, that window was walked to its last node: measured at 23.8s for
-/// this one window, which on a nine-window desktop is the whole observation gone.
+/// Electron window presents, where almost every node is an element the walk skips. Without the visit bound,
+/// that window would be walked to its last node.
 /// </para>
 /// <para>
 /// The bound here is deliberately loose — the point is not to pin a number that moves with the machine — and
@@ -63,8 +62,8 @@ public sealed class ObservationCostTests
     [LiveDesktopFact]
     public void A_real_window_is_observed_quickly()
     {
-        // The other side of the same bound: the caps exist for pathological trees, and a window that is merely
-        // ordinary must not feel them. This is the number a turn actually pays on a quiet desktop.
+        // The other side of the same bound: the caps exist for pathological trees, and an ordinary window must
+        // not feel them.
         using var host = new WideWindow(24);
         using var automation = new DesktopAutomation();
 
@@ -94,8 +93,7 @@ public sealed class ObservationCostTests
                 ShowInTaskbar = true,
             };
 
-            // The control worth finding comes first, which is the common shape and the one that makes the
-            // comparison fair: the old code found it too, twenty seconds later.
+            // The control worth finding comes first, which is the common shape and makes the comparison fair.
             _form.Controls.Add(new System.Windows.Forms.Button { Text = "提交", Left = 700, Top = 600 });
 
             for (var index = 0; index < skipped; index++)

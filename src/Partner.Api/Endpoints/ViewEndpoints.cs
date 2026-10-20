@@ -13,8 +13,8 @@ using Partner.Core.Agent.Skills;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// The four views of design doc §2.10 plus the projection rebuild that Phase 7 requires. Every endpoint is a
-/// thin projection over the stores — no view state lives here, which is why deleting the UI loses nothing.
+/// The four views plus the projection rebuild. Every endpoint is a thin projection over the stores — no view
+/// state lives here.
 /// </summary>
 public static class ViewEndpoints
 {
@@ -37,7 +37,6 @@ public static class ViewEndpoints
         MapDiscovery(app);
     }
 
-    // ---- discovery: what can be picked instead of typed ---------------------------------------------
     private static void MapDiscovery(WebApplication app)
     {
         app.MapGet("/api/voice/devices", (VoiceHost host) => Results.Ok(new
@@ -47,8 +46,7 @@ public static class ViewEndpoints
         }));
 
         // Proxied rather than called from the browser: the model endpoint will not allow the UI's origin,
-        // and the API key must not travel to the webview. The key used is the stored one — a draft key is not
-        // accepted here, because that would mean a second place secrets arrive from.
+        // and the API key must not reach the webview. Only the stored key is used, never a draft.
         app.MapPost("/api/models", async (
             ModelProbeRequest request, ApiContext ctx, CancellationToken ct) =>
         {
@@ -88,8 +86,7 @@ public static class ViewEndpoints
                     or ModelCallFailure)
             {
                 // The reason travels: "the endpoint says 404" and "the endpoint is unreachable" need different
-                // fixes, and an empty dropdown would say neither. ModelCallFailure carries the same answer in a
-                // better shape, and is caught here for the same reason — a probe that 500s teaches nothing.
+                // fixes, and an empty dropdown would say neither.
                 return Results.Ok(new { baseUrl, models = Array.Empty<string>(), error = error.Message });
             }
         });
@@ -97,7 +94,6 @@ public static class ViewEndpoints
 
     public sealed record ModelProbeRequest(string? BaseUrl);
 
-    // ---- input delivery (design doc §2.3.1: the UI's single entry point) --------------------------
     private static void MapInput(WebApplication app)
     {
         app.MapPost("/api/input", async (InputRequest request, ApiContext ctx, CancellationToken ct) =>
@@ -107,8 +103,8 @@ public static class ViewEndpoints
                 return Results.BadRequest(new { error = "payload must not be empty" });
             }
 
-            // Agent is the runtime talking to itself (a sub-agent's report); a client that could send it could write
-            // a sub-agent's words, so it is not one of the sources this endpoint accepts.
+            // Agent is the runtime talking to itself (a sub-agent's report); a client that could send it could
+            // write a sub-agent's words, so it is not an accepted source.
             if (!Enum.TryParse<InputSource>(request.Source, ignoreCase: true, out var source) || source == InputSource.Agent)
             {
                 return Results.BadRequest(new
@@ -124,8 +120,8 @@ public static class ViewEndpoints
                 return Results.BadRequest(new { error = $"未知的附件：{string.Join(", ", unknown)}" });
             }
 
-            // Blank means "the message did not choose", which leaves the configured default in place. A named
-            // gear must exist in the list, so the menu can never offer something the runner would reject.
+            // Blank means "the message did not choose", leaving the configured default. A named gear must exist
+            // in the list, so the menu can never offer something the runner would reject.
             var gear = ReasoningEfforts.Normalize(request.ReasoningEffort);
             if (gear.Length > 0)
             {
@@ -144,12 +140,11 @@ public static class ViewEndpoints
             var key = suppliedKey ? request.IdempotencyKey! : $"ui:{source}:{itemId}";
 
             // A caller that supplies a key is asking for retry safety, so it is worth telling it whether this
-            // call was the one that created the item. Scanning is only done when a key was supplied.
+            // call created the item. Scanning only happens when a key was supplied.
             var deduplicated = suppliedKey && await KeyExistsAsync(ctx, key, ct).ConfigureAwait(false);
 
-            // A new message is what makes a pending withdrawal final. Done before the message is queued, so the
-            // purge is finished — and what was remembered from the withdrawn conversations is gone — before any
-            // turn can start that might recall it.
+            // A new message makes a pending withdrawal final. Done before the message is queued, so the purge is
+            // finished before any turn can start that might recall withdrawn content.
             await ctx.Withdrawals.CommitAsync(ct).ConfigureAwait(false);
 
             var seq = await ctx.Queue.EnqueueAsync(new InputItem
@@ -162,8 +157,8 @@ public static class ViewEndpoints
                 ReasoningEffort = gear,
             }, ct).ConfigureAwait(false);
 
-            // The queue is the only place this lands: no consumer runs in this process, so the item waits here
-            // until one does. Saying so is more useful than implying it was executed.
+            // The queue is the only place this lands: no consumer runs in this process, so the item waits until
+            // one does. Saying so is more useful than implying it was executed.
             return Results.Ok(new
             {
                 itemId,
@@ -187,17 +182,15 @@ public static class ViewEndpoints
         return false;
     }
 
-    // ---- attachments (图片与文档) -------------------------------------------------------------------
     private static void MapMedia(WebApplication app)
     {
-        // The bytes come in as the raw body with the type in the header: no multipart parsing, and the UI can
-        // send a File straight through. The name travels in a header rather than the body, so a File is still a
-        // File and the body stays a byte range.
+        // Bytes arrive as the raw body with the type in the header: no multipart parsing, and the UI can send a
+        // File straight through. The name travels in a header so the body stays a byte range.
         app.MapPost("/api/media", async (HttpRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             var contentType = (request.ContentType ?? string.Empty).Split(';')[0].Trim();
-            // The client percent-encodes: a header can only carry ASCII, and a Chinese file name is the norm
-            // here. A name that is not valid encoding is simply not a usable name — the store falls back to one.
+            // The client percent-encodes: headers carry ASCII only, and non-ASCII file names are common. An
+            // invalid name is simply unusable — the store falls back to one.
             var encodedName = request.Headers["X-File-Name"].ToString();
             var fileName = encodedName.Contains('%')
                 ? Uri.UnescapeDataString(encodedName)
@@ -214,8 +207,8 @@ public static class ViewEndpoints
                 {
                     mediaId,
                     contentType = attachment.ContentType,
-                    // The name and the path are what the model is told; without them an attachment is an id it
-                    // cannot act on, and the message body would have to invent a location.
+                    // The name and path are what the model is told; without them an attachment is an id it
+                    // cannot act on.
                     fileName = attachment.FileName,
                     path = attachment.LocalPath,
                     bytes = attachment.Bytes.Length,
@@ -231,14 +224,14 @@ public static class ViewEndpoints
             }
         });
 
-        // Served back so the composer can show what is attached without keeping a copy of the bytes in the UI.
+        // Served back so the composer can show what is attached without keeping a copy of the bytes.
         app.MapGet("/api/media/{mediaId}", (string mediaId, ApiContext ctx) =>
             ctx.Media.TryRead(mediaId) is { } attachment
                 ? Results.Bytes(attachment.Bytes, attachment.ContentType)
                 : Results.NotFound(new { error = $"未知的附件 '{mediaId}'" }));
 
-        // What this store will hold. A client that has to guess would rather be refused up front than after the
-        // upload, and the browser's file picker needs the list to filter on.
+        // What this store will hold: a client that would otherwise guess can be refused up front, and the
+        // browser's file picker needs the list to filter on.
         app.MapGet("/api/media/types", () => Results.Ok(new { types = FileMediaStore.Types }));
     }
 
@@ -249,15 +242,14 @@ public static class ViewEndpoints
         IReadOnlyList<string>? Media = null,
 
         /// <summary>
-        /// 这一条消息选的思考挡位。缺省 = 用设置里的默认挡位。
+        /// The reasoning gear chosen for this message. Absent = the default gear from settings.
         /// <para>
-        /// 校验的是「在清单里」，不是「在内置词表里」：清单是用户自己维护的，删掉一个词只会让它从菜单消失，
-        /// 不会让服务端拒绝它。
+        /// Validation checks membership in the configured list, not the built-in vocabulary: the list belongs to
+        /// the user, so removing a word only hides it from the menu and does not make the server reject it.
         /// </para>
         /// </summary>
         string? ReasoningEffort = null);
 
-    // ---- session view (查看 + 编辑 + 编辑历史) ----------------------------------------------------
     private static void MapSession(WebApplication app)
     {
         app.MapGet("/api/session", async (
@@ -267,20 +259,20 @@ public static class ViewEndpoints
             var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
             var pending = await ctx.Withdrawals.PendingAsync(ct).ConfigureAwait(false);
 
-            // A sub-agent's report is the runtime talking to the main agent, not part of the conversation a person
-            // had: it stays in the log (the model reads it) and out of the view. The main agent's reply to it is
-            // an ordinary assistant message and is shown.
+            // A sub-agent's report is the runtime talking to the main agent, not part of the person's
+            // conversation: it stays in the log (the model reads it) and out of the view. The main agent's reply
+            // is an ordinary assistant message and is shown.
             var shown = view.Items
                 .Where(i => !(i.Kind == SessionEventKind.User && i.Source == InputSource.Agent))
                 .ToList();
 
-            // The day picker is a *view* over the one session: the log is not split, the days are only a way to
-            // look at it. The client passes its own UTC offset because "which day" is the reader's calendar, not
-            // the server's. Without `offsetMinutes` none of this runs and the response is what it always was.
+            // The day picker is a *view* over the one session: the log is not split, days are only a way to look
+            // at it. The client passes its own UTC offset because "which day" is the reader's calendar. Without
+            // `offsetMinutes` none of this runs.
             //
             // `day` picks the window ("latest" = the newest day that has events). A *closed* window is that day
-            // alone; an *open* one starts at that day and runs to the end of the log, which is how a turn that
-            // crosses midnight keeps showing under the day the reader was looking at until they are idle.
+            // alone; an *open* one starts at that day and runs to the end of the log, so a turn crossing midnight
+            // keeps showing under the day the reader was looking at until they are idle.
             List<object>? days = null;
             string? resolvedDay = null;
             var windowFrom = from ?? 1;
@@ -328,24 +320,21 @@ public static class ViewEndpoints
                     revisionCount = i.RevisionCount,
                     streaming = false,
 
-                    // A tool call and its result are two events; the meta is what lets the UI pair them into
-                    // one card (id/name/args/ok) instead of showing two unrelated rows.
+                    // A tool call and its result are two events; the meta lets the UI pair them into one card
+                    // (id/name/args/ok).
                     meta = i.Meta,
 
-                    // Only ever set on a live row; a logged Thinking event carries its text in the body like
-                    // every other event, and inventing a second place for it would mean two sources of truth.
+                    // Only ever set on a live row; a logged Thinking event carries its text in the body.
                     reasoning = (string?)null,
                     reasoningSince = (string?)null,
                 })
                 .ToList();
 
-            // The reply being written right now rides along as one extra row. It is not in the log — a
-            // half-written answer is not an event of record — so it carries seq 0 and disappears the moment
-            // the real Assistant event lands. The view is already a mix of log and runtime (context below is
-            // measured, not stored), so this is the same contract, not a new one.
+            // The reply being written now rides along as one extra row. It is not in the log — a half-written
+            // answer is not an event of record — so it carries seq 0 and disappears when the real Assistant
+            // event lands.
             //
-            // Reasoning rides on the same row rather than as a second one: a turn that is thinking has not yet
-            // started answering, and a view that showed two live rows would be claiming two things are moving.
+            // Reasoning rides on the same row: a thinking turn has not started answering yet.
             if (includeLive && consumer.LiveAssistant is { } live)
             {
                 items.Add(new
@@ -360,25 +349,24 @@ public static class ViewEndpoints
                     streaming = true,
                     meta = (IReadOnlyDictionary<string, string>?)null,
 
-                    // What the model is thinking right now. The row's own `at` is when the answer started,
-                    // and ReasoningSince is when the thinking did — null means the thinking is over and only
-                    // the answer is coming, which is the difference a reader can see.
+                    // What the model is thinking now. The row's `at` is when the answer started, and
+                    // ReasoningSince is when thinking did — null means thinking is over and only the answer is
+                    // coming.
                     reasoning = live.Reasoning,
                     reasoningSince = live.ReasoningSince?.ToString("O"),
                 });
             }
 
-            // Reasoning being streamed is not in the log yet either, so it gets the same treatment as the
-            // answer: a row of its own, with seq 0, which the finished Thinking event replaces. While the model
-            // is thinking there is no answer text yet, so this is the only live row there is.
+            // Streamed reasoning is not in the log yet either, so it gets the same treatment: a row of its own,
+            // seq 0, which the finished Thinking event replaces. While thinking there is no answer text yet.
             if (includeLive && consumer.LiveAssistant is { Reasoning: { } thinking, ReasoningSince: { } since })
             {
                 items.Add(new
                 {
                     seq = 0L,
 
-                    // `at` **is** the start of the thinking here, so the same field a client already reads off
-                    // every row carries the clock. One source, not a second one that can disagree with it.
+                    // `at` **is** the start of the thinking, so the field a client already reads off every row
+                    // carries the clock.
                     at = since,
                     kind = "ThinkingStreaming",
                     source = "Text",
@@ -393,8 +381,8 @@ public static class ViewEndpoints
             }
 
 
-            // The window's occupancy is measured the same way a turn would assemble it, so the number the UI
-            // shows is the number that decides whether history has to be folded.
+            // The window's occupancy is measured the way a turn assembles it, so the UI's number is the one
+            // that decides whether history is folded.
             var usage = await consumer.MeasureContextAsync(ctx.Settings.Load(), ct).ConfigureAwait(false);
 
             return Results.Ok(new
@@ -404,8 +392,8 @@ public static class ViewEndpoints
                 days,
                 day = resolvedDay,
 
-                // What the view needs to offer the right actions: delete is for the latest conversation only, and
-                // a pending withdrawal is the one thing that can still be taken back.
+                // What the view needs to offer the right actions: delete applies to the latest conversation
+                // only, and a pending withdrawal is the one thing that can still be taken back.
                 conversation = new
                 {
                     latestFromSeq = WithdrawalService.LatestStart(view),
@@ -419,8 +407,7 @@ public static class ViewEndpoints
                             events = pending.Events,
                         },
                 },
-                // Whether a turn is in flight. The view uses it to decide how often to re-read itself: a
-                // session that is being written to must show it while it happens, not five seconds later.
+                // Whether a turn is in flight. The view uses it to decide how often to re-read itself.
                 busy = consumer.LiveAssistant is not null || ctx.Queue.Snapshot().RunningItemId is not null,
                 context = new
                 {
@@ -470,13 +457,11 @@ public static class ViewEndpoints
             return Results.Ok(events.Select(e => new { seq = e.Seq, at = e.At, body = e.Body, meta = e.Meta }));
         });
 
-        // Deleting is for the latest conversation only, and it deletes the whole of it. It is physical: the lines
+        // Deleting applies to the latest conversation only and removes all of it. It is physical: the lines
         // leave the log, and one content-free retraction is left for the range so the seq space stays monotonic.
-        // "Deleted" has to mean deleted — a hidden line is still a line on disk, and the user asked for it to go.
         //
-        // Not the earlier ones, and not a single event out of the middle: removing history from behind newer
-        // history leaves the rest of the conversation answering things that were never asked. Going back further
-        // is what withdrawing is for.
+        // Not earlier conversations, and not a single event out of the middle: removing history from behind newer
+        // history leaves the rest of the conversation answering things that were never asked. Use withdrawal.
         app.MapPost("/api/session/{seq:long}/delete", async (
             long seq, ApiContext ctx, ConsumerHost consumer, CancellationToken ct) =>
         {
@@ -528,14 +513,13 @@ public static class ViewEndpoints
             });
         });
 
-        // Withdrawing hides the selected conversation and everything after it, and nothing else happens: the lines
-        // stay in the log and so do their memories. That is what lets it be taken back — until the next message is
-        // sent, which makes it final (see WithdrawalService).
+        // Withdrawing hides the selected conversation and everything after it; the lines stay in the log and so
+        // do their memories. That is what lets it be taken back — until the next message makes it final (see
+        // WithdrawalService).
         app.MapPost("/api/session/{seq:long}/withdraw", async (
             long seq, ApiContext ctx, ConsumerHost consumer, CancellationToken ct) =>
         {
-            // Hiding history under a turn that is still writing it would leave the turn's tail visible and
-            // headless. Wait for it, or stop it.
+            // Hiding history under a turn still writing it would leave the turn's tail visible and headless.
             if (Busy(ctx, consumer) is { } busy)
             {
                 return busy;
@@ -564,8 +548,8 @@ public static class ViewEndpoints
         consumer.LiveAssistant is not null || ctx.Queue.Snapshot().RunningItemId is not null
             ? Results.Conflict(new { error = "正在回复：等它结束（或先停止）再删除或撤回" })
             : consumer.Agents.HasActiveJobs
-                // A running job reports back as a new message, which would land in a conversation that has just had its
-                // history taken away from under it.
+                // A running job reports back as a new message, which would land in a conversation whose history
+                // was just taken away.
                 ? Results.Conflict(new { error = "子 agent 还有任务在进行：等它汇报，或先取消任务，再删除或撤回" })
                 : null;
 
@@ -580,9 +564,9 @@ public static class ViewEndpoints
     /// <summary>
     /// Whether the MCP section changed in a way the running consumer cannot absorb.
     /// <para>
-    /// The allow list is deliberately excluded: governance reads it live, like the desktop approval gear, so
-    /// changing it must not kill the servers and re-run every handshake. The server list and the on/off switch
-    /// do restart, because they decide <em>which processes exist</em> — and a tool table is built at start.
+    /// The allow list is deliberately excluded: governance reads it live, so changing it must not kill the
+    /// servers and re-run every handshake. The server list and the on/off switch restart, because they decide
+    /// <em>which processes exist</em> — and a tool table is built at start.
     /// </para>
     /// </summary>
     private static bool McpNeedsRestart(McpSettings before, McpSettings after) =>
@@ -596,16 +580,13 @@ public static class ViewEndpoints
         return view.Items.Any(item => item.Seq == seq);
     }
 
-    // ---- queue view (查看 + 取消) ------------------------------------------------------------------
     private static void MapQueue(WebApplication app)
     {
         // No await: the answer is already in memory, which is the point.
         app.MapGet("/api/queue", (ApiContext ctx) =>
         {
-            // From memory, not from the log. The log records every transition of every item this installation
-            // has ever accepted; the queue is the items still in play. Reading the log here meant a full file
-            // read — under the queue lock — every five seconds, growing forever, to hand back a list the queue
-            // already held.
+            // From memory, not from the log: the log holds every transition ever recorded, while the queue holds
+            // the items still in play.
             var latest = ctx.Queue.ActiveItems()
                 .Select(i => new
                 {
@@ -620,8 +601,8 @@ public static class ViewEndpoints
                     error = i.Error,
                     payload = i.Payload,
                     mediaIds = i.MediaIds,
-                    // The gear a sender chose, so a stalled or failed turn can be traced back to the
-                    // request that asked for it. Null means the message did not choose one.
+                    // The gear the sender chose, so a stalled or failed turn can be traced to the request.
+                    // Null means the message did not choose one.
                     reasoningEffort = string.IsNullOrEmpty(i.ReasoningEffort) ? null : i.ReasoningEffort,
                 });
 
@@ -644,7 +625,6 @@ public static class ViewEndpoints
         });
     }
 
-    // ---- memory view (查看 + 检索 + 编辑 + 删除) ----------------------------------------------------
     private static void MapMemory(WebApplication app)
     {
         app.MapGet("/api/memory", async (ApiContext ctx, string? tier, string? scope, int? take, CancellationToken ct) =>
@@ -670,9 +650,8 @@ public static class ViewEndpoints
         });
 
 
-        // The full list, including what has been retired. A memory view that hides invalidated records cannot
-        // be "fully visible": the interesting question is usually "what replaced this", and that answer lives
-        // on the row that was superseded.
+        // The full list, including retired records: the interesting question is usually "what replaced this",
+        // and that answer lives on the superseded row.
         app.MapGet("/api/memory/all", async (ApiContext ctx, CancellationToken ct) =>
         {
             var records = await ctx.Memory.ListAsync(new MemoryQuery(IncludeInvalidated: true, Limit: 1000), ct)
@@ -693,8 +672,8 @@ public static class ViewEndpoints
             }));
         });
 
-        // Tier is editable, because "this is a fact I rely on" and "this is something I once guessed" are
-        // judgements only the person can make, and the whole demotion rule works off them.
+        // Tier is editable: "a fact I rely on" vs "something I once guessed" is a judgement only the person can
+        // make, and the demotion rule works off it.
         app.MapPost("/api/memory/{recordId}/tier", async (string recordId, TierRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             if (!Enum.TryParse<MemoryTier>(request.Tier, ignoreCase: true, out var tier))
@@ -711,12 +690,11 @@ public static class ViewEndpoints
                 : Results.NotFound(new { error = $"未知的记忆 '{recordId}'" });
         });
 
-        // Retention is the other judgement only a person can make, and the one the clock cannot make for them:
-        // it is the promise that demotion and trimming will not break.
+        // Retention is the other judgement only a person can make, and the promise that demotion and trimming
+        // will not break.
         //
-        // It deliberately does not touch the tier. Tier is about trust, retention is about time, and neither
-        // implies the other — pinning retention to a single tier would have left Procedural (a way of doing
-        // something, rather than a fact) unprotectable.
+        // It deliberately does not touch the tier: tier is about trust, retention is about time, and neither
+        // implies the other — pinning retention to a tier would leave Procedural unprotectable.
         app.MapPost("/api/memory/{recordId}/scope", async (string recordId, ScopeRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             if (!Enum.TryParse<MemoryScope>(request.Scope, ignoreCase: true, out var scope))
@@ -733,9 +711,7 @@ public static class ViewEndpoints
                 : Results.NotFound(new { error = $"未知的记忆 '{recordId}'" });
         });
 
-        // Writing a memory by hand. Until this existed the store had a write path (the distillation hook) and no
-        // way for a person to add one, so the only records a reader could correct were the ones the distiller had
-        // happened to keep.
+        // Writing a memory by hand, alongside the distiller's write path.
         app.MapPost("/api/memory", async (CreateMemoryRequest request, ApiContext ctx, CancellationToken ct) =>
         {
             var body = (request.Body ?? string.Empty).Trim();
@@ -756,12 +732,11 @@ public static class ViewEndpoints
                 });
             }
 
-            // Absent means "the default a person means"; present-but-wrong is refused, like /tier and /scope
-            // do. Silently falling back to Semantic would store the record under a tier nobody asked for and
-            // answer 200, which is the one outcome a caller cannot detect.
+            // Absent means "the default a person means"; present-but-wrong is refused, like /tier and /scope.
+            // Silently falling back to Semantic would store the record under an unrequested tier and answer 200.
             //
             // Semantic, not Working: something a person typed is not a note waiting to be corroborated, and
-            // Working carries a TTL that would make the record they just wrote disappear on its own.
+            // Working carries a TTL that would make the record disappear on its own.
             var tier = MemoryTier.Semantic;
             if (!string.IsNullOrWhiteSpace(request.Tier)
                 && !Enum.TryParse<MemoryTier>(request.Tier, ignoreCase: true, out tier))
@@ -782,17 +757,13 @@ public static class ViewEndpoints
                 });
             }
 
-            // No SourceEventSeq, and that is a decision rather than an omission. It keeps the
-            // distillation hook's "have I distilled this turn already" check from colliding with a hand-written
-            // record, and it gives the record its own id prefix so the two id spaces cannot overlap.
+            // No SourceEventSeq on purpose. It keeps the distillation hook's "already distilled" check from
+            // colliding with a hand-written record, and the id prefix keeps the two id spaces apart.
             //
-            // The consequence is spelled out rather than left to be discovered: 「删除之后」 and 「撤回」 promise
-            // that what was remembered from the deleted turns goes with them, and that cascade
-            // (MemoryDeletion.CascadeAsync) finds memories by walking source_event_seq. A hand-written memory
-            // is therefore NOT removed with the conversation it was written next to — it belongs to the
-            // person, not to that turn. The honest version of this is a sentence in the UI rather than a
-            // fuzzy match on the body (which would delete the wrong record) or a back-link (which would put
-            // back exactly the coupling this deliberately drops).
+            // Consequence: delete and withdraw promise that memories from removed turns go with them, and that
+            // cascade (MemoryDeletion.CascadeAsync) walks source_event_seq. A hand-written memory therefore is
+            // NOT removed with the conversation it was written next to — it belongs to the person. The UI says
+            // so; a fuzzy body match would delete the wrong record and a back-link would restore the coupling.
             var recordId = $"m-manual-{Guid.NewGuid().ToString("n")[..8]}";
 
             await ctx.Memory.WriteAsync(
@@ -817,10 +788,8 @@ public static class ViewEndpoints
         {
             var hits = await ctx.Memory.RecallAsync(request.Query ?? string.Empty, request.Limit, ct).ConfigureAwait(false);
 
-            // Tier and scope ride along because a hit *is* one of the records the list already shows. Without
-            // them the list can only be a plain array of matches, and two things a person does with them
-            // stop working: filtering the results the way they filtered the list, and telling a hit apart
-            // from an anonymous one when the two are side by side.
+            // Tier and scope ride along because a hit is one of the records the list already shows, so the
+            // caller can filter results the same way and tell a hit apart from an anonymous match.
             return Results.Ok(hits.Select(h => new
             {
                 recordId = h.RecordId,
@@ -829,8 +798,8 @@ public static class ViewEndpoints
                 reasons = h.Reasons,
                 tier = h.Tier.ToString(),
                 scope = h.Scope.ToString(),
-                // Raw, like `createdAt` on /api/memory/all: the two fields have the same name, so they have to
-                // carry the same shape. System.Text.Json writes it as ISO 8601 with an offset.
+                // Raw, like `createdAt` on /api/memory/all: same field name, same shape. System.Text.Json
+                // writes it as ISO 8601 with an offset.
                 createdAt = h.CreatedAt,
             }));
         });
@@ -902,8 +871,8 @@ public static class ViewEndpoints
     /// What skills the workspace holds, and which are switched off.
     /// <para>
     /// Read-only on purpose: a skill is a <c>SKILL.md</c> in the workspace, and writing one is a job for
-    /// whatever produced it. What belongs here is the judgement that is this installation's — whether a
-    /// given skill is used — which is why the disable list is in settings and the content is not here.
+    /// whatever produced it. The judgement that belongs here is whether a skill is used, which is why the
+    /// disable list is in settings and the content is not.
     /// </para>
     /// </summary>
     private static void MapSkills(WebApplication app, ApiContext ctx, string workspace)
@@ -922,8 +891,7 @@ public static class ViewEndpoints
                     description = skill.Description,
                     enabled = !disabled.Contains(skill.SkillId),
 
-                    // Carried so the view can show what a skill says without opening the file. A skill list
-                    // that only shows names cannot be judged on whether to switch it on.
+                    // Carried so the view can show what a skill says without opening the file.
                     instructions = skill.Instructions,
                 }),
                 warnings = loaded.Warnings,
@@ -931,7 +899,6 @@ public static class ViewEndpoints
         });
     }
 
-    // ---- settings view ----------------------------------------------------------------------------
     private static void MapSettings(WebApplication app)
     {
         app.MapGet("/api/settings", (ApiContext ctx) => Results.Ok(SettingsView.From(ctx.Settings.Load())));
@@ -952,14 +919,13 @@ public static class ViewEndpoints
                 return Results.BadRequest(new { error = invalid.Message, errors = invalid.Errors });
             }
 
-            // The model section is the one that must take effect now rather than at the next restart. Other
-            // sections can change without interrupting a turn in flight.
+            // The model section must take effect now rather than at the next restart. Other sections can change
+            // without interrupting a turn in flight.
             //
-            // The desktop section is the exception among those: it decides which tools are registered and with
-            // which window policy, and both are built when the consumer starts. The approval gear is *not* part
-            // of that — governance reads it live — so changing only the gear does not restart anything. MCP is
-            // the same shape twice over: the server list decides which processes exist, and the allow list
-            // does not, so only the former restarts.
+            // The desktop section is the exception: it decides which tools are registered and with which window
+            // policy, both built when the consumer starts. The approval gear is *not* part of that — governance
+            // reads it live. MCP has the same shape: the server list decides which processes exist, the allow
+            // list does not, so only the former restarts.
             if (ModelConfig.Differs(before.Model, stored.Model)
                 || DesktopNeedsRestart(before.Desktop, stored.Desktop)
                 || McpNeedsRestart(before.Mcp, stored.Mcp)
@@ -970,18 +936,18 @@ public static class ViewEndpoints
             }
 
             // Local engines own the child processes behind the voice HTTP clients: a command/port/switch edit
-            // converges them here (matches() leaves a correctly running one alone), and Exit 对照进程码报状态。
+            // converges them here (matches() leaves a correctly running one alone).
             if (before.Local != stored.Local)
             {
                 await localEngines.ReconfigureAsync(stored.Local).ConfigureAwait(false);
             }
 
-            // Shrinking the window leaves history that no longer fits, so it is folded once, right here:
-            // waiting for the next turn would send an over-long conversation to the model first.
+            // Shrinking the window leaves history that no longer fits, so it is folded here: waiting for the next
+            // turn would send an over-long conversation to the model first.
             CompactionResult? compaction = null;
             if (stored.Model.ContextTokens < before.Model.ContextTokens)
             {
-                // Measured under the new window, so the room left for history is what the assembler will really allow
+                // Measured under the new window, so the room left for history is what the assembler will allow
                 // (it pays for the system block first).
                 var usage = await consumer.MeasureContextAsync(stored, ct).ConfigureAwait(false);
                 compaction = await consumer.CompactAsync(SessionCompactor.HistoryBudget(usage), ct).ConfigureAwait(false);
@@ -1006,7 +972,6 @@ public static class ViewEndpoints
         });
     }
 
-    // ---- projection rebuild (Phase 7 acceptance) ----------------------------------------------------
     private static void MapProjections(WebApplication app)
     {
         app.MapPost("/api/projections/rebuild", async (ApiContext ctx, CancellationToken ct) =>

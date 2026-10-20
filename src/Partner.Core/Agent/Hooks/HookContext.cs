@@ -3,9 +3,10 @@ using Partner.Core.Contracts;
 namespace Partner.Core.Agent.Hooks;
 
 /// <summary>
-/// 钩子运行时上下文（设计文档 §2.9.3）：一轮一个实例，随阶段在钩子之间传递。
+/// Hook runtime context: one instance per turn, passed between hooks across phases.
 /// <para>
-/// 非线程安全：由同一轮的执行线程独占使用；<see cref="InjectedPrompts"/> 的排序缓存在首次读取时建立。
+/// Not thread-safe: owned by the turn's executing thread; the ordering cache for <see cref="InjectedPrompts"/>
+/// is built on first read.
 /// </para>
 /// </summary>
 public sealed class HookContext
@@ -13,47 +14,48 @@ public sealed class HookContext
     private readonly List<(int Priority, string Text, string? Label)> _injected = new();
     private IReadOnlyList<string>? _orderedInjected;
 
-    /// <summary>本轮所属会话。</summary>
+    /// <summary>The session this turn belongs to.</summary>
     public required string SessionId { get; init; }
 
-    /// <summary>触发本轮的输入来源。</summary>
+    /// <summary>The source of the input that triggered this turn.</summary>
     public required InputSource Source { get; init; }
 
-    /// <summary>原始输入载荷（语音转写文本、用户输入文本或调度事件载荷）。</summary>
+    /// <summary>Raw input payload (speech transcript, user text, or scheduled event payload).</summary>
     public required string InputPayload { get; init; }
 
-    /// <summary>本轮工作目录。</summary>
+    /// <summary>Working directory for this turn.</summary>
     public required string WorkspaceDirectory { get; init; }
 
-    /// <summary>钩子注入的提示词，按优先级（升序）再按插入顺序排列。</summary>
+    /// <summary>Prompts injected by hooks, ordered by priority (ascending) then insertion order.</summary>
     public IReadOnlyList<string> InjectedPrompts =>
-        // LINQ 的 OrderBy 是稳定排序：同优先级保持插入顺序。
+        // LINQ OrderBy is a stable sort: equal priorities keep insertion order.
         _orderedInjected ??= _injected.OrderBy(e => e.Priority).Select(e => e.Text).ToArray();
 
     /// <summary>
-    /// 与 <see cref="InjectedPrompts"/> 一一对应的标签，没有标签的位置为 null。
+    /// Labels corresponding one-to-one with <see cref="InjectedPrompts"/>; null where there is no label.
     /// <para>
-    /// 单独一条通道，不拼进正文：标签是给人读的，正文是给模型读的，两者混在一起会让模型看到本来只属于
-    /// 界面的词。
+    /// A separate channel, not folded into the text: labels are for people, text is for the model, and mixing
+    /// them would show the model words that belong only to the UI.
     /// </para>
     /// </summary>
     public IReadOnlyList<string?> InjectedLabels =>
         _injected.OrderBy(e => e.Priority).Select(e => e.Label).ToArray();
 
-    /// <summary>钩子对之间传递数据的命名空间字典（快照等）。</summary>
+    /// <summary>Namespace dictionary for passing data between hooks (snapshots and the like).</summary>
     public IDictionary<string, string> Extras { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>错误信息；由 <see cref="AgentPhase.OnError"/> 阶段的钩子写入。</summary>
+    /// <summary>Error message; written by hooks in the <see cref="AgentPhase.OnError"/> phase.</summary>
     public string? Error { get; set; }
 
     /// <summary>
-    /// 注入一段提示词。<paramref name="priority"/> 越小越靠前；相同优先级保持插入顺序。
+    /// Injects a prompt. A smaller <paramref name="priority"/> comes first; equal priorities keep insertion order.
     /// </summary>
     /// <param name="label">
-    /// 这段文字是什么，给读会话的人看（例如 <c>recall</c>）。只用于展示：提示词本身不变，模型看到的仍是
-    /// <paramref name="text"/>。不填时会话页把它当作普通系统行。
+    /// What this text is, for people reading the session (for example <c>recall</c>). Display only: the prompt
+    /// itself is unchanged, and the model still sees <paramref name="text"/>. When omitted, the session page
+    /// treats it as an ordinary system line.
     /// </param>
-    /// <exception cref="ArgumentException"><paramref name="text"/> 为 null、空或纯空白。</exception>
+    /// <exception cref="ArgumentException"><paramref name="text"/> is null, empty, or whitespace.</exception>
     public void Inject(string text, int priority = 100, string? label = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);

@@ -17,12 +17,8 @@ public enum Route
 }
 
 /// <summary>
-/// The decision that turns an <see cref="InputMode"/> into a channel.
-/// <para>
-/// Pure and separate from the code that sends anything, so the policy can be read — and pinned — as a table: the
-/// cost of getting it wrong is either an agent that takes over the user's screen when it was told not to, or one
-/// that refuses something a background channel could have done.
-/// </para>
+/// Maps an <see cref="InputMode"/> and an action to a channel. Pure, so the policy can be read and pinned as a
+/// table; getting it wrong either takes over the user's screen or refuses work a background channel could do.
 /// </summary>
 public static class BackgroundRoute
 {
@@ -36,7 +32,7 @@ public static class BackgroundRoute
             return Route.Legacy;
         }
 
-        // Not an input at all: it asks a control to scroll itself, and a pattern or nothing answers it.
+        // Not an input: it asks a control to scroll itself, so a pattern or nothing answers it.
         if (kind == ActionKind.ScrollIntoView)
         {
             return mode == InputMode.Background ? Route.Refuse : Route.Legacy;
@@ -56,8 +52,8 @@ public static class BackgroundRoute
     }
 
     /// <summary>
-    /// What the refusal says. It names the ways out, because "refused" alone sends a model back to try the same
-    /// call, and the useful answer is which channel <i>would</i> have carried it.
+    /// What the refusal says. It names the ways out, because "refused" alone sends a model back to retry the
+    /// same call.
     /// </summary>
     public static string Refusal(ActionKind kind, string window) =>
         kind == ActionKind.ScrollIntoView

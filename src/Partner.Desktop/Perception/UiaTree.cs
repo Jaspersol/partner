@@ -6,26 +6,22 @@ using Partner.Desktop.Input;
 namespace Partner.Desktop.Perception;
 
 /// <summary>
-/// One addressable control inside a window: what the reference scheme calls a discovered entity.
+/// One addressable control inside a window.
 /// </summary>
-/// <param name="ElementId">Valid for one observation only — it is an index into that observation, not a handle.</param>
+/// <param name="ElementId">Valid for one observation only; it is an index into that observation, not a handle.</param>
 /// <param name="WindowId">The window it belongs to; acting on an element needs that window's lease.</param>
-/// <param name="Name">The label a human reads ("播放", "发送", "文件名").</param>
+/// <param name="Name">The label a human reads.</param>
 /// <param name="Role">The control type ("Button", "Edit", …).</param>
 /// <param name="Rect">Screen rectangle; the click point is its centre.</param>
-/// <param name="IdentityDigest">Identity digest (window, name, role) — deliberately not the value, and
-/// deliberately not the rectangle: typing into a field must not make the field look like a different element,
-/// and a layout shift must not make it look like a different one either. The click point is recomputed from
-/// the fresh rectangle at act time, so drift is already handled where it matters.</param>
+/// <param name="IdentityDigest">Identity digest (window, name, role), deliberately not the value and not the
+/// rectangle: typing into a field must not make it a different element, and neither must a layout shift. The
+/// click point is recomputed from the fresh rectangle at act time.</param>
 /// <param name="Value">What a text field holds, when UIA exposes it.</param>
 /// <param name="IsOffscreen">
-/// Whether the control is outside the window's visible area — below the fold of a list, collapsed into a tree.
-/// <para>
-/// Kept in the answer rather than filtered out, and that is the whole reason <c>scrollIntoView</c> can work: an
-/// element the walk had thrown away is an element nothing could ever scroll to, so "scroll down a bit and look
-/// again" became a two-step dance the model had to get right by trial. Its click point is outside the window,
-/// so an action on one is refused until it has been scrolled to.
-/// </para>
+/// Whether the control is outside the window's visible area (below the fold of a list, collapsed into a tree).
+/// Kept in the answer rather than filtered out, which is what makes <c>scrollIntoView</c> possible: an element
+/// the walk had thrown away could never be scrolled to. Its click point is outside the window, so an action on
+/// one is refused until it has been scrolled to.
 /// </param>
 public sealed record UiElement(
     string ElementId,
@@ -43,8 +39,8 @@ public sealed record UiElement(
 
 /// <summary>
 /// What happened when a control was acted on through a UI Automation pattern instead of injected input.
-/// Distinct from an <c>InjectionResult</c> on purpose: no input event was sent, and reporting it as one
-/// would make the log claim the user's own keyboard and mouse were used.
+/// Distinct from an <c>InjectionResult</c>: no input event was sent, and reporting it as one would make the log
+/// claim the user's own keyboard and mouse were used.
 /// </summary>
 /// <param name="Ok">Whether the pattern call went through.</param>
 /// <param name="Method">The pattern used, e.g. <c>uia.invoke</c> — carried into the result so the model can
@@ -53,22 +49,16 @@ public sealed record UiElement(
 public sealed record UiaInvocation(bool Ok, string Method, string Detail);
 
 /// <summary>
-/// What a UI Automation control can be asked to do to itself, with no pointer and no scrolling guess.
-/// <para>
-/// These are the platform's own answers to "make this reachable": a list item below the fold says how far it
-/// is from the viewport, and a collapsed node says it has one to expand. Recomputing either here would be a
-/// guess about someone else's layout.
-/// </para>
+/// What a UI Automation control can be asked to do to itself, with no pointer and no scrolling guess. These are
+/// the platform's own answers to "make this reachable"; recomputing either here would be a guess about someone
+/// else's layout.
 /// </summary>
 public static class UiaScroll
 {
     /// <summary>
     /// Brings a control into view through <c>ScrollItemPattern</c>, falling back to <c>ScrollPattern</c> for a
-    /// container that scrolls as a whole.
-    /// <para>
-    /// Null when the control offers neither — then the only thing left is scrolling a container by coordinates,
-    /// which is the guess this exists to avoid.
-    /// </para>
+    /// container that scrolls as a whole. Null when the control offers neither; the only thing left then is
+    /// scrolling a container by coordinates, which is the guess this exists to avoid.
     /// </summary>
     public static UiaInvocation? ScrollIntoView(AutomationElement node)
     {
@@ -105,11 +95,9 @@ public static class UiaScroll
     private const int MaxSteps = 60;
 
     /// <summary>
-    /// Scrolls the control, or the nearest container above it that scrolls, by wheel notches (positive is up).
-    /// <para>
-    /// The pattern call reaches the container itself, so it needs neither the foreground nor the pointer over
-    /// it. Null when nothing in reach scrolls: that is a reason to try another channel, not a failure.
-    /// </para>
+    /// Scrolls the control, or the nearest scrollable container above it, by wheel notches (positive is up). The
+    /// pattern call reaches the container itself, so it needs neither the foreground nor the pointer over it.
+    /// Null when nothing in reach scrolls: a reason to try another channel, not a failure.
     /// </summary>
     public static UiaInvocation? ScrollBy(AutomationElement node, int notches)
     {
@@ -156,13 +144,10 @@ public static class UiaScroll
 
     /// <summary>
     /// Types into a field by writing its value, for a field that offers a value pattern.
-    /// <para>
-    /// <c>ValuePattern.SetValue</c> replaces everything, and a typing action is not allowed to wipe a half-filled
-    /// form — so what is written is the existing text <i>plus</i> the new text. That is "type at the end", which
-    /// is only what the caller asked for when the caret was at the end; the pattern cannot say where the caret
-    /// is, and the result says so rather than letting it pass for ordinary typing. Null for a field with no value
-    /// pattern or a read-only one: the caller then tries another channel.
-    /// </para>
+    /// <c>ValuePattern.SetValue</c> replaces everything, and typing must not wipe a half-filled form, so what is
+    /// written is the existing text plus the new text. The pattern cannot say where the caret is, so this is
+    /// "type at the end" and the result says so. Null for a field with no value pattern or a read-only one; the
+    /// caller then tries another channel.
     /// </summary>
     public static UiaInvocation? AppendText(AutomationElement node, string? text)
     {
@@ -219,13 +204,12 @@ public static class UiaScroll
 }
 
 /// <summary>
-/// Reads the UI Automation tree. This is what makes "click the 播放 button" possible: the model addresses a
-/// control by what it is, instead of guessing screen coordinates — the failure mode that once typed a letter
-/// into whatever window happened to be focused.
+/// Reads the UI Automation tree, which is what makes "click the play button" possible: the model addresses a
+/// control by what it is instead of guessing screen coordinates.
 /// <para>
-/// UIA is per-process RPC, so the walk is bounded on purpose: a depth limit, a cap per window, a cap on the
-/// nodes <i>visited</i>, and a per-window time budget — see <see cref="WalkBudget"/>. An app that is blind or
-/// slow (Chromium, games, canvases) yields nothing and the window-level path still works.
+/// UIA is per-process RPC, so the walk is bounded on purpose: depth, controls per window, nodes visited and a
+/// per-window time budget; see <see cref="WalkBudget"/>. An app that is blind or slow (Chromium, games, canvases)
+/// yields nothing and the window-level path still works.
 /// </para>
 /// </summary>
 public static class UiaTree
@@ -233,13 +217,10 @@ public static class UiaTree
     /// <summary>How much of a document's text to report: enough to verify a change, not the whole file.</summary>
     private const int MaxValueChars = 200;
 
-    /// <summary>Roles that are actionable; walking into the rest costs time and returns nothing.</summary>
-    /// <para>
-    /// <c>Text</c> is deliberately not in it. A static label is not something to act on, and it is the most
-    /// numerous element in a real interface — so every label consumed part of the 40-control budget that was
-    /// meant for controls, and a window with 40 labels above its buttons returned labels and nothing else. The
-    /// cost was not just tokens: it was the buttons themselves disappearing from the answer.
-    /// </para>
+    /// <summary>
+    /// Roles that are actionable; walking into the rest costs time and returns nothing. <c>Text</c> is
+    /// deliberately excluded: static labels are the most numerous element in a real interface, and including
+    /// them let labels consume the 40-control budget meant for controls.
     /// </summary>
     private static readonly HashSet<string> Interesting = new(StringComparer.Ordinal)
     {
@@ -250,13 +231,10 @@ public static class UiaTree
     };
 
     /// <summary>
-    /// Roles whose text is worth reading.
-    /// <para>
-    /// The value is one cross-process RPC per control — and <c>TextPattern.DocumentRange.GetText</c> pulls a
-    /// document range to do it — while the answer is only meaningful for something that holds text the user
-    /// typed. Static <c>Text</c> controls are the most numerous elements in a real interface, so reading all
-    /// of them was the single largest cost in an observation, and none of it was ever used.
-    /// </para>
+    /// Roles whose text is worth reading. The value is one cross-process RPC per control, and
+    /// <c>TextPattern.DocumentRange.GetText</c> pulls a document range to answer, while only text the user typed
+    /// is meaningful. Static <c>Text</c> controls are the most numerous elements, so reading all of them was the
+    /// single largest cost in an observation.
     /// </summary>
     private static readonly HashSet<string> ValueBearing = new(StringComparer.Ordinal)
     {
@@ -264,42 +242,30 @@ public static class UiaTree
     };
 
     /// <summary>
-    /// Whether this role's text is read. Exposed for the same reason <see cref="UiaTree.TryBuildPointer"/>-style
-    /// internals are: the rule is a contract, and asserting it needs no window.
+    /// Whether this role's text is read. Exposed so the rule can be asserted without a window.
     /// </summary>
     internal static bool ReadsValue(string role) => ValueBearing.Contains(role);
 
     /// <summary>
-    /// Interactive elements of one window, by native handle. Returns an empty list when UIA has nothing to
-    /// say about it — never throws: a window that cannot be inspected is not an error, it is a window the
-    /// coordinate path is for.
+    /// Interactive elements of one window, by native handle. Returns an empty list when UIA has nothing to say
+    /// about it; never throws, since a window that cannot be inspected is a window the coordinate path is for.
     /// </summary>
     public static IReadOnlyList<UiElement> Read(nint handle, string windowId) => WalkWindow(handle, windowId).Elements;
 
     /// <summary>
-    /// The same walk, with each control numbered the way an observation numbers it.
-    /// <para>
-    /// The numbering is by position within the window, which is what makes an element id mean "this control,
-    /// as of the last read" — and it is why it has to be produced in exactly one place. A screenshot that
-    /// renumbered independently would put different ids on the same marks than the observation the model is
-    /// holding, and clicking a mark would then act on whatever now sits at that index.
-    /// </para>
-    /// <para>
-    /// The default budget is deliberately the one <see cref="TryAct"/> walks with too: an id is an index into
-    /// this list, so a different budget here than there would mean the index names a different control.
-    /// </para>
+    /// The same walk, with each control numbered the way an observation numbers it. Numbering is by position
+    /// within the window, which makes an element id mean "this control, as of the last read", so it must be
+    /// produced in exactly one place. The default budget matches the one <see cref="TryAct"/> walks with: an id
+    /// is an index into this list, so a different budget would name a different control.
     /// </summary>
     public static IReadOnlyList<UiElement> ReadNumbered(nint handle, string windowId) =>
         Number(WalkWindow(handle, windowId, WalkBudget.Default).Elements, windowId);
 
     /// <summary>
-    /// The same walk, keeping the live controls behind the numbered elements.
-    /// <para>
-    /// An action needs both halves: the numbering says which control the model meant, and the
-    /// <see cref="AutomationElement"/> is what a pattern is invoked on. Returning them together is what lets
-    /// the caller act without walking the window a second time — and the second walk was the expensive half
-    /// of pressing a control by id, because UI Automation is a cross-process RPC per node.
-    /// </para>
+    /// The same walk, keeping the live controls behind the numbered elements. An action needs both halves: the
+    /// numbering says which control the model meant, and the <see cref="AutomationElement"/> is what a pattern is
+    /// invoked on. Returning them together avoids a second walk, which is the expensive half of pressing a
+    /// control by id because UI Automation is a cross-process RPC per node.
     /// </summary>
     internal static (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes, WalkStopReason Stopped)
         ReadNumberedWithNodes(
@@ -323,13 +289,9 @@ public static class UiaTree
     }
 
     /// <summary>
-    /// One walk of a window's control view, kept in two lockstep lists: what the model was shown, and the
-    /// live <see cref="AutomationElement"/> behind each entry.
-    /// <para>
-    /// The pairing is what makes an element id actionable later. An id is an index into <i>this</i> list, so
-    /// re-walking a window recovers the control that index pointed at — no name search that could match a
-    /// different element that happens to share a label.
-    /// </para>
+    /// One walk of a window's control view, in two lockstep lists: what the model was shown, and the live
+    /// <see cref="AutomationElement"/> behind each entry. An id is an index into this list, so re-walking
+    /// recovers the control that index pointed at, with no name search that could match another element.
     /// </summary>
     private static (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes, WalkStopReason Stopped)
         WalkWindow(
@@ -362,8 +324,8 @@ public static class UiaTree
         catch (TimeoutException)
         {
             // A busy app: its elements are not worth blocking the observation for. The per-window budget above
-            // is the deliberate version of this — it stops the walk at a point we choose rather than wherever
-            // the provider's own internal timeout happens to land.
+            // is the deliberate version of this: it stops the walk where we choose rather than wherever the
+            // provider's internal timeout lands.
         }
 
         return (elements, nodes, state.Stopped);
@@ -394,9 +356,9 @@ public static class UiaTree
 
         while (child is not null)
         {
-            // Checked per node rather than per produced element: the old condition counted only elements the
-            // walk had decided to keep, so a window made entirely of skipped controls never reached its cap
-            // and was walked to its last node — which is exactly the shape a Chromium window has.
+            // Checked per node rather than per produced element: a produced-only cap is never reached by a
+            // window made entirely of skipped controls, so such a window would be walked to its last node,
+            // which is exactly the shape a Chromium window has.
             if (!state.Allows(depth, elements.Count))
             {
                 return;
@@ -463,9 +425,9 @@ public static class UiaTree
     }
 
     /// <summary>
-    /// What distinguishes this control from every other one of the same name and kind: its automation id, its class
-    /// and its runtime id. The runtime id is unique among live controls and lasts as long as the control does, which
-    /// is exactly the span between an observation and the action on it. Null when none of them can be read.
+    /// What distinguishes this control from every other one of the same name and kind: its automation id, class
+    /// and runtime id. The runtime id is unique among live controls and lasts as long as the control does, which
+    /// is the span between an observation and the action on it. Null when none can be read.
     /// </summary>
     private static string? StableKey(AutomationElement node, AutomationElement.AutomationElementInformation current)
     {
@@ -566,33 +528,31 @@ public static class UiaTree
     }
 
     /// <summary>
-    /// Acts on a named control through a UI Automation pattern instead of a coordinate click, when the
-    /// control supports one.
+    /// Acts on a named control through a UI Automation pattern instead of a coordinate click, when the control
+    /// supports one.
     /// <para>
-    /// A pattern call reaches the control itself. It needs no foreground window — so it cannot land in
-    /// whatever the user is actually looking at — and it is unaffected by the control having moved a few
-    /// pixels since the observation. It is also the only way to press a control that is obscured.
+    /// A pattern call reaches the control itself. It needs no foreground window, so it cannot land in whatever
+    /// the user is looking at, and it is unaffected by the control moving since the observation. It is also the
+    /// only way to press an obscured control.
     /// </para>
     /// Returns null when this does not apply: the control is gone, it exposes none of the patterns that mean
-    /// "click", or the action is one only a real input device can perform. The caller then injects input at
-    /// the element's centre, which is what a person would do.
+    /// "click", or the action is one only a real input device can perform. The caller then injects input at the
+    /// element's centre.
     /// </summary>
     /// <param name="kind">
     /// Pattern-shaped: <see cref="ActionKind.LeftClick"/> and <see cref="ActionKind.Focus"/> press a control,
-    /// <see cref="ActionKind.ScrollIntoView"/> makes it reachable.
-    /// <c>TypeText</c> is excluded by default: <c>ValuePattern.SetValue</c> replaces a field's entire
-    /// contents, and silently wiping a half-filled form is not what "type this" means. A double click is
-    /// excluded too: there is no pattern for "press twice in time", and sending <c>Invoke</c> twice is not it.
-    /// With <paramref name="background"/>, <c>TypeText</c> becomes an append (existing text is kept) and
-    /// <see cref="ActionKind.Scroll"/> becomes a <c>ScrollPattern</c> call.
+    /// <see cref="ActionKind.ScrollIntoView"/> makes it reachable. <c>TypeText</c> is excluded by default:
+    /// <c>ValuePattern.SetValue</c> replaces a field's entire contents, and silently wiping a half-filled form is
+    /// not what "type this" means. A double click is excluded too: there is no pattern for "press twice in time",
+    /// and sending <c>Invoke</c> twice is not it. With <paramref name="background"/>, <c>TypeText</c> becomes an
+    /// append and <see cref="ActionKind.Scroll"/> becomes a <c>ScrollPattern</c> call.
     /// </param>
     /// <param name="parameters">The action's amounts and text; needed only by the two background kinds.</param>
     /// <param name="background">Whether the caller has agreed to patterns standing in for wheel and typing.</param>
     /// <param name="known">
-    /// The walk this action was decided on, when the caller already has it. Re-walking is what turns an id
-    /// back into a live control and doubles as an "is it still there" check — but the caller re-observed this
-    /// window to re-check the action anyway (<c>Observe(elementsFor:)</c>), and that walk is the fresher of
-    /// the two. Passing it here saves a second traversal of the same tree; omitting it walks as before.
+    /// The walk this action was decided on, when the caller already has it. Re-walking is what turns an id back
+    /// into a live control and doubles as an "is it still there" check; the caller's re-observation is fresher,
+    /// so passing it saves a second traversal.
     /// <para>
     /// The two lists must be the lockstep pair one walk produced. A mismatched pair would name a different
     /// control than the one its number was assigned to, which is the whole reason an id is an index.
@@ -664,14 +624,12 @@ public static class UiaTree
 
         if (kind == ActionKind.ScrollIntoView)
         {
-            // The control knows how far it is from the viewport; a scrolled-by estimate is how "scroll down a
-            // bit and look again" became a two-step dance the model had to get right by trial.
+            // The control knows how far it is from the viewport; scrolling by estimate is the guess this avoids.
             return UiaScroll.ScrollIntoView(node) ?? UiaScroll.Expand(node);
         }
 
         // Which pattern means "click" depends on what the control is: pressing a list row selects it rather
-        // than invoking it, and pressing a checkbox flips it. Getting this wrong is how a click turns into a
-        // different action than the one the model asked for.
+        // than invoking it, and pressing a checkbox flips it. The wrong pattern is a different action.
         return elements[index].Role switch
         {
             "CheckBox" => TryToggle(node) ?? TryInvoke(node),

@@ -4,9 +4,8 @@ namespace Partner.Core.Agent.Web;
 /// One request at a time to any one host, with a short gap between them.
 /// <para>
 /// The rate limiter is per engine, and an engine is not a host: two searches in a row are two requests to the same
-/// host with nothing between them. A burst of those is the shape of a scraper, and it is exactly what a rate limit
-/// or a captcha is there to stop. Serialising by host costs one round trip of latency at worst, which is the
-/// cheapest thing this code can do to arrive politely.
+/// host with nothing between them. A burst of those is the shape of a scraper, exactly what a rate limit or a
+/// captcha stops. Serialising by host costs one round trip of latency at worst.
 /// </para>
 /// <para>
 /// The gap carries jitter on purpose. Requests sent exactly <see cref="DefaultGap"/> apart are as regular as a
@@ -49,8 +48,8 @@ public sealed class HostGate
     }
 
     /// <summary>
-    /// Waits for this host's turn. Returns at once when the host has not been asked recently, which is the normal
-    /// case for the first request of a session and for every host the fanout only touches once.
+    /// Waits for this host's turn. Returns at once when the host has not been asked recently, the normal case
+    /// for the first request of a session and for every host the fanout only touches once.
     /// </summary>
     public Task WaitAsync(string host, CancellationToken ct = default)
     {
@@ -78,7 +77,7 @@ public sealed class HostGate
         }
         catch
         {
-            // The request ahead of this one failing is not this one's problem. Its turn is over either way.
+            // A failure of the request ahead is not this one's problem; its turn is over either way.
         }
 
         DateTimeOffset started;

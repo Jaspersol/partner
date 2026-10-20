@@ -1,9 +1,8 @@
 /**
  * Where the API lives and which token to present.
  *
- * The token is never baked into the bundle and never read from the URL: the shell injects it, a developer
- * can set it in the environment, and a browser session can keep it in localStorage. Without one the UI
- * refuses to start rather than issuing anonymous requests.
+ * The token is never baked into the bundle and never read from the URL. Without one the UI refuses to start
+ * rather than issuing anonymous requests.
  */
 
 export interface Connection {

@@ -5,12 +5,8 @@ import Icon from './Icon.vue'
 /**
  * A glass panel that slides in from the right over the page it belongs to.
  *
- * <para>
- * A floating layer at every width, never a column: a detail panel that squeezes the list at 1100px and floats
- * over it at 800px is two layouts to keep working, and the memory page and the skill page only need one. It is
- * absolutely positioned inside the nearest positioned ancestor (the view), so it covers that view and not the
+ * Absolutely positioned inside the nearest positioned ancestor (the view), so it covers that view and not the
  * rail. Esc and the scrim close it; focus moves in when it opens and back to what opened it when it closes.
- * </para>
  */
 const props = withDefaults(defineProps<{ open: boolean; title: string; id?: string | undefined; wide?: boolean }>(), {
   id: undefined,

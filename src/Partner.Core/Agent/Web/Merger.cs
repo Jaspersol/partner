@@ -3,32 +3,30 @@ namespace Partner.Core.Agent.Web;
 /// <summary>
 /// The third quality gate: one ranked list out of several, without scoring anything by meaning.
 /// <para>
-/// It trusts two things only — the rank an engine gave a result, and how many engines independently returned it.
-/// Reciprocal rank fusion is the standard way to combine those and it needs no model, no embedding and no
-/// per-result judgement, which is exactly why it is here: this list has to be explainable to the user as
-/// "these two sources ranked it highly", and a lexical score could not be explained that way.
+/// It trusts two things only: the rank an engine gave a result, and how many engines independently returned it.
+/// Reciprocal rank fusion needs no model, no embedding and no per-result judgement, so the list can be explained
+/// to the user as "these two sources ranked it highly"; a lexical score could not be explained that way.
 /// </para>
 /// </summary>
 public sealed class Merger
 {
     /// <summary>
-    /// The fusion constant. 60 is the value from the original reciprocal-rank-fusion write-up and the one in
-    /// near-universal use; it damps the difference between ranks 1 and 5 hard enough that agreement between two
-    /// engines outweighs being first on one. Kept as a named constant so the replay fixtures, once they exist, can
-    /// argue with it in one place.
+    /// The fusion constant. 60 is the value from the original reciprocal-rank-fusion write-up, in near-universal
+    /// use; it damps the difference between ranks 1 and 5 enough that agreement between two engines outweighs
+    /// being first on one. A named constant so the replay fixtures can challenge it in one place.
     /// </summary>
     public const double RrfK = 60;
 
     /// <summary>
     /// An engine that indexes the kind being asked about, rather than the whole web. Its first hit is not worth
-    /// more than anyone else's <i>because it says so</i>, but it is worth more: it was asked precisely because it
-    /// indexes this. 1.5 means one expert hit outranks two base hits ranked below it and does not outrank three.
+    /// more than anyone else's <i>because it says so</i>, but it was asked precisely because it indexes this.
+    /// 1.5 means one expert hit outranks two base hits ranked below it and does not outrank three.
     /// </summary>
     public const double SpecialistWeight = 1.5;
 
     /// <summary>
     /// A looked-up record — a temperature, a version. It answers the question rather than pointing at a page that
-    /// might, so one of them outweighs the whole default pool agreeing. Weight as documented in the plan's §4.6.
+    /// might, so one of them outweighs the whole default pool agreeing.
     /// </summary>
     public const double RecordWeight = 3.0;
 
@@ -243,8 +241,8 @@ public sealed class Merger
 
     /// <summary>
     /// Whether two titles carry the same numbers. "Node 20 released" and "Node 18 released" are 0.8 similar and
-    /// are different results; merging them would answer the question with the wrong version, which is the single
-    /// most damaging thing a deduplicator can do.
+    /// are different results; merging them would answer the question with the wrong version, the single most
+    /// damaging thing a deduplicator can do.
     /// </summary>
     private static bool SameNumbers(string left, string right)
     {

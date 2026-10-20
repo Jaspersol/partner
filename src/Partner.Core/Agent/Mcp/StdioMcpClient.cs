@@ -9,11 +9,12 @@ using Partner.Core.Diagnostics;
 namespace Partner.Core.Agent.Mcp;
 
 /// <summary>
-/// 基于子进程 stdin/stdout 的 MCP 客户端（设计文档 §2.6.3）。
+/// MCP client over a child process's stdin/stdout.
 /// <para>
-/// 传输是<b>换行分隔</b>的 UTF-8 JSON-RPC 2.0（一行一个 JSON 对象），不是 LSP 的 Content-Length 分帧。
-/// 请求并发：每个请求分配递增 id，响应按 id 匹配（与到达顺序无关）；stderr 持续排空并保留最后若干行，
-/// 失败时拼进异常信息，避免子进程因管道写满而阻塞。
+/// The transport is <b>newline-delimited</b> UTF-8 JSON-RPC 2.0 (one JSON object per line), not LSP's
+/// Content-Length framing. Requests run concurrently: each gets an increasing id and responses are matched by
+/// id regardless of arrival order. stderr is drained continuously and the last lines are kept, appended to
+/// failure messages, so the child never blocks on a full pipe.
 /// </para>
 /// </summary>
 public sealed class StdioMcpClient : IMcpClient
@@ -39,8 +40,8 @@ public sealed class StdioMcpClient : IMcpClient
     private IReadOnlyList<McpToolDescriptor>? _cachedTools;
     private DateTimeOffset _cachedToolsAt;
 
-    /// <param name="config">服务器配置。</param>
-    /// <param name="clock">用于能力缓存 TTL 的时钟；默认 <see cref="TimeProvider.System"/>。</param>
+    /// <param name="config">Server configuration.</param>
+    /// <param name="clock">Clock for the capability-cache TTL; defaults to <see cref="TimeProvider.System"/>.</param>
     public StdioMcpClient(McpServerConfig config, TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -251,7 +252,7 @@ public sealed class StdioMcpClient : IMcpClient
             }
             catch (Exception)
             {
-                // 收尾读取任务的异常已经通过 FailAllPending 反馈给调用方。
+                // Exceptions from the drain tasks were already surfaced to callers through FailAllPending.
             }
         }
 
@@ -312,7 +313,7 @@ public sealed class StdioMcpClient : IMcpClient
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
         {
-            // 进程可能已经退出；关闭 stdin 只是为了触发子进程的 EOF 退出。
+            // The process may already have exited; closing stdin is only meant to trigger EOF.
         }
 
         try
@@ -324,7 +325,7 @@ public sealed class StdioMcpClient : IMcpClient
         }
         catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
         {
-            // 进程已经退出或无法等待；无需再处理。
+            // The process already exited or cannot be waited on; nothing more to do.
         }
 
         FailAllPending(new InvalidOperationException($"MCP server '{_config.Name}' is not running."));
@@ -335,7 +336,7 @@ public sealed class StdioMcpClient : IMcpClient
         }
         catch (ObjectDisposedException)
         {
-            // 已经释放。
+            // Already disposed.
         }
 
         process.Dispose();
@@ -440,7 +441,7 @@ public sealed class StdioMcpClient : IMcpClient
         }
         catch (OperationCanceledException)
         {
-            // 正常停止。
+            // Normal shutdown.
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {

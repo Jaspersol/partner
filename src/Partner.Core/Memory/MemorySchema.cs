@@ -5,10 +5,8 @@ namespace Partner.Core.Memory;
 /// <summary>
 /// SQLite schema for the memory store.
 /// <para>
-/// Deviation from design doc §2.5.6 ①, recorded deliberately: the doc lists one table per tier, but FTS5
-/// external-content tables can only mirror <b>one</b> content table. All tiers therefore live in
-/// <c>memories</c> with a <c>tier</c> column (identical model, one index, no duplicated bodies), and the
-/// optional knowledge-graph table is not implemented yet.
+/// All tiers live in <c>memories</c> with a <c>tier</c> column rather than one table per tier: FTS5
+/// external-content tables can only mirror one content table.
 /// </para>
 /// </summary>
 internal static class MemorySchema
@@ -16,8 +14,8 @@ internal static class MemorySchema
     /// <summary>
     /// Everything that can be created unconditionally, in one batch. The CJK triggers are <b>not</b> in here:
     /// they name <c>body_cjk</c>, and a store old enough to lack that column fails at <c>CREATE TRIGGER</c> —
-    /// SQLite resolves the columns of a trigger body when the statement is prepared, not when it fires. They are
-    /// created by the store after the migrations, which is the only place that can promise the column exists.
+    /// SQLite resolves the columns of a trigger body when the statement is prepared, not when it fires. The store
+    /// creates them after the migrations, once the column is guaranteed to exist.
     /// </summary>
     public const string Ddl = Tables + CjkIndexTable;
 
@@ -110,10 +108,9 @@ internal static class MemorySchema
     /// <summary>
     /// The second index, over the bigrams in <c>body_cjk</c> (see <see cref="CjkText"/>).
     /// <para>
-    /// Same shape as <c>memory_fts</c> — external content over the same rows, kept in step by the same three
-    /// triggers — but a separate table because it indexes a different column of the same row. The table is here
-    /// and the triggers are <see cref="CjkTriggers"/>, created by the store only once the migrations have
-    /// established the column they name.
+    /// Same shape as <c>memory_fts</c> — external content over the same rows — but a separate table because it
+    /// indexes a different column. The triggers are <see cref="CjkTriggers"/>, created by the store only after
+    /// the migrations have established the column they name.
     /// </para>
     /// </summary>
     private const string CjkIndexTable = """
@@ -130,8 +127,8 @@ internal static class MemorySchema
     /// <para>
     /// Run on their own, after the migrations, for the reason in <see cref="Ddl"/> — and because they must not
     /// fire during the v1→v2 backfill: an UPDATE that fires them against a row the index has never seen makes
-    /// FTS5 report the database as corrupt (measured), so the column is filled and the index rebuilt first, and
-    /// only then are the triggers put in place.
+    /// FTS5 report the database as corrupt, so the column is filled and the index rebuilt first, and only then
+    /// are the triggers created.
     /// </para>
     /// </summary>
     internal const string CjkTriggers = """
@@ -158,11 +155,9 @@ internal static class MemorySchema
     /// <summary>
     /// The schema's history, one step per version, lowest first.
     /// <para>
-    /// `CREATE TABLE IF NOT EXISTS` silently leaves an existing table alone, so a new column reaches new
-    /// workspaces and never old ones. Before this list existed, each statement was run on every open and its
-    /// failure swallowed, which meant a future step that changed a column type or split a table had no way to
-    /// tell "already done" from "did not work" — it would fail quietly and leave a store that opens fine and
-    /// then misbehaves.
+    /// <c>CREATE TABLE IF NOT EXISTS</c> silently leaves an existing table alone, so a new column reaches new
+    /// workspaces and never old ones. Each step records what it did, so a failure names the thing that failed
+    /// instead of being swallowed.
     /// </para>
     /// </summary>
     public static IReadOnlyList<SchemaMigration> Migrations { get; } = new[]
@@ -183,10 +178,9 @@ internal static class MemorySchema
     /// <summary>
     /// Fills <c>body_cjk</c> for every row that predates the column, then rebuilds the index over it.
     /// <para>
-    /// The one step SQL cannot express: a bigram is a property of the text, and SQLite has no way to cut a string
-    /// into overlapping pairs — so the values are computed in C# and written row by row. The index is then derived
-    /// from the finished column by its own rebuild command rather than by replaying triggers: nothing here is
-    /// indexed yet, and the triggers that would normally do it are not created until after this runs.
+    /// A bigram is a property of the text, and SQLite cannot cut a string into overlapping pairs, so the values
+    /// are computed in C# and written row by row. The index is then derived from the finished column by its own
+    /// rebuild command rather than by replaying triggers, which do not exist yet at this point.
     /// </para>
     /// <para>
     /// Runs in one transaction: a half-backfilled store would answer some queries and not others.

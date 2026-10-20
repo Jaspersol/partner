@@ -11,14 +11,14 @@ public enum ScheduleTaskStatus
     /// <summary>Paused or exhausted: excluded from the due set.</summary>
     Inactive,
 
-    /// <summary>Repeated delivery failures. <b>Still schedulable</b> — a failing task must never be lost (design doc §2.4).</summary>
+    /// <summary>Repeated delivery failures. <b>Still schedulable</b> — a failing task must never be lost.</summary>
     Failed,
 }
 
 /// <summary>What to do with occurrences that were missed because the app was not running (or the machine slept).</summary>
 public enum CatchUpPolicy
 {
-    /// <summary>Deliver the one overdue occurrence once and skip the rest. The behaviour before this was a choice.</summary>
+    /// <summary>Deliver the one overdue occurrence once and skip the rest.</summary>
     Once,
 
     /// <summary>Do not deliver an occurrence that is past its grace period; record it as missed.</summary>
@@ -29,7 +29,7 @@ public enum CatchUpPolicy
 }
 
 /// <summary>
-/// A durable scheduled task (design doc §2.2). It carries no session id: firing it only enqueues an
+/// A durable scheduled task. It carries no session id: firing it only enqueues an
 /// <see cref="Partner.Core.Queue.InputItem"/> with <see cref="InputSource.Schedule"/>.
 /// </summary>
 public sealed record ScheduleTask
@@ -70,8 +70,8 @@ public sealed record ScheduleTask
 }
 
 /// <summary>
-/// Proof that one occurrence was handed to the input queue (design doc §2.2). Written <b>before</b> the
-/// task state advances, so a crash in between can never double-deliver.
+/// Proof that one occurrence was handed to the input queue. Written <b>before</b> the task state advances, so a
+/// crash in between can never double-deliver.
 /// </summary>
 public sealed record DeliveryReceipt
 {
@@ -86,6 +86,6 @@ public sealed record DeliveryReceipt
     public int Attempt { get; init; }
 
     /// <summary>Dedup key: <c>(TaskId, OccurrenceAt)</c>.</summary>
-[JsonIgnore]
+    [JsonIgnore]
     public string Key => $"{TaskId}@{OccurrenceAt.UtcDateTime:O}";
 }

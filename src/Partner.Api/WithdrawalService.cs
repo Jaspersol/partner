@@ -14,20 +14,18 @@ public sealed record PendingWithdrawal(long RetractSeq, long FromSeq, long ToSeq
 
 /// <summary>
 /// Conversations, and the two ways to take them out of the session: delete the latest one for good, or withdraw
-/// from a point and be able to take it back until the next message is sent.
+/// from a point and take it back until the next message is sent.
 /// <para>
-/// A <b>conversation</b> is what a person would call one exchange: it starts at a message somebody sent (typed,
-/// spoken or scheduled) and runs to the next such message. A sub-agent's report is not one — it arrives inside
-/// whatever conversation caused it, and it is hidden from the view, so it never starts or ends anything a person
-/// can see.
+/// A <b>conversation</b> starts at a message somebody sent (typed, spoken or scheduled) and runs to the next such
+/// message. A sub-agent's report is not one — it arrives inside whatever conversation caused it and is hidden
+/// from the view.
 /// </para>
 /// <para>
-/// <b>Withdrawing</b> hides the range behind an ordinary retraction event and leaves every byte in the log. That
-/// is what makes it reversible, and it is why the memories distilled from the withdrawn events are also left
-/// alone for now. The withdrawal becomes final — the lines are purged and their memories cascade away — the
-/// moment a new message is sent, which is <see cref="CommitAsync"/>. At most one withdrawal is pending: withdrawing
-/// from an earlier point widens it (every visible conversation lies before the pending range, so a new
-/// withdrawal always contains the old one), and cancelling brings back everything that was withdrawn.
+/// <b>Withdrawing</b> hides the range behind an ordinary retraction event and leaves every byte in the log, which
+/// is what makes it reversible; memories distilled from the withdrawn events are left alone until the withdrawal
+/// becomes final. It becomes final — lines purged and their memories cascaded away — on <see cref="CommitAsync"/>.
+/// At most one withdrawal is pending: withdrawing from an earlier point widens it, and cancelling brings back
+/// everything that was withdrawn.
 /// </para>
 /// </summary>
 public sealed class WithdrawalService
@@ -140,7 +138,7 @@ public sealed class WithdrawalService
             }, ct).ConfigureAwait(false);
 
             // The earlier withdrawal lies wholly inside this one, so it is redundant now. Removed after the new one
-            // is in place, never before: in between, both hide the range and nothing flickers back into view.
+            // is in place, never before, so nothing flickers back into view.
             if (_pending is { } previous)
             {
                 await _session.PurgeAsync(previous.RetractSeq, previous.RetractSeq, ct).ConfigureAwait(false);

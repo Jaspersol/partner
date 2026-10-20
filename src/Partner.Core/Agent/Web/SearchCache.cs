@@ -18,10 +18,9 @@ public sealed record SearchOutcome(
 /// <summary>
 /// An in-process answer cache, small and short-lived on purpose.
 /// <para>
-/// There is no long-lived tier. A week-old result answered today's question is wrong by construction, so the
-/// lifetime shrinks as the question gets more time-sensitive, and the shortest lifetime wins. A hit must also
-/// report its age — a cached answer that presents itself as fresh is exactly the failure this whole capability
-/// exists to avoid.
+/// No long-lived tier: a week-old result answered today's question is wrong by construction, so the lifetime
+/// shrinks as the question gets more time-sensitive, and the shortest lifetime wins. A hit must also report its
+/// age — a cached answer that presents itself as fresh is exactly the failure this capability exists to avoid.
 /// </para>
 /// </summary>
 public sealed class SearchCache
@@ -35,7 +34,7 @@ public sealed class SearchCache
     /// <summary>A looked-up record. Its publisher's own clock expires it; this is the shortest we dare hold it.</summary>
     public static readonly TimeSpan RecordLifetime = TimeSpan.FromMinutes(10);
 
-    /// <summary>An ordinary question. An hour is long enough to make a repeated question free and short enough to notice.</summary>
+    /// <summary>An ordinary question. An hour makes a repeated question free and is short enough to notice.</summary>
     public static readonly TimeSpan DefaultLifetime = TimeSpan.FromHours(1);
 
     private readonly Dictionary<string, SearchOutcome> _entries = new(StringComparer.Ordinal);

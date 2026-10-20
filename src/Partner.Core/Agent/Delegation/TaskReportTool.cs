@@ -15,7 +15,7 @@ public sealed record TaskReport(bool Success, string Summary, string? Evidence, 
 /// The tool a sub-agent ends a round with. Registered only in a sub-agent's registry — the main agent never
 /// sees it.
 /// <para>
-/// A round's verdict comes from this call and not from the wording of the last message: parsing prose for "I
+/// A round's verdict comes from this call, not from the wording of the last message: parsing prose for "I
 /// did it" is how a failure gets reported as a success. A round that ends without calling it is a failed round.
 /// </para>
 /// </summary>

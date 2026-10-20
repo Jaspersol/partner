@@ -16,9 +16,9 @@ public sealed class DesktopSystemToolTests
     [Fact]
     public async Task The_screenshot_result_names_the_window_the_mapping_and_the_call_to_make()
     {
-        // What the model has to act on. The old message said "coordinates are relative to the window" and never
-        // named the window — so the model sent coordinates alone and every click was refused, four times, until
-        // the turn died on the step limit.
+        // What the model has to act on. "Coordinates are relative to the window" without naming the window
+        // leaves the model sending coordinates alone, and every click is refused until the turn dies on the
+        // step limit.
         var workspace = Directory.CreateTempSubdirectory("partner-screenshot-");
         try
         {
@@ -138,13 +138,6 @@ public sealed class DesktopSystemToolTests
     /// both closed" is what tells it the next command is safe to issue. The pipes are closed unconditionally on
     /// this path, and the wait for the drains is bounded, so neither can park the turn.
     /// </para>
-    /// <para>
-    /// Deliberately not a handle-count assertion. That was the first attempt and it was wrong twice over: the
-    /// tree kill already reaps a <c>start /b</c> child, so nothing leaks, and the number itself is moved as much
-    /// by a survivor's own handles and by when the GC happens to run as by anything the tool does — measured
-    /// flat over ten timed-out calls in both the before and after of the pipe-close change. A test that asserted
-    /// a bound there would have been pinning the noise.
-    /// </para>
     /// </summary>
     [Fact]
     public async Task Exec_a_timed_out_command_reports_that_it_closed_its_pipes()
@@ -159,9 +152,9 @@ public sealed class DesktopSystemToolTests
 
 
     /// <summary>
-    /// The output a command produces is bounded while it is being read, not after. A command that prints
-    /// without end used to be buffered whole and only then truncated — so "output is truncated" was true of
-    /// what reached the conversation and false of what the process held in memory.
+    /// The output a command produces is bounded while it is being read, not after. Buffering output without end
+    /// and truncating afterwards makes "output is truncated" true of the conversation and false of what the
+    /// process holds in memory.
     /// </summary>
     [Fact]
     public async Task Exec_truncates_a_command_that_prints_far_more_than_the_cap()

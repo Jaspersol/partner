@@ -37,7 +37,7 @@ const drawerOpen = ref(false)
 
 const query = ref('')
 const tier = ref('all')
-/** 「只看已固定」: the retention filter, now a switch — retention is a yes/no with one exception, not a rank. */
+/** 「只看已固定」: the retention filter is a yes/no with one exception, not a rank. */
 const pinnedOnly = ref(false)
 /** Records a later statement replaced are kept but are not part of the day-to-day picture, so they start hidden. */
 const showRetired = ref(false)
@@ -53,10 +53,9 @@ const recalled = ref('')
  * What the summary line says, derived from the list rather than remembered alongside it.
  *
  * <para>
- * It used to be a ref written by whichever call finished last, which made it drift: change a filter after a
- * search and the count stayed the pre-filter one, so a list of three sat under 「10 条命中」 — and a list of
- * nothing sat under it too. A number next to a list has to be computed from that list, so this is a computed:
- * there is no path by which the sentence and the rows disagree.
+ * A number next to a list must be computed from that list: a separately stored count drifts, so a list of
+ * three can sit under 「10 条命中」. As a computed, there is no path by which the sentence and the rows
+ * disagree.
  * </para>
  */
 const summary = computed(() => {
@@ -78,10 +77,9 @@ const summary = computed(() => {
  * All four tiers, always, with a count each.
  *
  * <para>
- * The list used to build this from the tiers the loaded rows happened to have, so a tier with no records could
- * not be selected and the ones that were showed a bare enum name. Both lose something: "this tier is empty" and
- * "this tier does not exist" are different facts, and a reader asking what is remembered about procedures should
- * get an answer rather than an absent option.
+ * "This tier is empty" and "this tier does not exist" are different facts: building the list from the tiers the
+ * loaded rows happen to have makes an empty tier unselectable and shows a bare enum name for the rest. A reader
+ * asking what is remembered about procedures should get an answer rather than an absent option.
  * </para>
  */
 const tierOptions = computed(() => [
@@ -149,8 +147,8 @@ async function reselect(recordId: string) {
  *
  * <para>
  * A person's call, not the scorer's: "this is a fact I rely on" and "this is something I once guessed" are
- * exactly the distinction the demotion rule works off, and no score can tell them apart. The re-read is the
- * norm (ui.md): the row on screen is what the server kept, not what was sent.
+ * exactly the distinction the demotion rule works off, and no score can tell them apart. The re-read keeps the
+ * row on screen equal to what the server kept, not what was sent.
  * </para>
  */
 async function setTier(next: string) {
@@ -173,10 +171,10 @@ async function setTier(next: string) {
 /**
  * Pins the selected record against forgetting, or releases it.
  *
- * <p>
+ * <para>
  * A person's call for the same reason the tier is: the 90-day demotion clock cannot tell a fact you rely on from
  * one you happened to hear once. Re-reads rather than assuming, like every other edit here.
- * </p>
+ * </para>
  */
 async function setScope(next: string) {
   const row = selected.value
@@ -301,12 +299,11 @@ async function remove() {
 /**
  * Writes a memory the distiller would not have written.
  *
- * <p>
- * Until this existed the only editable memories were the ones the store had happened to keep, so a fact the
- * person wanted remembered had to be phrased in a way the distiller recognised. The tier and scope are offered
- * here rather than assumed, because both are judgements — but the server decides the defaults if they are left
- * alone, so the common case is one textarea.
- * </p>
+ * <para>
+ * The store only keeps what the distiller recognised, so a fact the person wants remembered must also be
+ * writable by hand. The tier and scope are offered here rather than assumed, because both are judgements — but
+ * the server decides the defaults if they are left alone, so the common case is one textarea.
+ * </para>
  */
 const composing = ref(false)
 const newBody = ref('')

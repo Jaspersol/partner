@@ -6,8 +6,8 @@ using System.Text.Json;
 namespace Partner.Voice.Tts;
 
 /// <summary>
-/// TTS HTTP 客户端：<c>POST {BaseUrl}/tts</c>，响应体是裸的小端 float32 PCM 流，
-/// 边到边切成 <see cref="TtsOptions.ChunkMs"/> 大小的块交给播放器。
+/// TTS HTTP client: <c>POST {BaseUrl}/tts</c>; the response body is a raw little-endian float32 PCM stream,
+/// split into <see cref="TtsOptions.ChunkMs"/> chunks as it arrives and handed to the player.
 /// </summary>
 public sealed class HttpTtsClient : ITtsClient
 {
@@ -16,7 +16,7 @@ public sealed class HttpTtsClient : ITtsClient
 
     private static readonly JsonWriterOptions WriterOptions = new()
     {
-        // 参考音频 base64 与中文文本不必转义成 \uXXXX。
+        // Reference audio base64 and Chinese text need not be escaped to \uXXXX.
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
@@ -40,7 +40,7 @@ public sealed class HttpTtsClient : ITtsClient
         _endpoint = new Uri(options.BaseUrl.TrimEnd('/') + "/tts", UriKind.Absolute);
         _chunkSamples = Math.Max(1, options.SampleRate * options.ChunkMs / 1000);
 
-        // 参考音频只在构造时读一次并编码一次（每句话复用）。
+        // Reference audio is read and encoded once at construction and reused for every sentence.
         if (!string.IsNullOrEmpty(options.SpeakerRefPath))
         {
             _speakerRefBase64 = Convert.ToBase64String(File.ReadAllBytes(options.SpeakerRefPath));

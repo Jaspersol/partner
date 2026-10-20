@@ -2,10 +2,6 @@ using Partner.Core.Memory;
 
 namespace Partner.Core.Tests.Memory;
 
-/// <summary>
-/// Embedding backends (design doc §2.5.6 ⑤): the offline default degrades to FTS-only, the hashing
-/// provider is deterministic and genuinely reflects shared substrings.
-/// </summary>
 public sealed class EmbeddingsTests
 {
     [Fact]

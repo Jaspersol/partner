@@ -21,7 +21,7 @@ public sealed class JsonlInputQueueTests
             enqueued.Add(await queue.EnqueueAsync(Item($"item-{i}", $"key-{i}", sources[i % sources.Length])));
         }
 
-        // Seq 从 1 开始、严格递增，且等于入队顺序。
+        // Seq starts at 1, increases strictly, and follows enqueue order.
         Assert.Equal(Enumerable.Range(1, 100).Select(i => (long)i), enqueued);
 
         var taken = new List<InputItem>();
@@ -77,14 +77,13 @@ public sealed class JsonlInputQueueTests
 
         await using (var reopened = new JsonlInputQueue(dir.Path, clock: clock))
         {
-            // 已消费过的幂等键仍参与去重：不产生新项，返回原 Seq。
+            // A consumed idempotency key still deduplicates: no new item, original Seq returned.
             Assert.Equal(1, await reopened.EnqueueAsync(Item("item-other", "key")));
             Assert.Equal(0, reopened.Snapshot().Depth);
             Assert.Equal(2, reopened.Snapshot().HeadSeq);
 
-            // The settled item is gone from the items log — that is the change. What must survive is the
-            // key, and the two asserts above already prove it: the retry was de-duplicated rather than
-            // enqueued a second time.
+            // The settled item is compacted out of the items log. What must survive is the key, and the two
+            // asserts above prove it: the retry was de-duplicated rather than enqueued a second time.
             Assert.Empty(await ReadLogAsync(reopened));
         }
     }
@@ -92,10 +91,9 @@ public sealed class JsonlInputQueueTests
     /// <summary>
     /// An interrupted item is retried, but only a bounded number of times.
     /// <para>
-    /// This is the restart loop that turned one wedged turn into three: nothing in the log said "stop", the
-    /// item came back on every start, and each retry re-ran a turn that had already issued its tool calls.
-    /// The cap turns the last attempt into a recorded failure, so the queue ends up telling the user why
-    /// instead of showing a permanently "running" item they can only clear by killing the process.
+    /// Without a cap, a wedged turn returns on every start and each retry re-runs a turn that already issued
+    /// its tool calls. The cap turns the last attempt into a recorded failure, so the queue ends up telling the
+    /// user why instead of showing a permanently "running" item.
     /// </para>
     /// </summary>
     [Fact]
@@ -128,9 +126,8 @@ public sealed class JsonlInputQueueTests
             Assert.Null(await TakeNowAsync(final));
             Assert.Equal(0, final.Snapshot().Depth);
 
-            // The cap still holds, and it holds where it always showed: the item is not taken again and
-            // the queue is empty. The Failed record used to be the evidence and is now compacted away — the
-            // attempt index is proven by the loop above, which read it off each retry.
+            // The cap holds: the item is not taken again and the queue is empty. The Failed record is compacted
+            // away; the attempt index is proven by the loop above, which read it off each retry.
             Assert.DoesNotContain(await ReadLogAsync(final), i => i.ItemId == "item-a");
 
         }
@@ -145,7 +142,7 @@ public sealed class JsonlInputQueueTests
 
     /// <summary>
     /// A failed item is not offered again, and its idempotency key still deduplicates — the same two answers a
-    /// settled item has always given, now including one the queue settled for itself.
+    /// settled item gives.
     /// </summary>
     [Fact]
     public async Task AnItemTheQueueFailedOnStartupIsNeitherTakenNorReEnqueued()
@@ -234,19 +231,18 @@ public sealed class JsonlInputQueueTests
             var taken = await queue.TakeAsync();
             Assert.Equal("item-b", taken!.ItemId);
 
-            // 被取消的排队项永不交给消费者（即使它仍占据通道中的位置）。
+            // A cancelled queued item is never handed to the consumer, even while it still occupies a channel slot.
             using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
             Assert.Null(await queue.TakeAsync(timeout.Token));
         }
 
         await using (var reopened = new JsonlInputQueue(dir.Path, clock: clock))
         {
-            // item-a 已取消且不再入队；item-b 中断后重入队。
+            // item-a is cancelled and never re-enqueued; item-b is requeued after the interruption.
             Assert.Equal(1, reopened.Snapshot().Depth);
 
-            // The cancelled item is compacted out of the log, so "it never comes back" is now asserted by its
-            // absence. The reason it does not come back used to be its Canceled record; it is now its key
-            // plus the fact that nothing was queued for it.
+            // The cancelled item is compacted out of the log, so "it never comes back" is asserted by its
+            // absence.
             Assert.DoesNotContain(await ReadLogAsync(reopened), i => i.ItemId == "item-a");
 
             var only = await reopened.TakeAsync();
@@ -272,12 +268,12 @@ public sealed class JsonlInputQueueTests
         Assert.True(await queue.CancelAsync("item-a"));
         Assert.True(queue.RunningToken.IsCancellationRequested);
 
-        // 状态仍由消费者落定。
+        // The status is still settled by the consumer.
         Assert.Equal("item-a", queue.Snapshot().RunningItemId);
         await queue.CompleteAsync("item-a", InputItemStatus.Canceled);
         Assert.Null(queue.Snapshot().RunningItemId);
 
-        // 未知或已终态的项无法取消。
+        // Unknown or already-settled items cannot be cancelled.
         Assert.False(await queue.CancelAsync("item-a"));
         Assert.False(await queue.CancelAsync("nope"));
     }
@@ -318,9 +314,9 @@ public sealed class JsonlInputQueueTests
 
         await using (var reopened = new JsonlInputQueue(dir.Path, clock: clock))
         {
-            // The failed item is compacted out on this start, so its error text is no longer in the
-            // queue's log. It was never the only copy: a failed turn writes TurnEnd with reason=error and an
-            // "error:"-prefixed System event into the session log, which is where a reader meets it.
+            // The failed item is compacted out on this start, so its error text is no longer in the queue's
+            // log. A failed turn also writes TurnEnd with reason=error and an "error:"-prefixed System event
+            // into the session log, which is where a reader meets it.
             Assert.Empty(await ReadLogAsync(reopened));
             Assert.Null(await TakeNowAsync(reopened));
             Assert.Equal(0, reopened.Snapshot().Depth);
@@ -351,7 +347,7 @@ public sealed class JsonlInputQueueTests
             await queue.EnqueueAsync(Item("item-a", "key-a"));
         }
 
-        // 模拟崩溃：文件末尾多出半行（无换行）。
+        // Simulate a crash: a half line at the end of the file (no newline).
         var logPath = System.IO.Path.Combine(dir.Path, "queue", "items.jsonl");
         File.WriteAllText(logPath, File.ReadAllText(logPath) + "{\"itemId\":\"torn");
 
@@ -402,9 +398,7 @@ public sealed class JsonlInputQueueTests
     [Fact]
     public async Task Settled_items_are_dropped_from_memory_but_stay_on_disk()
     {
-        // The log only grows, so holding every finished message in a map made startup memory proportional to
-        // the whole history. Nothing needs a Done item in memory — it cannot be taken, cancelled or completed
-        // again — and a restart replays the log, not this map.
+        // A Done item cannot be taken, cancelled or completed again, and a restart replays the log, not this map.
         using var dir = new TempDir();
         var clock = new FakeClock(Base);
 
@@ -448,8 +442,8 @@ public sealed class JsonlInputQueueTests
     public async Task Completing_an_already_settled_item_is_idempotent_rather_than_an_error()
     {
         // A redelivered item whose turn already ended is marked Done again without being re-run. That is
-        // ordinary crash recovery, and it lands exactly where the item is no longer in memory — so throwing
-        // here would turn recovery into a second crash.
+        // ordinary crash recovery, and it lands where the item is no longer in memory, so throwing here would
+        // turn recovery into a second crash.
         using var dir = new TempDir();
         var clock = new FakeClock(Base);
 
@@ -529,7 +523,7 @@ public sealed class JsonlInputQueueTests
             }
             catch (IOException)
             {
-                // 句柄未释放时留待系统清理，不掩盖测试结果。
+                // Leave cleanup to the OS when a handle is still open; do not mask the test result.
             }
         }
     }

@@ -4,12 +4,8 @@ using Partner.Api.Settings;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// The prompts page's API: the agents section as one document, and the sub-agents' jobs.
-/// <para>
-/// The agents section has its own endpoint rather than riding on <c>PUT /api/settings</c>. That one takes the
-/// whole settings document, and the settings page refills its form from the response; two pages each writing the
-/// whole document is how one of them ends up writing the other's section back to its defaults.
-/// </para>
+/// Separate from <c>PUT /api/settings</c>, which takes the whole settings document: two pages writing it whole
+/// would overwrite each other's section with defaults.
 /// </summary>
 public static class AgentEndpoints
 {
@@ -17,7 +13,6 @@ public static class AgentEndpoints
     {
         app.MapGet("/api/agents", (ApiContext ctx) => Results.Ok(AgentsView.From(ctx.Settings.Load())));
 
-        // Latencies a person feels, measured where they happen (see LatencyTracker). Read-only.
         app.MapGet("/api/latency", () => Results.Ok(new { latencies = Partner.Core.Diagnostics.LatencyTracker.Snapshot() }));
 
         app.MapPut("/api/agents", async (AgentsSettings incoming, ApiContext ctx, ConsumerHost consumer) =>
@@ -57,7 +52,6 @@ public static class AgentEndpoints
 
         app.MapGet("/api/agent-jobs", (ConsumerHost consumer) => Results.Ok(new { jobs = consumer.Agents.Jobs() }));
 
-        // The job's own conversation, in the shape /api/session uses, minus the turn/step bookkeeping.
         app.MapGet("/api/agent-jobs/{id}/session", async (string id, ConsumerHost consumer, CancellationToken ct) =>
         {
             var events = await consumer.Agents.ReadSessionAsync(id, ct).ConfigureAwait(false);

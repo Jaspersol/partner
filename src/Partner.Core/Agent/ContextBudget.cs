@@ -3,9 +3,7 @@ using Partner.Core.Memory;
 namespace Partner.Core.Agent;
 
 /// <summary>
-/// How much history fits. The rule lives here because two places must agree on it: the assembler decides
-/// what to send, and the compactor decides what to fold — a disagreement would either send more than the
-/// window allows or fold more than necessary.
+/// How much history fits. The assembler and the compactor must both use this rule.
 /// </summary>
 public static class ContextBudget
 {
@@ -13,15 +11,14 @@ public static class ContextBudget
     public const int MessageOverheadTokens = 4;
 
     /// <summary>
-    /// What one attached image is charged against the window. A flat, conservative number: a vision model
-    /// prices an image by its own tiling, which this layer cannot know, and charging nothing would let a
-    /// prompt look like it fits while the image alone fills it.
+    /// Flat, conservative charge per attached image: a vision model prices an image by its own tiling, which this
+    /// layer cannot know.
     /// </summary>
     public const int ImageTokens = 1024;
 
     /// <summary>
     /// Keeps the newest contiguous suffix that fits <paramref name="budget"/>. A suffix rather than a
-    /// selection: dropping a turn from the middle would leave the conversation answering something that is no
+    /// selection: dropping a turn from the middle would leave the conversation answering something no
     /// longer in context.
     /// </summary>
     public static async ValueTask<List<T>> FitNewestFirstAsync<T>(
@@ -55,7 +52,6 @@ public static class ContextBudget
             kept.Add(items[i]);
         }
 
-        // Collected newest first and turned around once: inserting at the front is a shift of everything kept so far.
         kept.Reverse();
         return kept;
     }
@@ -68,8 +64,7 @@ public static class ContextBudget
     }
 
     /// <summary>
-    /// The room a prompt actually has: the context window minus what the completion may occupy. Sending a
-    /// prompt that leaves no room for the answer is how a model ends up truncating mid-sentence.
+    /// The context window minus what the completion may occupy. Leaving no room for the answer truncates it.
     /// </summary>
     public static int PromptBudget(int contextTokens, int reserveForOutput)
     {

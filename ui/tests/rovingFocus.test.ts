@@ -81,8 +81,8 @@ describe('roving focus', () => {
 
 describe('a roved list in the real components', () => {
   it('is a single tab stop, whatever its length', async () => {
-    // The defect: every row carried `tabindex="0"`, so a keyboard reader pressed Tab once per event to reach
-    // the composer — five hundred presses on a list that is still growing while they read it.
+    // Every row carrying `tabindex="0"` would make a keyboard reader press Tab once per event to reach the
+    // composer — five hundred presses on a list that is still growing while they read it.
     const items = Array.from({ length: 50 }, (_, index) => ({
       seq: index + 1,
       at: '2026-09-26T10:00:00+00:00',

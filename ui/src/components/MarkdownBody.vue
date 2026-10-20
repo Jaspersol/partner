@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 /**
- * A deliberately small Markdown renderer (ui.md §5.2): quotes, headings, lists, fenced code, tables and
+ * A deliberately small Markdown renderer: quotes, headings, lists, fenced code, tables and
  * inline code/emphasis — enough for the session log to read like a document.
  *
  * It renders through Vue's text interpolation, never `v-html`, so a body containing HTML is shown as text.

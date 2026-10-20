@@ -2,17 +2,14 @@ using Partner.Core.Agent.Web;
 
 namespace Partner.Api.Endpoints;
 
-/// <summary>One engine as the settings page needs it: what it is, and why it may not answer right now.</summary>
+/// <summary>One engine as the settings page needs it.</summary>
 /// <param name="Id">The id the settings file stores in its disabled list.</param>
-/// <param name="Name">What a person calls it.</param>
 /// <param name="Nature">Ranked documents, or a record the publisher owns.</param>
 /// <param name="Kinds">Content types it indexes, by name.</param>
 /// <param name="SingleSite">A catalogue of one site.</param>
 /// <param name="Disabled">Switched off by the user.</param>
 /// <param name="Cooling">Currently in the breaker's cooldown.</param>
-/// <param name="Until">When that cooldown ends.</param>
 /// <param name="Strikes">Consecutive failures.</param>
-/// <param name="LastReason">The last failure, in words.</param>
 public sealed record WebEngineView(
     string Id,
     string Name,
@@ -26,9 +23,8 @@ public sealed record WebEngineView(
     string? LastReason);
 
 /// <summary>
-/// The web section as the settings page reads it. The health state is included rather than left to the file
-/// because the file is not where a person looks: an engine that stopped answering ten minutes ago should say so
-/// where the switch that would disable it lives.
+/// The web section as the settings page reads it. Health state is included because the settings file is not where
+/// a person looks: an engine that stopped answering should say so where the switch that would disable it lives.
 /// </summary>
 public sealed record WebView(
     bool Enabled,

@@ -6,7 +6,7 @@ using Partner.Voice.Text;
 
 namespace Partner.Voice.Tests;
 
-/// <summary>Ring buffer + stream clock (design doc §2.8.1).</summary>
+/// <summary>Ring buffer and stream clock.</summary>
 public sealed class AudioRingBufferTests
 {
     private static float[] Tone(int samples, float amplitude = 0.5f)
@@ -89,7 +89,7 @@ public sealed class AudioRingBufferTests
     }
 }
 
-/// <summary>Pause blocking (design doc §2.8.2/§2.8.3): the two knobs and the owed-block retry.</summary>
+/// <summary>Pause blocking: the two knobs and the owed-block retry.</summary>
 public sealed class PauseBlockingDetectorTests
 {
     private static PauseBlockingDetector Detector(bool stream = false, double threshold = 0.03) => new(
@@ -318,7 +318,7 @@ public sealed class PlaybackGateTests
     }
 }
 
-/// <summary>Sentence splitting and readability cleaning (design doc §2.8.11).</summary>
+/// <summary>Sentence splitting and readability cleaning.</summary>
 public sealed class SpeechTextTests
 {
     [Fact]

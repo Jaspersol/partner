@@ -5,10 +5,9 @@ namespace Partner.Desktop.Tests;
 
 /// <summary>
 /// The recheck loop: repaints are asynchronous, so a NoChange measured within milliseconds of the injection
-/// can be a frame the application has not drawn yet, and reporting it as "nothing changed" is what produced
-/// the retries that double-triggered toggles. These tests hold the loop's two ends: a change that arrives on
-/// any later capture wins on the round it appeared, and a loop that runs out still reports exactly what was
-/// measured — no change, once per round, on every round until now.
+/// can be a frame the application has not drawn yet. These tests hold the loop's two ends: a change that
+/// arrives on any later capture wins on the round it appeared, and a loop that runs out still reports exactly
+/// what was measured — no change, once per round, on every round until now.
 /// </summary>
 public sealed class PostActionVerifierPollTests
 {
@@ -25,7 +24,7 @@ public sealed class PostActionVerifierPollTests
 
         Assert.Equal(VerifyDecision.AnyChange, result.Decision);
         Assert.Equal(2, capture.WindowCaptures);
-        // The loop waited, at least one round, rather than answering immediately: a finding the first frame
+        // The loop waited at least one round rather than answering immediately: a finding the first frame
         // could not support on its own.
         Assert.True(
             result.ElapsedMs >= PostActionVerifier.DefaultRecheckDelay.TotalMilliseconds,
@@ -65,8 +64,7 @@ public sealed class PostActionVerifierPollTests
     [Fact]
     public async Task Zero_recheck_rounds_is_exactly_the_single_measurement_it_used_to_be()
     {
-        // The poll loop is an addition on top of the reference behaviour, not a replacement of it: configured
-        // off, the verifier measures once and answers once, which is the shape the older tests pin down.
+        // With rechecks configured off, the verifier measures once and answers once.
         var capture = new SequenceCapture(unchanged: Frame(), changed: null);
         var verifier = new PostActionVerifier(capture, recheckRounds: 0);
 
@@ -79,8 +77,8 @@ public sealed class PostActionVerifierPollTests
     [Fact]
     public async Task The_region_path_polls_the_same_way()
     {
-        // The cheap path is the common one for a coordinate click, and its asynchronous-repaint risk is the
-        // same: the recheck has to re-capture the region, not fall back to a window render.
+        // The cheap path is the common one for a coordinate click, and it carries the same asynchronous-repaint
+        // risk: the recheck must re-capture the region, not fall back to a window render.
         var capture = new SequenceCapture(
             unchanged: Frame(),
             changed: Frame(dirty: (0, 0, 8, 8)),
@@ -146,8 +144,6 @@ public sealed class PostActionVerifierPollTests
         private readonly PixelRect? _region;
         private readonly int _unchangedCapturesBeforeChange;
 
-        /// <summary><paramref name="unchangedCapturesBeforeChange"/> captures come back unchanged, then the
-        /// repaint lands and stays. Null <paramref name="changed"/> means it never arrives.</summary>
         private int _windowCaptures;
         private int _regionCaptures;
 
@@ -192,7 +188,8 @@ public sealed class PostActionVerifierPollTests
             var full = StaticResult(repaint ? _changed! : _unchanged, "test");
             var crop = PostActionVerifier.Crop(full, x - _region!.X, y - _region.Y, w, h);
             return Task.FromResult((crop ?? throw new InvalidOperationException("the region does not fit the frame"))
-                with { Method = "test.region" });
+                with
+            { Method = "test.region" });
         }
 
         private static CaptureResult StaticResult(byte[] frame, string method) => new()

@@ -8,14 +8,8 @@ namespace Partner.Core.Agent.Llm;
 /// What went wrong when a model call did not come back, in a shape somebody can act on.
 /// <para>
 /// An endpoint's error body is the most useful thing in the failure and the easiest to throw away. This type
-/// exists so the three facts that matter survive the trip: <b>which</b> call failed, <b>why</b> in the
-/// endpoint's own words, and <b>what to do next</b> — plus the request id, which is the only handle the
-/// provider's own support has on it.
-/// </para>
-/// <para>
-/// The message is built once, here, in a fixed shape:
-/// <c>&lt;what&gt;: &lt;value&gt; (&lt;reason&gt;; &lt;next step&gt;)</c>. Fixed because a reader learns it once; the
-/// alternative is a sentence that reshapes itself per error and has to be re-read every time.
+/// keeps the three facts that matter: <b>which</b> call failed, <b>why</b> in the endpoint's own words, and
+/// <b>what to do next</b> — plus the request id, which is the only handle the provider's own support has on it.
 /// </para>
 /// </summary>
 public sealed class ModelCallFailure : Exception
@@ -47,10 +41,10 @@ public sealed class ModelCallFailure : Exception
         RequestId = requestId;
         Detail = detail;
     }
-    /// <summary>Which sort of failure this is. A caller can branch on it; a reader usually reads the message.</summary>
+    /// <summary>Which sort of failure this is, for callers that branch on it.</summary>
     public FailureKind Kind { get; }
 
-    /// <summary>Which call this was: <c>补全</c> or <c>列出模型</c>.</summary>
+    /// <summary>Which call this was: completion or model listing.</summary>
     public string What { get; }
 
     /// <summary>The specific value involved — a status code, a host, a limit.</summary>
@@ -73,7 +67,7 @@ public sealed class ModelCallFailure : Exception
         var head = $"{what}: {value} ({reason}; {nextStep})";
 
         // The detail is appended rather than folded into the reason: it is the provider's own wording, and it
-        // is what a person quotes when they go and ask. It is sanitised first — an error body is exactly the
+        // is what a person quotes when they ask for help. It is sanitised first — an error body is exactly the
         // kind of text that can echo a key back.
         return string.IsNullOrWhiteSpace(detail) ? head : $"{head} · {detail}";
     }
@@ -99,9 +93,8 @@ public sealed class ModelCallFailure : Exception
     /// <summary>
     /// An endpoint that did not answer in time.
     /// <para>
-    /// <paramref name="limit"/> is null when the caller does not know it — which is the transport's position,
-    /// since a cancelled task does not say why. Saying "0s" there would be a number that reads as an
-    /// instant, so the value falls back to a word instead.
+    /// <paramref name="limit"/> is null when the caller does not know it, since a cancelled task does not say
+    /// why. Saying "0s" there would read as an instant, so the value falls back to a word instead.
     /// </para>
     /// </summary>
     public static ModelCallFailure TimedOut(string what, TimeSpan? limit) =>
@@ -129,9 +122,8 @@ public sealed class ModelCallFailure : Exception
     /// <summary>
     /// The endpoint a failed call was aimed at, for diagnosis.
     /// <para>
-    /// Derived from the exception rather than the call: "模型补全" says what we were doing, and a connection
-    /// refused while doing it has to name *where*. Falling back to the call name is better than nothing, but it
-    /// should not be the common case.
+    /// Derived from the exception rather than the call, because a connection refused while doing something has
+    /// to name <b>where</b>. Falling back to the call name is better than nothing, but should not be common.
     /// </para>
     /// </summary>
     private static string HostOf(string what, Exception cause)
@@ -146,8 +138,8 @@ public sealed class ModelCallFailure : Exception
             : cause.Message;
 
     /// <summary>
-    /// Why this status means, in a clause. The mapping is short on purpose: a longer table would be a guess
-    /// about bodies this layer never reads.
+    /// Why this status means, in a clause. The table stays short: a longer one would be a guess about bodies
+    /// this layer never reads.
     /// </summary>
     private static string ReasonFor(HttpStatusCode status) => (int)status switch
     {

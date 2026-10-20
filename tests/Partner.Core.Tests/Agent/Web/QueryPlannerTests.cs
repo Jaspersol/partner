@@ -28,8 +28,8 @@ public sealed class QueryPlannerTests
     public void Plan_AsksAnEngineThatHandlesTheQuestionEvenWhenItsScriptIsWrong()
     {
         // Shape routing comes first and is exempt from the script filter: an engine that matched the question
-        // offline declared, by doing so, that it can answer this query. Weather is a place plus a word, and both
-        // may be Chinese.
+        // declared, by doing so, that it can answer this query. Weather is a place plus a word, and both may be
+        // Chinese.
         var weather = FakeEngines.Make(
             "open-meteo",
             ContentKinds.Weather,
@@ -72,8 +72,8 @@ public sealed class QueryPlannerTests
     [Fact]
     public void Plan_NeverRoutesToAnEngineThatNeedsAnAccount()
     {
-        // A capability that quietly depends on somebody's login is not a capability that can be promised, so the
-        // planner refuses these whatever else they declare.
+        // A capability that quietly depends on somebody's login cannot be promised, so the planner refuses these
+        // whatever else they declare.
         var selfHosted = FakeEngines.Make("searxng", ContentKinds.General, needsCredentials: true);
         var duck = FakeEngines.Make("duckduckgo", ContentKinds.General);
 
@@ -81,8 +81,7 @@ public sealed class QueryPlannerTests
 
         Assert.Equal("duckduckgo", Assert.Single(pool.Engines).Engine.Traits.Id);
 
-        // Not even in the skipped list: it is not a source the user could have switched on, so naming it in the
-        // answer would be telling them about a choice they do not have.
+        // Not even in the skipped list: naming it would tell the user about a choice they do not have.
         Assert.Empty(pool.Skipped);
     }
 
@@ -150,8 +149,7 @@ public sealed class QueryPlannerTests
     [Fact]
     public void Plan_IgnoresAnEngineThatIndexesNothingWithoutARoutingRule()
     {
-        // Nothing to say about it either way: it declared no kind and no shape, so it is not a source that was
-        // passed over, it is a source that was never a candidate.
+        // Nothing declared a kind or a shape, so it is not a source that was passed over; it was never a candidate.
         var opaque = FakeEngines.Make("opaque", ContentKinds.None);
 
         var pool = Plan(new SearchQuery("x"), opaque);
@@ -171,8 +169,8 @@ public sealed class QueryPlannerTests
     [Fact]
     public void TheShippedEnginesDeclareThemselvesConsistently()
     {
-        // The engine set is listed in exactly one place. These are the invariants the rest of the pipeline reads
-        // that list on, so a new engine that breaks one of them breaks a gate several files away.
+        // The engine set is listed in exactly one place; the rest of the pipeline reads its invariants, so a new
+        // engine that breaks one breaks a gate several files away.
         Assert.NotEmpty(WebEngines.All);
         Assert.Equal(WebEngines.All.Count, WebEngines.Ids.Distinct(StringComparer.Ordinal).Count());
         Assert.All(WebEngines.All, engine => Assert.False(engine.Traits.NeedsCredentials));
@@ -185,8 +183,8 @@ public sealed class QueryPlannerTests
             WebEngines.All.Where(engine => engine.Traits.SingleSite),
             engine => Assert.True(engine.Traits.ExemptFromHostFilter));
 
-        // A record answers the question itself rather than pointing at a page that might, which is why the merger
-        // weighs it above the whole default pool — so it must not be filed as a general index.
+        // A record answers the question itself rather than pointing at a page, so it must not be filed as a
+        // general index.
         Assert.All(
             WebEngines.All.Where(engine => engine.Traits.Nature == ResultNature.Record),
             engine => Assert.NotEqual(ContentKinds.General, engine.Traits.Kinds));
@@ -195,8 +193,8 @@ public sealed class QueryPlannerTests
     [Fact]
     public void TheShippedSetSaysWhyTheAcademicIndexWasNotAskedAChineseQuestion()
     {
-        // End to end over the real engine list rather than a fake: a Chinese academic query is exactly the case
-        // the script declaration on arXiv exists to answer, and the answer has to reach the user's screen.
+        // End to end over the real engine list: a Chinese academic query is what the script declaration on arXiv
+        // exists to answer.
         var pool = new QueryPlanner(WebEngines.All).Plan(
             new SearchQuery("图神经网络综述", SearchKinds.Academic),
             WebPlanContext.Open);

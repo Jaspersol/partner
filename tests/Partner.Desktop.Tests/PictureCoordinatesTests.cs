@@ -15,7 +15,7 @@ public sealed class PictureCoordinatesTests
     [Fact]
     public void A_picture_pixel_maps_through_the_rectangle_it_was_taken_at()
     {
-        // 1:1 picture, pixel (10,10) of the picture is pixel (10,10) of the window, and the window's own
+        // 1:1 picture: pixel (10,10) of the picture is pixel (10,10) of the window, and the window's own
         // origin carries it onto the screen.
         var picture = new ShownPicture("w", Whole, 800, 600, "obs-1");
 
@@ -28,7 +28,7 @@ public sealed class PictureCoordinatesTests
     public void The_two_axes_scale_independently()
     {
         // A capture cropped to the visible frame and rescaled to the token budget need not keep its aspect:
-        // one scale for both axes was how the y numbers drifted.
+        // each axis needs its own scale.
         var scaledDown = new ShownPicture("w", Whole, 400, 300, "obs-1");
 
         var mapped = DesktopActTool.MapPicturePoint(scaledDown, 100, 100);

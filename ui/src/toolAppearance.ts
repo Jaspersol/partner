@@ -2,16 +2,13 @@
  * What one tool looks like: a glyph to scan by and a hue to sort by.
  *
  * <para>
- * A turn that calls a tool is a list of names, and a list of names is read one at a time. Giving each family
- * its own glyph and its own accent turns "ran three tools" into something the eye can take in at a glance —
- * which is the only reason this table exists rather than a `data-tool` attribute somebody can style by hand.
+ * Giving each family its own glyph and accent makes a list of tool names scannable at a glance.
  * </para>
  *
  * <para>
- * The families are matched by prefix, longest first: `desktop_exec` and `desktop_clipboard_get` are different
- * things, and a table that matched on the head of the name would file both of them under "desktop". A name
- * nothing matches falls back rather than being hidden — an unrecognised tool is exactly the one a reader needs
- * to see, because it is the one they cannot guess.
+ * Families are matched by prefix, first match wins: `desktop_exec` and `desktop_clipboard_get` are different
+ * things. A name nothing matches falls back rather than being hidden — an unrecognised tool is exactly the one
+ * a reader needs to see.
  * </para>
  */
 
@@ -40,8 +37,6 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
   ['desktop_screenshot', { icon: 'file', family: 'read', label: '截图' }],
   ['desktop_observe', { icon: 'file', family: 'read', label: '观察' }],
   ['desktop_clipboard', { icon: 'file', family: 'read', label: '剪贴板' }],
-  // Acting on the world, not running something in it. It shared the ⌘ glyph with the shell family only because
-  // there was nothing better in the character set; now that there is, the two families must not look alike.
   ['desktop_act', { icon: 'crosshair', family: 'control', label: '桌面动作' }],
   ['desktop_launch', { icon: 'terminal', family: 'shell', label: '启动' }],
   ['desktop_exec', { icon: 'terminal', family: 'shell', label: '执行' }],
@@ -53,8 +48,7 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
 
   ['skill', { icon: 'swap', family: 'agent', label: '技能' }],
   ['mcp', { icon: 'swap', family: 'agent', label: 'MCP' }],
-  // The delegation family: handing work to a sub-agent, asking how it is going, and stopping it. Named before
-  // the generic `agent` prefix so the specific verbs win.
+  // Delegation tools, before the generic `agent` prefix so the specific verbs win.
   ['agent_delegate', { icon: 'swap', family: 'agent', label: '委派' }],
   ['agent_job_status', { icon: 'swap', family: 'agent', label: '任务进度' }],
   ['agent_job_cancel', { icon: 'swap', family: 'agent', label: '取消任务' }],
@@ -62,12 +56,11 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
   ['task_report', { icon: 'swap', family: 'agent', label: '汇报' }],
   ['task', { icon: 'swap', family: 'agent', label: '子任务' }],
 
-  // Reading files, which is the file-read sub-agent's whole job. Named before the generic read/list rules so
-  // the two tool names a person actually sees here get their own word.
+  // File-read tools, before the generic read/list rules so they get their own word.
   ['file_list', { icon: 'file', family: 'read', label: '列目录' }],
   ['file_read', { icon: 'file', family: 'read', label: '读文件' }],
 
-  // The assistant's own timed-task tools, named before the generic prefix so a card says what was done.
+  // The assistant's own timed-task tools, before the generic prefix.
   ['schedule_create', { icon: 'clock', family: 'schedule', label: '创建定时' }],
   ['schedule_list', { icon: 'clock', family: 'schedule', label: '定时列表' }],
   ['schedule_delete', { icon: 'clock', family: 'schedule', label: '删除定时' }],
@@ -79,8 +72,7 @@ const RULES: readonly (readonly [string, ToolAppearance])[] = [
   ['grep', { icon: 'search', family: 'search', label: '搜索' }],
   ['find', { icon: 'search', family: 'search', label: '查找' }],
 
-  // The two web tools, named before the generic `web` and `fetch` rules so they do not both read as 抓取:
-  // one returns leads, the other opens the page, and only the second one can settle a question.
+  // The two web tools, before the generic `web` and `fetch` rules so they do not both read as 抓取.
   ['web_search', { icon: 'search', family: 'web', label: '联网搜索' }],
   ['web_fetch', { icon: 'download', family: 'web', label: '读网页' }],
 

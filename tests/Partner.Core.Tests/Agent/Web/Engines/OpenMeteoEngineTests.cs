@@ -48,7 +48,6 @@ public sealed class OpenMeteoEngineTests
         Assert.Equal(DateSource.Structured, hit.DateSource);
 
         // The published instant is the observation time the forecast carries, not the moment it was asked for.
-        // For a forecast that difference is the whole point of the field.
         Assert.Equal("2026-10-19 14:15", hit.Published!.Value.ToString("yyyy-MM-dd HH:mm"));
     }
 
@@ -98,10 +97,9 @@ public sealed class OpenMeteoEngineTests
     [Fact]
     public async Task Parse_ReportsAProviderErrorAsAParseFailureRatherThanAsNoPlace()
     {
-        // This provider has two ways of saying "nothing for you": it omits the results list when the place simply
-        // does not exist, and it sends an error document with the reason when it refuses the request. Both arrive
-        // without results, so telling them apart is the parser's job — and reading the refusal as an answer tells
-        // the person the place does not exist when the truth is that nobody looked.
+        // The geocoder omits the results list when the place does not exist, and sends an error document when it
+        // refuses the request. Both arrive without results, so reading a refusal as an answer would tell the
+        // person the place does not exist when nobody ever looked.
         var follow = new FollowUp(Fixtures.Load("open-meteo-forecast.json"));
 
         var result = await ParseAsync("open-meteo-error.json", follow);
@@ -163,8 +161,7 @@ public sealed class OpenMeteoEngineTests
         Assert.False(handles("会不会下雨"));
         Assert.False(handles("热"));
 
-        // And a question with no weather word at all is not one, however much of it survives the stripping. This
-        // is the case that keeps every other search in the session off the weather API.
+        // No weather word at all is not a weather question, which keeps every other search off this API.
         Assert.False(handles("Rust 教程"));
         Assert.False(handles("quantum computing breakthrough"));
         Assert.False(handles(string.Empty));

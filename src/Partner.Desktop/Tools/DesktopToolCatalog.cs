@@ -3,16 +3,14 @@ namespace Partner.Desktop.Tools;
 /// <summary>
 /// What each desktop tool can do to the machine, so the approval gear has something to key off.
 /// <para>
-/// "Dangerous" is about **leaving the GUI**: running a command, starting a program, writing the clipboard.
-/// Clicking and typing stay in the interactive world where a person can see them happen — which is why they
-/// are the ones the middle gear lets through, and why the reference project's example of a dangerous action
-/// is deleting a file rather than pressing a button.
+/// "Dangerous" means **leaving the GUI**: running a command, starting a program, writing the clipboard.
+/// Clicking and typing stay in the interactive world where a person can see them happen.
 /// </para>
 /// </summary>
 public static class DesktopToolCatalog
 {
-    /// <summary>Tools that only look. They are never gated: asking for permission to read the screen would
-    /// make the agent unusable and protect nothing.</summary>
+    /// <summary>Tools that only look. Never gated: a read-only call protects nothing and would only
+    /// make the agent unusable.</summary>
     private static readonly HashSet<string> ReadOnlyNames = new(StringComparer.Ordinal)
     {
         "desktop_observe",

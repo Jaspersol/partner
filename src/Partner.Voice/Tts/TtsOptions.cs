@@ -1,17 +1,18 @@
 namespace Partner.Voice.Tts;
 
-/// <summary>TTS 协议：自建服务的裸 PCM 流（默认）还是 OpenAI 标准的 speech 端点。</summary>
+/// <summary>TTS protocol: raw PCM stream from the native service (default) or the OpenAI standard speech endpoint.</summary>
 public static class TtsProtocols
 {
-    /// <summary>自建端点：<c>POST /tts</c>，响应是裸 float32 PCM 流。</summary>
+    /// <summary>Native endpoint: <c>POST /tts</c>, response is a raw float32 PCM stream.</summary>
     public const string Native = "native";
 
-    /// <summary>OpenAI 标准：<c>POST /audio/speech</c>，响应是完整 WAV。</summary>
+    /// <summary>OpenAI standard: <c>POST /audio/speech</c>, response is a complete WAV.</summary>
     public const string OpenAi = "openai";
 
     /// <summary>
-    /// 本机朗读引擎（engines/tts）。线上格式和 <see cref="OpenAi"/> 一样（<c>/audio/speech</c>），但模型、音色、
-    /// 语速都由引擎自己定，设置里不用填；单独成一个值，是为了让界面只摆「本地 / 通用标准接口」两个选项。
+    /// Local speech engine (engines/tts). Wire format is the same as <see cref="OpenAi"/> (<c>/audio/speech</c>), but
+    /// model, voice and speed are fixed by the engine and need no settings; a separate value lets the UI offer only
+    /// "local / generic standard endpoint".
     /// </summary>
     public const string Local = "local";
 
@@ -22,23 +23,23 @@ public static class TtsProtocols
 }
 
 /// <summary>
-/// TTS 服务连接参数（设计文档 §2.8.10）。
+/// TTS service connection parameters.
 /// </summary>
 public sealed record TtsOptions
 {
-    /// <summary>服务基址，例如 <c>http://127.0.0.1:45102</c>。</summary>
+    /// <summary>Service base URL, e.g. <c>http://127.0.0.1:45102</c>.</summary>
     public required string BaseUrl { get; init; }
 
-    /// <summary>协议：<see cref="TtsProtocols.Native"/>（默认）或 <see cref="TtsProtocols.OpenAi"/>。</summary>
+    /// <summary>Protocol: <see cref="TtsProtocols.Native"/> (default) or <see cref="TtsProtocols.OpenAi"/>.</summary>
     public string Protocol { get; init; } = TtsProtocols.Native;
 
-    /// <summary>OpenAI 协议的模型名（如 <c>tts-1</c>）；native 协议不用。</summary>
+    /// <summary>OpenAI protocol model name (e.g. <c>tts-1</c>); unused by the native protocol.</summary>
     public string? Model { get; init; }
 
-    /// <summary>OpenAI 协议的音色名（如 <c>alloy</c>）；native 协议用 <see cref="SpeakerRefPath"/> 克隆。</summary>
+    /// <summary>OpenAI protocol voice name (e.g. <c>alloy</c>); the native protocol clones from <see cref="SpeakerRefPath"/>.</summary>
     public string? Voice { get; init; }
 
-    /// <summary>OpenAI 协语的语速；native 协议不用。&lt;=0 按 1.0 处理。</summary>
+    /// <summary>OpenAI protocol speaking speed; unused by the native protocol. &lt;=0 is treated as 1.0.</summary>
     public double Speed { get; init; } = 1.0;
 
     public string Lang { get; init; } = "zh";
@@ -49,8 +50,9 @@ public sealed record TtsOptions
     public string? SpeakerRefPath { get; init; }
 
     /// <summary>
-    /// 参考录音里实际说的话。克隆音色用它和参考音频的 codec 逐位对齐；留空 = 零样本克隆
-    /// （只用音色向量）。填错比留空更糟：会直接合成出乱读。
+    /// What the reference recording actually says. Voice cloning uses it to align bit-for-bit with the reference
+    /// audio's codec; empty = zero-shot cloning (voice vector only). A wrong value is worse than empty: it
+    /// synthesizes gibberish.
     /// </summary>
     public string? SpeakerRefText { get; init; }
 

@@ -8,24 +8,28 @@ using Partner.Core.Storage;
 namespace Partner.Core.Queue;
 
 /// <summary>
-/// <see cref="IInputQueue"/> 的 JSONL 持久化实现（设计文档 §2.2 / §2.3）。
+/// JSONL-persisted implementation of <see cref="IInputQueue"/>.
 /// <para>
-/// <b>可用性</b>：恢复在<b>构造函数内</b>完成——构造返回后队列即可用，无需额外的 <c>Open()</c>。
+/// <b>Availability</b>: recovery happens <b>inside the constructor</b>; once it returns the queue is usable,
+/// with no separate <c>Open()</c>.
 /// </para>
 /// <para>
-/// <b>持久化</b>：日志位于 <c>&lt;directory&gt;/queue/items.jsonl</c>，只追加、从不截断；
-/// 每次状态变更追加一条记录，并在返回前调用 <see cref="IAppendOnlySink.FlushToDisk"/> 作为持久化屏障。
-/// 重放时同一 <c>itemId</c> 以最后一条记录为准，顺序由 <c>Seq</c> 决定。
+/// <b>Persistence</b>: the log lives at <c>&lt;directory&gt;/queue/items.jsonl</c>, append-only, never
+/// truncated. Each state change appends one record and calls <see cref="IAppendOnlySink.FlushToDisk"/> as a
+/// durability barrier before returning. On replay the last record for an <c>itemId</c> wins, ordered by
+/// <c>Seq</c>.
 /// </para>
 /// <para>
-/// <b>恢复</b>：构造时先用 <see cref="FileAppendOnlySink.RepairTail"/> 丢弃崩溃产生的半行，再重放日志：
-/// <c>Queued</c> 项按 <c>Seq</c> 重新入队；<c>Running</c> 项视为进程中断，以 <c>Attempt+1</c> 重新入队（并追加一条记录）；
-/// 重新入队的次数以 <see cref="MaxAttempts"/> 为限（超过则直接落为 <c>Failed</c>）；
-/// <c>Done</c>/<c>Failed</c>/<c>Canceled</c> 不重入队，但其幂等键仍参与去重。
+/// <b>Recovery</b>: construction first drops a crash-torn half line with
+/// <see cref="FileAppendOnlySink.RepairTail"/>, then replays the log: <c>Queued</c> items are re-queued by
+/// <c>Seq</c>; <c>Running</c> items are treated as interrupted and re-queued with <c>Attempt+1</c> (and a record
+/// appended); re-queues are capped at <see cref="MaxAttempts"/> (past that the item settles as <c>Failed</c>);
+/// <c>Done</c>/<c>Failed</c>/<c>Canceled</c> are not re-queued, but their idempotency keys still de-duplicate.
 /// </para>
 /// <para>
-/// <b>并发</b>：多生产者 + 单消费者。传输用有界 <see cref="Channel{T}"/>；容量由信号量（槽位）把守，
-/// 因此即使重放积压超过容量也不会死锁。所有状态字典由 <c>_gate</c> 锁保护。
+/// <b>Concurrency</b>: multiple producers, one consumer. Transfer uses a bounded <see cref="Channel{T}"/> whose
+/// capacity is guarded by a semaphore (slots), so a replay backlog larger than the capacity cannot deadlock.
+/// All state dictionaries are protected by <c>_gate</c>.
 /// </para>
 /// </summary>
 public sealed class JsonlInputQueue : IInputQueue
@@ -37,12 +41,9 @@ public sealed class JsonlInputQueue : IInputQueue
     /// <summary>
     /// How many times one interrupted item may be started in total, the first try included.
     /// <para>
-    /// A <c>Running</c> item is re-run from the beginning, not resumed: there is no record of which of its
-    /// tool calls already happened, so a restart re-issues them. Without a cap, one item that reliably wedges
-    /// the turn is retried on every single start, each retry re-running whatever the turn had already done —
-    /// and a queue that reports "running" for something that never finishes gives the user nothing to do but
-    /// kill the process, which is the retry. So the attempts are counted, and the last one is recorded as the
-    /// failure it is instead of being started again.
+    /// A <c>Running</c> item is re-run from the beginning, not resumed: nothing records which of its tool calls
+    /// already happened. Without a cap, an item that reliably wedges the turn would be retried on every start,
+    /// re-running whatever the turn had already done. Past the cap the item settles as the failure it is.
     /// </para>
     /// </summary>
     public const int MaxAttempts = 3;
@@ -66,9 +67,9 @@ public sealed class JsonlInputQueue : IInputQueue
     /// <summary>
     /// Idempotency key → the seq that key was accepted at.
     /// <para>
-    /// The seq rather than the item id, because that is all the de-duplication needs to answer and it is
-    /// true for keys whose item finished long ago and was dropped from <see cref="_items"/>. Holding the item
-    /// itself would pin every completed message in memory for the life of the process.
+    /// The seq rather than the item id: it is all de-duplication needs to answer, and it stays valid for keys
+    /// whose item finished long ago and was dropped from <see cref="_items"/>. Holding the item itself would pin
+    /// every completed message in memory for the life of the process.
     /// </para>
     /// </summary>
     private readonly Dictionary<string, long> _byKey = new(StringComparer.Ordinal);
@@ -79,9 +80,11 @@ public sealed class JsonlInputQueue : IInputQueue
     private CancellationTokenSource? _runningCts;
     private bool _disposed;
 
-    /// <param name="directory">数据根目录；日志写在 <c>&lt;directory&gt;/queue/items.jsonl</c>。</param>
-    /// <param name="capacity">队列中最多可等待的项数；满时 <see cref="EnqueueAsync"/> 等待。</param>
-    /// <param name="clock">时间源，测试可注入假时钟；默认 <see cref="TimeProvider.System"/>。</param>
+    /// <param name="directory">Data root; the log is written to <c>&lt;directory&gt;/queue/items.jsonl</c>.</param>
+    /// <param name="capacity">Maximum number of items that may wait in the queue; when full,
+    /// <see cref="EnqueueAsync"/> waits.</param>
+    /// <param name="clock">Time source; tests can inject a fake clock. Defaults to
+    /// <see cref="TimeProvider.System"/>.</param>
     public JsonlInputQueue(string directory, int capacity = 1024, TimeProvider? clock = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
@@ -95,14 +98,15 @@ public sealed class JsonlInputQueue : IInputQueue
         _sink = new FileAppendOnlySink(Path.Combine(queueDirectory, LogFileName));
         _sink.RepairTail();
 
-        // Idempotency keys outlive the items they name, so they cannot live in the items log. See
-        // `Compact` for why the split exists at all.
+        // Idempotency keys outlive the items they name, so they cannot live in the items log. See `Compact`
+        // for why the split exists.
         _keys = new FileAppendOnlySink(Path.Combine(queueDirectory, KeysFileName));
         _keys.RepairTail();
 
         var replay = Replay();
 
-        // 通道上界不小于重放积压，保证构造期写入不会溢出；运行期写入由槽位信号量限制在 capacity 以内。
+        // The channel bound is at least the replay backlog so construction cannot overflow it; runtime writes
+        // are held to `capacity` by the slot semaphore.
         _channel = Channel.CreateBounded<InputItem>(new BoundedChannelOptions(Math.Max(capacity, replay.Count))
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -121,7 +125,8 @@ public sealed class JsonlInputQueue : IInputQueue
     }
 
     /// <summary>
-    /// 最近一次 <see cref="TakeAsync"/> 交出的项所对应的取消令牌；尚未取出任何项时为 <see cref="CancellationToken.None"/>。
+    /// Cancellation token for the item last handed out by <see cref="TakeAsync"/>; <see cref="CancellationToken.None"/>
+    /// before anything is taken.
     /// </summary>
     public CancellationToken RunningToken
     {
@@ -142,7 +147,8 @@ public sealed class JsonlInputQueue : IInputQueue
         ArgumentException.ThrowIfNullOrWhiteSpace(item.IdempotencyKey);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // 串行化生产者：既保证「入队顺序 == Seq 顺序 == 通道顺序」，也让容量等待有确定的先后。
+        // Serialise producers: guarantees enqueue order == Seq order == channel order, and gives the capacity
+        // wait a deterministic order.
         await _enqueueGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -154,13 +160,13 @@ public sealed class JsonlInputQueue : IInputQueue
                 }
             }
 
-            // 有界容量：满时在此等待，直到消费者取走一项释放槽位。
+            // Wait for a free slot; the consumer releases one when it takes an item.
             await _slots.WaitAsync(ct).ConfigureAwait(false);
 
             lock (_gate)
             {
-                // 'with' rather than a field-by-field copy: the queue owns the seq, the clock and the state,
-                // and anything else the caller sent (attachments included) rides along untouched.
+                // 'with' rather than a field-by-field copy: the queue owns the seq, the clock and the state, and
+                // anything else the caller sent (attachments included) rides along untouched.
                 var stored = item with
                 {
                     Seq = _nextSeq++,
@@ -214,12 +220,10 @@ public sealed class JsonlInputQueue : IInputQueue
 
             lock (_gate)
             {
-                // A miss is not an error: the item was cancelled or settled while still sitting in the
-                // channel, and the cancel path deliberately drops it from _items. Either way it must not be
-                // handed to a consumer.
+                // A miss is not an error: the item was cancelled or settled while still sitting in the channel,
+                // and that path deliberately drops it from _items. Either way it must not reach a consumer.
                 if (!_items.TryGetValue(dequeued.ItemId, out var latest) || latest.Status != InputItemStatus.Queued)
                 {
-                    // 排队期间被取消或落定：永不交给消费者，跳过（其槽位已随出队释放）。
                     continue;
                 }
 
@@ -228,7 +232,7 @@ public sealed class JsonlInputQueue : IInputQueue
                 _queuedCount--;
 
                 _runningItemId = running.ItemId;
-                // 不释放旧 CTS：RunningToken 在队列存活期内始终可安全读取。
+                // The old CTS is not disposed: RunningToken must stay safe to read for the queue's lifetime.
                 _runningCts = new CancellationTokenSource();
 
                 return running;
@@ -250,8 +254,8 @@ public sealed class JsonlInputQueue : IInputQueue
     {
         lock (_gate)
         {
-            // Ordered here rather than by the caller: `_items` is a dictionary, and handing back insertion
-            // order by accident would make a queue that sometimes looks like it reordered itself.
+            // Ordered here rather than by the caller: `_items` is a dictionary, and insertion order would make
+            // the queue look like it sometimes reordered itself.
             return _items.Values.OrderBy(i => i.Seq).ToList();
         }
     }
@@ -272,7 +276,7 @@ public sealed class JsonlInputQueue : IInputQueue
             switch (item.Status)
             {
                 case InputItemStatus.Queued:
-                    // 终态立即落盘；通道里的残留条目会在出队时被跳过。
+                    // Persist the terminal state now; any leftover copy in the channel is skipped on dequeue.
                     Persist(Copy(item, InputItemStatus.Canceled, item.StartedAt, item.FinishedAt, item.Attempt, item.Error));
                     _queuedCount--;
 
@@ -312,8 +316,7 @@ public sealed class JsonlInputQueue : IInputQueue
             {
                 // Completing a settled item is a normal path, not a mistake: a redelivered item whose turn
                 // already ended is marked Done again without being re-run, and that is exactly when it is no
-                // longer in memory. Idempotent here on purpose — throwing would turn crash recovery into a
-                // crash.
+                // longer in memory. Idempotent on purpose — throwing would turn crash recovery into a crash.
                 if (IsSettled(itemId))
                 {
                     return Task.CompletedTask;
@@ -334,13 +337,13 @@ public sealed class JsonlInputQueue : IInputQueue
 
             if (item.Status == InputItemStatus.Queued)
             {
-                // 尚未被取走就落定：它不再是等待项（通道里的残留条目会在出队时被跳过）。
+                // Settled before it was taken: it is no longer waiting (a leftover channel copy is skipped).
                 _queuedCount--;
             }
 
             // A settled item is never taken, cancelled or completed again — every one of those reads _items
-            // to ask what state it is in, and this one has just answered. Keeping it would grow the map by
-            // every message the process ever ran; the log still has it, which is what a restart replays.
+            // to ask what state it is in. Keeping it would grow the map by every message the process ever ran;
+            // the log still has it, which is what a restart replays.
             _items.Remove(itemId);
 
             if (string.Equals(_runningItemId, itemId, StringComparison.Ordinal))
@@ -355,9 +358,8 @@ public sealed class JsonlInputQueue : IInputQueue
     /// <summary>
     /// Whether the log's last word about this item is a settled one.
     /// <para>
-    /// Read from the log rather than kept in memory on purpose: memory is exactly what was dropped, and a
-    /// restart must reach the same answer. It costs a scan, which is fine because this only runs for an id
-    /// that is already gone — the rare case, not the hot one.
+    /// Read from the log rather than memory on purpose: memory is exactly what was dropped, and a restart must
+    /// reach the same answer. The scan is acceptable because this only runs for an id that is already gone.
     /// </para>
     /// </summary>
     private bool IsSettled(string itemId)
@@ -413,9 +415,8 @@ public sealed class JsonlInputQueue : IInputQueue
         _channel.Writer.TryComplete();
         _sink.Dispose();
 
-        // Both handles, not one. A sink holds its file open with FileShare.Read — "readers may tail it" — so a
-        // sink that is not closed keeps the *next* queue from opening the same directory at all. That is how a
-        // "reopen the queue over the same workspace" test fails with a sharing violation on a fresh-looking path.
+        // Both handles, not one. A sink holds its file open with FileShare.Read, so a sink that is not closed
+        // keeps the next queue from opening the same directory at all.
         _keys.Dispose();
         _slots.Dispose();
         _enqueueGate.Dispose();
@@ -423,19 +424,20 @@ public sealed class JsonlInputQueue : IInputQueue
     }
 
     /// <summary>
-    /// 重放日志并准备待入队项。同一 itemId 以最后一条记录为准；<c>Running</c> 项以 <c>Attempt+1</c> 重新入队并追加记录。
-    /// 返回按 <c>Seq</c> 升序的待入队项。
+    /// Replays the log and prepares the items to enqueue. The last record per itemId wins; <c>Running</c> items
+    /// are re-queued with <c>Attempt+1</c> and a record appended. Returns the items to enqueue in ascending
+    /// <c>Seq</c> order.
     /// <para>
-    /// <b>只把活跃项留在内存里。</b>日志只增不减，跑久了是几十万行，而全量重放进 <c>_items</c> 意味着启动
-    /// 时的内存与整个历史的项数成正比——为一个用不到的数据结构付费。
+    /// <b>Only active items stay in memory.</b> The log only grows, and replaying all of it into <c>_items</c>
+    /// would make startup memory proportional to the whole history.
     /// <para>
-    /// 终态项<em>不</em>进 <c>_items</c>：<c>TakeAsync</c>、<c>CancelAsync</c>、<c>CompleteAsync</c> 读它，都是为了判断
-    /// 「这一条现在是什么状态」——而一个 <c>Done</c> 的项永远不会再被取走、取消或完成。崩溃恢复靠的是日志里
-    /// 那条 <c>Done</c> 记录本身（不重入队），不是这份内存。
+    /// Settled items do <em>not</em> enter <c>_items</c>: <c>TakeAsync</c>, <c>CancelAsync</c> and
+    /// <c>CompleteAsync</c> read it only to ask what state an item is in, and a <c>Done</c> item is never taken,
+    /// cancelled or completed again. Crash recovery relies on the log's <c>Done</c> record, not on this map.
     /// </para>
     /// <para>
-    /// 但 <c>_byKey</c> 仍收全量：幂等去重要认出「这个键见过」，键本身很小（一条 GUID 字符串），而漏掉
-    /// 一条会让同一请求重复入队、对话被污染两次。
+    /// <c>_byKey</c> still takes every key: idempotency must recognise a key it has seen, and a missing key
+    /// would enqueue the same request twice.
     /// </para>
     /// </summary>
     private List<InputItem> Replay()
@@ -452,14 +454,13 @@ public sealed class JsonlInputQueue : IInputQueue
             }
 
             highestSeq = Math.Max(highestSeq, item.Seq);
-            latest[item.ItemId] = item; // 最后一条记录生效
+            latest[item.ItemId] = item; // the last record wins
         }
 
         _nextSeq = highestSeq + 1;
 
         // Keys recorded by earlier compactions: these name items the log no longer holds. Losing them would
-        // make a caller retrying an old request enqueue a second copy of it, which is the exact thing the
-        // idempotency key exists to prevent.
+        // let a caller retrying an old request enqueue a second copy, which the idempotency key exists to prevent.
         foreach (var line in _keys.ReadLines())
         {
             try
@@ -492,8 +493,8 @@ public sealed class JsonlInputQueue : IInputQueue
                 case InputItemStatus.Running:
                     if (item.Attempt + 1 >= MaxAttempts)
                     {
-                        // 已用尽尝试次数：落为失败，并把这个理由留在日志里。
-                        // 直接失败而不是重新入队，是因为重新入队只会让人再看见一次同样的卡死。
+                        // Attempts exhausted: settle as failed, with the reason left in the log. Failing beats
+                        // re-queueing, which would only show the same wedge again.
                         Persist(Copy(
                             item,
                             InputItemStatus.Failed,
@@ -501,25 +502,25 @@ public sealed class JsonlInputQueue : IInputQueue
                             _clock.GetUtcNow(),
                             item.Attempt,
                             $"该项被中断 {item.Attempt + 1} 次仍未跑完，已不再重试。"));
-                        _items.Remove(item.ItemId); // 终态项不留内存（见上方说明）
+                        _items.Remove(item.ItemId); // settled items do not stay in memory (see above)
                         break;
                     }
 
-                    // 进程中断：保持原 Seq（顺序不变），Attempt+1 后重新入队。
+                    // Interrupted process: keep the original Seq (order unchanged) and re-queue with Attempt+1.
                     var retried = Copy(item, InputItemStatus.Queued, null, null, item.Attempt + 1, null);
                     Persist(retried);
                     requeue.Add(retried);
                     break;
 
                 default:
-                    // Done/Failed/Canceled：不重入队，也不留在内存里。见上方说明。
+                    // Done/Failed/Canceled: not re-queued, not kept in memory. See above.
                     break;
             }
         }
 
         _queuedCount = requeue.Count;
 
-        // After, not before: compaction re-reads the log so it sees the re-queue records replay just appended.
+        // After, not before: compaction re-reads the log, so it must see the re-queue records replay just appended.
         Compact();
 
         return requeue;
@@ -534,12 +535,12 @@ public sealed class JsonlInputQueue : IInputQueue
         }
         catch (JsonException)
         {
-            // 完整但无法解析的行：跳过，避免一行损坏让整个队列不可用。
+            // A complete but unparseable line: skip it so one damaged line cannot take the whole queue down.
             return null;
         }
     }
 
-    /// <summary>产生一个状态变更后的新实例：同一个项，只换状态相关的字段。</summary>
+    /// <summary>Produces a new instance after a state change: the same item with only the state fields replaced.</summary>
     private static InputItem Copy(
         InputItem source,
         InputItemStatus status,
@@ -559,26 +560,23 @@ public sealed class JsonlInputQueue : IInputQueue
     private sealed record KeyRecord(string Key, long Seq);
 
     /// <summary>
-    /// Drops the settled items from the log and leaves only what still has to run, moving their idempotency
-    /// keys into <c>keys.jsonl</c> first.
+    /// Drops settled items from the log, leaving only what still has to run, after moving their idempotency
+    /// keys into <c>keys.jsonl</c>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Called once, at construction, after replay has worked out what is still in play. The log's job is crash
-    /// recovery and ordering; a finished item is neither. Leaving them in meant every read of the queue paid
-    /// for the whole history — the API did exactly that on a five-second timer, and while holding the queue
-    /// lock.
+    /// Called once at construction, after replay. The log's job is crash recovery and ordering, which a settled
+    /// item no longer serves; keeping them made every queue read pay for the whole history.
     /// </para>
     /// <para>
-    /// It reads the log again rather than reusing replay's snapshot, and that is not tidiness. Replay
-    /// re-queues an interrupted item by appending a fresh <c>Queued</c> record with <c>Attempt+1</c>; compacting
-    /// from the pre-requeue snapshot would write the old <c>Running</c> record back and hand that item another
-    /// run for free — quietly undoing the retry cap, which is the one thing standing between a wedged turn and
-    /// a boot loop.
+    /// It re-reads the log rather than reusing replay's snapshot on purpose: replay re-queues an interrupted
+    /// item by appending a fresh <c>Queued</c> record with <c>Attempt+1</c>, and compacting from the pre-requeue
+    /// snapshot would write the old <c>Running</c> record back, granting the item another run and undoing the
+    /// retry cap.
     /// </para>
     /// <para>
-    /// Keys go first, deliberately. Written the other way round, a crash between the two loses both the record
-    /// and its key — and the record is the part that still has to run.
+    /// Keys are written first deliberately: in the other order a crash between the two would lose both the
+    /// record and its key, and the record is the part that still has to run.
     /// </para>
     /// </remarks>
     private void Compact()
@@ -610,8 +608,7 @@ public sealed class JsonlInputQueue : IInputQueue
 
         if (movedKeys == 0)
         {
-            // Nothing settled, so there is nothing to drop — and not rewriting keeps start-up from touching a
-            // file that does not need touching.
+            // Nothing settled, so nothing to drop; not rewriting keeps startup from touching an untouched file.
             return;
         }
 
@@ -619,7 +616,7 @@ public sealed class JsonlInputQueue : IInputQueue
         _sink.Rewrite(keep);
     }
 
-    /// <summary>追加一条记录并落盘（持久化屏障）。调用方必须持有 <c>_gate</c>。</summary>
+    /// <summary>Appends a record and flushes it to disk (durability barrier). The caller must hold <c>_gate</c>.</summary>
     private void Persist(InputItem item)
     {
         _items[item.ItemId] = item;

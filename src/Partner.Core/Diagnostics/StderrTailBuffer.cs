@@ -5,12 +5,10 @@ namespace Partner.Core.Diagnostics;
 /// gave instead of only the exception that noticed it.
 /// <para>
 /// Bounded on purpose: a server that logs continuously would otherwise be piped into memory without limit.
-/// The tail is what a diagnosis needs; the rest of it is in the process's own logs.
 /// </para>
 /// <para>
-/// One implementation shared by the MCP stdio client (<c>Partner.Core</c>) and the game process adapter
-/// (<c>Partner.Game</c>): the two pipe a child's stderr the same way, and a second copy is a second place for
-/// the drain to be got wrong.
+/// Shared by the MCP stdio client (<c>Partner.Core</c>) and the game process adapter (<c>Partner.Game</c>): the
+/// two pipe a child's stderr the same way.
 /// </para>
 /// </summary>
 public sealed class StderrTailBuffer

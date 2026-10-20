@@ -47,8 +47,7 @@ public sealed class ApiContext : IAsyncDisposable
         Telemetry = telemetry;
 
         // Options are read through a delegate, so an edit to the proxy, the budget or the engine list takes
-        // effect on the next search rather than at the next restart. The health state lives under the workspace,
-        // beside the settings it answers to.
+        // effect on the next search rather than at the next restart. The health state lives under the workspace.
         Web = new Partner.Core.Agent.Web.WebSearchService(
             () => Settings.Load().Web.ToOptions(),
             workspace,
@@ -129,23 +128,20 @@ public sealed class ApiContext : IAsyncDisposable
     public TaskLeaseStore TaskLeases { get; }
 
     /// <summary>
-    /// Desktop tool measurements, shared by the automation (walk side) and the tools (result side), and
-    /// read by the telemetry endpoint. Session-level like every other store: it outlives a consumer
-    /// restart, because a tuning question spans turns.
+    /// Desktop tool measurements, shared by the automation (walk side) and the tools (result side), and read by
+    /// the telemetry endpoint. Session-level: it outlives a consumer restart, because a tuning question spans turns.
     /// </summary>
     public InMemoryTelemetrySink Telemetry { get; }
 
     /// <summary>
     /// The one web capability in this process. Shared on purpose: two instances would hold two rate limiters
-    /// (so the same engine could be asked twice as often as its limit allows), two answer caches, and two
-    /// views of the circuit-breaker health file — and the host ledger that decides whether <c>web_fetch</c>
-    /// asks the user would be split in half.
+    /// (so the same engine could be asked twice as often as its limit allows), two answer caches, two views of
+    /// the circuit-breaker health file, and two halves of the host ledger.
     /// </summary>
     public Partner.Core.Agent.Web.WebSearchService Web { get; }
 
-    /// <summary>The clock the host was opened with. The telemetry endpoint reads it so its window can be stated
-    /// in the same time base the sink stamped its events in — a window measured against a different clock would
-    /// be a second, silently different answer.</summary>
+    /// <summary>The clock the host was opened with. The telemetry endpoint reads it so its window uses the same
+    /// time base the sink stamped its events with.</summary>
     public TimeProvider Clock { get; }
 
     public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
@@ -156,10 +152,9 @@ public sealed class ApiContext : IAsyncDisposable
         var (session, _) = JsonlSessionStore.Open(workspace, clock);
         var queue = new JsonlInputQueue(workspace, capacity: 1024, clock: clock);
 
-        // Read once, here: the store is built with its embedding provider fixed. Turning the switch on
-        // therefore takes effect at the next process start, which the settings comment in MemorySettings
-        // owes the reader — changing it live would mean re-embedding or silently diverging between old and
-        // new records on the vector arm of the scorer.
+        // Read once, here: the store is built with its embedding provider fixed, so turning the switch on takes
+        // effect at the next process start. Changing it live would mean re-embedding or silently diverging between
+        // old and new records on the vector arm of the scorer.
         var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
         var memoryOptions = new MemoryStoreOptions { MinScore = 0.3 };
         if (settings.Load().Memory.Embeddings)
@@ -170,7 +165,6 @@ public sealed class ApiContext : IAsyncDisposable
         // One caller at a time: the maintenance timer and a turn are different threads over one SQLite connection.
         var memory = new SerializedMemoryStore(new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), memoryOptions, clock));
 
-        // Holds the whole runtime configuration now, not just the voice halves.
         var media = FileMediaStore.Open(workspace);
 
         // The machine's own zone: "every day at 9" means 9 on the wall clock of whoever wrote it, and a cron
@@ -185,7 +179,8 @@ public sealed class ApiContext : IAsyncDisposable
                     TimeZoneInfo.ClearCachedData();
                     return TimeZoneInfo.Local;
                 },
-                MaxTasks = Partner.Api.Endpoints.ScheduleRules.MaxTasks });
+                MaxTasks = Partner.Api.Endpoints.ScheduleRules.MaxTasks
+            });
 
         // The TTL comes from the settings at call time rather than at construction: a lease policy is a
         // per-observation decision, and the settings can change while the process runs.
@@ -195,10 +190,9 @@ public sealed class ApiContext : IAsyncDisposable
         // that opened them.
         var cdpPorts = new CdpRegistry();
         var telemetry = new InMemoryTelemetrySink(clock);
-        //
-        // The input mode is read from the settings at each action and each launch rather than captured here:
-        // it is the one desktop setting that has to take effect while a turn is running (a user who sees the
-        // agent taking over their screen turns it down, and expects the very next action to obey).
+
+        // The input mode is read from the settings at each action and each launch rather than captured here: a
+        // user who sees the agent taking over their screen turns it down and expects the very next action to obey.
         Func<Partner.Desktop.Input.InputMode> inputMode = () =>
             Partner.Desktop.Input.InputModes.Parse(settings.Load().Desktop.InputMode);
 

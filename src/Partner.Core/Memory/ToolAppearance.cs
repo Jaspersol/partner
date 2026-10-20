@@ -8,13 +8,11 @@ namespace Partner.Core.Memory;
 /// <para>
 /// Desktop work answers in tool results: the assistant text is short or empty, and the conclusions a later
 /// turn needs (which path was taken, which window was acted on, that it worked) live in the
-/// <c>ToolResult</c> events. The store kept missing all of it, because the distiller required "an answer".
+/// <c>ToolResult</c> events.
 /// </para>
 /// <para>
-/// Conservative by construction: only results that are both marked ok and written in the automation's
-/// class of success — a window was acted on at its control centre, which is what the result text says when a
-/// click landed where it was aimed (or rolled there, "snapped"). A refused call, an unverifiable one, and a
-/// failed command read as prose the filter cannot vouch for, and stay out.
+/// Conservative by construction: only results that are both marked ok and carry the automation's success
+/// markers. A refused call, an unverifiable one, and a failed command stay out.
 /// </para>
 /// </summary>
 public static class ToolAppearance
@@ -31,9 +29,9 @@ public static class ToolAppearance
     /// <summary>
     /// The body one tool-only exchange is worth remembering as, or null when nothing qualifies.
     /// <para>
-    /// Takes the single most informative result rather than a concatenation: one act's line "LeftClick ·
-    /// 注入成功 · 校验：画面已变化 · 目标 '播放' [button] @ 播放器" already carries the action, target, and
-    /// outcome, and stacking several turns into one record would outrun the distiller's body cap.
+    /// Takes the single most informative result rather than a concatenation: one act's line already carries the
+    /// action, target, and outcome, and stacking several turns into one record would outrun the distiller's body
+    /// cap.
     /// </para>
     /// </summary>
     /// <param name="items">The projected view; read for the ToolCall/ToolResult pair the turn produced.</param>

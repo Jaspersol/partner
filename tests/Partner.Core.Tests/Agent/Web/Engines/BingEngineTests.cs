@@ -149,8 +149,8 @@ public sealed class BingEngineTests
         Assert.Contains("count=3", latinUrl, StringComparison.Ordinal);
         Assert.Contains("setlang=en", latinUrl, StringComparison.Ordinal);
 
-        // One Accept header, asking for the feed and nothing else. Two entries here would be the old bug: the
-        // generic page default left in place and the feed appended to it, which also sent text/html.
+        // One Accept header, asking for the feed and nothing else. Leaving a generic page default in place and
+        // appending the feed would also send text/html.
         Assert.Equal(
             new[] { "application/rss+xml", "application/xml; q=0.9", "*/*; q=0.5" },
             latin.Headers.GetValues("Accept"));

@@ -12,16 +12,15 @@ public sealed record DistilledMemory(string Body, double Importance, double Vera
 /// <summary>
 /// Turns a turn's worth of conversation into things worth remembering.
 /// <para>
-/// Deliberately <b>not</b> a model call. The whole tier system already answers "what survives": a distilled
-/// memory lands in <see cref="MemoryTier.Working"/>, is scored on recall, is promoted to an episodic copy only
-/// after <c>PromotionAge</c>, and is trimmed if it never matures. A second model call to pre-filter would add
-/// latency and a failure mode to solve a problem the scoring already solves — and would make a wrong answer
-/// unrecoverable, where a noisy record is one <c>SoftDeleteAsync</c> away.
+/// Deliberately <b>not</b> a model call. The tier system already answers "what survives": a distilled memory
+/// lands in <see cref="MemoryTier.Working"/>, is scored on recall, is promoted to an episodic copy only after
+/// <c>PromotionAge</c>, and is trimmed if it never matures. A second model call to pre-filter would add latency
+/// and a failure mode, and a wrong answer would be unrecoverable where a noisy record is one
+/// <c>SoftDeleteAsync</c> away.
 /// </para>
 /// <para>
-/// What it does filter: only turns that carry a <em>statement about the user or the work</em>. Acknowledgements,
-/// questions with no answer in the turn, and anything the user framed as a question about the assistant itself
-/// are not facts about them, and a memory store full of those is a memory store nobody reads.
+/// Filters to turns that carry a <em>statement about the user or the work</em>: acknowledgements, unanswered
+/// questions, and questions about the assistant itself are not facts about the person.
 /// </para>
 /// </summary>
 public static class ConversationDistiller
@@ -30,18 +29,14 @@ public static class ConversationDistiller
     public const int MaxBodyLength = 400;
 
     /// <summary>
-    /// Turns shorter than this carry no statement worth keeping. Public because a hand-written memory has to
-    /// clear the same bar: the distiller's filter exists to keep the store readable, and a route that accepted
-    /// anything would be a way around it.
+    /// Turns shorter than this carry no statement worth keeping. Public because a hand-written memory must clear
+    /// the same bar.
     /// </summary>
     public const int MinBodyLength = 4;
 
     /// <summary>
-    /// Phrases that mark a question <em>about the assistant</em> rather than a fact about the user.
-    /// <para>
-    /// These are the ones that would otherwise fill the store: "who are you", "what can you do". The question is
-    /// a request for the assistant's own description, which the next turn already has in the system prompt.
-    /// </para>
+    /// Phrases that mark a question <em>about the assistant</em> rather than a fact about the user. The next turn
+    /// already has the assistant's own description in the system prompt.
     /// </summary>
     private static readonly string[] SelfReferential =
     {
@@ -50,18 +45,14 @@ public static class ConversationDistiller
         "who are you", "what can you do", "your name",
     };
 
-    /// <summary>
-    /// Phrases that mark the turn as a passing exchange with nothing to keep.
-    /// </summary>
+    /// <summary>Phrases that mark a passing exchange with nothing to keep.</summary>
     private static readonly string[] Chitchat =
     {
         "谢谢", "多谢", "好的", "收到", "明白了", "知道了", "辛苦了", "再见",
         "thank", "thanks", "ok", "okay", "got it", "hi", "hello", "bye",
     };
 
-    /// <summary>
-    /// What to remember from one turn: the user's message and the assistant's reply.
-    /// </summary>
+    /// <summary>What to remember from one turn: the user's message and the assistant's reply.</summary>
     /// <param name="userText">What the person said this turn.</param>
     /// <param name="assistantText">What the model answered, which often names the thing in play.</param>
     /// <param name="sourceEventSeq">The event the exchange starts at.</param>
@@ -83,8 +74,7 @@ public static class ConversationDistiller
             return null;
         }
 
-        // A question with no answer attached is a question, not a fact. Recording it would fill the store with
-        // things the person asked, which is the opposite of what a memory is for.
+        // A question with no answer attached is a question, not a fact.
         var answer = (assistantText ?? string.Empty).Trim();
         if (answer.Length == 0)
         {
@@ -114,12 +104,9 @@ public static class ConversationDistiller
     }
 
     /// <summary>
-    /// How much a turn shapes later ones, read off its own wording.
-    /// <para>
-    /// A heuristic, and deliberately a small one: a stated preference, an ongoing project, or something the
-    /// person was told to always do is worth more than an answer to a one-off question. Every one of these is
-    /// something the text <em>says</em> — nothing here guesses at importance from length.
-    /// </para>
+    /// How much a turn shapes later ones, read off its own wording. A stated preference, an ongoing project, or
+    /// an instruction to always do something outweighs an answer to a one-off question. Nothing here guesses at
+    /// importance from length.
     /// </summary>
     private static double Importance(string user, string answer)
     {

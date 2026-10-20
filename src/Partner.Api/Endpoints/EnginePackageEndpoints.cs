@@ -3,8 +3,8 @@ using Partner.Api.Voice;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// The local-engine module as the settings page sees it: is it on disk, download it, or point at a copy the
-/// user already has. Detection is just a GET — it re-reads the disk every time, so "检测" needs no endpoint of its own.
+/// The local-engine module as the settings page sees it: on disk, downloading, or pointed at an existing copy.
+/// Detection is a plain GET; it re-reads the disk every time, so no separate endpoint is needed.
 /// </summary>
 public static class EnginePackageEndpoints
 {

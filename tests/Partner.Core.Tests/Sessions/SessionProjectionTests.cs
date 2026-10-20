@@ -4,8 +4,8 @@ using Partner.Core.Sessions;
 namespace Partner.Core.Tests.Sessions;
 
 /// <summary>
-/// Projection rules (design doc §2.5.5): the view shows the latest revision, the original body stays
-/// recoverable, and revision events never appear as their own content.
+/// Projection rules: the view shows the latest revision, the original body stays recoverable, and revision
+/// events never appear as their own content.
 /// </summary>
 public sealed class SessionProjectionTests
 {

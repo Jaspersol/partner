@@ -3,8 +3,8 @@ using Partner.Desktop.Tools;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// Starting a program by the name a person would say. The bug this pins: <c>notepad</c> launched and
-/// <c>网易云音乐</c> did not, because ShellExecute searches PATH but not the Start Menu.
+/// Starting a program by the name a person would say. ShellExecute searches PATH but not the Start Menu, so
+/// <c>notepad</c> resolves from PATH while <c>网易云音乐</c> has to be found in the Start Menu.
 /// </summary>
 public sealed class DesktopLaunchToolTests : IDisposable
 {

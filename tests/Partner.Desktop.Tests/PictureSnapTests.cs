@@ -5,11 +5,10 @@ using Partner.Desktop.Tools;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// The snap: a point read off a picture — or guessed by a model — carries a couple of pixels the server
-/// does not have to accept as gospel. When no control was named, a point inside a control's neighbourhood
-/// is upgraded to that control's centre, where the pattern and the verification know exactly what they are
-/// acting on. Beyond the radius, the point stays the point: snapping to what the model did not aim at
-/// would be a different click.
+/// The snap: a point read off a picture — or guessed by a model — may be a couple of pixels off. When no
+/// control was named, a point inside a control's neighbourhood is upgraded to that control's centre, where
+/// the pattern and the verification know exactly what they are acting on. Beyond the radius, the point stays
+/// the point: snapping to what the model did not aim at would be a different click.
 /// </summary>
 public sealed class PictureSnapTests
 {
@@ -66,7 +65,6 @@ public sealed class PictureSnapTests
     [Fact]
     public void A_point_beyond_the_radius_stays_a_point()
     {
-        // Snapping to a distant control would be a different click — the model aimed there, not here.
         var observation = Observation(Element("1a2b:0", x: 200, y: 200)); // centre (250,220)
 
         Assert.Null(DesktopActTool.SnapToElement(observation, "1a2b", (270, 240)));

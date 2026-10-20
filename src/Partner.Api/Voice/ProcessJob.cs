@@ -5,20 +5,19 @@ using System.Runtime.InteropServices;
 namespace Partner.Api.Voice;
 
 /// <summary>
-/// Windows job object with kill-on-job-close. Every managed engine's process tree is assigned to one, and
-/// the handle lives as long as this API process: if the API dies without running its cleanup (crash, hard
-/// kill — the paths where LocalEngineHost.DisposeAsync never runs), the kernel releases the handle and
-/// terminates the whole tree for us. Without it the engines linger as orphans holding GPU memory and ports,
-/// which is exactly the "app exited but resources not released" failure this class exists to close.
+/// Windows job object with kill-on-job-close. Every managed engine's process tree is assigned to one, and the
+/// handle lives as long as this API process: if the API dies without cleanup (crash, hard kill — paths where
+/// LocalEngineHost.DisposeAsync never runs), the kernel releases the handle and terminates the whole tree.
+/// Without it engines linger as orphans holding GPU memory and ports.
 /// <para>
-/// Kill-on-close fires when the *last* handle to the job closes. We never duplicate the handle and never
-/// make it inheritable, so the only handle is this process's: engine children and grandchildren
-/// (tts-server 的解码器子进程) are all in the job but cannot keep it alive on their own.
+/// Kill-on-close fires when the *last* handle to the job closes. The handle is never duplicated or made
+/// inheritable, so the only handle is this process's: engine children and grandchildren (tts-server's decoder
+/// subprocesses) are in the job but cannot keep it alive on their own.
 /// </para>
 /// </summary>
 internal sealed class EngineJob : IDisposable
 {
-    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: 作业句柄释放即杀树。
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: releasing the job handle kills the tree.
     private const uint JobObjectExtendedLimitInformation = 9;
     private const uint JobObjectLimitKillOnJobClose = 0x2000;
 
@@ -26,9 +25,9 @@ internal sealed class EngineJob : IDisposable
 
     private EngineJob(IntPtr handle) => _handle = handle;
 
-    /// <summary>Assign to a job or report why not. Failing is not fatal: engines still run, only the
-    /// hard-kill cleanup is lost (e.g. a sandbox host that already put us inside a job it forbids breaking
-    /// out of). State reporting keeps the failure visible in the reason string.</summary>
+    /// <summary>Assign to a job or report why not. Failure is not fatal: engines still run, only the hard-kill
+    /// cleanup is lost (e.g. a sandbox host that already put us inside a job it forbids breaking out of). The
+    /// failure stays visible in the reason string.</summary>
     public static EngineJob? Create(Process process, string name)
     {
         try

@@ -5,10 +5,6 @@ using System.Text;
 namespace Partner.Core.Memory;
 
 /// <summary>
-/// Counts tokens for budgeting. The local estimate is always available; a counter that can ask the model
-/// itself (a tokenizer endpoint) also implements <see cref="CountAsync"/>.
-/// </summary>
-/// <summary>
 /// A counter that can be told what the model really charged, and tunes its estimate toward it.
 /// </summary>
 public interface ICalibratedTokenCounter : ITokenCounter
@@ -33,7 +29,7 @@ public interface ITokenCounter
 /// Dependency-free approximation: ~1 token per 4 characters, never zero for non-empty text.
 /// <para>
 /// Deliberately crude, and knowingly wrong in one direction for some scripts: CJK text runs closer to 1 token
-/// per character than 1 per 4, so this <b>under</b>counted Chinese before it counted CJK characters one for one. It is the fallback, not the answer — a
+/// per character than 1 per 4, so this counts CJK characters one for one. It is the fallback, not the answer — a
 /// provider-backed counter (see <c>HttpLlmClient</c>) is preferred wherever one is available.
 /// </para>
 /// </summary>
@@ -77,8 +73,7 @@ public sealed class ApproximateTokenCounter : ICalibratedTokenCounter
         }
 
         // Chinese and kana run near one token per character, not one per four, so they are counted one for one;
-        // everything else keeps the ~4-chars-per-token rule. Counting 5000 characters of Chinese as 1250 tokens
-        // is how a budget gets blown by a factor of four.
+        // everything else keeps the ~4-chars-per-token rule.
         var cjk = 0;
         foreach (var ch in text)
         {
@@ -109,8 +104,7 @@ public sealed class DualArmTokenCounter(ITokenCounter provider, ITokenCounter lo
 
     public async ValueTask<int> CountAsync(string text, CancellationToken ct = default)
     {
-        // Both at once: the provider arm is a network round trip and the local one is not, so awaiting them in
-        // turn only ever added the local time to the remote one.
+        // Both at once: the provider arm is a network round trip and the local one is not.
         var providerCount = provider.CountAsync(text, ct).AsTask();
         var localCount = local.CountAsync(text, ct).AsTask();
         await Task.WhenAll(providerCount, localCount).ConfigureAwait(false);
@@ -119,12 +113,12 @@ public sealed class DualArmTokenCounter(ITokenCounter provider, ITokenCounter lo
 }
 
 /// <summary>
-/// Memo for token counts. Counting the same body again is the common case (a session window is rebuilt every
-/// turn), and a provider-backed count costs a round trip.
+/// Memo for token counts. Counting the same body again is the common case, and a provider-backed count costs a
+/// round trip.
 /// <para>
 /// Keys are 128-bit hashes rather than the text itself: the session view hands out fresh string instances each
 /// turn, so a string-keyed dictionary would retain every body it ever saw. A hash collision would mis-price one
-/// entry, which a budget can absorb; retaining the history cannot.
+/// entry, which a budget can absorb.
 /// </para>
 /// </summary>
 public sealed class TokenCountCache
@@ -199,10 +193,9 @@ public sealed class TokenCountCache
     }
 
     /// <summary>
-    /// A 128-bit content key: two independent 64-bit FNV-1a passes over the characters, plus the length. A cache hit
-    /// still reads the whole text once, so the hash is what the lookup costs — SHA-256 over a UTF-8 copy of every
-    /// body was most of it. Nothing here is adversarial (the text is this process's own history), and a collision
-    /// would mis-price one entry, which a budget absorbs.
+    /// A 128-bit content key: two independent 64-bit FNV-1a passes over the characters, plus the length. The hash
+    /// is what a cache lookup costs. Nothing here is adversarial (the text is this process's own history), and a
+    /// collision would mis-price one entry, which a budget absorbs.
     /// </summary>
     private readonly record struct Key(ulong High, ulong Low)
     {

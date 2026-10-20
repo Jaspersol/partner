@@ -15,8 +15,8 @@ namespace Partner.Desktop.Tools;
 /// program took the foreground anyway (many do, whatever they were asked), gives it back to whoever had it.
 /// </para>
 /// <para>
-/// None of this is a guarantee, and nothing here claims it is: "don't activate" is a request the program can
-/// ignore. What the settle step reports is what it actually saw and did.
+/// None of this is a guarantee: "don't activate" is a request the program can ignore. What the settle step
+/// reports is what it actually saw and did.
 /// </para>
 /// </summary>
 internal static class BackgroundLaunch
@@ -102,10 +102,10 @@ internal static class BackgroundLaunch
     /// The windows in <paramref name="now"/> that belong to the program that was just started.
     /// <para>
     /// "New since the launch" is not enough: in the seconds this watches, the user may open a window of their
-    /// own, and sending <i>that</i> to the bottom — or taking the foreground back from it — would be the agent
-    /// interfering with exactly the person it is trying not to disturb. So a new window counts only if its
-    /// process is the one started, or was itself started after the launch began (a launcher that hands off to
-    /// the real program, an updater stub). A new window of a program that was already running is not ours.
+    /// own, and sending <i>that</i> to the bottom — or taking the foreground back from it — would interfere
+    /// with exactly the person this is trying not to disturb. So a new window counts only if its process is
+    /// the one started, or was itself started after the launch began (a launcher that hands off to the real
+    /// program, an updater stub). A new window of a program that was already running is not ours.
     /// </para>
     /// </summary>
     internal static IReadOnlyList<DesktopWindow> LaunchedWindows(Snapshot before, int processId, IEnumerable<DesktopWindow> now) =>
@@ -168,9 +168,9 @@ internal static class BackgroundLaunch
 
             // Only a launched window holding the foreground is the program taking it. A foreground the user
             // chose — they clicked elsewhere while this was watching — is theirs and is left alone.
-            // The foreground holder is judged by its process, not by whether it was among the windows listed: a
-            // browser shows an untitled window first (measured), which the listing skips and which took the
-            // foreground all the same.
+            // The foreground holder is judged by its process, not by whether it was among the windows listed:
+            // a browser shows an untitled window first, which the listing skips and which took the foreground
+            // all the same.
             var foreground = NativeMethods.GetForegroundWindow();
             if (foreground != before.Foreground && foreground != 0 && IsLaunched(foreground, before, processId))
             {

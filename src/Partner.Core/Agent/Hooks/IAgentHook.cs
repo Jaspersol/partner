@@ -1,25 +1,25 @@
 namespace Partner.Core.Agent.Hooks;
 
 /// <summary>
-/// Agent 生命周期钩子（设计文档 §2.9.3）。实现者通常继承 <see cref="AgentHookBase"/> 以省略约束列表。
+/// Agent lifecycle hook. Implementers usually derive from <see cref="AgentHookBase"/> to omit the constraint lists.
 /// </summary>
 public interface IAgentHook
 {
-    /// <summary>本钩子挂载的阶段。</summary>
+    /// <summary>The phase this hook is mounted on.</summary>
     AgentPhase Phase { get; }
 
-    /// <summary>阶段内唯一的名字，用于 <see cref="Before"/>/<see cref="After"/> 约束。</summary>
+    /// <summary>Unique name within the phase, used by <see cref="Before"/>/<see cref="After"/> constraints.</summary>
     string Name { get; }
 
-    /// <summary>排序权重，越小越先执行（默认 100）。仅在无约束冲突时作为决胜条件。</summary>
+    /// <summary>Ordering weight, smaller runs earlier (default 100). Used only as a tiebreaker without constraint conflicts.</summary>
     int Priority { get; }
 
-    /// <summary>必须先于这些钩子（同阶段内按 <see cref="Name"/> 引用）运行。</summary>
+    /// <summary>Must run before these hooks (referenced by <see cref="Name"/> within the same phase).</summary>
     IReadOnlyList<string> Before { get; }
 
-    /// <summary>必须晚于这些钩子（同阶段内按 <see cref="Name"/> 引用）运行。</summary>
+    /// <summary>Must run after these hooks (referenced by <see cref="Name"/> within the same phase).</summary>
     IReadOnlyList<string> After { get; }
 
-    /// <summary>执行钩子。</summary>
+    /// <summary>Runs the hook.</summary>
     ValueTask<HookOutcome> RunAsync(HookContext ctx, CancellationToken ct);
 }

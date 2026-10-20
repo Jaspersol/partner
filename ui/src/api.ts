@@ -39,7 +39,6 @@ export interface ContextUsage {
  * What the view may offer at the history's tail.
  *
  * <para>
- * A conversation starts at a message somebody sent (typed, spoken or scheduled) and runs to the next one.
  * Deleting is only ever the latest conversation, as a whole; withdrawing from an earlier point is the
  * reversible alternative. `withdrawn` is non-null while a withdrawal is still pending — until the person
  * sends a new message, which makes it final on the server.
@@ -429,30 +428,30 @@ export interface FilesSettings {
 }
 
 /**
- * 联网搜索（web）。默认**打开**——这是本仓库唯一默认开启的联网能力，也是唯一会把本机上的字句
- * 发给第三方搜索服务的开关，所以设置页必须在它旁边把这件事写清楚。
+ * Web search. Enabled by default: it is the only network capability on by default and the only one that sends
+ * the machine's text to third-party search services, so the settings page must say so beside it.
  */
 export interface WebSettings {
   enabled: boolean
-  /** 整次检索的时间预算（秒），从第一个引擎返回结果开始计时。 */
+  /** Time budget for a whole search, in seconds, counted from the first engine's result. */
   timeBudgetSeconds: number
-  /** 答案里列出的结果条数上限。 */
+  /** Upper bound on results listed in the answer. */
   maxResults: number
-  /** http(s) 代理；空 = 直连。 */
+  /** http(s) proxy; empty = direct. */
   proxy: string | null
-  /** 被手动关掉的引擎 id。 */
+  /** Ids of engines manually turned off. */
   disabledEngines: string[]
 }
 
-/** 一个引擎，连它当前的运行状态：熔断中还是正常。 */
+/** One engine with its current runtime state: circuit-broken or normal. */
 export interface WebEngineView {
   id: string
   name: string
-  /** 'ranked'（按相关度排序的文档）或 'record'（发布方自己的记录，直接就是答案）。 */
+  /** 'ranked' (documents sorted by relevance) or 'record' (the publisher's own record, which is the answer). */
   nature: string
-  /** 它索引的内容类型，名字小写：general / news / academic / code / encyclopedia / weather / qa。 */
+  /** Content types it indexes, lower-case names: general / news / academic / code / encyclopedia / weather / qa. */
   kinds: string[]
-  /** 该站点自己的目录（维基、arXiv），结果不会复述查询词。 */
+  /** The site's own catalogue (Wikipedia, arXiv): results do not restate the query. */
   singleSite: boolean
   disabled: boolean
   cooling: boolean
@@ -461,14 +460,14 @@ export interface WebEngineView {
   lastReason: string | null
 }
 
-/** GET /api/web 的回答：设置 + 每个引擎的状态。 */
+/** GET /api/web: settings plus each engine's state. */
 export interface WebView {
   enabled: boolean
   proxy: string | null
   timeBudgetSeconds: number
   maxResults: number
   engines: WebEngineView[]
-  /** 熔断状态文件的位置，出问题时要看的就是它。 */
+  /** Location of the circuit-breaker state file; this is what to inspect when something goes wrong. */
   healthPath: string
 }
 
@@ -685,7 +684,6 @@ export interface ApprovalQueue {
   pending: PendingApproval[]
 }
 
-/** Saving returns what was stored plus the consumer state it produced. */
 /** What one compaction pass did; null when the context was not shrunk. */
 export interface CompactionReport {
   foldedEvents: number
@@ -706,9 +704,9 @@ export interface VoiceTestResult {
   ok: boolean
   detail: string
   latencyMs: number
-  /** ASR 测试：引擎转出来的原话（TTS 合成样本喂进去的）。 */
+  /** ASR test: the engine's transcript of a synthesized TTS sample. */
   transcribed?: string
-  /** TTS 测试：合成好的 16-bit 单声道 WAV，base64，UI 转 Blob 播放。 */
+  /** TTS test: synthesized 16-bit mono WAV, base64; the UI converts it to a Blob for playback. */
   audioBase64?: string
   seconds?: number
 }
@@ -721,7 +719,6 @@ export interface SubmitResult {
   deduplicated: boolean
 }
 
-/** Whether anything is executing the queue, and if not, why. */
 /** One tool the model can call, with what governance will do about it. */
 export interface ToolExposure {
   name: string
@@ -864,8 +861,8 @@ export interface ApiOptions {
 }
 
 /**
- * Exactly the surface the views use. Views depend on this, so a test stub is checked by the compiler
- * against the same shape the real client exposes — a stub cannot silently drift from the contract.
+ * Exactly the surface the views use. Views depend on this, so a test stub is checked by the compiler against
+ * the same shape the real client exposes — a stub cannot silently drift from the contract.
  */
 /** One stored attachment, as the upload endpoint reports it. */
 export interface UploadedMedia {
@@ -882,8 +879,8 @@ export interface UploadedMedia {
  * How a file name travels with its bytes.
  *
  * <para>
- * A header rather than the body, so a <code>File</code> can still be posted straight through without being read
- * into memory first — which is what makes a folder of attachments possible at all.
+ * A header rather than the body, so a <code>File</code> can be posted straight through without being read into
+ * memory first.
  * </para>
  */
 const FILE_NAME_HEADER = 'X-File-Name'
@@ -931,7 +928,7 @@ export interface PartnerApiSurface {
   settings(): Promise<SettingsView>
   /** The agents section as the prompts page reads it: stored values, defaults, effective prompts, problems. */
   agents(): Promise<AgentsView>
-  /** 每个搜索引擎的当前状态（已在设置里关掉的、被熔断的都会标出来）。 */
+  /** Current state of every search engine (disabled ones and circuit-broken ones are marked). */
   web(): Promise<WebView>
   /** Writes the stored shape. A new sub-agent goes in with `id: ""`; the server names it. */
   saveAgents(agents: AgentsSettings): Promise<AgentsSaved>
@@ -974,7 +971,6 @@ export class PartnerApi implements PartnerApiSurface {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis)
   }
 
-  // ---- session ---------------------------------------------------------------------------------
 
   session(from = 1, take?: number, window?: SessionWindow): Promise<SessionView> {
     const query = new URLSearchParams({ from: String(from) })
@@ -983,7 +979,7 @@ export class PartnerApi implements PartnerApiSurface {
       query.set('open', String(window.open))
       query.set('offsetMinutes', String(window.offsetMinutes))
     }
-    // Left to the server when not given: a day's window and the old "first 200" have different sensible sizes.
+    // Left to the server when not given: a day's window and a plain read have different sensible sizes.
     if (take !== undefined) query.set('take', String(take))
     return this.request<SessionView>('GET', `/api/session?${query.toString()}`)
   }
@@ -1017,7 +1013,6 @@ export class PartnerApi implements PartnerApiSurface {
     return this.request<SessionRevision[]>('GET', `/api/session/${seq}/revisions`)
   }
 
-  // ---- queue -----------------------------------------------------------------------------------
 
   queue(): Promise<QueueView> {
     return this.request<QueueView>('GET', '/api/queue')
@@ -1035,13 +1030,11 @@ export class PartnerApi implements PartnerApiSurface {
     return true
   }
 
-  // ---- input delivery --------------------------------------------------------------------------
 
   /**
    * Delivers to the queue. Nothing executes it here, so the answer says "queued", not "done".
    * <para>
-   * The per-message parts are an object rather than two more positional parameters: a caller reading
-   * `submitInput(text, 'text', 'composer:1', ids, 'high')` cannot tell what the last two mean.
+   * The per-message parts are an object rather than more positional parameters so call sites stay readable.
    * </para>
    */
   submitInput(
@@ -1063,11 +1056,6 @@ export class PartnerApi implements PartnerApiSurface {
     })
   }
 
-  /**
-   * Uploads one attachment. The bytes go as the request body with the type and the name in headers, so a File
-   * can be passed straight through without being read into memory first; what comes back is the id the delivery
-   * refers to, plus the name and path the model is told.
-   */
   async uploadVoiceReference(file: Blob, fileName: string): Promise<{ path: string; fileName: string; bytes: number }> {
     const response = await this.fetchImpl(`${this.base}/api/voice/reference`, {
       method: 'POST',
@@ -1178,7 +1166,6 @@ export class PartnerApi implements PartnerApiSurface {
     return this.request<ModelProbe>('POST', '/api/models', { baseUrl: baseUrl ?? null })
   }
 
-  // ---- memory ----------------------------------------------------------------------------------
 
   memory(tier?: string, scope?: string, take = 200): Promise<MemoryItem[]> {
     const query = new URLSearchParams({ take: String(take) })
@@ -1231,7 +1218,6 @@ export class PartnerApi implements PartnerApiSurface {
     return this.request<MemoryRevision[]>('GET', `/api/memory/${encodeURIComponent(recordId)}/revisions`)
   }
 
-  // ---- settings --------------------------------------------------------------------------------
 
   settings(): Promise<SettingsView> {
     return this.request<SettingsView>('GET', '/api/settings')
@@ -1241,13 +1227,11 @@ export class PartnerApi implements PartnerApiSurface {
     return this.request<SettingsSaved>('PUT', '/api/settings', settings)
   }
 
-  // ---- web -------------------------------------------------------------------------------------
 
   web(): Promise<WebView> {
     return this.request<WebView>('GET', '/api/web')
   }
 
-  // ---- agents ----------------------------------------------------------------------------------
 
   agents(): Promise<AgentsView> {
     return this.request<AgentsView>('GET', '/api/agents')
@@ -1275,7 +1259,6 @@ export class PartnerApi implements PartnerApiSurface {
     return true
   }
 
-  // ---- schedules -------------------------------------------------------------------------------
 
   async schedules(): Promise<ScheduleTaskView[]> {
     const answer = await this.request<{ tasks?: ScheduleTaskView[] }>('GET', '/api/schedules')
@@ -1347,7 +1330,6 @@ export class PartnerApi implements PartnerApiSurface {
     return response.status === 401 ? 'unauthorized' : 'unavailable'
   }
 
-  // ---- plumbing --------------------------------------------------------------------------------
 
   private send(method: string, path: string, payload?: unknown): Promise<Response> {
     const init: RequestInit = {

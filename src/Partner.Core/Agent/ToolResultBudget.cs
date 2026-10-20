@@ -4,13 +4,12 @@ using Partner.Core.Memory;
 namespace Partner.Core.Agent;
 
 /// <summary>
-/// The budget that binds <i>inside</i> a turn. The assembler only prices the history a turn starts from; once
-/// the tool loop is running, every result is appended whole, and one large <c>file_read</c> or <c>web_fetch</c>
-/// is enough to outgrow the window and fail the next model call.
+/// The budget that binds <i>inside</i> a turn: one large <c>file_read</c> or <c>web_fetch</c> result can
+/// outgrow the window and fail the next model call.
 /// <para>
 /// Two rules, applied by the runner: a single result is capped (head and tail kept, the middle folded into a
-/// marker that says how to read more), and when the conversation as a whole nears the window the oldest tool
-/// results are replaced by a one-line note, never the newest ones the model is still working from.
+/// marker), and when the conversation as a whole nears the window the oldest tool results are replaced by a
+/// one-line note, never the newest ones the model is still working from.
 /// </para>
 /// </summary>
 public static class ToolResultBudget
@@ -77,9 +76,9 @@ public static class ToolResultBudget
     /// <see cref="CollapseAbove"/> of <paramref name="promptBudget"/>, until it is back under
     /// <see cref="CollapseTo"/>. Returns how many results were folded.
     /// <para>
-    /// Everything from <paramref name="protectFrom"/> on is the latest step and is never touched: the model has
-    /// not answered it yet. The call/result pairing is kept — only the result body is replaced — because a
-    /// provider rejects a tool call without its result.
+    /// Everything from <paramref name="protectFrom"/> on is the latest step and is never touched. The call/result
+    /// pairing is kept — only the result body is replaced — because a provider rejects a tool call without its
+    /// result.
     /// </para>
     /// </summary>
     public static int CollapseOlder(

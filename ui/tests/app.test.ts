@@ -178,9 +178,8 @@ describe('app shell', () => {
   let warnings: string[]
 
   // Every App registers a window-level keydown listener, and an unmounted one keeps its listener: without this,
-  // the shortcuts of a test's shell also answer for the shells of the tests before it. That produced a Ctrl+K
-  // assertion that was really measuring a stale component, and it would have kept doing so for whichever
-  // assertion came next.
+  // the shortcuts of a test's shell also answer for the shells of the tests before it, so an assertion can
+  // measure a stale component instead of the one under test.
   enableAutoUnmount(afterEach)
 
   beforeEach(() => {
@@ -333,12 +332,8 @@ describe('app shell', () => {
   })
 
   it('keeps the stop button through a failed read, and says the read failed', async () => {
-    // A regression from adding 中断运行: the refresh handler cleared the queue state on failure, and the stop
-    // button is derived from it — so one transient hiccup made the *stop* control vanish while the turn was
-    // still running, with no way to get it back but waiting for the next poll.
-    //
-    // A blocked-work indicator that blinks out on one failed poll is not a blocked-work indicator, so the last
-    // good read is kept and flagged rather than erased.
+    // A blocked-work indicator that blinks out on one failed poll is not a blocked-work indicator: the stop
+    // button is derived from the queue read, so the last good read is kept and flagged rather than erased.
     let queueReads = 0
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url

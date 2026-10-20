@@ -43,8 +43,7 @@ public sealed class ScreenshotMarksTests
     [Fact]
     public void A_mark_carries_the_click_point_the_server_computed()
     {
-        // The contract the reference project is built on: the model picks a mark, the server already knows the
-        // coordinate. Nothing is estimated, so nothing is off by 334 px.
+        // The model picks a mark; the server already knows the coordinate. Nothing is estimated.
         var button = Element("播放", "Button", new PixelRect(800, 350, 40, 20));
 
         var (annotated, marks) = ScreenshotMarks.Draw(

@@ -1,7 +1,7 @@
 namespace Partner.Voice.Audio;
 
 /// <summary>
-/// Single-writer ring buffer of mono float32 audio plus a monotonic <b>stream clock</b> (design doc §2.8.1).
+/// Single-writer ring buffer of mono float32 audio plus a monotonic <b>stream clock</b>.
 /// <para>
 /// The clock is "seconds written since the process started", not wall time. That is what makes cursors
 /// cheap — and it is exactly why an idempotency key built from it must also carry a boot id, otherwise a

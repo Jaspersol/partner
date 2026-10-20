@@ -5,19 +5,17 @@ namespace Partner.Core.Agent.Diagnostics;
 /// <summary>
 /// Takes secrets out of text that is about to be shown to somebody or written down.
 /// <para>
-/// This exists because the things worth diagnosing — an endpoint's error body, a tool's message, a failed
-/// command's output — are exactly the things that can contain a key. A request-id log that leaks a bearer
-/// token is worse than no log: it puts the secret somewhere with weaker protection and a longer life.
+/// The things worth diagnosing — an endpoint's error body, a tool's message, a failed command's output — are
+/// exactly the things that can contain a key. A request-id log that leaks a bearer token is worse than no log.
 /// </para>
 /// <para>
-/// The reductions are deliberately shallow. Over-eager masking makes a diagnosis impossible, which is its own
-/// kind of failure, so only what is recognisably a secret or a home directory is masked — and each rule says
-/// what it matched, so a reader can tell a redaction from the real value.
+/// The reductions are deliberately shallow: over-eager masking makes a diagnosis impossible. Only what is
+/// recognisably a secret or a home directory is masked.
 /// </para>
 /// </summary>
 public static class DiagnosticText
 {
-    /// <summary>Longest text kept. Beyond this the interesting part is long gone and the size is not free.</summary>
+    /// <summary>Longest text kept; the size is not free.</summary>
     public const int MaxLength = 2000;
 
     /// <summary>What a redaction stands in for.</summary>
@@ -70,9 +68,8 @@ public static class DiagnosticText
 
         var cleaned = text;
 
-        // Bearer first. The named-assignment rule matches `Authorization:` and masks only the first token,
-        // which on a header line leaves the credential itself sitting right there in the clear — a redaction
-        // that hides the name and shows the secret is worse than none.
+        // Bearer first: the named-assignment rule matches `Authorization:` and masks only the first token, which
+        // on a header line leaves the credential itself in the clear.
         cleaned = BearerHeader.Replace(cleaned, "Bearer " + Redacted);
 
         // Then the named assignments, then the shape rules for whatever those did not claim.

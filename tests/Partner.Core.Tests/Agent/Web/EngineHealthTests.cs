@@ -32,8 +32,8 @@ public sealed class EngineHealthTests
     [Fact]
     public void Record_TreatsAPrefixedBlockFailureTheSameAsABlockVerdict()
     {
-        // Two paths reach the same judgement — a parser that recognised a challenge page, and a transport that
-        // saw the status — and a source is no less blocked because the transport noticed first.
+        // Two paths reach the same judgement: a parser that recognised a challenge page, and a transport that
+        // saw the status.
         using var workspace = new TempWorkspace();
         var health = NewHealth(workspace);
 
@@ -107,8 +107,8 @@ public sealed class EngineHealthTests
     [InlineData("not_found：域名不存在")]
     public void Record_DoesNotBlameTheEngineForOurOwnDecisions(string failure)
     {
-        // Every one of these is either this pipeline's choice or the shape of the question. Counting them would
-        // grow the cooldown of a source that is working perfectly.
+        // These are either this pipeline's choice or the shape of the question; counting them would grow the
+        // cooldown of a source that is working perfectly.
         using var workspace = new TempWorkspace();
         var health = NewHealth(workspace);
 
@@ -148,8 +148,8 @@ public sealed class EngineHealthTests
     [Fact]
     public void Record_CountsAPageTheParserNoLongerUnderstands()
     {
-        // A redesign is not a transient condition, and it has to reach the breaker rather than quietly become
-        // "found nothing" — which is the failure mode the unparseable status exists to prevent.
+        // A redesign must reach the breaker rather than quietly become "found nothing", which is the failure
+        // mode the unparseable status exists to prevent.
         using var workspace = new TempWorkspace();
         var health = NewHealth(workspace);
 
@@ -163,8 +163,8 @@ public sealed class EngineHealthTests
     [Fact]
     public void Record_AddsStrikesUpAcrossFailureClasses()
     {
-        // An engine that was unreachable and is now silent is a source that has been failing, not two unrelated
-        // incidents. The threshold is the current attempt's, the count is everything it has done.
+        // An engine that was unreachable and is now silent is one failing source, not two incidents. The
+        // threshold is the current attempt's; the count is everything it has done.
         using var workspace = new TempWorkspace();
         var health = NewHealth(workspace);
 

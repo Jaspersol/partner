@@ -5,7 +5,7 @@ using Partner.Voice.Tts;
 namespace Partner.Api.Settings;
 
 /// <summary>
-/// The runtime's editable configuration (design doc §2.5.5, §2.8.11–§2.8.12, §2.9.5).
+/// The runtime's editable configuration.
 /// <para>
 /// Field names mirror the option records that actually consume them — <c>Partner.Voice.Asr.AsrOptions</c>,
 /// <c>Partner.Voice.Tts.TtsOptions</c>, <c>Partner.Core.Agent.Llm.HttpLlmOptions</c> — so the correspondence
@@ -64,39 +64,38 @@ public sealed record RuntimeSettings
 }
 
 /// <summary>
-/// 联网搜索的开关与边界。
+/// The web search switch and its bounds.
 /// <para>
-/// 默认**打开**：这是本仓库里唯一默认开启的联网能力，也是唯一会让本机地址离开这台电脑的能力——
-/// 每次检索都把查询词发给第三方搜索服务。这个取舍是本项目的所有者明确要求的，与设计文档里
-/// 「默认关闭、由用户显式打开」相反（见 <c>WebOptions.Default</c> 的注释）。设置页必须把这一点写在开关旁边，
-/// 而不是只给一个滑块。
+/// Defaults to <b>on</b>: this is the only capability in the repository that is on by default, and the only one
+/// that sends local data off this computer — every search sends the query to a third-party search service.
 /// </para>
 /// <para>
-/// 读取不受此开关影响：<c>web_fetch</c> 与检索同属一个能力，关掉开关，两个工具都不存在。
-/// 「只取不搜」不是一种状态——没有检索结果，模型就只剩下自己猜地址这一条路。
+/// Reading is governed by the same switch: <c>web_fetch</c> and search are one capability, so turning it off
+/// removes both tools. "Fetch only, no search" is not a state — without search results the model would have to
+/// guess addresses.
 /// </para>
 /// </summary>
 public sealed record WebSettings
 {
-    /// <summary>是否把联网能力暴露给模型。默认打开。</summary>
+    /// <summary>Whether the web capability is exposed to the model. On by default.</summary>
     public bool Enabled { get; init; } = true;
 
     /// <summary>
-    /// 整次检索的时间预算（秒），从**第一个引擎返回结果**开始计时，而不是从发请求开始：
-    /// 一个慢引擎不该把预算吃掉，导致先答上来的结果反而来不及用。
+    /// Time budget for a whole search, in seconds, counted from the <b>first engine result</b> rather than from
+    /// the request: a slow engine must not eat the budget so the earliest answers arrive too late to use.
     /// </summary>
     public int TimeBudgetSeconds { get; init; } = 12;
 
-    /// <summary>答案里列出的结果条数上限。与向引擎索取的条数（<c>limit</c> 参数）是两回事。</summary>
+    /// <summary>Cap on results listed in the answer. Separate from the count requested from the engine (<c>limit</c>).</summary>
     public int MaxResults { get; init; } = 8;
 
     /// <summary>
-    /// http(s) 代理地址；空 = 直连。只在需要穿代理的环境里才有用，因此没有默认值。
-    /// 非空时必须是绝对的 http/https 地址，保存时校验。
+    /// http(s) proxy address; empty = direct. Only useful where a proxy is required, so there is no default.
+    /// Non-empty must be an absolute http/https address; validated on save.
     /// </summary>
     public string? Proxy { get; init; }
 
-    /// <summary>被用户手动关掉的引擎 id。不存在的 id 会被忽略（引擎可能在新版本里被移除）。</summary>
+    /// <summary>Ids of engines the user turned off. Unknown ids are ignored (an engine may be removed in a later version).</summary>
     public IReadOnlyList<string> DisabledEngines { get; init; } = Array.Empty<string>();
 
     /// <summary>
@@ -127,18 +126,18 @@ public sealed record WebSettings
 /// <summary>
 /// The memory store's electrical wiring.
 /// <para>
-/// Embeddings default <b>off</b>, and stay off by default: the store works FTS-only (design doc's offline
-/// degradation), and turning the local hashing provider on rewrites every future record into vectors the
-/// current store did not have — a ranking change a person did not ask for. The provider here is local and
-/// dependency-free (hashed character trigrams), so enabling costs no network call; a model-backed embedding
-/// endpoint would be an external dependency and is deliberately not reachable through this setting.
+/// Embeddings default <b>off</b>: the store works FTS-only, and turning the local hashing provider on rewrites
+/// every future record into vectors the current store did not have — a ranking change a person did not ask
+/// for. The provider here is local and dependency-free (hashed character trigrams), so enabling costs no
+/// network call; a model-backed embedding endpoint would be an external dependency and is deliberately not
+/// reachable through this setting.
 /// </para>
 /// </summary>
 public sealed record MemorySettings
 {
     /// <summary>
-    /// Turn on the local hashing embedding provider. Off = exactly the pre-setting behaviour: recall scores
-    /// run lexical + FTS only, and the vector component stays zero.
+    /// Turn on the local hashing embedding provider. Off = recall scores run lexical + FTS only, and the
+    /// vector component stays zero.
     /// </summary>
     public bool Embeddings { get; init; }
 
@@ -148,39 +147,42 @@ public sealed record MemorySettings
 }
 
 /// <summary>
-/// 桌面操控（M9）的开关与边界。
+/// Desktop control's switch and its bounds.
 /// <para>
-/// 默认**关闭**：打开之后模型就能移动指针、发按键，这是本仓库里唯一不可逆的能力。即使打开，动作类工具
-/// 也走人工批准（治理的 ask 列表），所以「打开」只是让模型能**问**，不是让它能**做**。
+/// Defaults <b>off</b>: once on, the model can move the pointer and send keystrokes, the only irreversible
+/// capability in this repository. Even when on, action tools go through human approval (the governance ask
+/// list), so "on" only lets the model <b>ask</b>, not <b>do</b>.
 /// </para>
 /// </summary>
 public sealed record DesktopSettings
 {
-    /// <summary>是否把桌面能力暴露给模型。</summary>
+    /// <summary>Whether the desktop capability is exposed to the model.</summary>
     public bool Enabled { get; init; }
 
-    /// <summary>租约基准有效期（毫秒）：观察之后多久之内还能据此动作。受策略的上下限约束。</summary>
+    /// <summary>Base lease lifetime in milliseconds: how long after an observation actions may still rely on it. Bounded by policy.</summary>
     public int LeaseTtlMs { get; init; } = 15_000;
 
     /// <summary>
-    /// 审批挡位：<c>none</c>（不审批）/ <c>dangerous</c>（危险指令审批）/ <c>all</c>（全部审批）。
+    /// Approval gear: <c>none</c> (no approval) / <c>dangerous</c> (dangerous actions only) / <c>all</c> (all).
     /// <para>
-    /// 「危险」指离开 GUI 的能力：执行命令、启动程序、写剪贴板。点击与打字留在人能看见的界面里，
-    /// 所以中间挡位放它们过去——参考项目举的危险例子是「删除文件」，不是「按了个按钮」。
+    /// "Dangerous" means leaving the GUI: running commands, launching programs, writing the clipboard. Clicks and
+    /// typing stay inside the interface a person can see, so the middle gear lets them through.
     /// </para>
     /// </summary>
     public string Approval { get; init; } = ApprovalGears.All;
 
-    /// <summary>允许动作的窗口标题子串（不区分大小写）；空表示不限。</summary>
+    /// <summary>Window title substrings an action may target (case-insensitive); empty means no restriction.</summary>
     public IReadOnlyList<string> AllowedWindowTitles { get; init; } = Array.Empty<string>();
 
     /// <summary>
-    /// 动作能走多远去够到目标：<c>foreground</c>（默认：该抢前台就抢）/ <c>auto</c>（能在后台完成就在后台，
-    /// 不行再接管屏幕）/ <c>background</c>（绝不接管屏幕，做不到就拒绝并说明）。
+    /// How far an action may go to reach its target: <c>foreground</c> (default: take the foreground when needed) /
+    /// <c>auto</c> (stay in the background when possible, otherwise take over the screen) / <c>background</c>
+    /// (never take over the screen; refuse and explain when impossible).
     /// <para>
-    /// 坐标点击、按键、打字走的 <c>SendInput</c> 是全局输入，只能抢前台、动真实指针；后台通道是浏览器 / Electron
-    /// 程序的页面调试端口（要由 <c>desktop_launch</c> 启动）和点名控件的界面自动化 pattern。每次动作和启动时现读，
-    /// 改了不用重启。
+    /// Coordinate clicks, keys and typing go through <c>SendInput</c>, which is global input and can only take the
+    /// foreground and move the real pointer; background channels are the page debug port of browser / Electron
+    /// apps (which must be started by <c>desktop_launch</c>) and UI Automation patterns on named controls. Read
+    /// fresh on every action and launch, so changes need no restart.
     /// </para>
     /// </summary>
     public string InputMode { get; init; } = Partner.Desktop.Input.InputModes.Foreground;
@@ -220,7 +222,7 @@ public static class ApprovalGears
 }
 
 /// <summary>
-/// MCP servers (design doc §2.6.3).
+/// MCP servers.
 /// <para>
 /// Off by default, and more strongly so than the desktop: an enabled server <b>starts a child process</b> the
 /// moment the consumer starts, and that process gets whatever it is configured with. Enabling this is not
@@ -288,14 +290,7 @@ public sealed record McpServerSettings : IEquatable<McpServerSettings>
 /// <summary>
 /// Which workspace skills are switched off.
 /// <para>
-/// Stored here rather than written into each <c>SKILL.md</c>: a skill is a file in the workspace that
-/// somebody else may be editing, and "I do not want this one right now" is a decision about this installation
-/// rather than a fact about the skill. Keeping them apart also means replacing a skill file does not silently
-/// re-enable something a person deliberately turned off.
-/// </para>
-/// <para>
-/// A deny list rather than an allow list, so a skill added later is on by default: a new skill that first had
-/// to be switched on to do anything would be an unpleasant surprise.
+/// A deny list rather than an allow list, so a skill added later is on by default.
 /// </para>
 /// </summary>
 public sealed record SkillSettings
@@ -319,7 +314,7 @@ public sealed record InputSettings
     /// <summary>Fixed RMS gate; must sit above the room noise floor or silence is never detected.</summary>
     public double SilenceThreshold { get; init; } = 0.003;
 
-    /// <summary>唤醒命中时在输出设备上播放一声提示（叮）。跟输入同卡，因为它是唤醒门的附属反馈。</summary>
+    /// <summary>Play a tone on the output device when the wake word fires. Shares the input card; it is feedback for the wake gate.</summary>
     public bool WakeTone { get; init; } = true;
 
     /// <summary>Speaking over the assistant stops it. Off by default; for headphones (a speaker is heard by the mic).</summary>
@@ -328,7 +323,7 @@ public sealed record InputSettings
     /// <summary>Absolute silence that ends the utterance.</summary>
     public double UtteranceGapMs { get; init; } = 1200;
 
-    /// <summary>唤醒后等用户开口的宽限期（毫秒）。开口前不按判句间隔关会话。</summary>
+    /// <summary>Grace period after the wake word for the user to start speaking (ms). The session is not closed on the gap before speech starts.</summary>
     public double WakeTimeoutMs { get; init; } = 5000;
 
     /// <summary>Silence that ends a sentence (streaming mode only).</summary>
@@ -422,22 +417,22 @@ public sealed record TtsSettings
 }
 
 /// <summary>
-/// 本地语音引擎的进程管理（本地音频.md 的部署形态）。
+/// Process management for the local voice engines.
 /// <para>
-/// 两个独立的开关，各自一个可执行文件：<c>tts</c> 管 OpenAI 兼容的 TTS 服务进程，
-/// <c>kws</c> 管 KWS+VAD+ASR 的识别服务进程。关掉 = 杀进程 = 真正释放显存/内存——
-/// 调研文档的核心教训是 ONNX 的内存池扩张后<b>不归还</b>，只有进程退出才可靠，所以「不占资源」的
-/// 单位是进程，不是客户端对象。宿主自己不发请求，HTTP 客户端的地址仍由 <see cref="TtsSettings"/> /
-/// <see cref="AsrSettings"/> 指向该引擎的端口。
+/// Two independent switches, one executable each: <c>tts</c> manages the OpenAI-compatible TTS service process,
+/// <c>kws</c> manages the KWS+VAD+ASR recognition service. Off = kill the process = actually release VRAM/RAM:
+/// ONNX memory pools grow and <b>do not return</b> memory, so only process exit reliably frees it. The host
+/// sends no requests itself; the HTTP client addresses still point at the engine ports via
+/// <see cref="TtsSettings"/> / <see cref="AsrSettings"/>.
 /// </para>
 /// <para>
-/// 命令行按占位符 <c>{port}</c> 展开：引擎需要知道自己听哪个端口，宿主需要知道去连哪，
-/// 一个字段同时喂两边，避免两处配置静默漂移。
+/// The command line expands the <c>{port}</c> placeholder: the engine needs to know which port it listens on and
+/// the host needs to know which to connect to, so one field feeds both and the two cannot silently drift.
 /// </para>
 /// </summary>
 public sealed record LocalSettings
 {
-    /// <summary>托管本地 TTS 引擎进程。服务地址在 tts 段里配（协议 openai 时）。</summary>
+    /// <summary>Managed local TTS engine process. The service address is configured in the tts section (openai protocol).</summary>
     public LocalEngineSettings Tts { get; init; } = new()
     {
         Command = "engines/tts/python/python.exe",
@@ -446,7 +441,7 @@ public sealed record LocalSettings
         Port = 45102,
     };
 
-    /// <summary>托管本地 KWS+VAD+ASR 引擎进程。服务地址在 asr 段里配。</summary>
+    /// <summary>Managed local KWS+VAD+ASR engine process. The service address is configured in the asr section.</summary>
     public LocalEngineSettings Kws { get; init; } = new()
     {
         Command = "engines/kws-asr/python/python.exe",
@@ -461,26 +456,27 @@ public sealed record LocalSettings
     public override int GetHashCode() => HashCode.Combine(Tts, Kws);
 }
 
-/// <summary>一个本地引擎进程：可执行文件、参数模板、端口。Command 空 = 不托管。</summary>
+/// <summary>One local engine process: executable, argument template, port. Empty Command = not managed.</summary>
 public sealed record LocalEngineSettings : IEquatable<LocalEngineSettings>
 {
     public bool Enabled { get; init; }
 
     public string? Command { get; init; }
 
-    /// <summary>参数模板；<c>{port}</c> 占位符换成下面端口的实际值再启动。</summary>
+    /// <summary>Argument template; the <c>{port}</c> placeholder is replaced with the port value before launch.</summary>
     public IReadOnlyList<string> Arguments { get; init; } = Array.Empty<string>();
 
     public string? WorkingDirectory { get; init; }
 
     public int Port { get; init; }
 
-    /// <summary>进程启动后到第一批请求可以发出去的宽限；启动慢于它的引擎会吃连接失败与重试。</summary>
+    /// <summary>Grace period after process start before the first requests may be sent; slower engines will see connection failures and retries.</summary>
     public int ReadyTimeoutSeconds { get; init; } = 30;
 
     /// <summary>
-    /// 唤醒词（显示名），引擎支持时整表替换：引擎端负责转拼音、落盘并重建识别流。仅 KWS 语义；
-    /// 空 = 不下发，引擎保留自己的默认词表—— Bazı 引擎（纯 TTS）没有词表概念。
+    /// Wake words (display names); when the engine supports it the whole list is replaced: the engine converts to
+    /// pinyin, persists it and rebuilds the recognition stream. KWS only; empty = not sent, the engine keeps its
+    /// default list — pure TTS engines have no word list.
     /// </summary>
     public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
 
@@ -537,30 +533,33 @@ public sealed record ModelSettings
     public bool SupportsImages { get; init; }
 
     /// <summary>
-    /// 默认思考挡位，随 <c>reasoning_effort</c> 出现在每次补全里——包括用户没有为这一条消息另选的情况。
+    /// Default reasoning gear, sent as <c>reasoning_effort</c> with every completion — including when the user
+    /// has not picked one for this message.
     /// <para>
-    /// 它必须出现在 <see cref="ReasoningGears"/> 里（保存时校验），否则会话里的下拉预选不到任何一项。
-    /// 单独一条消息可以用别的挡位，见 <see cref="InputItem.ReasoningEffort"/>。
+    /// It must appear in <see cref="ReasoningGears"/> (validated on save), or the session dropdown cannot preselect
+    /// any item. A single message may use another gear; see <see cref="InputItem.ReasoningEffort"/>.
     /// </para>
     /// <para>
-    /// 值本身**不被**限制在 <see cref="ReasoningEfforts.Values"/>：端点可以自造词，拒掉一个服务端本会
-    /// 认的词比原样发出去更糟。<c>off</c>（或留空）表示**不发这个字段**，而不是发一个值。
+    /// The value itself is <b>not</b> restricted to <see cref="ReasoningEfforts.Values"/>: an endpoint may invent
+    /// its own words, and rejecting a word the server would accept is worse than sending it as-is. <c>off</c> (or
+    /// empty) means the field is <b>not sent</b>, not sent with a value.
     /// </para>
     /// </summary>
     public string ReasoningEffort { get; init; } = ReasoningEfforts.Default;
 
     /// <summary>
-    /// 挡位清单：UI 里能选的那些词，按展示顺序。用户在设置里增删改。
+    /// Gear list: the words the UI offers, in display order. The user adds and removes them in settings.
     /// <para>
-    /// 这是**菜单**不是约束——<see cref="ReasoningEffort"/> 仍然是自由文本，删掉一个词只会让它不再出现在
-    /// 菜单里，已经用这个词发出去的消息不受影响。清单为空时 UI 回退到内置默认清单，否则会给出空菜单。
+    /// This is a <b>menu</b>, not a constraint — <see cref="ReasoningEffort"/> is still free text; removing a word
+    /// only removes it from the menu, and messages already sent with it are unaffected. When the list is empty the
+    /// UI falls back to the built-in defaults rather than showing an empty menu.
     /// </para>
     /// </summary>
     public IReadOnlyList<string> ReasoningGears { get; init; } = ReasoningEfforts.Values;
 
     /// <summary>
-    /// 挡位的显示文字：词 → 界面上写的字。只影响显示，发给模型的永远是词本身。
-    /// 没有登记的词由 UI 回退到内置名称（常见六个词）或原词。
+    /// Display text per gear: word → label shown in the UI. Display only; the word itself is always what is sent
+    /// to the model. Unregistered words fall back to the built-in name (the six common ones) or the word itself.
     /// </summary>
     public IReadOnlyDictionary<string, string> ReasoningLabels { get; init; } = new Dictionary<string, string>();
 }
@@ -592,8 +591,8 @@ public sealed record ModelSettingsView
     public IReadOnlyList<string> ReasoningGears { get; init; } = ReasoningEfforts.Values;
 
     /// <summary>
-    /// 挡位的显示文字：词 → 界面上写的字。只影响显示，发给模型的永远是词本身。
-    /// 没有登记的词由 UI 回退到内置名称（常见六个词）或原词。
+    /// Display text per gear: word → label shown in the UI. Display only; the word itself is always what is sent
+    /// to the model. Unregistered words fall back to the built-in name (the six common ones) or the word itself.
     /// </summary>
     public IReadOnlyDictionary<string, string> ReasoningLabels { get; init; } = new Dictionary<string, string>();
 }

@@ -1,8 +1,7 @@
 namespace Partner.Core.Contracts;
 
 /// <summary>
-/// Kinds of records in the single session log (design doc §2.2, refined by §2.9.1 which fixes the
-/// event sequence inside a turn).
+/// Kinds of records in the single session log.
 /// <para>
 /// Two families:
 /// <list type="bullet">
@@ -13,7 +12,6 @@ namespace Partner.Core.Contracts;
 /// </summary>
 public enum SessionEventKind
 {
-    // ---- content -------------------------------------------------------------------------------
     User,
     Assistant,
     System,
@@ -21,7 +19,6 @@ public enum SessionEventKind
     Schedule,
     Summary,
 
-    // ---- revisions -----------------------------------------------------------------------------
     /// <summary>A revision of an earlier event. Carries <c>EditedFromSeq</c>; never rendered as its own content.</summary>
     Edit,
 
@@ -36,7 +33,6 @@ public enum SessionEventKind
     /// </summary>
     Retract,
 
-    // ---- control (design doc §2.9.1) ------------------------------------------------------------
     TurnStart,
     StepStart,
     StepEnd,
@@ -98,7 +94,7 @@ public static class SessionEventKindExtensions
     };
 }
 
-/// <summary>Why a turn ended. Recorded in <c>TurnEnd</c> events; never left empty (design doc §2.9.1).</summary>
+/// <summary>Why a turn ended. Recorded in <c>TurnEnd</c> events; never left empty.</summary>
 public static class TurnEndReason
 {
     public const string Completed = "completed";

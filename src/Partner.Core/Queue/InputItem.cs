@@ -3,60 +3,60 @@ using Partner.Core.Contracts;
 namespace Partner.Core.Queue;
 
 /// <summary>
-/// 队列中的一条输入（设计文档 §2.2）。不可变值对象（record）：每次状态变更都产生一个新实例，
-/// 并作为一条新记录追加到日志（同一 <see cref="ItemId"/> 以最后一条记录为准）。
+/// One input in the queue. Immutable value object (record): every state change produces a new instance,
+/// appended to the log as a new record (the last record for an <see cref="ItemId"/> wins).
 /// <para>
-/// 是 record 而非逐字段手抄的类：状态推进用 <c>with</c>，新增字段不会被漏掉——附图曾经就是这样在
-/// 项推进状态时被静默丢掉的。
+/// A record rather than a hand-written class: state advances with <c>with</c>, so new fields cannot be
+/// dropped by accident when an item changes state.
 /// </para>
 /// </summary>
 public sealed record InputItem
 {
-    /// <summary>调用方提供的唯一标识（非空）。</summary>
+    /// <summary>Caller-supplied unique identifier (non-empty).</summary>
     public string ItemId { get; init; } = string.Empty;
 
-    /// <summary>由队列分配：从 1 开始、单调递增、永不复用。</summary>
+    /// <summary>Assigned by the queue: starts at 1, monotonic, never reused.</summary>
     public long Seq { get; init; }
 
-    /// <summary>入队时间（由队列时钟给出）。</summary>
+    /// <summary>Enqueue time, from the queue's clock.</summary>
     public DateTimeOffset EnqueuedAt { get; init; }
 
-    /// <summary>输入来源。</summary>
+    /// <summary>Where the input came from.</summary>
     public InputSource Source { get; init; }
 
-    /// <summary>对队列完全不透明的载荷。</summary>
+    /// <summary>Payload, fully opaque to the queue.</summary>
     public string Payload { get; init; } = string.Empty;
 
     /// <summary>
-    /// 附图（媒体库里的 id，按用户附加顺序）。纯文本输入为空。**字节不进日志**：日志里只记 id，
-    /// 图片本体在 media 目录，否则会话文件会被 base64 撑成兆级。
+    /// Attached media (ids in the media store, in the order the user attached them). Empty for plain text.
+    /// <b>Bytes never enter the log</b>: the log records ids only, and the media directory holds the bytes.
     /// </summary>
     public IReadOnlyList<string> MediaIds { get; init; } = Array.Empty<string>();
 
     /// <summary>
-    /// 这一条消息选的思考挡位（<c>reasoning_effort</c>）。空 = 用设置里的默认挡位。
+    /// Reasoning effort chosen for this message (<c>reasoning_effort</c>). Empty = the default from settings.
     /// <para>
-    /// 随项走而不是随全局设置走：挡位是**逐条消息**的选择，一句话重一点还是轻一点由发消息的人决定，
-    /// 改了设置也不该把已经排队的那些条目的挡位改掉——它们入队时的选择是那一条消息的一部分。
+    /// Travels with the item rather than with global settings: effort is a <b>per-message</b> choice, and
+    /// changing settings must not alter items already queued, whose choice was part of that message.
     /// </para>
     /// </summary>
     public string ReasoningEffort { get; init; } = string.Empty;
 
-    /// <summary>幂等键（非空）：去重依据，跨重启生效。</summary>
+    /// <summary>Idempotency key (non-empty): the de-duplication basis, honoured across restarts.</summary>
     public string IdempotencyKey { get; init; } = string.Empty;
 
-    /// <summary>当前状态。</summary>
+    /// <summary>Current state.</summary>
     public InputItemStatus Status { get; init; }
 
-    /// <summary>被消费者取走的时刻。</summary>
+    /// <summary>When the consumer took it.</summary>
     public DateTimeOffset? StartedAt { get; init; }
 
-    /// <summary>落定为终态的时刻。</summary>
+    /// <summary>When it reached a terminal state.</summary>
     public DateTimeOffset? FinishedAt { get; init; }
 
-    /// <summary>已被消费者取走的次数（进程中断后重新入队时 +1）。</summary>
+    /// <summary>How many times a consumer has taken it (incremented when re-queued after an interruption).</summary>
     public int Attempt { get; init; }
 
-    /// <summary>失败原因（仅 <see cref="InputItemStatus.Failed"/> 时写入）。</summary>
+    /// <summary>Failure reason (set only for <see cref="InputItemStatus.Failed"/>).</summary>
     public string? Error { get; init; }
 }

@@ -1,13 +1,9 @@
 namespace Partner.Desktop.Perception;
 
 /// <summary>
-/// Lease TTL policy — the numbers are taken verbatim from the reference implementation
-/// (design doc §2.6.1 ①, allowed by §2.0 rule 4) and are the normative values here.
-/// <para>
-/// Short leases when the target is cheap to re-observe; longer ones for exploratory/debug views where
-/// re-observing is expensive; and the lease always shortens as the scene gets busier (more entities,
+/// Lease TTL policy. Short leases when the target is cheap to re-observe; longer ones for exploratory or debug
+/// views where re-observing is expensive; the lease always shortens as the scene gets busier (more entities,
 /// bigger payloads), because the chance of the target moving grows with it.
-/// </para>
 /// </summary>
 public sealed record LeaseTtlPolicy
 {

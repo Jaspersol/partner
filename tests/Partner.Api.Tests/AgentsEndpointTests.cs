@@ -74,7 +74,11 @@ public sealed class AgentsEndpointTests : ApiFixture
 
         var moved = await PutAgentsAsync(null, new
         {
-            id = "desktop", name = "桌面操控", enabled = true, scenario = "file-read", maxRounds = 5,
+            id = "desktop",
+            name = "桌面操控",
+            enabled = true,
+            scenario = "file-read",
+            maxRounds = 5,
         });
         Assert.Equal(HttpStatusCode.BadRequest, moved.StatusCode);
     }
@@ -96,10 +100,18 @@ public sealed class AgentsEndpointTests : ApiFixture
     {
         var response = await PutAgentsAsync(null, Desktop(), new
         {
-            id = "r1", name = "甲", enabled = false, scenario = "file-read", maxRounds = 5,
+            id = "r1",
+            name = "甲",
+            enabled = false,
+            scenario = "file-read",
+            maxRounds = 5,
         }, new
         {
-            id = "r2", name = "乙", enabled = true, scenario = "file-read", maxRounds = 5,
+            id = "r2",
+            name = "乙",
+            enabled = true,
+            scenario = "file-read",
+            maxRounds = 5,
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -189,9 +201,8 @@ public sealed class AgentsEndpointTests : ApiFixture
         });
         Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
 
-        // The drive is unplugged. Saving something unrelated must still work...
+        // The drive is unplugged. The settings page sends the whole document, files section included.
         Directory.Delete(drive);
-        // (The settings page sends the whole document, files section included.)
         var unrelated = await _http.PutAsJsonAsync("/api/settings", new
         {
             output = new { speed = 1.2 },
@@ -199,13 +210,11 @@ public sealed class AgentsEndpointTests : ApiFixture
         });
         Assert.Equal(HttpStatusCode.OK, unrelated.StatusCode);
 
-        // ...and the page says what is wrong instead of failing silently.
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/agents");
         Assert.Contains(
             view.GetProperty("problems").EnumerateArray().Select(p => p.GetString()),
             problem => problem!.Contains("不存在", StringComparison.Ordinal));
 
-        // A *new* entry that does not exist is still a typo and is refused.
         var typo = await _http.PutAsJsonAsync("/api/settings", new
         {
             files = new { enabled = true, roots = new[] { drive, Path.Combine(drive, "typo") } },
@@ -218,13 +227,21 @@ public sealed class AgentsEndpointTests : ApiFixture
     {
         var rounds = await PutAgentsAsync(null, new
         {
-            id = "desktop", name = "桌面操控", enabled = true, scenario = "desktop", maxRounds = 11,
+            id = "desktop",
+            name = "桌面操控",
+            enabled = true,
+            scenario = "desktop",
+            maxRounds = 11,
         });
         Assert.Equal(HttpStatusCode.BadRequest, rounds.StatusCode);
 
         var zero = await PutAgentsAsync(null, new
         {
-            id = "desktop", name = "桌面操控", enabled = true, scenario = "desktop", maxRounds = 0,
+            id = "desktop",
+            name = "桌面操控",
+            enabled = true,
+            scenario = "desktop",
+            maxRounds = 0,
         });
         Assert.Equal(HttpStatusCode.BadRequest, zero.StatusCode);
 
@@ -263,8 +280,14 @@ public sealed class AgentsEndpointTests : ApiFixture
     {
         var model = new
         {
-            baseUrl = "http://127.0.0.1:9/v1", model = "vision", apiKey = "sk-secret-123",
-            timeoutSeconds = 60, contextTokens = 16000, maxTokens = 2000, supportsImages = true, reasoningEffort = "off",
+            baseUrl = "http://127.0.0.1:9/v1",
+            model = "vision",
+            apiKey = "sk-secret-123",
+            timeoutSeconds = 60,
+            contextTokens = 16000,
+            maxTokens = 2000,
+            supportsImages = true,
+            reasoningEffort = "off",
         };
         var saved = await PutAgentsAsync(null, Desktop(model: model));
         Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
@@ -276,24 +299,32 @@ public sealed class AgentsEndpointTests : ApiFixture
         Assert.False(shown.TryGetProperty("apiKey", out _));
         Assert.DoesNotContain("sk-secret-123", await (await _http.GetAsync("/api/settings")).Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
-        // Editing something else, with the key left out, keeps it.
         var withoutKey = new
         {
-            baseUrl = "http://127.0.0.1:9/v1", model = "vision2",
-            timeoutSeconds = 60, contextTokens = 16000, maxTokens = 2000, supportsImages = true, reasoningEffort = "off",
+            baseUrl = "http://127.0.0.1:9/v1",
+            model = "vision2",
+            timeoutSeconds = 60,
+            contextTokens = 16000,
+            maxTokens = 2000,
+            supportsImages = true,
+            reasoningEffort = "off",
         };
         await PutAgentsAsync(null, Desktop(model: withoutKey));
         Assert.Equal("sk-secret-123", _context.Settings.Load().Agents.SubAgents[0].Model!.ApiKey);
 
-        // An empty string clears it.
         await PutAgentsAsync(null, Desktop(model: new
         {
-            baseUrl = "http://127.0.0.1:9/v1", model = "vision2", apiKey = "",
-            timeoutSeconds = 60, contextTokens = 16000, maxTokens = 2000, supportsImages = true, reasoningEffort = "off",
+            baseUrl = "http://127.0.0.1:9/v1",
+            model = "vision2",
+            apiKey = "",
+            timeoutSeconds = 60,
+            contextTokens = 16000,
+            maxTokens = 2000,
+            supportsImages = true,
+            reasoningEffort = "off",
         }));
         Assert.Null(_context.Settings.Load().Agents.SubAgents[0].Model!.ApiKey);
 
-        // Back to following the main model.
         await PutAgentsAsync(null, Desktop(model: null));
         Assert.Null(_context.Settings.Load().Agents.SubAgents[0].Model);
     }

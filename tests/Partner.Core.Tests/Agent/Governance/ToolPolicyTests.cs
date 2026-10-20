@@ -4,8 +4,7 @@ using Partner.Core.Agent.Tools;
 namespace Partner.Core.Tests.Agent.Governance;
 
 /// <summary>
-/// The tool governance policy: fail-closed defaults, unified precedence, and target-parameter rules
-/// (design doc §2.9.6 / §8.5 gap A).
+/// The tool governance policy: fail-closed defaults, unified precedence, and target-parameter rules.
 /// </summary>
 public sealed class ToolPolicyTests
 {

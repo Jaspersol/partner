@@ -56,7 +56,7 @@ public sealed class AgentDelegateTool : ITool
         }
 
         // The sub-agent cannot see this conversation, and a goal like "read the file we just talked about" is
-        // meaningless to it. The last few turns ride along as background so such references can be resolved.
+        // meaningless to it. The last few turns ride along as background so such references resolve.
         context = WithAttachments(context, Delegation.Strings(argumentsJson, "attachments"));
         var background = await _host.RecentConversationAsync(ct).ConfigureAwait(false);
         var result = _host.Start(scenario, goal, context, background);

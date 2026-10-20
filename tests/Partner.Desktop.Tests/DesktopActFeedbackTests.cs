@@ -8,26 +8,20 @@ using Partner.Desktop.Tools;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// The state an action leaves behind, as its own answer sees it.
-/// <para>
-/// An action used to answer in text only, so the model spent a second tool call — a whole extra model
-/// round trip — just to find out what the click did. The picture now rides along. What has to hold: the
-/// marking matches what the model can address by id next, every no-picture case is a deliberate one
-/// rather than a coincidence, and a failed render must not fail an action that already succeeded.
-/// </para>
+/// The state an action leaves behind, as its own answer sees it: the marking matches what the model can address
+/// by id next, every no-picture case is deliberate rather than a coincidence, and a failed render must not fail
+/// an action that already succeeded.
 /// </summary>
 public sealed class DesktopActFeedbackTests
 {
-    // ---- the decision matrix -------------------------------------------------------------------
-
     [Theory]
     [InlineData(ActionKind.Focus)]
     [InlineData(ActionKind.MovePointer)]
     [InlineData(ActionKind.ScrollIntoView)]
     public void A_kind_without_a_visual_consequence_carries_no_picture(ActionKind kind)
     {
-        // Focus/ScrollIntoView exist to prepare an aim, and MovePointer only places the cursor: attaching a
-        // picture there would pay a model round trip of tokens for a screen the next action re-shows.
+        // Focus/ScrollIntoView prepare an aim and MovePointer only places the cursor; a picture there would cost
+        // tokens for a screen the next action re-shows.
         Assert.False(DesktopActTool.WantsPicture(kind, "auto", supportsImages: true, guardPassed: true));
     }
 
@@ -46,8 +40,8 @@ public sealed class DesktopActFeedbackTests
     [Fact]
     public void A_text_only_model_gets_no_picture()
     {
-        // Sending one to a text-only model fails the request — the same reason the screenshot tool is not
-        // registered for it. The act tool has to answer with the same honesty.
+        // Sending one to a text-only model fails the request, the same reason the screenshot tool is not
+        // registered for it.
         Assert.False(DesktopActTool.WantsPicture(ActionKind.LeftClick, "auto", supportsImages: false, guardPassed: true));
     }
 
@@ -75,12 +69,10 @@ public sealed class DesktopActFeedbackTests
             ActionKind.LeftClick, null, supportsImages: true, guardPassed: true, VerifyDecision.Indeterminate));
     }
 
-    // ---- the render, end to end but with a stub capture ---------------------------------------
-
     /// <summary>
-    /// The picture the act tool attaches is a real PNG, stored under a media id the server can map — and its
-    /// marks come from the <b>fresh</b> observation the act re-checked against, so what is labelled is what
-    /// the model can address next. A stub capture keeps the user's desktop out of it.
+    /// The attached picture is a real PNG stored under a media id the server can map; its marks come from the
+    /// <b>fresh</b> observation the act re-checked against, so what is labelled is what the model can address
+    /// next. A stub capture keeps the user's desktop out of it.
     /// </summary>
     [Fact]
     public async Task The_post_action_picture_is_a_mappable_png_recorded_under_its_id()

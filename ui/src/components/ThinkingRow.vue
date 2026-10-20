@@ -37,14 +37,14 @@ const props = defineProps<{
  * </para>
  *
  * <para>
- * This row used to own a one-second interval, started and stopped by its own `running` flag. It could not: a
- * session view re-reads itself every few hundred milliseconds and hands back a *new* row each time, so a
- * remount would leave the clock frozen at whatever it first computed — and a turn that thinks in three
- * stretches ran three timers to display the same number three times. One shared clock instead
- * (`ui/src/clock.ts`); the flag now only decides whether the row shows a number.
+ * The clock is shared (`ui/src/clock.ts`) rather than owned by the row: a session view re-reads itself every
+ * few hundred milliseconds and hands back a *new* row each time, so a per-row interval would freeze on
+ * remount and a turn that thinks in three stretches would run three timers for one number. The `running` flag
+ * only decides whether the row shows a number.
  * </para>
  */
-// 只在真正思考时订阅：已完成的思考段永远留在日志里，按生命周期订阅会让时钟一直跑。
+// Subscribe only while thinking: a finished segment stays in the log, and a lifecycle subscription would
+// keep the clock running.
 const now = useSharedTick(() => props.running === true)
 const startedAt = computed(() => (props.since === null || props.since === undefined ? null : Date.parse(props.since)))
 

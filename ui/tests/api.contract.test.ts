@@ -236,8 +236,8 @@ describe('the API contract the UI binds to', () => {
   })
 
   it('returns the desktop section the settings page refills from', async () => {
-    // The settings page writes the form back from this response. A missing section reads as "off", so the
-    // switch used to flip itself back the moment it was saved.
+    // The settings page writes the form back from this response. A missing section reads as "off", so saving
+    // would flip the switch back.
     const settings = await api.settings()
     expect(settings.desktop).toBeDefined()
     expect(typeof settings.desktop.enabled).toBe('boolean')

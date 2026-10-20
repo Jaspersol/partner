@@ -12,7 +12,7 @@ public sealed partial class ViewEndpointsTests
 {
     /// <summary>
     /// The desktop sub-agent's tools with the decision governance will make for each, read off /api/consumer.
-    /// The main agent no longer holds them, so they are reported under <c>agentTools</c>.
+    /// The main agent holds none of them, so they are reported under <c>agentTools</c>.
     /// </summary>
     private async Task<List<(string Name, string Decision)>> DesktopToolsAsync()
     {
@@ -81,8 +81,6 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task The_settings_response_carries_the_section_the_ui_refills_from()
     {
-        // The UI refills its form from this response. When the section was missing, saving flipped the switch
-        // back to off — the setting was stored, but the answer to the save said otherwise.
         var saved = await _http.PutAsJsonAsync("/api/settings", new
         {
             desktop = new { enabled = true, leaseTtlMs = 7000, allowedWindowTitles = new[] { "记事本" } },
@@ -93,7 +91,6 @@ public sealed partial class ViewEndpointsTests
         Assert.True(desktop.GetProperty("enabled").GetBoolean());
         Assert.Equal(7000, desktop.GetProperty("leaseTtlMs").GetInt32());
 
-        // And the plain read agrees, which is what the settings page loads on open.
         var read = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
         Assert.True(read.GetProperty("desktop").GetProperty("enabled").GetBoolean());
     }
@@ -113,28 +110,21 @@ public sealed partial class ViewEndpointsTests
             desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
 
-        // The main agent can only delegate: it never holds a desktop tool itself.
         var on = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         var mainTools = on.GetProperty("tools").EnumerateArray().Select(tool => tool.GetProperty("name").GetString()!).ToList();
         Assert.Contains("agent_delegate", mainTools);
         Assert.DoesNotContain(mainTools, name => name.StartsWith("desktop_", StringComparison.Ordinal));
 
-        // The desktop sub-agent has them: looking is allowed outright; acting always asks a human.
         var tools = (await DesktopToolsAsync()).Select(tool => tool.Name + ":" + tool.Decision).ToList();
         Assert.Contains("desktop_observe:allow", tools);
         Assert.Contains("desktop_act:ask", tools);
 
-        // And switching it off takes them away again.
         await _http.PutAsJsonAsync("/api/settings", new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
 
-        // Switching it off takes the desktop tools away and leaves exactly the other capability this build ships
-        // enabled — web access, which no sub-agent has claimed — plus the timed-task tools, which are always the main
-        // agent's. The switch is read live, so this is the desktop
-        // family leaving the table rather than the table emptying.
         var offAgain = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         var left = offAgain.GetProperty("tools").EnumerateArray()
             .Select(tool => tool.GetProperty("name").GetString()!)
@@ -147,8 +137,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task The_gear_decides_which_tools_ask()
     {
-        // Observable in /api/consumer: the tool table is what the model can call and what governance will do
-        // about each one. A gear that changed nothing here would be a switch that does nothing.
+        // The tool table in /api/consumer is what the model can call and what governance does with each.
         async Task<List<string>> ToolsAsync() =>
             (await DesktopToolsAsync()).Select(tool => $"{tool.Name}:{tool.Decision}").ToList();
 
@@ -184,7 +173,6 @@ public sealed partial class ViewEndpointsTests
         Assert.All(none, tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
         Assert.Equal(8, none.Count);
 
-        // An unknown gear is refused rather than silently stored.
         var bogus = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "whatever" });
         Assert.Equal(HttpStatusCode.BadRequest, bogus.StatusCode);
     }
@@ -217,7 +205,6 @@ public sealed partial class ViewEndpointsTests
         var screenshot = (await DesktopToolsAsync()).First(tool => tool.Name == "desktop_screenshot");
         Assert.Equal("allow", screenshot.Decision);
 
-        // And the setting is reported back, or the checkbox would forget itself on the next save.
         var settings = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
         Assert.True(settings.GetProperty("model").GetProperty("supportsImages").GetBoolean());
     }
@@ -225,9 +212,8 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task A_desktop_act_decision_rides_the_lease_telemetry()
     {
-        // The gear that asks per action, an act argument that carries a window id, and Decide directly:
-        // the lease label is what the T-zone's exhaustion-rate threshold keys on, and the endpoint column
-        // must reflect what governance answered without a turn in flight.
+        // Decide is called directly with an act argument carrying a window id; the lease label is what the
+        // exhaustion-rate threshold keys on.
         await _http.PutAsJsonAsync("/api/settings", new
         {
             desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -275,16 +261,14 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task The_telemetry_window_is_the_retention_it_is_read_from()
     {
-        // The window and the retention are one number kept in one place. When the endpoint wrote its own 1h
-        // and the sink kept another, every rate was computed over a window the answer said it was not using —
-        // and nothing failed, the numbers were just quietly about a different span.
+        // The window and the retention must be one number: a rate over a different span than reported is a
+        // silent error.
         var telemetry = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
 
         Assert.Equal(
             telemetry.GetProperty("retentionHours").GetDouble(),
             telemetry.GetProperty("windowHours").GetDouble());
 
-        // And it is the sink's own retention, read off the context the host was opened with.
         Assert.Equal(
             _context.Telemetry.Retention.TotalHours,
             telemetry.GetProperty("retentionHours").GetDouble(),
@@ -294,8 +278,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task A_caller_may_narrow_the_telemetry_window_but_not_widen_it()
     {
-        // Asking for more than is kept can only return less than it says, so the request is clamped rather
-        // than honoured — a caller that could widen the window would be told a rate over events already evicted.
+        // A wider window would report rates over events already evicted, so the request is clamped.
         var narrowed = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry?hoursRaw=0.25");
         Assert.Equal(0.25, narrowed.GetProperty("windowHours").GetDouble());
 

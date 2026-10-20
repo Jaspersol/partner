@@ -20,15 +20,10 @@ public sealed record CaptureResult
     public required string Method { get; init; }
 
     /// <summary>
-    /// Where the frame's top-left pixel sits on the screen, when the capture knows. A window capture
-    /// measures the window's bounds as it renders, so this is the one rectangle the picture is actually
-    /// aligned to — and the grid and marks drawn on the picture are expressed in it.
-    /// <para>
-    /// It exists because the observation's rectangle can be stale: a window that moved between being
-    /// observed and being photographed was rendered at its new position, and drawing the old rectangle's
-    /// grid on the new position's pixels shifts every coordinate the model reads off the picture — silently,
-    /// because nothing is wrong with any individual part.
-    /// </para>
+    /// Where the frame's top-left pixel sits on the screen. A window capture measures the window's bounds as it
+    /// renders, so this is the rectangle the picture is aligned to, and the one the grid and marks drawn on the
+    /// picture are expressed in. The observation's rectangle can be stale (the window may have moved between
+    /// observation and capture); drawing it over the new pixels would silently shift every coordinate.
     /// </summary>
     public PixelRect? ScreenRect { get; init; }
 
@@ -80,12 +75,10 @@ public sealed class GdiScreenCapture : IScreenCapture
             return CaptureResult.Failed("gdi", "window has no visible bounds");
         }
 
-        // PrintWindow renders from the *window rectangle's* origin, which on Windows 10+ sits a few pixels
-        // outside the visible frame (the invisible resize border — measured 7 px at 100% DPI). Rendering
-        // straight into a visible-frame-sized bitmap therefore shifts every pixel of the picture: the grid
-        // labels and the marks are drawn in visible-frame coordinates, so every coordinate the model reads
-        // off the picture was off by that much, with nothing failing anywhere. Render at the outer size and
-        // cut the invisible border away instead.
+        // PrintWindow renders from the window rectangle's origin, which on Windows 10+ sits a few pixels
+        // outside the visible frame (the invisible resize border). Rendering into a visible-frame-sized bitmap
+        // would shift every pixel of the picture while the grid and marks stay in visible-frame coordinates.
+        // Render at the outer size and crop the invisible border away instead.
         var outer = WindowEnumerator.GetOuterBounds(handle);
 
         var printed = RenderToBuffer(
@@ -94,15 +87,15 @@ public sealed class GdiScreenCapture : IScreenCapture
             (hdc, bitmap) => NativeMethods.PrintWindow(handle, hdc, NativeMethods.PwRenderFullContent),
             "gdi.printwindow");
 
-        // The bounds are read here, at the moment of the render, and that reading is the frame's origin —
-        // not whatever rectangle the observation recorded. A window that moved in between was rendered at
-        // where it is now, so that is the rectangle the picture's grid and marks have to be drawn in.
+        // Bounds are read at the moment of the render, and that reading is the frame's origin: the picture's
+        // grid and marks must be drawn in the rectangle the window occupies now, not the observed one.
         var screenRect = new PixelRect(bounds.Left, bounds.Top, bounds.Width, bounds.Height);
 
         if (printed.Ok)
         {
             return Crop(printed, bounds.Left - outer.Left, bounds.Top - outer.Top, bounds.Width, bounds.Height)
-                with { ScreenRect = screenRect };
+                with
+            { ScreenRect = screenRect };
         }
 
         // Fallback: copy the window's on-screen region (fails for fully occluded windows). Already aligned —
@@ -111,9 +104,8 @@ public sealed class GdiScreenCapture : IScreenCapture
     }
 
     /// <summary>
-    /// Cuts the visible frame out of a window-rectangle-sized render, so the picture's origin is the same
-    /// origin every other part of the pipeline uses (observation rectangles, the click guard, the grid and
-    /// marks drawn on a screenshot).
+    /// Cuts the visible frame out of a window-rectangle-sized render, so the picture's origin matches the
+    /// origin every other part of the pipeline uses.
     /// </summary>
     internal static CaptureResult Crop(CaptureResult frame, int x, int y, int width, int height)
     {

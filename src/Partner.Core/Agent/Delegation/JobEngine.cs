@@ -23,9 +23,9 @@ public sealed record JobSpec(string JobId, string Goal, string? Context, int Max
 /// a spent step budget), not taken from the model's account of it.
 /// </para>
 /// <para>
-/// Some failures end the job at once: retrying a refusal is not persistence, it is asking again after being
-/// told no. Between rounds the sub-agent is handed the failure and the list of actions already made, because a
-/// GUI action is not idempotent and a round that sent the message before it failed must not send it twice.
+/// Some failures end the job at once: retrying a refusal is asking again after being told no. Between rounds
+/// the sub-agent is handed the failure and the actions already made, because a GUI action is not idempotent
+/// and a round that sent the message before it failed must not send it twice.
 /// </para>
 /// </summary>
 public sealed partial class JobEngine(
@@ -163,8 +163,8 @@ public sealed partial class JobEngine(
 
     private async Task<TurnResult?> RunBoundedAsync(InputItem item, CancellationToken ct)
     {
-        // The round's own token, linked to the job's: the overrun below has to be able to stop *this* round
-        // without cancelling a job that is still entitled to its remaining time.
+        // The round's own token, linked to the job's: the overrun below must stop this round without cancelling
+        // a job that is still entitled to its remaining time.
         var roundToken = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var running = runner.RunAsync(item, roundToken.Token);
         var finished = await Task.WhenAny(running, Task.Delay(runner.TurnTimeout, CancellationToken.None)).ConfigureAwait(false);
@@ -174,15 +174,14 @@ public sealed partial class JobEngine(
             return await running.ConfigureAwait(false);
         }
 
-        // Asked to stop first. Abandoning a turn that is still running leaves it calling the model and the
-        // tools and writing to the job's session after the job has already reported; a turn that listens exits
-        // within the grace period and the session is quiet before the job says it timed out.
+        // Asked to stop first: abandoning a turn that is still running leaves it calling the model and the tools
+        // and writing to the job's session after the job has reported. A turn that listens exits within the
+        // grace period.
         roundToken.Cancel();
         await Task.WhenAny(running, Task.Delay(_cancelGrace, CancellationToken.None)).ConfigureAwait(false);
 
-        // Still not done: the turn is not listening (it is parked on something that ignores its token). Let it
-        // go, as the consumer loop does for the main agent: a job that waits forever on one round is a hung
-        // job. The token source is deliberately not disposed — the abandoned turn may still be reading it.
+        // Still not done: the turn is not listening. Let it go. The token source is deliberately not disposed —
+        // the abandoned turn may still be reading it.
         _ = running.ContinueWith(
             static faulted => _ = faulted.Exception,
             CancellationToken.None,

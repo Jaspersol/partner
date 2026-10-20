@@ -9,15 +9,6 @@ namespace Partner.Api.Tests;
 /// <summary>
 /// A real API host on a free port over a throwaway workspace, so every suite here starts from the same state:
 /// a live Kestrel, a bearer token, and a workspace that is deleted when the class is done.
-/// <para>
-/// A test class varies four things, and they are the four hooks below: the workspace's name, the model, the
-/// voice components, and which endpoint proves the host is listening. Everything else was written out eight
-/// times, which also meant eight places for the start-up order to drift.
-/// </para>
-/// <para>
-/// The fields are <c>protected</c> rather than reached through properties so that the subclasses keep reading
-/// <c>_http</c>, <c>_context</c> and the rest exactly as they did before the host moved here.
-/// </para>
 /// </summary>
 public abstract class ApiFixture : IAsyncLifetime
 {
@@ -100,10 +91,8 @@ public abstract class ApiFixture : IAsyncLifetime
 
     /// <summary>
     /// Asks the OS for a free port, so two suites — or two hosts inside one suite — never collide.
-    /// <para>
-    /// <c>internal</c> rather than <c>protected</c> because the one suite that builds its host inline instead
-    /// of through this fixture still needs a port.
-    /// </para>
+    /// <c>internal</c> because the one suite that builds its host inline rather than through this fixture
+    /// still needs a port.
     /// </summary>
     internal static int FreePort()
     {

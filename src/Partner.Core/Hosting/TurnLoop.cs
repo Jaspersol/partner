@@ -15,7 +15,7 @@ public sealed record TurnLoopStats(int Completed, int Failed, int Canceled, int 
 }
 
 /// <summary>
-/// The single consumer of the input queue (design doc §2.2): takes one item at a time, in arrival order, runs
+/// The single consumer of the input queue: takes one item at a time, in arrival order, runs
 /// a turn for it, and settles the item as <c>Done</c>/<c>Failed</c>/<c>Canceled</c>.
 /// <para>
 /// Invariants enforced here:
@@ -106,8 +106,8 @@ public sealed class TurnLoop
             Partner.Core.Diagnostics.LatencyTracker.Record("turn", turnWatch.Elapsed);
         }
 
-        // Told how the item ended, so a scheduled task can show what its last run did and not only that it was
-        // delivered. Best effort: the item is already settled and this must not change that.
+        // Told how the item ended, so a scheduled task can show what its last run did. Best effort: the item is
+        // already settled and this must not change that.
         if (settled is not null && _onSettled is not null)
         {
             try
@@ -120,9 +120,9 @@ public sealed class TurnLoop
             }
         }
 
-        // After the turn, on this same loop: the queue has a single reader, so nothing else is running a turn
-        // against this session now, and whatever the hook writes to it cannot interleave with one. A hook that
-        // fails must not fail the item it followed — that item is already settled.
+        // After the turn, on this same loop: the queue has a single reader, so whatever the hook writes cannot
+        // interleave with another turn. A hook that fails must not fail the item it followed — that item is
+        // already settled.
         if (_afterTurn is not null)
         {
             try
@@ -150,10 +150,9 @@ public sealed class TurnLoop
             return null;
         }
 
-        // The ceiling is the loop's, not the runner's: every budget inside a turn is a promise by the code
-        // being called, and this loop is the only place that can say the promise was not kept. Without it a
-        // turn that never returns holds the only reader this queue has, so the item stays Running, every
-        // message behind it waits, and the UI's "running" is a lie with no way out but killing the process.
+        // The ceiling is the loop's, not the runner's. Without it a turn that never returns holds the only reader
+        // this queue has, so the item stays Running, every message behind it waits, and the UI's "running" is a
+        // lie with no way out but killing the process.
 
         // The turn observes the item's own cancel token, so a UI cancel interrupts it, while stopping the
         // loop does not.
@@ -163,10 +162,10 @@ public sealed class TurnLoop
         {
             var running = _runner.RunAsync(item, turn.Token);
 
-            // Waited on with a bound rather than awaited outright. This is the part that is easy to get wrong:
-            // cancelling the token does <i>not</i> bring back a turn that is parked on an await which ignores
-            // it, so `await running` would keep waiting for exactly the case this exists to catch. Waiting on
-            // the pair instead means the loop gives up on schedule whether or not the turn is listening.
+            // Waited on with a bound rather than awaited outright. Cancelling the token does <i>not</i> bring
+            // back a turn parked on an await that ignores it, so `await running` would keep waiting for exactly
+            // the case this exists to catch. Waiting on the pair means the loop gives up on schedule whether or
+            // not the turn is listening.
             var finished = await Task
                 .WhenAny(running, Task.Delay(_runner.TurnTimeout, CancellationToken.None))
                 .ConfigureAwait(false);

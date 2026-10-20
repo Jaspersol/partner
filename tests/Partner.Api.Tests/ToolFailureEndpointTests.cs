@@ -13,7 +13,7 @@ namespace Partner.Api.Tests;
 /// The tool-failure summary over HTTP.
 /// <para>
 /// Its own fixture because the summary lives on the consumer host, and the fixture that watches a live row
-/// parks a turn on a gate — reconfiguring that consumer would deadlock (see README §必须知道的坑).
+/// parks a turn on a gate — reconfiguring that consumer would deadlock.
 /// </para>
 /// </summary>
 public sealed class ToolFailureEndpointTests : ApiFixture

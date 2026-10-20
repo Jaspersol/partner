@@ -64,8 +64,7 @@ public sealed record JobOutcome(
     public const int EvidenceChars = 2000;
 
     /// <summary>
-    /// A report is read into the main agent's context, so it is bounded; what is left out is not lost — the
-    /// sub-agent's own session holds the whole thing, and the cut says where.
+    /// A report is read into the main agent's context, so it is bounded; the cut says where the rest is.
     /// </summary>
     private static string Limit(string? text, int max, string jobId)
     {

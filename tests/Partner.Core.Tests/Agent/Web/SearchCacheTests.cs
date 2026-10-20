@@ -3,9 +3,9 @@ using Partner.Core.Agent.Web;
 namespace Partner.Core.Tests.Agent.Web;
 
 /// <summary>
-/// The answer cache. There is no long-lived tier here on purpose — a week-old result answering today's question
-/// is wrong by construction — so these tests are mostly about the lifetimes, and about the two rules that keep a
-/// cached answer from being worse than no answer: only cache something that was found, and always report its age.
+/// The answer cache. There is no long-lived tier on purpose, so these tests are mostly about the lifetimes,
+/// and about the two rules that keep a cached answer from being worse than no answer: only cache something
+/// that was found, and always report its age.
 /// </summary>
 public sealed class SearchCacheTests
 {
@@ -25,21 +25,20 @@ public sealed class SearchCacheTests
     [Fact]
     public void LifetimeOf_ALookedUpRecordHasItsOwnLifetime()
     {
-        // A temperature is expired by its publisher's own clock, so the shortest lifetime we dare hold it for is
-        // ten minutes whatever the question said.
+        // A temperature is expired by its publisher's own clock, so the shortest lifetime is ten minutes
+        // whatever the question said.
         Assert.Equal(TimeSpan.FromMinutes(10), SearchCache.LifetimeOf(new SearchQuery("x"), recordAnswered: true));
 
-        // The record rule is asked before the time-sensitive ones, so a record answer outlives a news answer. The
-        // planner never puts a record engine in a news pool, so this pins the order of the checks rather than a
-        // case a user can reach.
+        // The record rule is asked before the time-sensitive ones. The planner never puts a record engine in a
+        // news pool, so this pins the order of the checks rather than a reachable case.
         Assert.Equal(TimeSpan.FromMinutes(10), SearchCache.LifetimeOf(new SearchQuery("x", SearchKinds.News), recordAnswered: true));
     }
 
     [Fact]
     public void WorthCaching_OnlyWhenSomethingWasFound()
     {
-        // A search where every engine failed is a snapshot of this moment's network, not an answer. Caching one
-        // would turn a transient outage into an hour of "nothing found".
+        // A search where every engine failed is a snapshot of the network, not an answer; caching one would turn
+        // a transient outage into an hour of "nothing found".
         Assert.True(SearchCache.WorthCaching(Outcome(new SearchQuery("x"), Now)));
         Assert.False(SearchCache.WorthCaching(Outcome(new SearchQuery("x"), Now, found: false)));
     }
@@ -129,8 +128,8 @@ public sealed class SearchCacheTests
 
         Assert.True(cache.TryGet(query.CacheKey, out var cached, out _));
 
-        // The metadata is part of the answer: a cached result that forgot which engines were silent would tell
-        // the model something different from what the same search said a minute ago.
+        // The metadata is part of the answer: forgetting which engines were silent would change what the model
+        // is told.
         Assert.Same(outcome, cached);
     }
 
@@ -158,7 +157,7 @@ public sealed class SearchCacheTests
             cache.Set(Outcome(new SearchQuery($"q{index}"), Now));
         }
 
-        // Asking again is what a cache exists for; an entry that gets re-read is not the least recently used one.
+        // A re-read entry is not the least recently used one.
         Assert.True(cache.TryGet(new SearchQuery("q0").CacheKey, out _, out _));
 
         cache.Set(Outcome(new SearchQuery("overflow"), Now));

@@ -55,8 +55,8 @@ public sealed class DesktopLiveInteractionTests
 
             GetCursorPos(out var landed);
 
-            // This is the assertion that would have failed before the fix: without MOUSEEVENTF_ABSOLUTE the
-            // coordinate was applied as a delta, so the pointer went to a screen corner instead.
+            // Without MOUSEEVENTF_ABSOLUTE the coordinate is applied as a delta and the pointer lands on a
+            // screen corner instead.
             Assert.InRange(landed.X, targetX - 1, targetX + 1);
             Assert.InRange(landed.Y, targetY - 1, targetY + 1);
 
@@ -79,10 +79,9 @@ public sealed class DesktopLiveInteractionTests
     [LiveDesktopFact]
     public void The_pointer_lands_on_the_exact_pixel_across_the_whole_width()
     {
-        // The exactness the normalization fix bought, checked against the real cursor rather than against
-        // the formula. The columns sampled are the ones the previous scaling was measured to put on their
-        // left-hand neighbour (2, 4, 7, 9, 12, 17, 22, 27 on a 2560-wide desktop), plus a coarse sweep and
-        // both edges. Before the fix these landed one pixel short and the injection still reported success.
+        // The exactness of the normalization, checked against the real cursor rather than the formula. The
+        // columns sampled are ones a coarser scaling puts on their left-hand neighbour (2, 4, 7, 9, 12, 17,
+        // 22, 27 on a 2560-wide desktop), plus a coarse sweep and both edges.
         var injector = new InputInjector();
         var desktop = VirtualDesktop.Current();
         Assert.True(desktop.Width > 1 && desktop.Height > 1, $"no interactive desktop: {desktop}");
@@ -261,9 +260,9 @@ public sealed class DesktopLiveInteractionTests
             // reached the control.
             Assert.True(host.Pressed.Wait(TimeSpan.FromSeconds(10)), $"the button's Click handler never ran: {result.Content}");
 
-            // And the answer now carries the state after the click — the same pipeline the screenshot tool
-            // runs, attached to the result the model is already about to read. One completed answer replaces
-            // the follow-up call the loop used to need.
+            // And the answer carries the state after the click — the same pipeline the screenshot tool runs,
+            // attached to the result the model is already about to read. One completed answer replaces a
+            // separate follow-up call.
             var afterPicture = Assert.Single(result.Images!);
             Assert.StartsWith("data:image/png;base64,", afterPicture);
             Assert.Contains("已附截图", result.Content, StringComparison.Ordinal);
@@ -281,8 +280,8 @@ public sealed class DesktopLiveInteractionTests
     {
         // The measured failure this reproduces: the agent's own window sits over the target application, the
         // click is delivered to the cover, and the tool still reported "注入成功 · 画面无变化" while the target
-        // never received anything. Raising the target is what the refusal used to ask the model to do; it now
-        // happens inside the same action, so one approval and one round trip replace three.
+        // never received anything. Raising the target is what the refusal would otherwise ask the model to do;
+        // doing it inside the same action makes one approval and one round trip replace three.
         using var target = new ButtonWindow("partner-live-target", new Point(120, 120));
         using var cover = new ButtonWindow("partner-live-cover", new Point(60, 60));
 

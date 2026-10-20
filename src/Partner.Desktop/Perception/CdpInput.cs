@@ -18,10 +18,9 @@ internal sealed record CdpKey(string Key, string Code, int VirtualKey, string? T
 /// <summary>
 /// Input for a page, as DevTools Protocol commands.
 /// <para>
-/// This is the channel that makes Chromium and Electron windows workable in the background: the events are
-/// delivered to the page itself, so they need neither the foreground nor the pointer, and a covered, minimized
-/// or off-screen window receives them exactly as a visible one does. Everything here is pure — it builds the
-/// commands and does the arithmetic — so it can be pinned without a browser; sending them is
+/// This channel makes Chromium and Electron windows workable in the background: events are delivered to the page
+/// itself, so they need neither the foreground nor the pointer, and a covered, minimized or off-screen window
+/// receives them like a visible one. Everything here is pure; sending the commands is
 /// <see cref="CdpDomSource"/>'s job.
 /// </para>
 /// </summary>
@@ -117,12 +116,9 @@ internal static class CdpInput
     }
 
     /// <summary>
-    /// A key press, with its modifiers held around it.
-    /// <para>
-    /// A chord is the modifiers going down, the key going down and up, and the modifiers coming up — and the
-    /// modifier bitmask rides on every event in between. A key that types nothing (a shortcut) is sent as a raw
-    /// key-down, because a key-down carrying text would also insert that text: Ctrl+A would type an "a".
-    /// </para>
+    /// A key press with its modifiers held around it. A chord is modifiers down, key down and up, modifiers up,
+    /// with the modifier bitmask on every event in between. A shortcut is sent as a raw key-down, because a
+    /// key-down carrying text would also insert that text: Ctrl+A would type an "a".
     /// </summary>
     /// <returns>Null when a key in the chord has no protocol name.</returns>
     internal static IReadOnlyList<CdpCommand>? KeyCommands(ushort virtualKey, IReadOnlyList<ushort> modifiers)
@@ -205,8 +201,7 @@ internal static class CdpInput
 
     /// <summary>
     /// A click: the pointer arrives, then <paramref name="count"/> press/release pairs whose <c>clickCount</c>
-    /// climbs — which is how the page tells a double click from two clicks, the same distinction
-    /// <see cref="ActionKind.DoubleClick"/> exists to keep.
+    /// climbs, which is how the page tells a double click from two clicks.
     /// </summary>
     internal static IReadOnlyList<CdpCommand> ClickCommands(double x, double y, bool right, int count)
     {
@@ -242,8 +237,8 @@ internal static class CdpInput
         };
 
     /// <summary>
-    /// Press, travel, release — in steps, with a pause between them. A drag that jumps from start to end in one
-    /// move is a teleport, and a page that tracks the pointer (a slider, a sortable list) never sees it move.
+    /// Press, travel, release, in steps with a pause between them. A drag that jumps from start to end in one
+    /// move is a teleport; a page that tracks the pointer (a slider, a sortable list) never sees it move.
     /// </summary>
     internal static IReadOnlyList<CdpCommand> DragCommands(double fromX, double fromY, double toX, double toY)
     {
@@ -269,19 +264,14 @@ internal static class CdpInput
     }
 
     /// <summary>
-    /// Where the page's viewport starts on the screen, worked out from what the page says about itself.
+    /// Where the page's viewport starts on the screen, from what the page says about itself. The client area is
+    /// not the page: a browser draws its tab strip and address bar inside the client area above the page, while
+    /// an Electron window has nothing there. The page's <c>innerWidth</c> and <c>innerHeight</c> say how much of
+    /// the client area is page; the remainder is chrome, on top.
     /// <para>
-    /// The window's client area is not the page: a browser draws its tab strip and address bar inside the client
-    /// area, above the page, and an Electron window has nothing there. The page's own <c>innerWidth</c> and
-    /// <c>innerHeight</c> say how much of the client area is page; what is left is chrome, and it is on top.
-    /// Treating the client origin as the page origin is exact for the second kind of window and lands every
-    /// click one toolbar too high in the first.
-    /// </para>
-    /// <para>
-    /// Null — and the caller refuses — when the numbers do not fit that picture: a width short by more than a
-    /// window frame can account for means a side panel or a docked inspector this cannot place, and a page larger
-    /// than its window means the metrics are stale. An approximate origin is a click on the neighbouring control,
-    /// with every step reporting success.
+    /// Null (and the caller refuses) when the numbers do not fit that picture: a width short by more than a
+    /// window frame means a side panel this cannot place, and a page larger than its window means stale
+    /// metrics. An approximate origin is a click on the neighbouring control.
     /// </para>
     /// </summary>
     internal static (int X, int Y)? ViewportOrigin(PixelRect client, double innerWidth, double innerHeight, double devicePixelRatio)
@@ -308,10 +298,9 @@ internal static class CdpInput
             return null;
         }
 
-        // Side borders are equal, so half the width left over is one border — and the same thickness runs along
-        // the bottom, which is why the page ends that much above the client area's end. What is left over above
-        // the page is the browser's own toolbar. Taking the whole height as toolbar put every click a border too
-        // low (4 px, measured), invisible on a big button and the neighbour of a small one.
+        // Side borders are equal, so half the leftover width is one border; the same thickness runs along the
+        // bottom, so the page ends that much above the client area's end. The rest above the page is the
+        // browser's toolbar.
         var border = Math.Max(0, extraWidth / 2);
 
         return (

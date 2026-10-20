@@ -63,19 +63,31 @@ public sealed partial class ViewEndpointsTests
         var item = new Dictionary<string, string> { ["itemId"] = "item-" + Guid.NewGuid().ToString("n")[..6] };
         var start = await _context.Session.AppendAsync(new SessionEvent
         {
-            Kind = SessionEventKind.TurnStart, Source = source, Body = "turn", Meta = item,
+            Kind = SessionEventKind.TurnStart,
+            Source = source,
+            Body = "turn",
+            Meta = item,
         });
         await _context.Session.AppendAsync(new SessionEvent
         {
-            Kind = SessionEventKind.StepStart, Source = source, Body = "step 1", Meta = item,
+            Kind = SessionEventKind.StepStart,
+            Source = source,
+            Body = "step 1",
+            Meta = item,
         });
         var userSeq = await _context.Session.AppendAsync(new SessionEvent
         {
-            Kind = SessionEventKind.User, Source = source, Body = user, Meta = item,
+            Kind = SessionEventKind.User,
+            Source = source,
+            Body = user,
+            Meta = item,
         });
         var replySeq = await _context.Session.AppendAsync(new SessionEvent
         {
-            Kind = SessionEventKind.Assistant, Source = source, Body = reply, Meta = item,
+            Kind = SessionEventKind.Assistant,
+            Source = source,
+            Body = reply,
+            Meta = item,
         });
         await _context.Session.AppendAsync(new SessionEvent
         {

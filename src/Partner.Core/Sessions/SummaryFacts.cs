@@ -3,9 +3,9 @@ namespace Partner.Core.Sessions;
 /// <summary>
 /// The "facts" line of a structured summary, as separate statements.
 /// <para>
-/// The compactor asks the model for labelled lines (goal, decided, facts, open, in progress). Of those, the facts
-/// are the part that is true regardless of the conversation they came from, so they are what is worth keeping once
-/// the conversation itself is folded away.
+/// The compactor asks the model for labelled lines (goal, decided, facts, open, in progress). The facts are the
+/// part that stays true regardless of the conversation they came from, so they are worth keeping once the
+/// conversation is folded away.
 /// </para>
 /// </summary>
 public static class SummaryFacts

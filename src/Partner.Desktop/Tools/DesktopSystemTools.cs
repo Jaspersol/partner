@@ -18,7 +18,7 @@ namespace Partner.Desktop.Tools;
 /// </summary>
 /// <summary>
 /// Runs one command and returns its output. The sharpest tool here: it can do anything the user can do in a
-/// shell, which is exactly why the approval gears exist.
+/// shell, which is why the approval gears exist.
 /// </summary>
 public sealed class DesktopExecTool : ITool
 {
@@ -31,8 +31,7 @@ public sealed class DesktopExecTool : ITool
     private readonly TimeSpan _timeout;
 
     /// <param name="timeout">
-    /// Overridable so the timeout itself is testable — the whole point of this tool's timeout is that it
-    /// cannot be tested without waiting it out, which is why it went untested and then hung a turn for good.
+    /// Overridable so the timeout itself is testable.
     /// </param>
     public DesktopExecTool(TimeSpan? timeout = null) => _timeout = timeout ?? DefaultTimeout;
 
@@ -53,11 +52,9 @@ public sealed class DesktopExecTool : ITool
     /// <b>The deadline covers the output, not just the process.</b> A command that leaves something behind
     /// holding the inherited pipe — <c>start /b</c>, a service launcher, anything that spawns a background
     /// child — makes <c>cmd.exe</c> exit immediately while the pipe stays open for as long as that child
-    /// lives. Waiting for the <i>process</i> therefore returns at once and the read that follows blocks for
-    /// minutes, or forever. That is not a slow command: it is an await with no bound on it, and because the
-    /// reads were the only unbounded ones in the tool, a turn that issued one of those sat in "running" until
-    /// the user killed the app. So the reads run under the same deadline as the wait, and each is drained
-    /// incrementally rather than with <c>ReadToEndAsync</c> — which also keeps a runaway command from
+    /// lives. Waiting for the <i>process</i> therefore returns at once and the read that follows blocks
+    /// indefinitely. So the reads run under the same deadline as the wait, and each is drained
+    /// incrementally rather than with <c>ReadToEndAsync</c>, which also keeps a runaway command from
     /// buffering megabytes before anything truncates them.
     /// </para>
     /// </summary>
@@ -118,15 +115,13 @@ public sealed class DesktopExecTool : ITool
         {
             KillQuietly(process);
 
-            // Then close our ends of the pipes and wait for the drains to finish. Belt and braces, and stated
-            // as such: with `Kill(entireProcessTree: true)` above, a `start /b` survivor is reaped too, so the
-            // read observes EOF and the handle goes with it — measured over 10 timed-out calls, the handle
-            // count is flat in both the before and after of this change, which is why there is no test
-            // asserting a leak here. What this does cover is the case the tree kill cannot reach: a process
-            // that left the tree before the kill, or a launcher that outlives it. An anonymous pipe read does
-            // not observe a cancelled token until the read itself completes, so without closing the readers
-            // the drains would stay parked on them. Closing is deterministic; the wait is bounded so a read
-            // that still will not return cannot reintroduce the hang this method exists to prevent.
+            // Then close our ends of the pipes and wait for the drains to finish. With
+            // `Kill(entireProcessTree: true)` above, a `start /b` survivor is reaped too, so the read observes
+            // EOF and the handle goes with it. What this covers is the case the tree kill cannot reach: a
+            // process that left the tree before the kill, or a launcher that outlives it. An anonymous pipe
+            // read does not observe a cancelled token until the read itself completes, so without closing the
+            // readers the drains would stay parked on them. Closing is deterministic; the wait is bounded so a
+            // read that still will not return cannot reintroduce the hang this method exists to prevent.
             ClosePipes(process);
             await WaitForDrainsAsync(outTask, errTask).ConfigureAwait(false);
 
@@ -147,8 +142,7 @@ public sealed class DesktopExecTool : ITool
 
     /// <summary>
     /// What the command left behind, capped and labelled. The cap is applied <i>while</i> reading rather than
-    /// after: a command that prints without end used to be buffered whole and truncated only once it had
-    /// finished, so the bound held for the conversation and not for the process.
+    /// after, so the bound holds for the process and not only for the conversation.
     /// </summary>
     private static string Describe(OutputSink stdout, OutputSink stderr, bool timedOut)
     {
@@ -185,8 +179,8 @@ public sealed class DesktopExecTool : ITool
         public string Text => _text.ToString();
 
         /// <summary>
-        /// Reads to EOF under <paramref name="ct"/>. The token is the whole point: an unbounded read is what
-        /// made a backgrounded command hang the turn it was issued from.
+        /// Reads to EOF under <paramref name="ct"/>. The token is required: an unbounded read lets a
+        /// backgrounded command hold the pipe open forever.
         /// </summary>
         public async Task DrainAsync(StreamReader reader, CancellationToken ct)
         {
@@ -425,7 +419,7 @@ internal static class Clipboard
     }
 }
 
-/// <summary>Shared JSON options for the tool arguments, which arrive as the model wrote them.</summary>
+/// <summary>Shared JSON options for the tool arguments.</summary>
 internal static class Json
 {
     private static readonly JsonSerializerOptions Options = new()

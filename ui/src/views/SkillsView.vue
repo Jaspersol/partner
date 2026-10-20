@@ -92,7 +92,7 @@ async function save() {
   error.value = ''
   notice.value = ''
   try {
-    // The norm (ui.md): re-read after writing, so what is on screen is what the server kept.
+    // Re-read after writing, so what is on screen is what the server kept.
     const saved = await props.api.saveSettings({ ...baseline.value, skills: { disabled: disabled.value } })
     baseline.value = saved.settings
     disabled.value = [...saved.settings.skills.disabled]

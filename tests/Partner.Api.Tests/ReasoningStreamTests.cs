@@ -9,15 +9,10 @@ using Partner.Core.Agent.Llm;
 namespace Partner.Api.Tests;
 
 /// <summary>
-/// A model that thinks out loud, seen from the session view.
-/// <para>
-/// Its own fixture, and deliberately so. <see cref="ConsumerEndpointTests"/> injects a turn that parks on a
-/// gate and only lets go mid-assertion, which is how a test watches a live row. Reconfiguring a consumer whose
-/// turn is still in flight blocks, and because the release happens <i>inside</i> the blocked test it would
-/// deadlock: the test waits for the reconfigure, the reconfigure waits for a gate the test has not reached.
-/// One consumer, one turn at a time, and this fixture only ever has one in flight — so a client that returns
-/// on its own is enough and the wait is a poll rather than a gate.
-/// </para>
+/// A model that thinks out loud, seen from the session view. Its own fixture because
+/// <see cref="ConsumerEndpointTests"/> parks a turn on a gate released mid-assertion; reconfiguring a consumer
+/// whose turn is in flight blocks, which would deadlock. This fixture never has more than one turn in flight,
+/// so a client that returns on its own is enough and the wait is a poll rather than a gate.
 /// </summary>
 public sealed class ReasoningStreamTests : ApiFixture
 {
@@ -85,11 +80,10 @@ public sealed class ReasoningStreamTests : ApiFixture
         var thinking = settled.GetProperty("items").EnumerateArray()
             .First(item => item.GetProperty("kind").GetString() == "Thinking");
 
-        // Recorded, not merely shown while it happened: a thinking row that vanished the moment the answer
-        // arrived would leave "what was it working out" unanswerable without re-asking the model.
+        // A thinking row that vanished when the answer arrived would leave "what was it working out"
+        // unanswerable without re-asking the model.
         Assert.Equal("先确认时区再换算", thinking.GetProperty("body").GetString());
 
-        // The answer and the reasoning are two different things, and only one of them is a conversation turn.
         Assert.Equal(
             "下午三点",
             settled.GetProperty("items").EnumerateArray()
@@ -100,8 +94,7 @@ public sealed class ReasoningStreamTests : ApiFixture
     [Fact]
     public async Task A_live_reasoning_row_is_gone_once_the_answer_lands()
     {
-        // The finished Thinking event replaces it. Leaving both would show the same reasoning twice — once as
-        // "what it is doing now" and once as history — for as long as the turn is over.
+        // The finished Thinking event replaces the live row; leaving both would show the reasoning twice.
         await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "几点了" });
 
         var settled = await WaitForSessionAsync(session =>

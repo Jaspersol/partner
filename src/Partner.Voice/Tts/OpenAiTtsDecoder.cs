@@ -3,13 +3,14 @@ using System.Buffers.Binary;
 namespace Partner.Voice.Tts;
 
 /// <summary>
-/// 双层 WAV 解码器：16-bit 小端整数采样 → [-1,1] float。
+/// Two-layer WAV decoder: 16-bit little-endian integer samples → [-1,1] float.
 /// </summary>
 public static class WavPcm16Decoder
 {
     /// <summary>
-    /// 解析 16-bit PCM WAV，返回 [-1,1] float。头部按 RIFF 块遍历（fmt 可能在 data 前带扩展字段），
-    /// 只认 <c>data</c> 块与 PCM 格式；不认识或不是 PCM 时抛 <see cref="InvalidDataException"/>。
+    /// Parses a 16-bit PCM WAV and returns [-1,1] floats. The header is walked as RIFF chunks (fmt may carry
+    /// extension fields before data); only the <c>data</c> chunk and PCM format are accepted; anything else
+    /// throws <see cref="InvalidDataException"/>.
     /// </summary>
     public static float[] Decode(byte[] wav)
     {
@@ -32,13 +33,13 @@ public static class WavPcm16Decoder
             var body = position + 8;
             if (body + size > wav.Length)
             {
-                size = wav.Length - body; // 尾部块可能被截断
+                size = wav.Length - body; // trailing chunk may be truncated
             }
 
             if (id == "fmt ")
             {
                 var format = BinaryPrimitives.ReadInt16LittleEndian(wav.AsSpan(body, 2));
-                if (format != 1) // PCM only; WAVE_FORMAT_EXTENSIBLE (0xFFFE) 偶见于带扩展头的服务端。
+                if (format != 1) // PCM only; WAVE_FORMAT_EXTENSIBLE (0xFFFE) sometimes appears from servers with an extension header.
                 {
                     throw new InvalidDataException($"WAV format {format} is not PCM.");
                 }
@@ -51,7 +52,7 @@ public static class WavPcm16Decoder
                 data = wav[body..(body + size)];
             }
 
-            position = body + size + (size & 1); // 块按 2 字节对齐
+            position = body + size + (size & 1); // chunks are 2-byte aligned
         }
 
         if (bitsPerSample != 16 || channels < 1)
@@ -62,7 +63,7 @@ public static class WavPcm16Decoder
         data ??= Array.Empty<byte>();
         if (data.Length < 2)
         {
-            return Array.Empty<float>(); // 空 data 块是合法响应（例如按了空白输入），不是错误。
+            return Array.Empty<float>(); // an empty data chunk is a legal response (e.g. blank input), not an error.
         }
 
         var frames = data.Length / 2 / channels;
@@ -77,7 +78,7 @@ public static class WavPcm16Decoder
         }
         else
         {
-            // 多声道取第一路：播放只需要单声道流，混合不是这里的职责。
+            // Take the first channel: playback only needs a mono stream, and mixing is not this layer's job.
             for (var i = 0; i < frames; i++)
             {
                 var raw = BinaryPrimitives.ReadInt16LittleEndian(data.AsSpan(i * channels * 2, 2));

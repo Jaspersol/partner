@@ -3,8 +3,8 @@ using System.Buffers.Binary;
 namespace Partner.Voice.Asr;
 
 /// <summary>
-/// 把 [-1,1] 的 float 采样写成 16-bit 单声道 PCM WAV（RIFF 头手工拼，不引第三方库）。
-/// 两个 ASR 客户端（chat-audio 内联与 openai multipart）共用这一份编码。
+/// Writes [-1,1] float samples as 16-bit mono PCM WAV (RIFF header assembled by hand, no third-party library).
+/// Shared by both ASR clients (chat-audio inline and OpenAI multipart).
 /// </summary>
 internal static class PcmWav
 {
@@ -20,7 +20,7 @@ internal static class PcmWav
         BinaryPrimitives.WriteInt32LittleEndian(wav.AsSpan(4, 4), 36 + dataBytes);
         System.Text.Encoding.ASCII.GetBytes("WAVE", wav.AsSpan(8, 4));
         System.Text.Encoding.ASCII.GetBytes("fmt ", wav.AsSpan(12, 4));
-        BinaryPrimitives.WriteInt32LittleEndian(wav.AsSpan(16, 4), 16); // fmt chunk 长度
+        BinaryPrimitives.WriteInt32LittleEndian(wav.AsSpan(16, 4), 16); // fmt chunk size
         BinaryPrimitives.WriteInt16LittleEndian(wav.AsSpan(20, 2), 1);  // PCM
         BinaryPrimitives.WriteInt16LittleEndian(wav.AsSpan(22, 2), channels);
         BinaryPrimitives.WriteInt32LittleEndian(wav.AsSpan(24, 4), sampleRate);

@@ -1,21 +1,13 @@
 /**
- * Roving tabindex for lists (P4 #26).
+ * Roving tabindex for lists.
  *
  * <para>
- * The problem this exists for: a listbox of a few hundred options, each with `tabindex="0"`, makes a keyboard
- * user press Tab once per row to get past it. On a session of five hundred events that is five hundred presses,
- * which is the same as saying the list cannot be reached by keyboard at all.
+ * A listbox of a few hundred options, each with `tabindex="0"`, makes a keyboard user press Tab once per row.
+ * Instead the list is a single tab stop and arrow keys move within it; Enter and Space still activate.
  * </para>
  *
  * <para>
- * The fix is the standard one — the list is a single tab stop, and arrow keys move within it. Everything else
- * about the interaction is unchanged: Enter and Space still activate, focus still follows.
- * </para>
- *
- * <para>
- * This module is a **pure function on purpose**. The arithmetic of "which row does this key mean" is the part
- * worth testing exhaustively, and a pure function is the only version of it that can be tested without a layout
- * engine — the same reason `scripts/e2e-shell.mjs` exists for the things this cannot cover.
+ * Pure functions on purpose: "which row does this key mean" is testable without a layout engine.
  * </para>
  */
 
@@ -29,12 +21,8 @@ export interface RovingOptions {
 /**
  * Normalises a key name.
  *
- * <para>
- * Browsers send `Enter`, `Escape`, `' '`. `@vue/test-utils`'s `trigger('keydown.enter')` sends `enter`, and
- * `keydown.space` sends `space`. Vue's own `.enter` template modifier hid that difference by comparing hyphenated
- * forms; now that the handler is ours instead of a template modifier's, absorbing it is ours to do. Lower-casing
- * once, here, is cheaper than a comparison at every call site and than remembering which spelling this one uses.
- * </para>
+ * Browsers send `Enter`, `Escape`, `' '`, while `@vue/test-utils` sends `enter` / `space`. Lower-casing once
+ * here avoids a comparison at every call site.
  */
 export function normalizeKey(key: string): string {
   return key.toLowerCase()
@@ -50,15 +38,13 @@ export function isActivationKey(key: string): boolean {
  * The row a key press moves to, or `null` when the key is none of ours.
  *
  * <para>
- * Movement **clamps rather than wraps**. Wrapping is right for a menu and wrong for a log: a reader who has
- * reached the newest event and presses Down again is not asking for the oldest one, they are asking whether
- * there is anything below. Answering that with a jump to the top of a five-hundred-row conversation is the
- * single most disorienting thing a list can do.
+ * Movement **clamps rather than wraps** for vertical lists: a reader at the newest event pressing Down again is
+ * asking whether there is anything below, not for a jump to the top of a long conversation.
  * </para>
  *
  * <para>
- * A horizontal rail wraps instead, because a rail has no "below" — Left from the first item landing on the
- * last is the behaviour every tab bar has.
+ * A horizontal rail wraps instead, because a rail has no "below" — Left from the first item landing on the last
+ * is the behaviour every tab bar has.
  * </para>
  */
 export function rovingTarget(
@@ -95,11 +81,8 @@ export function rovingTarget(
 /**
  * Keeps a roving index inside a list whose length just changed.
  *
- * <para>
- * The list grows under the reader — that is the whole point of a live session log — and the index has to
- * follow. Without this, one new event at the bottom would push the focused row off the end and drop the reader
- * back at the top, losing their place in a conversation that is still going.
- * </para>
+ * Without this, one new event at the bottom would push the focused row off the end and drop the reader back at
+ * the top, losing their place in a conversation that is still going.
  */
 export function clampIndex(index: number, count: number): number {
   if (count <= 0) return 0

@@ -10,12 +10,8 @@ using Partner.Desktop.Tools;
 namespace Partner.Api.Tests;
 
 /// <summary>
-/// MCP wiring: the tool table, the governance boundary, and the settings round-trip.
-/// <para>
-/// The client itself is already covered by <c>StdioMcpClientTests</c> in Core. What is untested until now is
-/// the part that was missing entirely — whether anything calls it — so these are about the host, not the
-/// protocol.
-/// </para>
+/// MCP wiring: the tool table, the governance boundary, and the settings round-trip. The protocol client is
+/// covered by <c>StdioMcpClientTests</c> in Core; these tests are about the host calling it.
 /// </summary>
 public sealed partial class ViewEndpointsTests
 {
@@ -63,9 +59,8 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task An_mcp_tool_is_asked_for_rather_than_denied()
     {
-        // Fail-closed, and the previous behaviour was to deny anything that was not a desktop tool — which
-        // meant an MCP tool, however well-behaved, could never run at all. The capability has to be on for the
-        // tool to be reachable in the first place; the off case is its own test below.
+        // Fail-closed, but an MCP tool must not be denied outright. The capability has to be on for the tool
+        // to be reachable; the off case is its own test below.
         await using var context = await ApiContext.OpenAsync(Workspace("mcp-ask"));
         context.Settings.Save(context.Settings.Load() with { Mcp = new McpSettings { Enabled = true } });
 
@@ -90,7 +85,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task An_mcp_tool_is_denied_when_the_capability_is_off()
     {
-        // Switching the server off has to actually stop it, not merely stop offering it.
+        // Switching the server off must actually stop it, not merely stop offering it.
 
         var context = await ApiContext.OpenAsync(Workspace("mcp"));
 
@@ -137,7 +132,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task A_desktop_tool_is_still_decided_by_the_desktop_gear()
     {
-        // The MCP branch must not swallow the tools it was added alongside: reads stay ungated, actions ask.
+        // The MCP branch must not swallow the desktop tools: reads stay ungated, actions ask.
         await using var context = await ApiContext.OpenAsync(Workspace("mcp-desktop"));
         context.Settings.Save(context.Settings.Load() with
         {
@@ -147,8 +142,7 @@ public sealed partial class ViewEndpointsTests
 
         var governance = new DesktopGovernance(context);
 
-        // desktop_observe only looks, so it is allowed; desktop_exec acts, so it asks. That difference is the
-        // desktop gear working, and it has to survive the branch added above.
+        // desktop_observe only looks, so it is allowed; desktop_exec acts, so it asks.
         Assert.Equal(ToolDecision.Allow, governance.Decide("desktop_observe", "{}").Decision);
         Assert.Equal(ToolDecision.Ask, governance.Decide("desktop_exec", "{}").Decision);
         Assert.Equal(ToolDecision.Ask, governance.Decide("mcp_files_read", "{}").Decision);

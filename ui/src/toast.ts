@@ -3,8 +3,8 @@ import { reactive } from 'vue'
 /**
  * Transient confirmations (「已删除」, 「已复制」): a sentence that is true for a few seconds and then is not.
  *
- * Module state rather than provide/inject so a view can say something without being handed a callback, and so
- * a test mounting that view alone still works — nothing is rendered unless a `ToastHost` is on the page.
+ * Module state rather than provide/inject so a view can say something without being handed a callback. Nothing
+ * is rendered unless a `ToastHost` is on the page.
  */
 export interface ToastMessage {
   id: number

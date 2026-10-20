@@ -125,9 +125,8 @@ public sealed class JsonlSessionStoreTests : IDisposable
     [Fact]
     public async Task Projection_is_reused_until_the_log_moves()
     {
-        // The projection reads the whole log and replays its rules. It used to run four times per turn and
-        // once every 400ms from the session view, so it is now held until a write lands. What matters is not
-        // that it is reused — it is that it is *not* reused one event too long.
+        // The projection replays the whole log. What matters is not that it is reused, but that it is *not*
+        // reused one event too long.
         var sink = new FakeSink();
         await using var store = new JsonlSessionStore(sink);
 
@@ -145,14 +144,12 @@ public sealed class JsonlSessionStoreTests : IDisposable
     [Fact]
     public async Task Projection_is_rebuilt_after_a_purge_rewrites_the_log()
     {
-        // A purge does not append — it rewrites the file — so an append-only invalidation would miss it, and
-        // getting that wrong would leave deleted text readable through the cache, which is the exact thing a
-        // purge exists to prevent.
+        // A purge rewrites the file rather than appending, so an append-only invalidation would miss it and
+        // leave deleted text readable through the cache.
         //
-        // What this test actually proves is narrower than it looks: the tombstone that PurgeAsync appends
-        // invalidates on its own, so it would pass even with the explicit bump after Rewrite removed. That bump
-        // stays because it closes the window between the rewrite and the tombstone — but the state inside that
-        // window is not reachable from here, so nothing can prove it.
+        // The tombstone that PurgeAsync appends invalidates on its own, so this would pass even without the
+        // explicit bump after Rewrite. That bump closes the window between the rewrite and the tombstone, which
+        // is not reachable from here.
         var sink = new FakeSink();
         await using var store = new JsonlSessionStore(sink);
 
@@ -302,8 +299,8 @@ public sealed class JsonlSessionStoreTests : IDisposable
     [Fact]
     public async Task A_multiline_body_round_trips_through_the_file()
     {
-        // The log is one JSON record per line; a body's newlines belong to the body and are escaped by the
-        // serializer. Flattening them here is what used to destroy a markdown reply's structure.
+        // The log is one JSON record per line; a body's newlines are escaped by the serializer. Flattening them
+        // would destroy a markdown reply's structure.
         const string Markdown = "## 标题\n\n- 一\n- 二\n\n```json\n{ \"a\": 1 }\n```";
 
         var (store, _) = JsonlSessionStore.Open(_dir);

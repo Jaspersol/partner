@@ -41,7 +41,7 @@ public sealed class PcmFloatStreamReader
         var samples = new float[(_carryCount + bytes.Length) / _bytesPerSample];
         var index = 0;
 
-        // 先补齐上一次留下的半个采样。
+        // Fill in the half sample left over from the previous call.
         if (_carryCount > 0)
         {
             var needed = _bytesPerSample - _carryCount;
@@ -51,7 +51,7 @@ public sealed class PcmFloatStreamReader
             _carryCount = 0;
         }
 
-        // 再直接从输入里解整采样，避免多一次拷贝。
+        // Then decode whole samples directly from the input, avoiding an extra copy.
         var whole = bytes.Length / _bytesPerSample;
         for (var i = 0; i < whole; i++)
         {

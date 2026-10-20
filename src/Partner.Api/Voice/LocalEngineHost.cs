@@ -11,9 +11,10 @@ public sealed record LocalEngineState(bool Running, string Reason, int? ProcessI
 public sealed record LocalEnginesState(LocalEngineState Tts, LocalEngineState Kws);
 
 /// <summary>
-/// Starts and stops the local voice engines (TTS server, KWS/ASR server) as child processes
-/// 本地音频.md 的模型：引擎是独立进程，「关闭不占资源」的单位是进程——ONNX 内存池扩张后不归还宿主，
-/// 只有 exit 才可靠释放。每个引擎一个可执行文件 + 端口；开关与命令变更驱动启停。
+/// Starts and stops the local voice engines (TTS server, KWS/ASR server) as child processes. The engine is a
+/// separate process, and process exit is the only reliable release point: the ONNX memory pool does not return
+/// memory to the host after growing. One executable and port per engine; the switch and command changes drive
+/// start/stop.
 /// </summary>
 public sealed class LocalEngineHost : IAsyncDisposable
 {
@@ -27,8 +28,9 @@ public sealed class LocalEngineHost : IAsyncDisposable
     private ManagedEngine? _kws;
     private bool _disposed;
 
-    /// <param name="appDir">Relative command and working-directory paths are resolved against it. 引擎模块随应用目录
-    /// 存放，设置里存相对路径，应用搬家或重装后仍然有效。Null = 路径按原样使用。</param>
+    /// <param name="appDir">Relative command and working-directory paths are resolved against it. The engine module
+    /// lives beside the app directory and settings store relative paths, so moving or reinstalling the app keeps
+    /// them valid. Null = paths are used as-is.</param>
     public LocalEngineHost(string? appDir = null) => _appDir = appDir;
 
     public LocalEnginesState State => new(
@@ -59,11 +61,12 @@ public sealed class LocalEngineHost : IAsyncDisposable
         }
     }
 
-    /// <summary>Idempotent convergence: a correctly-running engine is left alone. 词表在引擎活着时才推，
-    /// 所以引擎中途重启（Exited→下次 Reconfigure 重拉）后 _keywordsSynced 随新实例归零，会重新下发。</summary>
+    /// <summary>Idempotent convergence: a correctly-running engine is left alone. Keywords are pushed only while
+    /// the engine is alive, so after a mid-session restart (Exited → next Reconfigure) _keywordsSynced resets with
+    /// the new instance and they are pushed again.</summary>
     private static async Task<ManagedEngine?> ApplyAsync(ManagedEngine? current, LocalEngineSettings wanted, string name, string? appDir)
     {
-        // 同配置且进程活着：什么都不做——设置保存不应抖动已在跑的引擎。
+        // Same config and live process: do nothing — saving settings must not churn a running engine.
         if (current is not null && current.Matches(wanted) && current.IsRunning)
         {
             return current;
@@ -85,9 +88,11 @@ public sealed class LocalEngineHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// 词表下发。配置里的 Keywords 非空才推——引擎端ী换表要重建识别流（读文件、建 spotter），是实质动作；
-    /// 空表 = 用户没配 = 保留引擎当前的词表，不被宿主静默清空。失败不抛：词表没同步上不该让设置保存
-    /// 整个 500，状态里已能看到引擎在跑；下次改任意配置会再推。
+    /// Keyword push. Only when the configured Keywords are non-empty — a table swap makes the engine rebuild its
+    /// recognition stream (read the file, build the spotter), which is a real action; an empty list means the user
+    /// configured none, so the engine's current list is kept rather than silently cleared. Failures are not
+    /// thrown: an unsynced keyword list must not 500 the settings save, the engine still shows as running, and the
+    /// next config change retries.
     /// </summary>
     private static async Task PushKeywordsAsync(ManagedEngine engine)
     {
@@ -100,9 +105,9 @@ public sealed class LocalEngineHost : IAsyncDisposable
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-            // 引擎端点吃 {"keywords":[…]} 包装对象（和它的 GET 返回同形），不是裸数组。
-            // 手拼 UTF-8 字节直发：PutAsJsonAsync 的 formatter 层在真实机上把 body 变成 {}，
-            // 引擎读出来是空词表、词推不上去。
+            // The engine endpoint expects a {"keywords":[…]} wrapper (same shape as its GET), not a bare array.
+            // Serialize UTF-8 bytes directly: PutAsJsonAsync's formatter layer produced an empty {} body on a real
+            // machine, so the engine saw an empty keyword list and the push never landed.
             var payload = System.Text.Json.JsonSerializer.Serialize(
                 new Dictionary<string, object?> { ["keywords"] = keywords });
             using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
@@ -154,10 +159,11 @@ public sealed class LocalEngineHost : IAsyncDisposable
         private Process? _process;
         private EngineJob? _job;
 
-        /// <summary>词表已在本次进程生命周期里成功下发过；防止每次 Reconfigure 都重建一遍识别流。</summary>
+        /// <summary>Keywords were pushed successfully during this process's lifetime; prevents rebuilding the
+        /// recognition stream on every Reconfigure.</summary>
         public bool KeywordsSynced;
 
-        /// <summary>启动它时用的那份配置；词表下发要读它的 Keywords 与 Port。</summary>
+        /// <summary>The settings this engine was started with; keyword push reads their Keywords and Port.</summary>
         public LocalEngineSettings SettingsSnapshot => _settings;
 
         private ManagedEngine(LocalEngineSettings settings, LocalEngineState state)
@@ -229,7 +235,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
 
             foreach (var argument in settings.Arguments)
             {
-                // 端口占位符：引擎要知道监听哪，宿主要连哪，一个模板同时喂两边。
+                // Port placeholder: one template feeds both the engine's listen port and the host's connect port.
                 startInfo.ArgumentList.Add(argument.Replace("{port}", settings.Port.ToString()));
             }
 
@@ -251,21 +257,23 @@ public sealed class LocalEngineHost : IAsyncDisposable
             }
 
             engine._process = process;
-            // 作业对象是「应用退出=引擎退出」的兜底：引擎的显存/内存只在进程退出时释放（本地音频.md），
-            // 若 API 崩溃或被硬杀走不到 DisposeAsync，内核就必须代劳——作业句柄随本进程消亡，整树被杀。
+            // The job object is the "app exit = engine exit" backstop: engine GPU/RAM is released only on process
+            // exit, and if the API crashes or is hard-killed, DisposeAsync never runs — so the kernel must step in.
+            // The job handle dies with this process, killing the whole tree.
             engine._job = EngineJob.Create(process, name);
             var pid = process.Id;
 
-            // 引擎进程闪退必须有理由：退出即报进程码，活下来才算「运行中」。但就绪要早退——引擎 1s
-            // 起好就 1s 返回，不再固定睡满 ReadyTimeoutSeconds（默认 30s，两引擎串行曾是启动的主瓶颈）。
+            // An engine crash must report a reason: exit reports the exit code, only survival counts as running.
+            // Readiness returns early, though — an engine up in 1 s returns in 1 s instead of always sleeping the
+            // full ReadyTimeoutSeconds (default 30 s; the two engines start serially).
             var grace = TimeSpan.FromSeconds(Math.Clamp(settings.ReadyTimeoutSeconds, 1, 30));
             var ready = await WaitUntilReadyAsync(process, settings.Port, grace).ConfigureAwait(false);
             engine.State = ready
                 ? new LocalEngineState(true, "运行中", pid)
                 : new LocalEngineState(false, $"进程已退出（代码 {process.ExitCode}）", null);
 
-            // But a process that dies during the session must be visible too. 退出事件闭掉 state 的活性，
-            // 不阻塞调用线程。
+            // A process that dies later in the session must be visible too. The exit event clears the state's
+            // liveness without blocking the calling thread.
             process.EnableRaisingEvents = true;
             process.Exited += (_, _) => engine.State = new LocalEngineState(false, $"进程已退出（代码 {engine.SafeExitCode()}）", null);
 
@@ -273,8 +281,9 @@ public sealed class LocalEngineHost : IAsyncDisposable
         }
 
         /// <summary>
-        /// 等引擎就绪：轮询 /health（2xx 即就绪）提前返回，进程闪退立即返回 false，上限是配置的宽限。
-        /// 端口没配就无从探测，退化为「睡满宽限只验证没闪退」的旧行为。
+        /// Waits for readiness: polls /health (2xx = ready) and returns early; a crashed process returns false
+        /// immediately; the bound is the configured grace. With no port there is nothing to probe, so it degrades
+        /// to sleeping the full grace and only checking the process did not exit.
         /// </summary>
         private static async Task<bool> WaitUntilReadyAsync(Process process, int port, TimeSpan timeout)
         {
@@ -308,13 +317,13 @@ public sealed class LocalEngineHost : IAsyncDisposable
                 }
                 catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
                 {
-                    // 还没监听/还没就绪，继续轮询。
+                    // Not listening / not ready yet; keep polling.
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
             }
 
-            // 到上限仍未见 /health：进程活着就按「运行中」报，宁可让后续请求吃重试，也不假报闪退。
+            // Still no /health at the bound: if the process is alive, report running rather than falsely claim a crash.
             return !process.HasExited;
         }
 
@@ -329,8 +338,8 @@ public sealed class LocalEngineHost : IAsyncDisposable
 
             try
             {
-                // 双保险：先给 Exit 事件一点时间自然结束，超时杀整棵树——
-                // 本地引擎（sherpa / tts-server）经常可以容忍 stdin 关闭而不退，必须硬杀。
+                // Belt and braces: give the Exit event a moment to happen naturally, then kill the whole tree.
+                // Local engines (sherpa / tts-server) often tolerate stdin closing and must be killed hard.
                 if (!await Task.Run(() => process.WaitForExit((int)StopGrace.TotalMilliseconds)).ConfigureAwait(false))
                 {
                     process.Kill(entireProcessTree: true);
@@ -338,7 +347,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
             }
             catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
             {
-                // 已经退出或无法等待；无需再处理。
+                // Already exited or cannot be waited on; nothing more to do.
             }
 
             _job?.Dispose();

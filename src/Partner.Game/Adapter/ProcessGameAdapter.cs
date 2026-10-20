@@ -23,10 +23,10 @@ public sealed record ProcessGameAdapterOptions
 }
 
 /// <summary>
-/// Game adapter over a child process (design doc §2.7): newline-delimited JSON on the child's
-/// stdin/stdout, UTF-8, one request in flight at a time. The protocol is strictly
-/// request/response, so a <see cref="SemaphoreSlim"/> serialises callers instead of letting
-/// them interleave lines on the pipe.
+/// Game adapter over a child process: newline-delimited JSON on the child's stdin/stdout,
+/// UTF-8, one request in flight at a time. The protocol is strictly request/response, so a
+/// <see cref="SemaphoreSlim"/> serialises callers instead of letting them interleave lines
+/// on the pipe.
 /// </summary>
 public sealed class ProcessGameAdapter : IGameAdapter
 {

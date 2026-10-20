@@ -1,6 +1,6 @@
 namespace Partner.Core.Contracts;
 
-/// <summary>Lifecycle of a queue item (see doc §2.2).</summary>
+/// <summary>Lifecycle of a queue item.</summary>
 public enum InputItemStatus
 {
     Queued,

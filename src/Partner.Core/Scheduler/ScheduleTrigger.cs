@@ -2,7 +2,7 @@ namespace Partner.Core.Scheduler;
 
 /// <summary>
 /// When a <see cref="ScheduleTask"/> is due. Implementations are pure: they never read the clock
-/// themselves (design doc §2.4 — the scheduler recomputes from persisted state).
+/// themselves — the scheduler recomputes from persisted state.
 /// </summary>
 public abstract record ScheduleTrigger
 {

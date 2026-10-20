@@ -7,7 +7,8 @@ using Partner.Voice.Settings;
 namespace Partner.Voice.Tests;
 
 /// <summary>
-/// 唤醒门 VoiceInputHalf + IWakeChecker 的行为：未唤醒不提交，唤醒后一段话内正常工作，说完全闭闸回去。
+/// Wake gate behavior of VoiceInputHalf with IWakeChecker: nothing submits before a wake hit, speech after a
+/// hit submits, and the gate closes once the utterance ends.
 /// </summary>
 public sealed class WakeGateTests
 {
@@ -19,7 +20,7 @@ public sealed class WakeGateTests
 
         public int Polls { get; private set; }
 
-        /// <summary>每次探针帧的长度，用来证明前置音频真的拼上去了。</summary>
+        /// <summary>Length of each probe frame, showing whether lead audio was prepended.</summary>
         public List<int> FrameLengths { get; } = new();
 
         public Task<LocalWakeClient.WakeHit> PollAsync(float[] frame, CancellationToken ct = default)
@@ -43,9 +44,8 @@ public sealed class WakeGateTests
             SilenceThreshold = 0.03,
             UtteranceGapMs = 1200,
 
-            // 唤醒后的宽限期在这里刻意压短，与本文件的用例意图一致：它们测的是「沉默最终会关掉会话」
-            // 这个机制，不是宽限期该多长。真实的默认值（5000）与「唤醒后停多久再说话还算数」由
-            // WakeTimingTests 负责——那条用例在引入宽限期之前必红。
+            // Deliberately short: these tests cover silence closing the session, not the grace period.
+            // WakeTimingTests covers the real default (5000) and how long after a wake speech still counts.
             WakeTimeoutMs = 1200,
             WindowSeconds = 8,
         };
@@ -64,7 +64,7 @@ public sealed class WakeGateTests
         return (half, source, wake, utterances);
     }
 
-    /// <summary>推进 n 秒的静音或语音帧（20ms 一步），between 每步 tick 一次。</summary>
+    /// <summary>Advances n seconds of silence or speech in 20 ms steps, ticking once per step.</summary>
     private static async Task AdvanceAsync(VoiceInputHalf half, SyntheticAudioSource source, double seconds, float amplitude)
     {
         const int frame = 320; // 20ms at 16kHz
@@ -80,12 +80,12 @@ public sealed class WakeGateTests
     {
         var (half, source, wake, utterances) = Create();
 
-        // 2 秒持续说话。没有唤醒词命中。
+        // Two seconds of speech, with no wake hit.
         await AdvanceAsync(half, source, 2.0, 0.5f);
 
         Assert.Empty(utterances);
         Assert.False(half.Awake);
-        Assert.True(wake.Polls > 0); // 麦克风在听，KWS 在被问
+        Assert.True(wake.Polls > 0); // The microphone listens and KWS is polled.
     }
 
     [Fact]
@@ -94,23 +94,20 @@ public sealed class WakeGateTests
         var (half, source, wake, utterances) = Create();
 
         wake.Respond = frame => new LocalWakeClient.WakeHit("小爱同学", 0, 0.9);
-        await AdvanceAsync(half, source, 0.2, 0f); // 唤醒词本身过来（当噪声也罢）
+        await AdvanceAsync(half, source, 0.2, 0f); // A wake hit arrives, treated as noise by the gate.
         Assert.True(half.Awake);
         wake.Respond = null;
 
-        // 唤醒后说一句话，然后沉默 1.4s 让 G2 闭合提交。
+        // Speak after the wake, then stay silent for 1.4 s so the gap closes and submits.
         await AdvanceAsync(half, source, 1.0, 0.5f);
         await AdvanceAsync(half, source, 1.4, 0f);
 
         Assert.Single(utterances);
-        Assert.False(half.Awake); // 提交即一段话完，回闸等下次唤醒。
+        Assert.False(half.Awake); // A submit ends the utterance and the gate waits for the next wake.
         Assert.True(half.Utterances.Single().Transcript.Length > 0);
     }
 
-    /// <summary>
-    /// 只喊唤醒词、不说话：会话必须自己回闸。曾经 <c>_awake</c> 只在提交的成功路径里清，纯静音的块
-    /// 撞上提前 return，于是闸门一直开着、唤醒探针再也不跑，提示音只响一次（实测复现）。
-    /// </summary>
+    /// <summary>A wake hit followed by silence must close the session itself.</summary>
     [Fact]
     public async Task A_wake_hit_without_following_speech_closes_the_session()
     {
@@ -120,24 +117,24 @@ public sealed class WakeGateTests
         await AdvanceAsync(half, source, 0.2, 0f);
         Assert.True(half.Awake);
 
-        // 喊完词就沉默：整段静默闭合（G2）必须关掉会话，而不是等一次成功的转写。
+        // Silence after the wake word must close the session through the gap, without waiting for a transcript.
         wake.Respond = null;
         var pollsWhileAwake = wake.Polls;
         await AdvanceAsync(half, source, 2.5, 0f);
 
         Assert.False(half.Awake);
-        Assert.Empty(utterances); // 纯静音不值得一次 ASR 请求。
+        Assert.Empty(utterances); // Pure silence is not worth an ASR request.
         Assert.True(wake.Polls > pollsWhileAwake, "探针必须在会话关掉之后重新跑起来");
 
-        // 再喊一次必须再次进入会话（提示音那条路径由 Wake_hit_plays_the_tone… 覆盖）。
+        // A second wake must re-enter the session (the tone path is covered by Wake_hit_plays_the_tone).
         wake.Respond = frame => new LocalWakeClient.WakeHit("小克小克", 0, 0.9);
         await AdvanceAsync(half, source, 0.2, 0f);
         Assert.True(half.Awake);
     }
 
     /// <summary>
-    /// 引擎命中后会换一条新流（同一条流会一直持有已匹配的前缀状态），所以会话结束、探针恢复时的第一帧
-    /// 必须重新带前置——否则新流没有左边上下文，第二次唤醒会静默失效。
+    /// A hit starts a new engine stream, so the first probe after the session ends must resend the lead;
+    /// otherwise the new stream has no left context and a second wake silently fails.
     /// </summary>
     [Fact]
     public async Task Wake_probe_re_primes_the_stream_after_a_hit()
@@ -156,7 +153,7 @@ public sealed class WakeGateTests
         Assert.True(wake.FrameLengths.Count > probesAtHit, "探针没有在会话结束后恢复");
         var resumed = wake.FrameLengths[probesAtHit];
 
-        // 增量上限 2s，超过它的长度只可能来自重新拼上的前置。
+        // The increment is capped at 2 s, so a longer frame can only come from a resent lead.
         Assert.True(
             resumed > SampleRate * 2,
             $"first probe after the session is {resumed} samples — the lead was not re-sent");
@@ -188,17 +185,17 @@ public sealed class WakeGateTests
         wake.Respond = frame => new LocalWakeClient.WakeHit("军哥", 0, 0.9);
         await AdvanceAsync(half, source, 1.0, 0.1f);
 
-        // 多次 tick 只在关→开的那一瞬达拨过一声；引擎持续命中时不再重复。
+        // Ticks across the closed-to-open transition play the tone once; a continuing hit does not repeat it.
         Assert.Equal(1, tones);
 
         wake.Respond = null;
         await AdvanceAsync(half, source, 3.0, 0.5f);
         await AdvanceAsync(half, source, 1.5, 0f);
-        Assert.False(half.Awake); // 会话闭了。
+        Assert.False(half.Awake); // The session is closed.
 
         wake.Respond = frame => new LocalWakeClient.WakeHit("军哥", 0, 0.9);
         await AdvanceAsync(half, source, 1.0, 0.1f);
-        Assert.Equal(2, tones); // 第二次唤醒再拨一声——每次进入会话都有。
+        Assert.Equal(2, tones); // A second wake plays it again: every entry into a session has one.
     }
 
     [Fact]
@@ -206,40 +203,40 @@ public sealed class WakeGateTests
     {
         var (half, source, _, utterances) = Create();
 
-        // 模拟引擎失联：PollAsync 抛。
+        // Simulate a lost engine: PollAsync throws.
         await AdvanceAsync(half, source, 0.5, 0.5f);
 
         Assert.Empty(utterances);
-        Assert.True(half.IsRunning); // 半区活着。
+        Assert.True(half.IsRunning); // The half stays alive.
     }
 
     /// <summary>
-    /// 前置音频只送一次：新流的解码器要左边上下文才命中（实测裸增量和 0.3s 前置都打不出、1.0s 才命中），
-    /// 但每帧都送就让同一条流把每句话听两遍——两遍「小克」正好凑出双声词，喊一声也唤醒。
+    /// The lead is sent once: a new stream needs left context to hit, but sending it every frame makes the
+    /// stream hear each phrase twice, which can fake a wake word.
     /// </summary>
     [Fact]
     public async Task Wake_probe_primes_the_stream_once_then_sends_bare_increments()
     {
         var (half, source, wake, _) = Create();
 
-        // 4s 语音：远超 1s 前置窗口，足够发生多次探针。
+        // Four seconds of speech: well past the 1 s lead window, enough for several probes.
         await AdvanceAsync(half, source, 4.0, 0.5f);
 
         Assert.True(wake.Polls > 0);
         Assert.True(wake.FrameLengths.Count >= 20, "not enough probes to judge the lead window");
 
-        // 首帧：100ms 增量之外还拼上了当时能读到的前置（这一刻环形里只有 100ms，所以是 3200 样本）。
+        // First frame prepends whatever lead is available; at this point the ring holds 100 ms, so 3200 samples.
         Assert.True(
             wake.FrameLengths[0] > 320,
             $"first probe {wake.FrameLengths[0]} samples carries no lead at all");
 
-        // 之后：纯增量。最小增量 100ms，加上前置就 ≥1.1s——出现这种长度说明前置又被送了一遍。
+        // After that, bare increments: 100 ms, or at least 1.1 s if the lead were resent.
         Assert.All(wake.FrameLengths.Skip(1), length => Assert.True(
             length < (int)(SampleRate * 1.1),
             $"probe frame {length} samples re-sent the lead context"));
     }
 
-    /// <summary>前置窗口之外的音频不占探针帧：帧有上限，否则一次请求会灌进整段历史。</summary>
+    /// <summary>Audio outside the lead window does not occupy probe frames, which are bounded.</summary>
     [Fact]
     public async Task Wake_probe_frame_stays_bounded()
     {
@@ -248,7 +245,7 @@ public sealed class WakeGateTests
         await AdvanceAsync(half, source, 4.0, 0.5f);
 
         Assert.True(wake.Polls > 0);
-        // 增量上限 2s + 前置 1s，再加一个 tick 的余量。
+        // A 2 s increment cap, a 1 s lead, and one tick of margin.
         Assert.All(wake.FrameLengths, length => Assert.True(
             length <= SampleRate * 3.2,
             $"probe frame {length} samples exceeds the 1s lead + 2s increment budget"));
@@ -281,10 +278,10 @@ public sealed class WakeGateTests
         await AdvanceAsync(half, source, 1.0, 0.5f);
         await AdvanceAsync(half, source, 1.4, 0f);
 
-        Assert.Single(utterances); // 没有唤醒门，一段话直接进。
+        Assert.Single(utterances); // Without a wake gate, the utterance goes straight through.
     }
 
-    /// <summary>固定返回一段文本的假 ASR，让每段提交都必产 utterance。</summary>
+    /// <summary>A fake ASR that always returns text, so every submit produces an utterance.</summary>
     private sealed class NullAsr : IAsrClient
     {
         public Task<string> TranscribeAsync(float[] pcm, CancellationToken ct = default) =>

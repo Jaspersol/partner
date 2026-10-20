@@ -6,9 +6,8 @@ namespace Partner.Desktop.Tests;
 /// <summary>
 /// What an observation's shared state has to survive: a second observation running at the same time.
 /// <para>
-/// The step budget allows parallel tool calls, so this is not hypothetical — and the failure it produced was
-/// invisible: two observations mutating one dictionary of truncation reasons, so an entity could carry the
-/// count belonging to somebody else's walk, and a half-built dictionary could be read by the other call.
+/// The step budget allows parallel tool calls, so this is not hypothetical: two observations must not share a
+/// mutable dictionary of truncation reasons.
 /// </para>
 /// <para>
 /// Driven through the walk seam rather than against the real desktop: the interleaving is the subject, and the
@@ -42,13 +41,6 @@ public sealed class ObservationConcurrencyTests
     /// carries the rest forward from the snapshot it started with; the full call walks everything and is cut
     /// off. What the targeted answer says about the windows it did <i>not</i> walk has to come from its own
     /// starting snapshot, not from the walk that happened while it was parked.
-    /// <para>
-    /// This is the interleaving that the shared-dictionary version loses. It parked the targeted call inside
-    /// its walk, after the seed and before the answer was built; the full walk then cleared and refilled the
-    /// one dictionary both of them held, so the targeted answer read the other call's reasons back out for
-    /// windows it never looked at. Nothing threw, and nothing was missing — the reasons were simply somebody
-    /// else's.
-    /// </para>
     /// <para>
     /// The park is placed deliberately: <c>_walk</c> is called after the carry-forward seed and before any of
     /// this call's own entries are written, so the window between them is the whole subject. A park placed
@@ -103,9 +95,8 @@ public sealed class ObservationConcurrencyTests
     }
 
     /// <summary>
-    /// A targeted observation carries the other windows forward untouched. The published state has to be
-    /// replaced as a unit for that to hold: a walk that rebuilt the dictionaries in place would leave a
-    /// concurrent call reading a half-populated one.
+    /// A targeted observation carries the other windows forward untouched. The published state must be
+    /// replaced as a unit, so a concurrent call never reads a half-populated dictionary.
     /// </summary>
     [Fact]
     public void A_targeted_observation_publishes_the_other_windows_unchanged()
@@ -125,7 +116,7 @@ public sealed class ObservationConcurrencyTests
         var targeted = automation.Observe(elementsFor: target);
 
         // The pair travels together: the window that was re-walked is now clean, and the ones that were not keep
-        // the reason they were published with — not the freshly walked one's.
+        // the reason they were published with, not the freshly walked one's.
         Assert.False(targeted.Find(target)!.ElementsTruncated);
         Assert.All(
             targeted.Entities.Where(entity => entity.EntityId != target),

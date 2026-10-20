@@ -1,17 +1,14 @@
 /**
- * What a session event's `kind` says to a reader (ui.md §5.2).
+ * What a session event's `kind` says to a reader.
  *
  * <para>
- * The wire value is a C# enum name (`ToolCall`, `ThinkingStreaming`, `StepStart`…), and rendering it verbatim
- * puts an internal spelling in front of whoever is reading the log. `ui.md §5.2` asks for a *word* — and it
- * asks for a word rather than a colour because colour is already spoken for in this view: 已编辑 and 已失效 own
- * it, so a third meaning on the same channel would have nothing left to say.
+ * The wire value is a C# enum name (`ToolCall`, `ThinkingStreaming`, `StepStart`…), which must not be rendered
+ * verbatim. A word rather than a colour, because 已编辑 and 已失效 already own colour in this view.
  * </para>
  *
  * <para>
- * A kind nothing matches falls through to the raw value rather than to a placeholder. An unrecognised kind is
- * exactly the one a reader needs to see, because it is the one they cannot guess — the same rule
- * `toolAppearance.ts` follows for an unrecognised tool name.
+ * An unknown kind falls through to the raw value rather than to a placeholder: it is the one a reader cannot
+ * guess. `toolAppearance.ts` follows the same rule for unknown tool names.
  * </para>
  */
 
@@ -19,9 +16,8 @@
  * Wire value → what the row says it is.
  *
  * <para>
- * Only the kinds a reader can actually encounter as a row are listed. `EventList` folds `ToolCall`/`ToolResult`
- * into one card and `Thinking` into `ThinkingRow`, so those never reach the meta line here; the pairs are here
- * anyway so the mapping stays a description of the enum rather than of the current rendering.
+ * `EventList` folds `ToolCall`/`ToolResult` into one card and `Thinking` into `ThinkingRow`, so those never
+ * reach the meta line here; the pairs are listed anyway so the mapping describes the enum, not the rendering.
  * </para>
  */
 const KIND_LABEL: Record<string, string> = {
@@ -39,11 +35,8 @@ const KIND_LABEL: Record<string, string> = {
  * What a session event's `source` says to a reader.
  *
  * <para>
- * The wire value is the C# enum name (`Voice`, `Text`, `Schedule`, `Agent`). The first three are familiar
- * enough to read as words. `Agent` gets no label at all: a sub-agent's own report is filtered out of the view
- * by the server, and the only `Agent` rows left are the main agent's ordinary replies to such a report — so
- * calling them 「子 agent」 would name the wrong speaker. Unknown values fall through verbatim, for the same
- * reason the kind labels do.
+ * `Agent` gets no label: the server filters sub-agent reports out of the view, so the remaining `Agent` rows
+ * are the main agent's ordinary replies. Unknown values fall through verbatim.
  * </para>
  */
 const SOURCE_LABEL: Record<string, string> = {
@@ -61,11 +54,8 @@ export function sourceLabel(source: string): string {
 /**
  * Whether a row should carry a source chip at all.
  *
- * <para>
- * `Agent` is deliberately absent: the server keeps sub-agent reports out of the view, so what remains is the
- * main agent answering one — an ordinary assistant row, not a second kind of speaker. A chip saying otherwise
- * is a label the reader cannot act on and can only misread.
- * </para>
+ * `Agent` is deliberately absent: the remaining `Agent` rows are ordinary assistant replies, so a chip would be
+ * a label the reader can only misread.
  */
 export function sourceHasChip(source: string): boolean {
   return source !== '' && SOURCE_LABEL[source] !== ''
@@ -84,15 +74,13 @@ export function sessionKindLabel(kind: string): string {
  * What kind of participant a row is, for the colour dot beside its name.
  *
  * <para>
- * A dot is a *second* channel, never the first: the role word is already in the row in text, and a reader who
- * cannot separate the tints loses nothing (ui.md §5.2 — colour cannot be the only thing saying what a row is).
- * What the dot buys is scanning — a turn of twenty tool calls can be found by looking for the shape rather
- * than reading twenty role words.
+ * The dot is a *second* channel, never the first: the role word is already in the row, so a reader who cannot
+ * separate the tints loses nothing. It buys scanning speed.
  * </para>
  *
  * <para>
- * The keys are roles rather than kinds because several kinds share a role, and the reader only cares about
- * "who said this": a tool call and its result are both the machine.
+ * Keys are roles rather than kinds because several kinds share a role: a tool call and its result are both the
+ * machine.
  * </para>
  */
 export type SessionRole = 'user' | 'assistant' | 'system' | 'tool' | 'schedule' | 'summary' | 'edit'
@@ -109,7 +97,7 @@ const KIND_ROLE: Record<string, SessionRole> = {
   Edit: 'edit',
 }
 
-/** The dot's role, or null for a kind this list has never heard of — which then gets the neutral dot. */
+/** The dot's role, or null for an unknown kind — which then gets the neutral dot. */
 export function sessionRole(kind: string): SessionRole | null {
   return KIND_ROLE[kind] ?? null
 }

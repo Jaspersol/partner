@@ -2,9 +2,7 @@ namespace Partner.Core.Memory;
 
 /// <summary>
 /// Lets one <see cref="IMemoryStore"/> be used from several threads. <see cref="MemoryStore"/> holds a single
-/// SQLite connection and a connection is not safe for concurrent use; the daily maintenance timer and a turn's
-/// recall are different threads, and when they overlap the failure is an exception from deep inside the driver
-/// (or worse, a half-read result).
+/// SQLite connection, which is not safe for concurrent use.
 /// <para>
 /// A decorator rather than a lock inside the store: the store's own methods call each other (a write promotes,
 /// a recall maintains), so a lock taken per public method would deadlock on itself. Outside callers go through
@@ -113,7 +111,8 @@ public sealed class SerializedMemoryStore(IMemoryStore inner) : IMemoryStore
 
     public async ValueTask DisposeAsync()
     {
-        // Waits for whatever is in flight: closing the connection under a running query is the failure this exists to prevent.
+        // Waits for whatever is in flight: closing the connection under a running query is the failure this exists
+        // to prevent.
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {

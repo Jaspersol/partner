@@ -31,26 +31,23 @@ import SettingsView from './views/SettingsView.vue'
 import { version } from '../package.json'
 
 /**
- * The shell (ui.md §2): top bar, body (sidebar + content), status bar. It owns exactly what the regions
- * share — the connection, the queue summary, the active view — and nothing else. Each view reads its own
- * data; the shell never caches a view's contents.
+ * The shell: top bar, body (sidebar + content), status bar. It owns exactly what the regions share — the
+ * connection, the queue summary, the active view — and nothing else. Each view reads its own data; the shell
+ * never caches a view's contents.
  */
 
 const NAV: NavItem[] = [
   { key: 'session', label: '会话', icon: 'chat' },
-  // Right under the conversation: what a timed task produces lands there, and it is the page one reaches for
-  // right after typing "remind me at nine".
+  // Right under the conversation: a timed task's output lands there.
   { key: 'schedules', label: '定时', icon: 'clock' },
   { key: 'memory', label: '记忆', icon: 'memory' },
 
   // Two capability pages of their own rather than cards inside settings: both are lists a person reads and
-  // changes, not two more switches. A server row or a skill row deserves the room a card in a settings form
-  // does not give it.
+  // changes, and need the room a settings card does not give.
   { key: 'mcp', label: 'MCP', icon: 'mcp' },
   { key: 'skills', label: '技能', icon: 'skill' },
 
-  // What the agents are told, and who they may hand work to. Between the capability pages and settings
-  // because it edits the thing the capabilities are offered to, not the installation itself.
+  // What the agents are told, and who they may hand work to.
   { key: 'prompts', label: 'agent', icon: 'prompt' },
   { key: 'settings', label: '设置', icon: 'settings' },
 ]
@@ -61,7 +58,7 @@ const QUEUE_POLL_MS = 5000
 /**
  * A tool call waiting for a human, shown here rather than inside a view: the answer is part of a turn that is
  * already parked, and a prompt that only exists on the session tab is a prompt nobody sees while they are
- * elsewhere — which is how two approvals once timed out with nobody watching.
+ * elsewhere.
  */
 const APPROVAL_POLL_MS = 500
 
@@ -75,9 +72,8 @@ const desktop = ref<DesktopState | null>(null)
  * The delegated job on screen, if any.
  *
  * <para>
- * Polled with the queue because it is the same question — "is something working, and can I stop it" — and a
- * job that a reader cannot see is a job they cannot cancel. Kept as the first running one rather than a list:
- * the status bar has room for one line, and the prompts page is where the full list lives.
+ * Polled with the queue because it answers the same question — "is something working, and can I stop it". Kept
+ * as the first running one rather than a list: the status bar has room for one line.
  * </para>
  */
 const runningJob = ref<AgentJobView | null>(null)
@@ -85,8 +81,7 @@ const runningJob = ref<AgentJobView | null>(null)
 
 /**
  * The gear menu and its default, for the composer's picker. Read from settings rather than fetched with the
- * summary: they only change when settings are saved, and a poll that re-read them would be asking the
- * server the same question every few seconds.
+ * summary: they only change when settings are saved.
  */
 const gears = ref<string[]>([])
 const defaultGear = ref('')
@@ -95,11 +90,8 @@ const active = ref('session')
  * What the reader chose, not what is true.
  *
  * <para>
- * These are kept apart because the difference is the whole bug. For years the CSS collapsed the sidebar on a
- * narrow window while this flag stayed `false`, so the toggle button went on reading 「收起侧栏」 and clicking it
- * changed nothing that could be seen: the state it reported and the state on screen had quietly diverged.
- * Now `railOnly` comes from a measurement, the effective state is derived from both, and the button is not
- * offered at all when the window is too narrow for it to mean anything.
+ * Kept apart from the measured `railOnly`: the effective state is derived from both, and the toggle button is
+ * not offered at all when the window is too narrow for it to mean anything.
  * </para>
  */
 const userWantsSidebar = ref(false)
@@ -110,24 +102,13 @@ const summary = ref<QueueSummary | null>(null)
  * The queue behind the badge, and what the composer's list is drawn from.
  *
  * <para>
- * One read, two readings — the counts the badge shows and the rows the composer's expandable list lists —
- * so they cannot disagree. There is no queue page any more: the conversation is where a reader meets the
- * queue, in the composer's own strip.
+ * One read, two readings — the badge's counts and the composer's rows — so they cannot disagree.
  * </para>
  */
 const queueItems = ref<QueueItem[]>([])
 const consumer = ref<ConsumerState | null>(null)
 
-/**
- * The line the top bar shows in the middle.
- *
- * <para>
- * Only the session view sets it, and only to name the row the reader has selected. Every other view used to
- * contribute a sentence here too — 「设置 · 运行时」, 「记忆 · 12 条」 — restating what the sidebar already said
- * about where they were and what the page under it already showed in full. That is text with nothing in it, so
- * those views say nothing now and the middle of the bar stays empty until there is a selection to name.
- * </para>
- */
+/** The line the top bar shows in the middle. Only the session view sets it, to name the selected row. */
 const context = ref('')
 const connectionError = ref('')
 const endpoint = ref('')
@@ -155,10 +136,8 @@ const activeView = ref<ActiveView | null>(null)
  * Switching views, with one thing asked first.
  *
  * <para>
- * The views are \`v-if\`, so leaving one destroys it. That was invisible while settings saved themselves on every
- * toggle; now that saving is explicit (P4 #20), switching tabs would silently throw away a page of edits. A
- * reader who did not expect to be asked is better served by a question than by losing the work — so the view is
- * asked, and only asked when the answer is yes.
+ * The views are `v-if`, so leaving one destroys it. Saving is explicit, so switching tabs would silently throw
+ * away a page of edits; the view is asked, and only asked when it has unsaved changes.
  * </para>
  */
 function select(key: string) {
@@ -180,10 +159,8 @@ let approvalPoller: ReturnType<typeof setInterval> | undefined
 /**
  * True once a refresh has failed and nothing has succeeded since.
  *
- * <para>
- * This exists because a failed read has to change the answer without erasing it, and those are different
- * demands that were being served by one line.
- * </para>
+ * A failed read must change the answer without erasing it: the badge can say "unknown", but the stop button
+ * must not disappear while the turn it controls is still running.
  */
 const stale = ref(false)
 
@@ -199,25 +176,16 @@ async function refreshSummary() {
     consumer.value = await api.value.consumer()
     approvals.value = (await api.value.approvals()).pending ?? []
 
-    // Always fetched: it carries the approval gear the composer offers, and the entities that turn an
+    // Always fetched: it carries the approval gear the composer offers and the entities that turn an
     // approval's entityId into a window a human recognises. Both are read-only and in-memory.
     desktop.value = await api.value.desktop()
     stale.value = false
   } catch (failure) {
-    // Two different things, and they used to be handled by the same statement:
-    //
-    //   - **A count we no longer trust must not be shown.** `summary = null` makes the badge read 队列 —,
-    //     which is honest: we do not know. Clearing it here is right, and the comment that used to sit on
-    //     this line is kept for the half of it that still holds.
-    //   - **An action must not disappear because a read failed.** The composer's interrupt button and its queue
-    //     list are derived from `queueItems` / `consumer`, so clearing those made the *stop* button vanish
-    //     mid-turn — on any transient hiccup, and with no way to get it back but waiting for the next poll.
-    //     A control that disappears while the thing it controls is still running is worse than one showing
-    //     something slightly old.
-    //
-    // So: the last known queue and consumer state are kept, and `stale` says so on the surface that is about
-    // connection state. Pressing interrupt on a stale read is harmless — `cancel` answers 404 and the composer
-    // reports 「已完成，无法取消」.
+    // A count we no longer trust must not be shown: `summary = null` makes the badge read 队列 —. But an action
+    // must not disappear because a read failed: the composer's interrupt button and queue list are derived from
+    // `queueItems` / `consumer`, so those are kept. A control that disappears while the thing it controls is
+    // still running is worse than one showing something slightly old. Pressing interrupt on a stale read is
+    // harmless — `cancel` answers 404 and the composer reports 「已完成，无法取消」.
     if (failure instanceof ApiError && failure.status === 401) {
       connectionError.value = 'token 失效（401）——请重启壳以获取新令牌'
     }
@@ -226,17 +194,15 @@ async function refreshSummary() {
   }
 
   // A separate read, deliberately: an older API answers 404 here, and that must not mark the queue stale or
-  // clear the badge. A failed job read keeps the last known job, for the same reason a failed queue read keeps
-  // the stop button.
+  // clear the badge. A failed job read keeps the last known job.
   await refreshJobs()
 }
 
 /**
  * The delegated job, on the same five-second cadence as the queue.
  *
- * Kept apart from `refreshSummary` because it is a different surface with a different failure: the jobs
- * endpoint is new, and a build without it should leave the status bar quiet rather than flag the whole
- * connection as stale.
+ * Kept apart from `refreshSummary` because it is a different surface with a different failure: a build without
+ * the jobs endpoint should leave the status bar quiet rather than flag the whole connection as stale.
  */
 async function refreshJobs() {
   if (!api.value) {
@@ -296,9 +262,8 @@ async function setApprovalGear(gear: string) {
 }
 
 /**
- * Re-reads the gear menu after a settings save, so the composer offers what was just stored. A failed
- * read keeps the last known list: emptying the picker would silently drop a gear the user can no longer
- * select, which is worse than showing a slightly stale one.
+ * Re-reads the gear menu after a settings save, so the composer offers what was just stored. A failed read
+ * keeps the last known list: emptying the picker would silently drop a gear the user can no longer select.
  */
 async function refreshGears() {
   if (!api.value) {
@@ -316,19 +281,16 @@ async function refreshGears() {
 }
 
 /**
- * Keyboard shortcuts (P4 #19).
+ * Keyboard shortcuts.
  *
  * <para>
- * Three, and each one has to be understood as *the* way to do something rather than a faster way: Ctrl+K to
- * search, `1`–`7` to switch view, Ctrl+B for the rail. The arrow keys already proved this app can be driven
- * from the keyboard; these are the three that were missing to finish the set.
+ * Ctrl+K to search, `1`–`7` to switch view, Ctrl+B for the rail.
  * </para>
  *
  * <para>
- * The rule that matters is what they must <b>not</b> steal. `1`–`7` are the digits a person types into the
- * composer, so they are inert while the caret is in a field — a shortcut that swallows half the characters of
- * a message is worse than no shortcut at all. Ctrl chords are left alone entirely unless they are one of ours,
- * so Ctrl+Tab and Ctrl+W still belong to the browser.
+ * The digits are inert while the caret is in a field: a shortcut that swallows half the characters of a message
+ * is worse than no shortcut. Ctrl chords that are not ours are left alone, so Ctrl+Tab and Ctrl+W still belong
+ * to the browser.
  * </para>
  */
 const VIEW_KEYS = ['1', '2', '3', '4', '5', '6', '7'] as const
@@ -346,12 +308,11 @@ function onShortcut(event: KeyboardEvent) {
     const key = event.key.toLowerCase()
 
     if (key === 'k') {
-      // Only when there is something to focus. Preventing the default for a chord we then do nothing with
-      // would be the same lie as a button that does nothing: the chord is left alone unless we act on it,
-      // which is also what keeps Ctrl+Tab and Ctrl+W the browser's.
+      // Only when there is something to focus: the chord is left alone unless we act on it, which is also what
+      // keeps Ctrl+Tab and Ctrl+W the browser's.
       if (typeof activeView.value?.focusSearch !== 'function') return
       // Deliberately not gated on `isTyping`: taking the reader away from whatever they were typing *is* what
-      // "search" means, and it is how every application that offers Ctrl+K behaves.
+      // "search" means.
       event.preventDefault()
       activeView.value.focusSearch()
       return
@@ -417,7 +378,7 @@ onMounted(async () => {
   applyReducedTransparency(readReducedTransparency())
 
   // On the window, not on the shell: a shortcut has to work wherever the caret is, including inside the
-  // composer. `isTyping` is what keeps the digit keys out of a message.
+  // composer. `isTyping` keeps the digit keys out of a message.
   window.addEventListener('keydown', onShortcut)
 
   const resolved = resolveConnection()

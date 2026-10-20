@@ -7,13 +7,8 @@ using Xunit;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// Input the action surface could not express at all: chords, two clicks in time, a position inside a
-/// control, and reaching a control that is below the fold.
-/// <para>
-/// Each of these was a hard "not supported" before. None of them is a nicety — copy is a chord, opening a
-/// folder is two clicks, a split button's arrow is a position inside one control, and everything below the
-/// fold was previously a "scroll by a guessed amount, look again, maybe scroll more" loop for the model.
-/// </para>
+/// Input the action surface must express: chords, two clicks in time, a position inside a control, and
+/// reaching a control below the fold.
 /// </summary>
 public sealed class DesktopInputCapabilityTests
 {
@@ -28,7 +23,6 @@ public sealed class DesktopInputCapabilityTests
     private static bool IsKeyUp(NativeMethods.Input input) =>
         (input.Union.Keyboard.Flags & NativeMethods.KeyeventfKeyup) != 0;
 
-    // ---- chords -------------------------------------------------------------------------------
 
     [Fact]
     public void A_modifier_is_held_around_the_key_not_folded_into_it()
@@ -132,7 +126,6 @@ public sealed class DesktopInputCapabilityTests
         Assert.Empty(DesktopActTool.Modifiers(new[] { "a" }));
     }
 
-    // ---- two clicks in time -------------------------------------------------------------------
 
     [Fact]
     public void A_double_click_is_two_clicks_separated_by_a_pause()
@@ -149,10 +142,10 @@ public sealed class DesktopInputCapabilityTests
         // Windows assembles a double click from two clicks in time. A down/up/down/up burst is one click that
         // moved, and a folder that opens on the second press never sees it.
         // Every mouse event carries the positional flags as well, so the button is read as a bit rather than as the
-// whole value.
-var presses = inputs
-            .Count(input => input.Type == NativeMethods.InputMouse
-                && (FlagsOf(input) & NativeMethods.MouseeventfLeftdown) != 0);
+        // whole value.
+        var presses = inputs
+                    .Count(input => input.Type == NativeMethods.InputMouse
+                        && (FlagsOf(input) & NativeMethods.MouseeventfLeftdown) != 0);
         var releases = inputs
             .Count(input => input.Type == NativeMethods.InputMouse
                 && (FlagsOf(input) & NativeMethods.MouseeventfLeftup) != 0);
@@ -202,7 +195,6 @@ var presses = inputs
         Assert.Equal(2, inputs.Length);
     }
 
-    // ---- a position inside a control ---------------------------------------------------------
 
     private static UiElement Element(int x, int y, int width, int height) => new(
         "w:0", "w", "提交", "Button", new PixelRect(x, y, width, height), "digest");
@@ -282,7 +274,6 @@ var presses = inputs
         ObservedAtMs = DateTimeOffset.UnixEpoch,
     };
 
-    // ---- what the guard says about the new kinds ---------------------------------------------
 
     [Fact]
     public void A_scroll_into_view_needs_a_control_not_a_distance()
@@ -338,9 +329,9 @@ var presses = inputs
 /// <summary>
 /// A control that is not on screen, and the one action that can change that.
 /// <para>
-/// The walk used to drop offscreen elements outright, which made "scroll down a bit and click it" impossible
-/// to express: there was no element to name, so the only route was a guessed scroll amount followed by another
-/// observation, and the model had to get the amount right by trial.
+/// The walk keeps offscreen elements so "scroll down a bit and click it" can be expressed. Dropping them leaves
+/// no element to name, and the only route is a guessed scroll amount followed by another observation, with the
+/// amount right only by trial.
 /// </para>
 /// </summary>
 public sealed class OffscreenElementTests

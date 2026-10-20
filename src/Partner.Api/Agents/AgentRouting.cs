@@ -47,8 +47,8 @@ public static class AgentRouting
     /// <summary>
     /// The same rule for the web tools: the main agent searches and fetches only while no enabled sub-agent has
     /// taken the scenario. Unlike files this is <b>on by default</b> and there is no built-in web sub-agent, so
-    /// out of the box the tools are the main agent's — which is what "联网搜索默认打开" has to mean for it to be
-    /// true of something.
+    /// out of the box the tools are the main agent's — which is what "web search on by default" has to mean for it
+    /// to be true of something.
     /// </summary>
     public static bool MainOwnsWeb(RuntimeSettings settings) =>
         settings.Web.Enabled && settings.Agents.Owner(AgentScenarios.WebSearch) is not { Enabled: true };
@@ -65,7 +65,7 @@ public static class AgentRouting
         || MainOwnsFiles(before) != MainOwnsFiles(after)
         // Only the web switch and who owns the tools are here. The proxy, the budget, the result count and the
         // engine list are read through a delegate on every search, so editing them must not restart anything —
-        // a restart would drop the in-process answer cache and the ledger beside it.
+        // a restart would drop the in-process answer cache and its ledger.
         || before.Web.Enabled != after.Web.Enabled
         || MainOwnsWeb(before) != MainOwnsWeb(after);
 

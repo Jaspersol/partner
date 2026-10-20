@@ -199,9 +199,9 @@ public sealed class DesktopIntegrationTests
     public void An_observation_is_stamped_when_it_finishes_not_when_it_starts()
     {
         // Reading the UIA trees of every window takes seconds; enumerating the windows takes milliseconds. The
-        // stamp — and therefore every lease's issue time — used to be taken before the walk, so a 15 s lease
-        // was handed out already ~10 s old and the action that followed came back "Expired" on a lease the
-        // caller had just been given.
+        // stamp, and therefore every lease's issue time, must be taken after the walk: before it, a 15 s lease
+        // is handed out already ~10 s old and the next action comes back "Expired" on a lease the caller had
+        // just been given.
         using var automation = new DesktopAutomation();
 
         var before = DateTimeOffset.UtcNow;

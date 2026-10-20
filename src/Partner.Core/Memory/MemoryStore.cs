@@ -6,8 +6,8 @@ using Microsoft.Data.Sqlite;
 namespace Partner.Core.Memory;
 
 /// <summary>
-/// SQLite-backed memory store (design doc §2.5.6): FTS5 coarse filter → explainable re-rank, promotion
-/// before trimming, four-step privacy delete, and offline degradation that never loses records.
+/// SQLite-backed memory store: FTS5 coarse filter → explainable re-rank, promotion before trimming, four-step
+/// privacy delete, and offline degradation that never loses records.
 /// </summary>
 public sealed class MemoryStore : IMemoryStore
 {
@@ -30,7 +30,7 @@ public sealed class MemoryStore : IMemoryStore
         _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
         _db.Open();
 
-        // Whether the file already held a store decides what the DDL means: for a new one it *is* the schema, for
+        // Whether the file already held a store decides what the DDL means: for a new one it is the schema; for
         // an old one it only adds what can be added idempotently, and the rest comes from the migration steps.
         var existing = TableExists("memories");
         Execute(MemorySchema.Ddl);
@@ -96,8 +96,8 @@ public sealed class MemoryStore : IMemoryStore
                 }
                 catch (SqliteException) when (step.TolerateFailures)
                 {
-                    // "duplicate column" — the statement was already applied to this store. Only a step that says
-                    // so in advance is allowed to be satisfied by a failure; the rest would be a lie.
+                    // "duplicate column" — the statement was already applied to this store. Only a step that says so in
+                    // advance may be satisfied by a failure.
                 }
             }
 
@@ -154,13 +154,12 @@ public sealed class MemoryStore : IMemoryStore
     {
         ArgumentNullException.ThrowIfNull(record);
 
-        // Design doc §2.5.6 ③: every write path consolidates eligible working records before committing. A pass
-        // reads the table, so it runs at most once per PromotionThrottle, not once per record.
+        // Every write path consolidates eligible working records before committing. A pass reads the table, so it
+        // runs at most once per PromotionThrottle, not once per record.
         await PromoteIfDueAsync(ct).ConfigureAwait(false);
 
-        // A newer statement about the same thing retires the older one. Doing it here rather than at recall
-        // means the list a person reads already shows the truth, instead of the prompt quietly hiding one half
-        // of a contradiction. The retired record is marked, not deleted: it stays visible and editable.
+        // A newer statement about the same thing retires the older one, here rather than at recall, so the list
+        // a person reads shows the truth. The retired record is marked, not deleted: it stays visible and editable.
         await SupersedeConflictingAsync(record, ct).ConfigureAwait(false);
 
         await InsertAsync(record, ct).ConfigureAwait(false);
@@ -171,21 +170,14 @@ public sealed class MemoryStore : IMemoryStore
     /// <summary>
     /// Retires live records that the incoming one contradicts.
     /// <para>
-    /// Only records in the same tier are compared: a semantic fact does not contradict a working note, and
-    /// demotion moves things between tiers anyway, so comparing across them would invalidate a record for
-    /// the wrong reason.
+    /// Only records in the same tier are compared: a semantic fact does not contradict a working note.
     /// </para>
     /// </summary>
     private async Task SupersedeConflictingAsync(MemoryRecord incoming, CancellationToken ct)
     {
-        // Two coarse filters for the same reason a recall needs two: a contradiction shares a subject and
-        // differs on one point, so it shares no whole substring — matching the sentence finds nothing and
-        // leaves both halves of the disagreement in the store.
-        //
-        // Bigrams for CJK, and the FTS expression for Latin, which has no bigrams to cut but a real
-        // tokenizer. Both are built even for a body that is mostly one script: a mixed body's English half is
-        // invisible to the bigram index and its Chinese half to the Latin one, so dropping either would leave
-        // half of it unsearchable. The decision is still made by word overlap below.
+        // Two coarse filters, because a contradiction shares a subject and differs on one point. Bigrams for CJK,
+        // FTS expression for Latin; both are built even for a body that is mostly one script, since a mixed body's
+        // other half would otherwise be unsearchable. The decision is made by word overlap below.
         var match = BuildMatchExpression(incoming.Body);
         var cjkMatch = CjkText.MatchExpression(incoming.Body);
 
@@ -219,19 +211,15 @@ public sealed class MemoryStore : IMemoryStore
     }
 
     /// <summary>
-    /// Marks what was just handed out as used.
-    /// <para>
-    /// Both happen on the recall path because that is the only place "used" is observable, and demotion needs a
-    /// moment when the store is already open. A record nobody found for three months is not something to keep
-    /// handing to a model at full trust.
-    /// </para>
+    /// Marks what was just handed out as used. The recall path is the only place "used" is observable, and
+    /// demotion needs that signal to take away records nobody finds.
     /// </summary>
     private async Task MaintainAsync(IReadOnlyList<string> recalled, CancellationToken ct)
     {
         var now = _clock.GetUtcNow();
 
         // One statement per chunk instead of one per hit: the recall path is on the critical path of every turn.
-        // Demotion is not here any more — it scans the whole table, and the maintenance pass already runs it.
+        // Demotion scans the whole table, so it belongs to the maintenance pass, not here.
         const int ChunkSize = 400;
         for (var from = 0; from < recalled.Count; from += ChunkSize)
         {
@@ -255,13 +243,12 @@ public sealed class MemoryStore : IMemoryStore
     /// Drops each idle record one tier: Semantic → Episodic → Working. Working then falls to the existing
     /// trim, so a record nobody has used in a year eventually leaves on its own.
     /// <para>
-    /// <see cref="MemoryScope.Retain"/> records are skipped: retention is exactly the promise that the demotion
-    /// rule may not break, and it is the only way a person can protect a fact from the clock.
+    /// <see cref="MemoryScope.Retain"/> records are skipped: retention is the promise that the demotion rule may
+    /// not break.
     /// </para>
     /// <para>
-    /// Procedural goes to Episodic rather than to Working. It used to fall through the CASE into Working, which
-    /// skipped a level — and Procedural is the only tier that records a way of doing something rather than a
-    /// fact, so dropping it two notches loses the part that made it worth keeping.
+    /// Procedural goes to Episodic rather than to Working, because Procedural records a way of doing something
+    /// rather than a fact, and dropping it two notches loses the part that made it worth keeping.
     /// </para>
     /// </summary>
     public async Task<int> DemoteIdleAsync(CancellationToken ct = default)
@@ -381,10 +368,8 @@ public sealed class MemoryStore : IMemoryStore
 
     /// <summary>
     /// How many source lookups this store has run, counting each query once however many rows it returned.
-    /// <para>
     /// Exists for the deletion cascade's own test: "a thousand-event deletion is one query, not a thousand" is a
-    /// claim about the statement count, and a stopwatch cannot tell the two apart on a warm page cache.
-    /// </para>
+    /// claim about statement count, which a stopwatch cannot check on a warm page cache.
     /// </summary>
     internal int SourceQueries { get; private set; }
 
@@ -437,11 +422,9 @@ public sealed class MemoryStore : IMemoryStore
         var take = Math.Max(1, limit ?? _options.RecallLimit);
 
         // Two coarse filters, because one index cannot serve both scripts. unicode61 has no Chinese word
-        // segmentation, so a CJK question is matched against the bigrams in the second index instead (CjkText):
-        // 我不太喜欢被打断 and 用户不喜欢被反复确认 share 喜欢/欢被, and that overlap is enough to bring the
-        // record in. Both expressions are built for every query — a mixed query like 部署 deployment carries
-        // words only one of the indexes can see, and choosing by "does it contain CJK" dropped the other half.
-        // The scorer still decides relevance; this is only a coarse filter.
+        // segmentation, so a CJK question is matched against the bigrams in the second index instead (CjkText).
+        // Both expressions are built for every query — a mixed query carries words only one of the indexes can
+        // see. The scorer still decides relevance; this is only a coarse filter.
         var match = BuildMatchExpression(query);
         var cjkMatch = CjkText.MatchExpression(query);
 
@@ -460,9 +443,7 @@ public sealed class MemoryStore : IMemoryStore
         var queryEmbedding = await TryEmbedAsync(query, ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
 
-        // Excluded before scoring rather than after taking the top N: a filtered-out record that still occupied
-        // a slot would silently shorten the answer, and the caller asked for N useful hits, not N candidates
-        // minus however many it already knew.
+        // Excluded before scoring rather than after the top-N cut, so the caller still gets N useful hits.
         var eligible = excludeSourceSeqs is null
             ? candidates
             : candidates.Where(c => c.SourceEventSeq is not { } seq || !excludeSourceSeqs.Contains(seq)).ToList();
@@ -491,8 +472,8 @@ public sealed class MemoryStore : IMemoryStore
             })
             .OrderByDescending(h => h.Score.Total)
             .ThenBy(h => h.RecordId, StringComparer.Ordinal)
-            // The same sentence can live in two rows (a promotion leaves the working row behind next to its episodic
-            // copy). Handing the model both is two slots for one fact; the better-scored row stands for it.
+            // The same sentence can live in two rows (a promotion leaves the working row behind next to its
+            // episodic copy). The better-scored row stands for it.
             .Where(hit => hit.Score.Total >= _options.MinScore)
             .Where(hit => seenBodies.Add(MemoryLifecycle.Normalize(hit.Body)))
             .Take(take)
@@ -625,7 +606,7 @@ public sealed class MemoryStore : IMemoryStore
             }
 
             // Promotion preserves the content: an episodic copy is written, then the working row is marked
-            // consolidated. The copy is what survives trimming (design doc §2.5.6 ③).
+            // consolidated. The copy is what survives trimming.
             await InsertAsync(
                 working with
                 {
@@ -662,9 +643,8 @@ public sealed class MemoryStore : IMemoryStore
 
         // Only consolidated working records may be trimmed: an unconsolidated one would lose data.
         //
-        // Retained records are excluded even though they are Working and consolidated, because retention does
-        // not pin the tier — a retained Working record is a legal combination, and it has a TTL this loop would
-        // otherwise act on with a physical DELETE. Retention is the one promise trim must not break.
+        // Retained records are excluded even though they are Working and consolidated: a retained Working record
+        // is a legal combination, and it has a TTL this loop would otherwise act on with a physical DELETE.
         var ids = await QueryIdsAsync(
             "SELECT record_id FROM memories WHERE tier = 'Working' AND consolidated_at IS NOT NULL "
             + "AND scope != 'Retain' "
@@ -716,8 +696,7 @@ public sealed class MemoryStore : IMemoryStore
     public async Task<int> RebuildIndexAsync(CancellationToken ct = default)
     {
         // FTS5 keeps a shadow index over the content table; 'rebuild' re-derives it from scratch. Both indexes
-        // are projections of the same rows — the bodies and their bigrams — so both are rebuilt, or a repair
-        // would leave the CJK half answering from whatever it held before.
+        // are projections of the same rows, so both are rebuilt.
         await using (var cmd = _db.CreateCommand())
         {
             cmd.CommandText =
@@ -783,7 +762,7 @@ public sealed class MemoryStore : IMemoryStore
         await _db.DisposeAsync().ConfigureAwait(false);
 
         // Microsoft.Data.Sqlite pools connections; without clearing the pool the file stays locked on
-        // Windows even after the connection is closed, so the workspace cannot be deleted or moved.
+        // Windows even after the connection is closed.
         SqliteConnection.ClearAllPools();
     }
 
@@ -818,8 +797,7 @@ public sealed class MemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$scope", record.Scope.ToString());
         cmd.Parameters.AddWithValue("$body", record.Body);
 
-        // The bigrams the CJK index reads. Written with the body, never derived at query time: the index is what
-        // makes a differently-worded question cheap, and it can only be built from what is stored here.
+        // The bigrams the CJK index reads. Written with the body, never derived at query time.
         cmd.Parameters.AddWithValue("$cjk", CjkText.Index(record.Body));
         cmd.Parameters.AddWithValue("$seq", (object?)record.SourceEventSeq ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$created", Iso(createdAt));
@@ -854,10 +832,9 @@ public sealed class MemoryStore : IMemoryStore
     /// <summary>
     /// Moves a record to another tier, on a person's judgement.
     /// <para>
-    /// Exposed because "this is a fact I rely on" and "this is something I once guessed" are judgements no
-    /// scorer can make: a preference promoted to <c>Semantic</c> is one the demotion rule will then protect,
-    /// and a guess left there is one it will eventually take away. Returns false for an id this store has
-    /// never seen, so a caller can tell a rejected edit from a silent one.
+    /// "This is a fact I rely on" and "this is something I once guessed" are judgements no scorer can make: a
+    /// preference promoted to <c>Semantic</c> is one the demotion rule will then protect. Returns false for an
+    /// id this store has never seen.
     /// </para>
     /// </summary>
     public async Task<bool> SetTierAsync(string recordId, MemoryTier tier, CancellationToken ct = default)
@@ -883,17 +860,15 @@ public sealed class MemoryStore : IMemoryStore
     /// <para>
     /// The second of the two axes a person controls. Tier says how much a record is trusted; this says whether it
     /// is allowed to be forgotten, and it is the only defence <see cref="DemoteIdleAsync"/> and
-    /// <see cref="TrimAsync"/> do not have a substitute for — a fact you rely on is exactly the one the 90-day
-    /// clock would otherwise take away from you.
+    /// <see cref="TrimAsync"/> have.
     /// </para>
     /// <para>
-    /// Deliberately does not touch the tier. Pinning Retain to a single tier would have been simpler to explain,
-    /// but it would have made the Procedural tier unprotectable: a retained "how to deploy this" note would
-    /// arrive as an established fact. The two axes are independent, so a retained Working record is a legal
-    /// combination — and Trim excludes it for that reason.
+    /// Deliberately does not touch the tier. Pinning Retain to a single tier would make the Procedural tier
+    /// unprotectable: a retained "how to deploy this" note would arrive as an established fact. A retained
+    /// Working record is therefore a legal combination, and Trim excludes it for that reason.
     /// </para>
     /// <para>
-    /// Returns false for an id this store has never seen, so a caller can tell a rejected edit from a silent one.
+    /// Returns false for an id this store has never seen.
     /// </para>
     /// </summary>
     public async Task<bool> SetScopeAsync(string recordId, MemoryScope scope, CancellationToken ct = default)
@@ -987,16 +962,11 @@ public sealed class MemoryStore : IMemoryStore
 
     /// <summary>
     /// The rows a query could plausibly want: one index for Latin, another for CJK, both bm25-ranked and both
-    /// bounded by the same candidate limit, then merged by record id — so a mixed query reaches a record through
-    /// either half of it, and this stays a coarse filter the scorer still decides on.
+    /// bounded by the same candidate limit, then merged by record id.
     /// <para>
     /// The two indexes are not on a common scale: bm25 is computed over the corpus behind each, and the CJK
     /// index's terms are bigrams rather than words. Each index's ranks are therefore scaled against its own best
     /// hit before the union, and a record both indexes found keeps the better of the two.
-    /// </para>
-    /// <para>
-    /// The CJK branch used to be a scan of the whole table with a LIKE per bigram, which is the cost this
-    /// replaced: the same overlap, answered from an index instead of by reading every body.
     /// </para>
     /// </summary>
     private async Task<List<MemoryCandidate>> LoadCandidatesAsync(
@@ -1090,16 +1060,14 @@ public sealed class MemoryStore : IMemoryStore
     /// Reads a stored scope, falling back to <see cref="MemoryScope.Recall"/> for a value this build no longer
     /// has.
     /// <para>
-    /// The column stores the enum name as text, so shrinking the enum can leave rows behind — the doc's
-    /// <c>Global</c> is the one to worry about. Parsing strictly would throw on the first read and take the whole
-    /// memory view down over one row, and guessing the other way (treating an unknown name as Retain) would hand a
-    /// record a protection nobody asked for. Falling back to the ordinary behaviour is the only option that cannot
-    /// surprise anybody.
+    /// The column stores the enum name as text, so shrinking the enum can leave rows behind. Parsing strictly
+    /// would take the whole memory view down over one row, and treating an unknown name as Retain would grant a
+    /// protection nobody asked for.
     /// </para>
     /// <para>
-    /// The fallback is quiet, which is not the same as unnoticed: the value is counted here and named once on
-    /// stderr, because a store whose rows all carry a scope this build does not know behaves like a store where
-    /// everything was silently let go, and nothing else in the system would say so.
+    /// The fallback is quiet, which is not the same as unnoticed: the value is counted and named once on stderr,
+    /// because a store whose rows all carry an unknown scope would otherwise behave as if everything was silently
+    /// let go.
     /// </para>
     /// </summary>
     private MemoryScope ParseScope(string value)
@@ -1197,16 +1165,12 @@ public sealed class MemoryStore : IMemoryStore
     /// Turns free text into a safe FTS5 MATCH expression: quoted tokens joined by OR, or null when the query
     /// has no usable token — so a syntax error is never built out of user input.
     /// <para>
-    /// Latin runs are split on non-alphanumerics. Chinese has no spaces, so a whole sentence would become one
-    /// token and match nothing but itself: "我不太喜欢被打断" would not find a record reading
-    /// "用户不喜欢被反复确认". A run that is entirely CJK is therefore cut into character bigrams, which is
-    /// the cheapest thing that makes the two overlap. A real segmenter is better and is a separate decision,
-    /// but without this the recall path is dead for the language this project is written in.
+    /// Latin runs are split on non-alphanumerics. A run that is entirely CJK is cut into character bigrams,
+    /// because a whole Chinese sentence would become one token and match nothing but itself.
     /// </para>
     /// <para>
     /// This is only the Latin half of a query. A mixed query also gets a CJK expression from
-    /// <see cref="CjkText.MatchExpression"/>, and the store unions the two — a CJK run reaching here is a
-    /// leftover the bigram index cannot serve (a single character), not the only way the query is searched.
+    /// <see cref="CjkText.MatchExpression"/>, and the store unions the two.
     /// </para>
     /// </summary>
     internal static string? BuildMatchExpression(string query)
@@ -1250,10 +1214,9 @@ public sealed class MemoryStore : IMemoryStore
     /// <summary>
     /// Splits one run into searchable pieces: a CJK run into bigrams, anything else left whole.
     /// <para>
-    /// A single CJK character is kept as itself, because it is a word often enough (「钱」「好」) and dropping it
-    /// would throw away the shortest queries. Kept for the <c>internal</c> expression builder's own sake: the
-    /// bigram index (<see cref="CjkText"/>) covers runs of two or more, so this is what is left for the Latin
-    /// index to find.
+    /// A single CJK character is kept as itself, because it is often a word on its own and dropping it
+    /// would throw away the shortest queries. The bigram index (<see cref="CjkText"/>) covers runs of two or
+    /// more, so this is what is left for the Latin index to find.
     /// </para>
     /// </summary>
     private static IEnumerable<string> SplitRun(string run)

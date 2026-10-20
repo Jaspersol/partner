@@ -23,15 +23,14 @@ public sealed record HttpLlmOptions
 
     /// <summary>
     /// The thinking gear sent as <c>reasoning_effort</c>; <see cref="ReasoningEfforts.Off"/> (or blank) sends
-    /// nothing. See <see cref="ReasoningEfforts"/> for why values are passed through rather than clamped.
+    /// nothing.
     /// </summary>
     public string ReasoningEffort { get; init; } = ReasoningEfforts.Default;
 
     /// <summary>
     /// Marks the system message as cacheable (<c>cache_control: ephemeral</c> on its content part). The system
-    /// message is the stable prefix of every request, and endpoints that price or speed up by prompt caching
-    /// (Anthropic-compatible gateways, OpenRouter for Claude and Gemini) only apply it where it is marked. Off by
-    /// default: a server that does not know the field may reject the part array outright.
+    /// message is the stable prefix of every request. Off by default: a server that does not know the field may
+    /// reject the part array outright.
     /// </summary>
     public bool PromptCacheMarkers { get; init; }
 }
@@ -39,9 +38,7 @@ public sealed record HttpLlmOptions
 /// <summary>
 /// The production <see cref="ILlmClient"/>: an OpenAI-compatible <c>chat/completions</c> call.
 /// <para>
-/// Deliberately configured from the environment rather than compiled in, and deliberately refuses to
-/// pretend: when it is not configured the host does not start a consumer at all (see <see cref="TryFromEnvironment"/>),
-/// because a consumer with a stub model would look like a working runtime while doing nothing.
+/// When it is not configured the host starts no consumer at all (see <see cref="TryFromEnvironment"/>).
 /// </para>
 /// </summary>
 public sealed class HttpLlmClient : ILlmClient, ITokenCounter
@@ -55,7 +52,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
 
-        // Non-ASCII goes out as UTF-8 rather than \uXXXX escapes: escaping roughly triples the bytes of a
+        // Non-ASCII goes out as UTF-8 rather than \uXXXX escapes, which roughly triples the bytes of a
         // Chinese conversation. The encoder name warns about HTML contexts; this is a JSON API.
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
@@ -87,7 +84,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     public string Model => _options.Model;
 
     /// <summary>
-    /// Reads the configuration from the environment, or explains why it cannot. Split from
+    /// Reads the configuration from the environment, or explains why it cannot. Separate from
     /// <see cref="TryFromEnvironment"/> so a host can report the resolved endpoint without building a client.
     /// </summary>
     public static (HttpLlmOptions? Options, string Reason) OptionsFromEnvironment()
@@ -121,7 +118,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     }
 
     /// <summary>
-    /// Builds a client from the environment, or explains why it cannot. The reason is surfaced by the host so
+    /// Builds a client from the environment, or explains why it cannot. The host surfaces the reason so
     /// "no consumer running" is never a silent state.
     /// </summary>
     public static (HttpLlmClient? Client, string Reason) TryFromEnvironment(HttpClient? http = null)
@@ -176,9 +173,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     }
 
     /// <summary>
-    /// What is already known about this text, without touching the network. The session view reports occupancy
-    /// on every load, and a view must not wait on — or fail because of — a model endpoint: this answers from
-    /// what the turns have already counted, and from the local estimate for anything new.
+    /// What is already known about this text, without touching the network: previously counted values, and the
+    /// local estimate for anything new. A session view must not wait on or fail because of a model endpoint.
     /// </summary>
     public int Count(string text)
     {
@@ -193,9 +189,9 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     /// <summary>
     /// The model's own count via <c>POST {base}/tokenize</c> (the llama.cpp-compatible endpoint), memoised.
     /// <para>
-    /// Falls back to the local estimate when the server has no such endpoint, and remembers that so a server
-    /// without it is not asked again on every turn. <c>usage.prompt_tokens</c> from a completion is deliberately
-    /// not used to fill the cache: it totals a whole prompt, which cannot be attributed back to one entry.
+    /// Falls back to the local estimate when the server has no such endpoint, and remembers that so it is not
+    /// asked again. <c>usage.prompt_tokens</c> from a completion is deliberately not used to fill the cache: it
+    /// totals a whole prompt, which cannot be attributed back to one entry.
     /// </para>
     /// </summary>
     public async ValueTask<int> CountAsync(string text, CancellationToken ct = default)
@@ -230,7 +226,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         catch (TaskCanceledException) when (ct.IsCancellationRequested)
         {
             // A canceled turn must stop, not quietly continue with an estimate. A timeout looks the same by
-            // type, which is why the caller's token is what decides.
+            // type, so the caller's token decides.
             throw;
         }
         catch (Exception error) when (error is HttpRequestException or JsonException or TaskCanceledException)
@@ -294,10 +290,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         }
         catch (Exception error) when (error is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            // A refused connection and a refused request are the same failure to the person watching, and the
-            // second is useless without a next step. Both go out in the same shape.
-            // The configured limit rides along: "未在时限内" alone sends the reader to the settings page
-            // without telling them which number to raise.
+            // A refused connection and a refused request look the same to the person watching, so both go out
+            // in the same shape. The configured limit rides along so the reader knows which number to raise.
             throw ModelCallFailure.From("模型补全", error, _options.Timeout);
         }
 
@@ -443,8 +437,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             }
 
             // Reasoning arrives as its own delta channel, before any answer text, and only when a thinking
-            // gear asked for it. It used to be dropped here — the whole reason a reasoning model looked
-            // instantaneous and unexplainable.
+            // gear asked for it.
             if (choice.Delta is { } delta)
             {
                 var fragment = delta.ReasoningContent ?? delta.Reasoning;
@@ -557,8 +550,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     /// A message's content: a plain string, or the OpenAI-compatible part array when images are attached.
     /// <para>
     /// The data URI is built here rather than stored: it is about a third larger than the bytes, and only the
-    /// request needs it. A server that predates multimodal content will reject the request — which is the
-    /// honest outcome, better than silently sending the text without what the user attached.
+    /// request needs it. A server that predates multimodal content rejects the request rather than silently
+    /// sending the text without what the user attached.
     /// </para>
     /// </summary>
     private static object? ToContent(LlmMessage message)
@@ -599,9 +592,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
                 .ToList()
             : (IReadOnlyList<LlmToolCall>)Array.Empty<LlmToolCall>();
 
-        // A buffered reply carries the same reasoning as a streamed one — the endpoint sends it once, in the
-        // message, rather than as deltas — so a server that refuses `stream: true` loses the live view but
-        // keeps the content.
+        // A buffered reply carries the same reasoning as a streamed one: the endpoint sends it once, in the
+        // message, rather than as deltas.
         var reasoning = choice.Message.ReasoningContent ?? choice.Message.Reasoning;
 
         return new LlmResponse(
@@ -614,8 +606,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
     }
 
     /// <summary>
-    /// The provider's own id for the request, from wherever they put it. This is the first thing their
-    /// support asks for, and a failure that has thrown it away is a failure that can only be re-created.
+    /// The provider's own id for the request, from wherever they put it. It is the first thing their support
+    /// asks for, and a failure that has thrown it away can only be re-created.
     /// </summary>
     private static string? RequestIdOf(HttpResponseMessage response)
     {
@@ -636,7 +628,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
 
     private static string Truncate(string text) => text.Length <= 400 ? text : text[..400] + "…";
 
-    // ---- wire shapes ------------------------------------------------------------------------------
+    // Wire shapes.
 
     private sealed record RequestBody(
         string Model,
@@ -681,7 +673,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
 
     private sealed record ChatChunk(IReadOnlyList<ChatChunkChoice>? Choices, ChatUsage? Usage = null);
 
-    /// <summary>What the server says the request cost. The prompt side is what the local estimate is checked against.</summary>
+    /// <summary>What the server says the request cost.</summary>
     private sealed record ChatUsage(int PromptTokens, int CompletionTokens);
 
     private sealed record ChatChunkChoice(ChatDelta? Delta, string? FinishReason);

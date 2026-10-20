@@ -52,8 +52,7 @@ internal sealed class ThrowingLlmClient(string message) : ILlmClient
 }
 
 /// <summary>
-/// A model call that never returns and never notices being told to stop — the shape of the hang this loop
-/// has to survive, since no budget inside a turn can catch it.
+/// A model call that never returns and never notices its token: the hang only the loop's own ceiling can catch.
 /// </summary>
 internal sealed class UnstoppableLlmClient : ILlmClient
 {
@@ -79,7 +78,7 @@ internal sealed class EndlessTool : ITool
     }
 }
 
-/// <summary>Acceptance tests for the single-consumer loop (design doc §2.2, §2.9).</summary>
+/// <summary>Acceptance tests for the single-consumer loop.</summary>
 public sealed class TurnLoopTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-turnloop-tests", Guid.NewGuid().ToString("n"));
@@ -363,10 +362,10 @@ public sealed class TurnLoopTests : IDisposable
     /// A turn that will not finish settles its item and lets the queue move, instead of holding the only
     /// reader this queue has forever.
     /// <para>
-    /// The client here ignores its token entirely — the exact shape of the bug that parked this queue: every
-    /// budget inside a turn is a request to the code being called, and only the loop can say the request was
-    /// not honoured. Without this ceiling the item stays <c>Running</c>, every message behind it waits, and the
-    /// UI reports "running" for something that is not running and cannot be stopped from inside.
+    /// The client here ignores its token entirely: every budget inside a turn is a request to the code being
+    /// called, and only the loop can say the request was not honoured. Without this ceiling the item stays
+    /// <c>Running</c>, every message behind it waits, and the UI reports "running" for something that cannot
+    /// be stopped from inside.
     /// </para>
     /// </summary>
     [Fact]

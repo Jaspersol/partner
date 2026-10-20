@@ -9,18 +9,9 @@ using Xunit;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// The DOM path against a real browser.
-/// <para>
-/// Everything else about this feature is arithmetic, and arithmetic can be asserted anywhere. What only a real
-/// browser can answer is the part that decides whether the feature is worth having: does a page launched with
-/// a debug port actually report its buttons, do their coordinates land inside the window, and does pressing one
-/// reach the page — rather than a socket that answered and an element list nobody verified.
-/// </para>
-/// <para>
-/// Opt-in on <c>PARTNER_DESKTOP_LIVE=1</c> for the same reason as the other live tests: it starts a browser.
-/// The browser is closed again in a <c>finally</c>, because leaving one open would make the next observation in
-/// the run slower for everyone after it.
-/// </para>
+/// The DOM path against a real browser: whether a page launched with a debug port reports its buttons,
+/// whether their coordinates land inside the window, and whether pressing one reaches the page.
+/// Opt-in on <c>PARTNER_DESKTOP_LIVE=1</c>, because it starts a browser.
 /// </summary>
 public sealed class CdpDomLiveTests
 {
@@ -87,9 +78,9 @@ public sealed class CdpDomLiveTests
             Assert.Contains(snapshot!.Elements, element => element.Name == "提交" && element.Role == "button");
             Assert.Contains(snapshot.Elements, element => element.Role == "textbox");
 
-            // The coordinates the server would hand the model have to be inside the window they name. The
-            // conversion is viewport + client origin + device scale, and leaving out any one of the three lands
-            // the point somewhere plausible and wrong.
+            // The coordinates handed to the model must be inside the window they name. The conversion is
+            // viewport + client origin + device scale; leaving out any one of the three lands the point
+            // somewhere plausible and wrong.
             var window = await WaitForWindowAsync(Path.GetFileNameWithoutExtension(browser!));
             Assert.NotNull(window);
 
@@ -134,16 +125,15 @@ public sealed class CdpDomLiveTests
             }
             catch (IOException)
             {
-                // The browser may still be letting go of it; the temp directory is not worth failing a test over.
+                // The browser may still be releasing it; the temp directory is not worth failing a test over.
             }
         }
     }
 
     private static Process Start(string browser, int port, string profile, string page)
     {
-        // A dedicated profile, because a real one is already in use by whatever the developer has open and the
-        // browser would hand the command line to that process instead of opening a port — which is the very
-        // single-instance case this test exists to prove the other half of.
+        // A dedicated profile: a real one is already in use by whatever the developer has open, and the
+        // browser would hand the command line to that process instead of opening a port.
         var startInfo = new ProcessStartInfo(browser)
         {
             UseShellExecute = false,
@@ -161,7 +151,7 @@ public sealed class CdpDomLiveTests
     private static async Task<DesktopWindow?> WaitForWindowAsync(string processName)
     {
         // The page answers over the debug port well before its window is on screen, and a window that is not
-        // there yet is not a coordinate this test can check anything against.
+        // there yet gives no rectangle to check a coordinate against.
         for (var attempt = 0; attempt < 40; attempt++)
         {
             var found = WindowEnumerator.Find(processName);
@@ -176,7 +166,7 @@ public sealed class CdpDomLiveTests
         return null;
     }
 
-private static async Task<CdpDomSource.CdpDomSnapshot?> WaitForPageAsync(CdpDomSource source, int port, string? windowTitle = null)
+    private static async Task<CdpDomSource.CdpDomSnapshot?> WaitForPageAsync(CdpDomSource source, int port, string? windowTitle = null)
     {
         for (var attempt = 0; attempt < 60; attempt++)
         {

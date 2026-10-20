@@ -112,7 +112,6 @@ function format(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens)
 }
 
-// ---- which day is on screen ---------------------------------------------------------------------------
 //
 // The session is one log; the days are only a way of looking at it. Nothing below changes what is stored or
 // where a message goes — a message sent while looking at an old day still lands in the log's tail.
@@ -212,8 +211,8 @@ function select(seq: number) {
  * Deletes the latest conversation as a whole.
  *
  * <para>
- * Deleting is physical: the lines leave the log and only a content-free `purge #a..#b` marker stays (see
- * README §历史). Nothing on the page announces it — the rows are simply gone, which is what was asked for.
+ * Deleting is physical: the lines leave the log and only a content-free `purge #a..#b` marker stays. Nothing on
+ * the page announces it — the rows are simply gone, which is what was asked for.
  * </para>
  */
 async function deleteLatest(seq: number) {
@@ -346,7 +345,6 @@ const IDLE_POLL_MS = 2000
 let poller: ReturnType<typeof setInterval> | undefined
 let lastPoll = 0
 
-// ---- sub-agents at work -------------------------------------------------------------------------------
 
 /** The delegated jobs, newest read. Only the running ones are drawn (see SubAgentCards). */
 const jobs = ref<AgentJobView[]>([])
@@ -499,8 +497,8 @@ async function followIfFollowing() {
   el.scrollTop = el.scrollHeight
 
   // A browser fires a scroll event for that assignment, and it lands before the next frame. Reading it would
-  // measure a layout that is still settling and could turn following off right after turning it on — which is
-  // how the view used to end up parked 36px short of the bottom, permanently.
+  // measure a layout that is still settling and could turn following off right after turning it on, leaving
+  // the view parked short of the bottom.
   requestAnimationFrame(() => {
     pinning = false
   })

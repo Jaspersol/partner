@@ -1,7 +1,8 @@
 namespace Partner.Core.Agent.Hooks;
 
 /// <summary>
-/// <see cref="IAgentHook"/> 的便捷基类：默认优先级 100、无 <see cref="Before"/>/<see cref="After"/> 约束。
+/// Convenience base for <see cref="IAgentHook"/>: default priority 100, no <see cref="Before"/>/<see cref="After"/>
+/// constraints.
 /// </summary>
 public abstract class AgentHookBase : IAgentHook
 {

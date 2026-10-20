@@ -13,9 +13,9 @@ public interface IMemoryScorer
 }
 
 /// <summary>
-/// Pure scoring of retrieval candidates (design doc §2.5.6 ④/⑤). Every component is normalised to
-/// <c>[0,1]</c>; <see cref="MemoryScore.Total"/> folds them with <see cref="MemoryScorerOptions"/> weights
-/// and applies the content penalty last.
+/// Pure scoring of retrieval candidates. Every component is normalised to <c>[0,1]</c>;
+/// <see cref="MemoryScore.Total"/> folds them with <see cref="MemoryScorerOptions"/> weights and applies the
+/// content penalty last.
 /// </summary>
 public sealed class MemoryScorer : IMemoryScorer
 {

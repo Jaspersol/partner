@@ -1,6 +1,6 @@
 namespace Partner.Voice.Asr;
 
-/// <summary>语音识别客户端（设计文档 §2.8.10）。</summary>
+/// <summary>Speech recognition client.</summary>
 public interface IAsrClient : IDisposable
 {
     /// <summary>Non-streaming transcription of one complete audio block.</summary>

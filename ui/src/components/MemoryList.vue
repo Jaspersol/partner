@@ -70,7 +70,7 @@ function choose(row: MemoryRow, index: number): void {
           <Icon name="pin" :size="12" />{{ scopeLabel(row.scope) }}
         </span>
         <span class="brief">{{ row.brief }}</span>
-        <!-- Validity belongs in the list, not only in the drawer (ui.md §5.5) — but as a sentence behind a mark. -->
+        <!-- Validity belongs in the list, not only in the drawer, but as a sentence behind a mark. -->
         <HintTip align="end" class="more"><span class="validity">{{ row.validity }}</span> · {{ row.recordId }}</HintTip>
       </div>
     </li>

@@ -5,7 +5,7 @@ using Partner.Core.Agent.Tools;
 namespace Partner.Core.Agent.Governance;
 
 /// <summary>
-/// Per-tool constraints on the <b>target</b> the tool would act on (design doc §1.1 <c>ToolGovernanceSpec.target_param</c>).
+/// Per-tool constraints on the <b>target</b> the tool would act on.
 /// A rule that is present but cannot be checked is a denial, never a pass (fail-closed).
 /// </summary>
 public sealed record TargetParamRules
@@ -33,8 +33,8 @@ public sealed record ToolPolicyEntry
 }
 
 /// <summary>
-/// The tool governance policy (design doc §2.9.6 / §8.5 gap A). Precedence is fixed and documented:
-/// <c>deny</c> &gt; <c>ask</c> &gt; <c>allow</c> &gt; <b>not listed = deny</b>.
+/// The tool governance policy. Precedence is fixed: <c>deny</c> &gt; <c>ask</c> &gt; <c>allow</c> &gt;
+/// <b>not listed = deny</b>.
 /// </summary>
 public sealed record ToolPolicy
 {
@@ -75,9 +75,9 @@ public sealed record ToolPolicy
         var document = JsonSerializer.Deserialize<PolicyDocument>(json, Json)
             ?? throw new ArgumentException("Policy document is empty.", nameof(json));
 
-        // A newer document is refused rather than half-read: governance is fail-closed, and a field this build
-        // does not know about is exactly the one that would be ignored while the tool it constrains runs.
-        // An absent `version` is v1 by construction — the property initialiser answers 1 before anything is set.
+        // A newer document is refused rather than half-read: a field this build does not know about is exactly
+        // the one that would be ignored while the tool it constrains runs. An absent `version` is v1 by
+        // construction — the property initialiser answers 1 before anything is set.
         if (document.Version != PolicyDocument.CurrentVersion)
         {
             throw new ArgumentException(

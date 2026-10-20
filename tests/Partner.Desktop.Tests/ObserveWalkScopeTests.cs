@@ -5,9 +5,8 @@ using Partner.Desktop.Tools;
 namespace Partner.Desktop.Tests;
 
 /// <summary>
-/// What an observation pays for. The filter on <c>desktop_observe</c> used to narrow only the answer, after
-/// every window's control tree had been read (10.2 s for nine windows, measured); now it decides which trees
-/// are read at all.
+/// What an observation pays for. The filter on <c>desktop_observe</c> decides which control trees are read at
+/// all, not merely which are returned.
 /// <para>
 /// Counted through the walk seam against whatever windows the machine has: the assertions are about how many
 /// walks a call made relative to a full one, never about a particular desktop.

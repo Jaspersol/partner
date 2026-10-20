@@ -15,9 +15,8 @@ public sealed record PointTarget(nint Handle, int ProcessId, string Title, nint 
 /// The window a screen point actually belongs to.
 /// <para>
 /// Pointer input is global: the OS delivers it to whatever top-level window is under the point, not to the
-/// window a caller named. So this — not the rectangle an observation reported — is what decides where a
-/// click lands, and it is the only way to tell a click that will reach the target from one that will be
-/// swallowed by whatever is covering it.
+/// window a caller named. This — not the rectangle an observation reported — decides where a click lands,
+/// and is the only way to tell a click that reaches the target from one swallowed by whatever covers it.
 /// </para>
 /// </summary>
 public static class HitTest

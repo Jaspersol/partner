@@ -62,8 +62,8 @@ export function tierHint(tier: string): string {
 /**
  * Retention: the only defence the clock does not have.
  *
- * <p>Two values on purpose. The design doc's third one (shared across sessions) had nothing to share across —
- * there is one logical session — and a value every row already has is a filter that cannot filter.
+ * <p>Two values: a third one (shared across sessions) has nothing to share across, since there is one logical
+ * session.
  */
 export const MEMORY_SCOPES = ['Recall', 'Retain'] as const
 
@@ -104,8 +104,7 @@ export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow
     tier: item.tier,
     scope: item.scope,
     body: item.body,
-    // Three things a reader needs and the old one-line form did not carry: whether this still counts, how long
-    // ago it was used, and what replaced it. "已编辑" said none of that.
+    // Whether this still counts, how long ago it was used, and what replaced it.
     validity: retired
       ? `已失效 → ${item.supersededBy ?? '(无后继)'} · ${ago(item.lastRecalledAt, now)}`
       : `有效 · ${ago(item.lastRecalledAt, now)} · 编辑者 ${item.editedBy ?? '原始'}`,
@@ -122,14 +121,13 @@ export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow
 export function memoryRowFromHit(hit: RecallHit): MemoryRow {
   return {
     recordId: hit.recordId,
-    // The record's own tier and scope, not a placeholder. A hit is the same record the list shows, so writing
-    // 'recall' and '-' here made the two filters match nothing: a reader who had filtered the list down to
-    // retained records saw an empty list and the words 无记忆 right after the app said it had hit one.
+    // The record's own tier and scope, not a placeholder: the two filters must match the same record the list
+    // shows.
     tier: hit.tier,
     scope: hit.scope,
     body: hit.body,
-    // A hit's why-it-surfaced line, which is the part a reader checking the ranking needs. It replaces the
-    // age line rather than joining it: a hit has no "last used" to report — recalling it is what just happened.
+    // A hit's why-it-surfaced line replaces the age line: recalling it is what just happened, so there is no
+    // "last used" to report.
     validity: `命中 ${hit.total.toFixed(3)} · ${hit.reasons.join(', ')}`,
     supersededBy: null,
     editedBy: null,

@@ -3,7 +3,7 @@ using Partner.Desktop.Interop;
 
 namespace Partner.Desktop.Windows;
 
-/// <summary>One observable top-level window (design doc §2.6 L1: 窗口枚举).</summary>
+/// <summary>One observable top-level window.</summary>
 public sealed record DesktopWindow
 {
     public required nint Handle { get; init; }
@@ -17,9 +17,9 @@ public sealed record DesktopWindow
     /// <summary>
     /// When the owning process started, in UTC ticks — part of the window's <i>identity</i>.
     /// <para>
-    /// Windows recycles window handles: the same handle can name a completely different window once the
-    /// first one closes, and a process that restarted keeps neither its pid nor its start time. Pairing the
-    /// handle with these is what distinguishes "the same window, moved" from "a different window, same id".
+    /// Windows recycles window handles: the same handle can name a different window once the first one closes,
+    /// and a process that restarted keeps neither its pid nor its start time. Pairing the handle with these
+    /// distinguishes "the same window, moved" from "a different window, same id".
     /// Null when the process cannot be queried (an elevated process refuses).
     /// </para>
     /// </summary>
@@ -36,8 +36,8 @@ public sealed record DesktopWindow
     public required bool IsForeground { get; init; }
 
     /// <summary>
-    /// Whether the window is minimized. Its rect is then a 160×28 stub at -32000,-32000, which is a real trap:
-    /// it looks like a window you can click, and clicking it lands in the void.
+    /// Whether the window is minimized. Its rect is then a 160×28 stub at -32000,-32000: it looks like a window
+    /// you can click, and clicking it lands in the void.
     /// </summary>
     public bool IsMinimized { get; init; }
 
@@ -52,9 +52,8 @@ public static class WindowEnumerator
         var foreground = NativeMethods.GetForegroundWindow();
         var windows = new List<DesktopWindow>();
 
-        // One process object per pid for the whole enumeration. Each of the two facts below needs its own
-        // Process handle, and a desktop with nine windows was opening eighteen — for the same handful of
-        // processes, and several times each.
+        // One process object per pid for the whole enumeration: each fact needs its own Process handle, and
+        // resolving them per window opens one per window for the same handful of processes.
         var names = new Dictionary<uint, string?>();
         var starts = new Dictionary<uint, long?>();
 
@@ -157,10 +156,9 @@ public static class WindowEnumerator
     /// <summary>
     /// One lookup per process per enumeration.
     /// <para>
-    /// A null result is cached too, and that is the point: "this process refuses to answer" is an answer that
-    /// costs a handle to find, and asking again per window is how an enumeration of nine windows turned into
-    /// thirty process handles. <c>TryGetValue</c> distinguishes "cached as null" from "not cached", so an
-    /// unconstrained <typeparamref name="T"/> is safe here and lets both facts share it.
+    /// A null result is cached too: "this process refuses to answer" costs a handle to find out, so asking
+    /// again per window multiplies process handles. <c>TryGetValue</c> distinguishes "cached as null" from
+    /// "not cached", so an unconstrained <typeparamref name="T"/> is safe here and lets both facts share it.
     /// </para>
     /// </summary>
     private static T Cached<T>(Dictionary<uint, T> cache, uint processId, Func<uint, T> read)

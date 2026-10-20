@@ -67,8 +67,7 @@ public sealed partial class ViewEndpointsTests
 
         Assert.Equal("季度报表.csv", name);
         Assert.NotNull(path);
-        // The path has to exist, not merely be reported: a message pointing at a missing file is worse than one
-        // that says nothing.
+        // The path must exist, not merely be reported.
         Assert.True(File.Exists(path), $"附件路径不存在：{path}");
         Assert.Equal("col 1\n1,2\n", await File.ReadAllTextAsync(path!));
 
@@ -90,8 +89,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task An_upload_with_no_usable_type_and_no_usable_name_is_refused()
     {
-        // Refused before it is stored, with the reason: a client that cannot say what it is sending has a bug,
-        // and a file named after a GUID is not a useful answer to "what did you attach".
+        // Refused before storage: a client that cannot say what it is sending has a bug.
         using var content = new ByteArrayContent(new byte[] { 1, 2, 3 });
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-nonsense");
 
@@ -105,7 +103,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task An_unknown_attachment_is_refused_at_delivery()
     {
-        // A turn that silently sent nothing would look like the model ignored the picture.
+        // A silently empty turn would look like the model ignored the picture.
         var response = await _http.PostAsJsonAsync("/api/input", new
         {
             source = "text",

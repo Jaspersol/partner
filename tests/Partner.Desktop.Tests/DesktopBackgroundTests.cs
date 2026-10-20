@@ -16,7 +16,6 @@ namespace Partner.Desktop.Tests;
 /// </summary>
 public sealed class DesktopBackgroundTests
 {
-    // ---- the setting ---------------------------------------------------------------------------
 
     [Theory]
     [InlineData("foreground", InputMode.Foreground)]
@@ -44,7 +43,6 @@ public sealed class DesktopBackgroundTests
         Assert.Equal(valid, InputModes.IsValid(text));
     }
 
-    // ---- the route ------------------------------------------------------------------------------
 
     [Theory]
     // Foreground: nothing changes, whatever the window offers.
@@ -107,7 +105,6 @@ public sealed class DesktopBackgroundTests
         Assert.Null(DesktopActTool.Guard(ActionKind.KeyPress, window, null, arguments, background: true));
     }
 
-    // ---- keys and text ---------------------------------------------------------------------------
 
     [Fact]
     public void Enter_types_a_line_break_and_an_arrow_types_nothing()
@@ -174,7 +171,6 @@ public sealed class DesktopBackgroundTests
         Assert.Equal(1 | 4, CdpInput.ModifierMask(new ushort[] { InputInjector.VirtualMenu, InputInjector.VirtualWin }));
     }
 
-    // ---- pointer ----------------------------------------------------------------------------------
 
     [Fact]
     public void A_double_click_is_two_presses_whose_count_climbs()
@@ -229,7 +225,6 @@ public sealed class DesktopBackgroundTests
         Assert.True(commands.Where(c => c.DelayMs > 0).Count() >= 8);
     }
 
-    // ---- where the page starts -----------------------------------------------------------------------
 
     [Fact]
     public void A_window_with_no_chrome_starts_the_page_at_the_client_area()
@@ -286,7 +281,6 @@ public sealed class DesktopBackgroundTests
         Assert.Null(CdpInput.ToViewport(100 + 1500, 300, origin, 1000, 640, 1.5));
     }
 
-    // ---- launching without landing on top ---------------------------------------------------------------
 
     [Fact]
     public void A_browser_launched_behind_other_windows_is_kept_painting()

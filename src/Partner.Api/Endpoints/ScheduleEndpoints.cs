@@ -3,14 +3,13 @@ using Partner.Core.Scheduler;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// The timed-tasks page's API. A task is a message to send and a rule for when: when it comes due the scheduler
-/// enqueues the message as <c>InputSource.Schedule</c>, so it reaches the assistant through the same queue, and
-/// shows in the session, as anything typed would. The assistant's own tools create tasks through the same
-/// <see cref="ScheduleRules"/>.
+/// The timed-tasks API. A task is a message plus a rule: when due, the scheduler enqueues the message as
+/// <c>InputSource.Schedule</c>, so it reaches the assistant through the same queue as typed input. The
+/// assistant's tools create tasks through the same <see cref="ScheduleRules"/>.
 /// <para>
-/// There is no "edit": a task's identity is its rule plus its message, so changing either is a new task. That also
-/// keeps the dedup record honest — an occurrence is keyed by the task id and its time, and rewriting a task under
-/// the same id would let an old receipt swallow a new occurrence.
+/// There is no "edit": a task's identity is its rule plus its message, so changing either creates a new task.
+/// Dedup keys an occurrence by task id and time; rewriting a task under the same id would let an old receipt
+/// swallow a new occurrence.
 /// </para>
 /// </summary>
 public static class ScheduleEndpoints

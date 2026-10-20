@@ -25,7 +25,7 @@ public sealed class LocalAsrClientTests
         Assert.Equal(45103, uri.Port);
         Assert.Equal("application/octet-stream", handler.LastContentType);
 
-        // 请求体就是原始小端 float32：三个采样 12 字节。
+        // The body is raw little-endian float32: three samples, twelve bytes.
         var bytes = Convert.FromBase64String(handler.LastBodyRaw!);
         Assert.Equal(12, bytes.Length);
         Assert.Equal(0.25f, BitConverter.ToSingle(bytes, 0));
@@ -124,7 +124,7 @@ public sealed class LocalAsrClientTests
 
         public string? LastBody { get; private set; }
 
-        /// <summary>二进制体（octet-stream）的 base64；文本体原样。</summary>
+        /// <summary>Base64 of a binary (octet-stream) body; text bodies verbatim.</summary>
         public string? LastBodyRaw { get; private set; }
 
         public string? LastContentType { get; private set; }

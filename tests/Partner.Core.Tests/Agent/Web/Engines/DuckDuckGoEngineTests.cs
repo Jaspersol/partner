@@ -8,9 +8,8 @@ namespace Partner.Core.Tests.Agent.Web.Engines;
 /// rather than a hit list: one endpoint serves results, a captcha and a page that is neither, and the three have
 /// to reach the circuit breaker as three different things.
 /// <para>
-/// It asks the <c>lite</c> endpoint, so the lite shape is what most of these tests pin. The older <c>html</c>
-/// shape is tested too, because the parser keeps reading it and a fallback nobody tests is a fallback that is
-/// already broken.
+/// It asks the <c>lite</c> endpoint, so the lite shape is what most of these tests pin; the <c>html</c> shape
+/// is tested too because the parser still reads it.
 /// </para>
 /// </summary>
 public sealed class DuckDuckGoEngineTests
@@ -79,7 +78,7 @@ public sealed class DuckDuckGoEngineTests
     [Fact]
     public async Task Parse_StillReadsTheFullHtmlPage()
     {
-        // The endpoint the engine used to ask. Both are the same service, so losing one must not lose the engine.
+        // Both endpoints are the same service, so losing one must not lose the engine.
         var result = await ParseAsync("duckduckgo-results.html");
 
         Assert.Equal(ParseStatus.Ok, result.Status);
@@ -142,8 +141,8 @@ public sealed class DuckDuckGoEngineTests
     [Fact]
     public void Build_AsksTheLiteEndpointForTheLanguageOfTheQuery()
     {
-        // The lite page is the plain table rather than the scripted one: less to fetch, less to parse, and a far
-        // less interesting target for the challenge machinery in front of the full page.
+        // The lite page is the plain table: less to fetch and parse, and less interesting to the challenge
+        // machinery in front of the full page.
         var chinese = _engine.Build(Query("北京天气"));
         var chineseUrl = chinese.RequestUri!.AbsoluteUri;
 
@@ -162,9 +161,7 @@ public sealed class DuckDuckGoEngineTests
     [Fact]
     public void Build_AsksForAPageOnce()
     {
-        // What a browser asks for on the way to a page, and nothing added to it. A second Accept value here would
-        // be an engine appending its own media type to a generic default, and those are the kind of detail a
-        // challenge page reads before it decides to answer.
+        // One Accept value only: a second would be an engine appending its own media type to the default.
         var request = _engine.Build(Query("rust book"));
 
         Assert.Equal(

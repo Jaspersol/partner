@@ -142,9 +142,11 @@ function onEngineArgumentsInput(engine: 'tts' | 'kws', event: Event) {
     .filter((part) => part !== '')
 }
 
-/** Wake words are edited as one comma line; 中英混排按序存，引擎端只对能转拼音的生效. */
-/** 输入框显示的原始串。按逗号切分回数组再 join 回显会让尾随逗号被切掉又拼没，打不进第二个词——
- *  所以编辑期间整串保真，切分只发生在保存时。 */
+/**
+ * Wake words are edited as one comma-separated line; mixed Chinese and English are stored in order, and the
+ * engine only uses words it can convert to pinyin. The draft keeps the raw string while editing: splitting
+ * and rejoining would drop a trailing comma and make the second word impossible to type.
+ */
 const keywordDrafts = ref<Record<'tts' | 'kws', string>>({ tts: '', kws: '' })
 
 function onEngineKeywordsInput(engine: 'tts' | 'kws', event: Event) {
@@ -153,7 +155,7 @@ function onEngineKeywordsInput(engine: 'tts' | 'kws', event: Event) {
   form.local[engine].keywords = parseKeywords(raw)
 }
 
-/** 逗号分隔串 → 词表。中英文逗号都算分隔符；首尾空白丢弃，空段不入表。 */
+/** Comma-separated string to word list. Both comma forms separate; surrounding whitespace and empty entries are dropped. */
 function parseKeywords(raw: string): string[] {
   return raw
     .split(/[,，]/)
@@ -173,7 +175,7 @@ const probing = ref(false)
 const voiceTest = ref<Record<string, VoiceTestResult | null>>({})
 const voiceTesting = ref<Record<string, boolean>>({})
 
-/** TTS 测试的音频（base64 WAV → blob URL）。结果被替换或组件卸载时回收。 */
+/** TTS test audio (base64 WAV to blob URL), reclaimed when the result is replaced or the component unmounts. */
 const testTtsUrl = computed(() => {
   const result = voiceTest.value.tts
   if (!result?.ok || !('audioBase64' in result) || !result.audioBase64) {
@@ -241,7 +243,7 @@ onUnmounted(() => {
   }
 })
 
-/** 电平条上限：RMS 0.2 已接近满幅说话，再往上没有分辨意义。 */
+/** Level-bar ceiling: RMS 0.2 is already near full-scale speech, so higher values add no information. */
 const LEVEL_CEILING = 0.2
 
 function levelWidth(value: number): string {
@@ -252,7 +254,7 @@ function levelWidth(value: number): string {
 const levelPercent = computed(() => levelWidth(voice.value?.input.rms ?? 0))
 const thresholdPercent = computed(() => levelWidth(form.input.silenceThreshold ?? 0))
 
-/** 唤醒门只在本地引擎托管开启且端口合法时生效（后端同一条件），否则「等唤醒词」是句假话。 */
+/** The wake gate applies only when the local engine is managed and its port is valid, matching the backend. */
 const wakeGateOn = computed(() => form.local.kws.enabled === true && (form.local.kws.port ?? 0) > 0)
 
 
@@ -284,7 +286,7 @@ async function probeModels() {
   }
 }
 
-/** 出厂默认：相对应用目录。与后端 LocalSettings 的默认值一致。 */
+/** Factory defaults, relative to the application directory and matching LocalSettings on the backend. */
 const LOCAL_ENGINE_DEFAULTS = {
   tts: { command: 'engines/tts/python/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102 },
   kws: { command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103 },
@@ -300,7 +302,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     tts: { ...settings.local?.tts, arguments: [...(settings.local?.tts?.arguments ?? [])], keywords: [...(settings.local?.tts?.keywords ?? [])] },
     kws: { ...settings.local?.kws, arguments: [...(settings.local?.kws?.arguments ?? [])], keywords: [...(settings.local?.kws?.keywords ?? [])] },
   })
-  // 存下来的设置里这几项可能是空的（旧版本存的，或服务端还是旧版本）；空着就用出厂默认，页面上不留一排空框。
+  // Stored settings may leave these empty (older client or server); fall back to the factory defaults.
   for (const engine of ['tts', 'kws'] as const) {
     const target = form.local[engine]
     const defaults = LOCAL_ENGINE_DEFAULTS[engine]
@@ -309,7 +311,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     if ((target.workingDirectory ?? '').trim() === '') target.workingDirectory = defaults.workingDirectory
     if (!(target.port > 0)) target.port = defaults.port
   }
-  // 朗读/识别的客户端默认连本地引擎；以前存成空的也补上（用户自己填过的不动）。
+  // TTS and ASR clients default to the local engines; fill in values stored empty by older versions.
   if ((form.asr.baseUrl ?? '').trim() === '') {
     form.asr.baseUrl = `http://127.0.0.1:${form.local.kws.port}`
     form.asr.protocol = 'sensevoice'
@@ -319,7 +321,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     form.tts.baseUrl = localTtsUrl
     form.tts.protocol = 'local'
   } else if ((form.tts.baseUrl ?? '').replace(/\/+$/, '') === localTtsUrl && form.tts.protocol === 'native') {
-    // 本地 tts-server 只有 /audio/speech；以前存成 native 的，对着它请求只会 404。
+    // The local tts-server only serves /audio/speech; a stored native protocol would get a 404.
     form.tts.protocol = 'local'
   }
   keywordDrafts.value = { tts: form.local.tts.keywords.join(','), kws: form.local.kws.keywords.join(',') }
@@ -410,10 +412,9 @@ async function refreshWeb() {
   }
 }
 
-// ---- 本地引擎包 -------------------------------------------------------------------------------
-//
-// 引擎（运行时 + 模型，约 3GB）不在安装包里，而是作为一个模块放在应用目录下的 engines/，由这里下载。
-// 它的状态来自磁盘，不属于表单：检测、下载、指定位置都是立即生效的动作，不经过「保存」。
+// Engines (runtime plus models, about 3 GB) are not in the installer; they live under the application's
+// engines/ directory and are downloaded here. Their state comes from disk and is not part of the form:
+// detect, download and choose location take effect immediately, without Save.
 
 const enginePackage = ref<EnginePackageStatus | null>(null)
 const enginePackageNote = ref('')
@@ -431,8 +432,8 @@ const downloadRunning = computed(() => {
 const allEnginesInstalled = computed(() => enginePackage.value?.tts.installed === true && enginePackage.value?.kws.installed === true)
 
 /**
- * 程序路径是不是用户自己配的。空的，或者就是引擎包的标准位置（出厂默认、上一次检测填的），都算没配：
- * 检测到引擎时换成实际找到的那个解释器（可搬走的 python/ 或 venv），不会被出厂默认挡住。
+ * Whether the command path was configured by the user. Empty or the engine package's standard location counts
+ * as unconfigured, so detection can replace it with the interpreter it actually finds.
  */
 function isCustomCommand(command: string | null | undefined): boolean {
   const value = (command ?? '').trim()
@@ -456,8 +457,8 @@ const downloadText = computed(() => {
 })
 
 /**
- * 找到了的引擎，把程序路径、参数、运行目录、端口填成默认值（相对应用目录，指到手选的目录时是绝对路径）。
- * 只填空的，已经配过的不动；`force` 用于刚换了位置，旧的默认值指向别处。填完表单会变成「未保存」，由用户确认。
+ * Fills command, arguments, working directory and port for a detected engine. Only empty fields are filled;
+ * `force` is for a location change that makes old defaults stale. The form then shows unsaved changes.
  */
 function fillEngineDefaults(force = false) {
   const status = enginePackage.value
@@ -476,7 +477,7 @@ function fillEngineDefaults(force = false) {
   }
 }
 
-/** 下载进行时每秒问一次进度；结束（成功、失败、取消）后停。 */
+/** Polls progress once a second while downloading; stops when the download finishes, fails or is cancelled. */
 function syncEnginePolling() {
   if (downloadRunning.value && enginePackageTimer === null) {
     enginePackageTimer = setInterval(() => void pollEnginePackage(), 1000)
@@ -501,7 +502,7 @@ async function pollEnginePackage() {
       if (download.phase === 'done') fillEngineDefaults()
     }
   } catch {
-    // 轮询失败不覆盖屏幕上已有的状态；下一秒再问。
+    // A failed poll keeps the state already on screen; the next tick asks again.
   }
 }
 
@@ -509,7 +510,7 @@ function describeFailure(failure: unknown): string {
   return failure instanceof Error ? failure.message : String(failure)
 }
 
-/** 「检测」：重新读磁盘。找到就填默认值，没找到就说缺什么。 */
+/** Detect: reread the disk, fill defaults when found, otherwise report what is missing. */
 async function detectEngines() {
   enginePackageNote.value = ''
   try {
@@ -546,7 +547,7 @@ async function cancelEngineDownload() {
   }
 }
 
-/** 手动指定：服务端会检查这个目录里确实有引擎才记下，写错了不会悄悄换掉能用的位置。留空 = 回到默认位置。 */
+/** Manual location: the server records it only if engines exist there. Empty returns to the default location. */
 async function applyEngineRoot() {
   enginePackageNote.value = ''
   try {
@@ -567,12 +568,12 @@ async function refreshEnginePackage() {
     syncEnginePolling()
     fillEngineDefaults()
   } catch {
-    // 读不到（例如服务端版本较旧）就当没有这个模块：引擎卡片照旧显示，不把整页变成空白。
+    // When unreadable (for example an older server), treat the module as absent instead of blanking the page.
     enginePackage.value = null
   }
 }
 
-/** 已装好的引擎，或者之前就配过程序路径的，才显示后面的设置；读不到引擎包状态时保持旧行为。 */
+/** Shows further settings only for an installed engine or a previously configured command path. */
 function showEngine(engine: 'tts' | 'kws'): boolean {
   const status = enginePackage.value
   if (!status) return true
@@ -586,13 +587,13 @@ onUnmounted(() => {
   }
 })
 
-/** 开关一个引擎。存的是「关掉了谁」，所以新加进列表的引擎默认是开的。 */
+/** Toggles an engine. Stores which ones are off, so a newly added engine defaults to on. */
 function toggleEngine(id: string) {
   const off = form.web.disabledEngines
   form.web.disabledEngines = off.includes(id) ? off.filter((each) => each !== id) : [...off, id]
 }
 
-/** 引擎索引的内容类型，说人话；认不出来的原样显示，而不是编一个词。 */
+/** Human labels for content types an engine indexes; unknown values are shown verbatim. */
 const KIND_LABELS: Record<string, string> = {
   general: '网页',
   news: '新闻',
@@ -609,12 +610,8 @@ function kindLabel(kind: string): string {
 }
 
 /**
- * 一个引擎现在是什么状态，一句话。
- *
- * <para>
- * 暂停和失败都要写出来。否则「这次没搜到」会被读成「网上没有」，而真实原因是这家引擎被自己的熔断器
- * 停着——那是两件完全不同的事，只有页面说清楚，人才知道该等还是该换一家。
- * </para>
+ * One sentence describing an engine's current state. Paused and failed are reported explicitly: "no results
+ * this time" must not read as "nothing on the web" when the engine is actually circuit-broken.
  */
 function engineState(engine: WebEngineView): string {
   if (form.web.disabledEngines.includes(engine.id)) {
@@ -642,7 +639,7 @@ const cloneBusy = ref(false)
 const cloneError = ref('')
 const cloneName = computed(() => (form.tts.speakerRefPath ?? '').split(/[\/]/).pop() ?? '')
 
-/** 选了文件就上传到工作区，设置里存落盘后的路径：浏览器给不了磁盘路径，引擎要的却正是路径。 */
+/** Uploads the chosen file and stores its on-disk path: the browser cannot supply a path and the engine needs one. */
 async function onCloneFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -673,7 +670,7 @@ async function persist() {
     input: { ...form.input },
     output: { ...form.output },
     asr: { ...form.asr, baseUrl: blankToNull(form.asr.baseUrl) },
-    // 空框是「没填」，不是空字符串；语速清空了就回到 1，别把 '' 发给要数字的字段而整页保存失败。
+    // A blank field means unset, not an empty string; clearing speed restores 1 so a numeric field does not fail.
     tts: {
       ...form.tts,
       baseUrl: blankToNull(form.tts.baseUrl),
@@ -695,7 +692,7 @@ async function persist() {
     // A row left blank is not a directory. Sending it would have the server reject the whole save over an
     // empty string the person never meant to add.
     files: { enabled: form.files.enabled, roots: form.files.roots.map((root) => root.trim()).filter((root) => root !== '') },
-    // 空串是「没填」，不是「一个叫空字符串的代理」，否则整页保存都会被这个字段挡下来。
+    // An empty string means unset, not a proxy named ""; otherwise this field blocks the whole save.
     web: {
       enabled: form.web.enabled,
       timeBudgetSeconds: form.web.timeBudgetSeconds,
@@ -765,8 +762,8 @@ const desktopAgentOff = computed(
 
 /**
  * The categories, in the order a person needs them: the model first (nothing runs without one), then what it can
- * hear and say, then what it may touch, then the plumbing. Regrouped by what a person wants to do rather than by
- * module — the old page asked you to know that 「语音识别」 was ASR before you could find its address.
+ * hear and say, then what it may touch, then the plumbing. They follow what a person wants to do rather than the
+ * module that implements it.
  */
 interface Section {
   key: string
@@ -833,7 +830,7 @@ const running = computed<Record<string, boolean>>(() => ({
   output: voice.value?.output?.running === true,
 }))
 
-// ---- reduced transparency & theme (frontend-only, never saved with the settings) ------------------------
+// Reduced transparency and theme are frontend-only and never saved with the settings.
 const reducedTransparency = ref(readReducedTransparency())
 
 function onReducedTransparency(value: boolean): void {
@@ -847,7 +844,6 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: 'dark', label: themeLabel('dark') },
 ]
 
-// ---- tests: what each block's last result was recorded against -----------------------------------------
 /**
  * A test result is a statement about a configuration. `testedWith` remembers which one, so editing the block
  * afterwards turns the old green tick grey instead of leaving it to vouch for something that no longer exists.
@@ -904,7 +900,6 @@ defineExpose({ refresh, hasUnsavedChanges })
         </nav>
 
         <div class="settings-body">
-          <!-- ================= 对话模型 ================= -->
           <section v-show="section === 'model'" class="panel" data-test="settings-section-model">
             <header class="panel-head">
               <h2>对话模型</h2>
@@ -1013,7 +1008,6 @@ defineExpose({ refresh, hasUnsavedChanges })
 
           </section>
 
-          <!-- ================= 语音输入 ================= -->
           <section v-show="section === 'input'" class="panel" data-test="settings-section-input">
             <header class="panel-head">
               <h2>语音输入</h2>
@@ -1166,7 +1160,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <!-- ================= 语音输出 ================= -->
           <section v-show="section === 'output'" class="panel" data-test="settings-section-output">
             <header class="panel-head"><h2>语音输出</h2></header>
 
@@ -1284,7 +1277,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <!-- ================= 电脑操控 ================= -->
           <section v-show="section === 'desktop'" class="panel" data-test="settings-section-desktop">
             <header class="panel-head"><h2>电脑操控</h2></header>
 
@@ -1342,7 +1334,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <!-- ================= 文件访问 ================= -->
           <section v-show="section === 'files'" class="panel" data-test="settings-section-files">
             <header class="panel-head"><h2>文件访问</h2></header>
 
@@ -1389,7 +1380,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <!-- ================= 联网搜索 ================= -->
           <section v-show="section === 'web'" class="panel" data-test="settings-section-web">
             <header class="panel-head">
               <h2>联网搜索</h2>
@@ -1497,7 +1487,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <!-- ================= 本地引擎 ================= -->
           <section v-show="section === 'engines'" class="panel" data-test="settings-section-engines">
             <header class="panel-head">
               <h2>本地引擎</h2>
@@ -1610,7 +1599,6 @@ defineExpose({ refresh, hasUnsavedChanges })
             </template>
           </section>
 
-          <!-- ================= 外观 ================= -->
           <section v-show="section === 'appearance'" class="panel" data-test="settings-section-appearance">
             <header class="panel-head"><h2>外观</h2></header>
             <div class="g-card">
@@ -1819,7 +1807,6 @@ defineExpose({ refresh, hasUnsavedChanges })
   border-radius: var(--radius-sm);
 }
 
-/* ---- input level --------------------------------------------------------------------------------- */
 .level {
   display: flex;
   align-items: center;
@@ -1869,7 +1856,6 @@ defineExpose({ refresh, hasUnsavedChanges })
   margin-block: var(--space-2);
 }
 
-/* ---- folders ------------------------------------------------------------------------------------- */
 .folders {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1904,7 +1890,6 @@ defineExpose({ refresh, hasUnsavedChanges })
   justify-self: start;
 }
 
-/* ---- web engines ---------------------------------------------------------------------------------- */
 /* One line per engine: who it is, what it indexes, how it is doing, and the switch. The state is the part
    that matters — an engine that is quietly paused is why a search came back thin. */
 .engine-row {
@@ -1968,7 +1953,6 @@ defineExpose({ refresh, hasUnsavedChanges })
   opacity: 0.7;
 }
 
-/* ---- engine package ---------------------------------------------------------------------------- */
 .pkg-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2011,7 +1995,6 @@ defineExpose({ refresh, hasUnsavedChanges })
   overflow-wrap: anywhere;
 }
 
-/* ---- narrow: categories become a row of chips ------------------------------------------------- */
 @container body (max-width: 52rem) {
   .settings {
     grid-template-columns: minmax(0, 1fr);

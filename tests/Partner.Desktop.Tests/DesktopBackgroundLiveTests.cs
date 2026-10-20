@@ -96,7 +96,6 @@ public sealed class DesktopBackgroundLiveTests
 
         try
         {
-            // ---- launch ------------------------------------------------------------------------------
             var arguments = $"--remote-debugging-port={port} --user-data-dir=\"{profile}\" --no-first-run "
                 + $"--no-default-browser-check \"{page}\"";
 
@@ -148,7 +147,6 @@ public sealed class DesktopBackgroundLiveTests
                 return action;
             }
 
-            // ---- a click, aimed by what is on the screen ----------------------------------------------
             // The page answers over the debug port before the window has painted it, so the picture is retried:
             // what is being waited for is the first frame, not a property of the feature.
             CaptureResult frame = null!;
@@ -202,12 +200,10 @@ public sealed class DesktopBackgroundLiveTests
                 Math.Abs(offsetX) <= 2 && Math.Abs(offsetY) <= 2,
                 $"the click landed ({offsetX:0.##}, {offsetY:0.##}) CSS px from the centre of the button");
 
-            // ---- a point on the browser's own toolbar is refused, not clamped onto the page -----------
             var onToolbar = await ActAsync(ActionKind.LeftClick, new ActionParams { X = target.X, Y = window.Y + 5 });
             Assert.False(onToolbar.Injection!.Ok);
             Assert.Contains("不在页面内容上", onToolbar.Injection.Detail, StringComparison.Ordinal);
 
-            // ---- text and keys, into a field the page has focused -----------------------------------------
             await source.EvaluateAsync(port, "document.getElementById('field').focus()", null, CancellationToken.None);
 
             var typed = await ActAsync(ActionKind.TypeText, new ActionParams { Text = "你好abc" });
@@ -228,14 +224,12 @@ public sealed class DesktopBackgroundLiveTests
             await ActAsync(ActionKind.TypeText, new ActionParams { Text = "X" });
             Assert.Equal("X", await ValueOf(source, port, "field"));
 
-            // ---- the wheel, the way the tool counts it (negative is down) --------------------------------
             var scrolled = await ActAsync(ActionKind.Scroll, new ActionParams { X = target.X, Y = target.Y, ScrollDelta = -3 });
             Assert.True(scrolled.Injection!.Ok, scrolled.Injection.Detail);
             await WaitUntilAsync(
                 async () => double.Parse(await source.EvaluateAsync(port, "window.scrollY", null, CancellationToken.None) ?? "0", System.Globalization.CultureInfo.InvariantCulture) > 100,
                 "the page did not scroll down");
 
-            // ---- a minimized window is restored without being activated -------------------------------------
             NativeMethods.ShowWindow(window.Handle, 7); // SW_SHOWMINNOACTIVE
             Assert.True(NativeMethods.IsIconic(window.Handle));
 

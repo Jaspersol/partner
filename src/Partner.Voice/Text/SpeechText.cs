@@ -3,7 +3,7 @@ using System.Text;
 namespace Partner.Voice.Text;
 
 /// <summary>
-/// Strips everything a speech engine would read out loud verbatim (design doc §2.8.11): emoji, Markdown
+/// Strips everything a speech engine would read out loud verbatim: emoji, Markdown
 /// emphasis/list/heading markers, links (keeping the label), code fences and inline code.
 /// Without this the model's formatting is dictated character by character.
 /// </summary>
@@ -151,7 +151,7 @@ public static class TtsTextCleaner
 }
 
 /// <summary>
-/// Splits a stream of text into speakable sentences (design doc §2.8.11): sentence-ending punctuation first,
+/// Splits a stream of text into speakable sentences: sentence-ending punctuation first,
 /// soft breaks when a fragment gets long, and a hard character cap for text that has no punctuation at all.
 /// </summary>
 public sealed class SpeechSegmenter

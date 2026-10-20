@@ -8,12 +8,11 @@ namespace Partner.Core.Agent.Files;
 /// Reads a slice of one text file under the whitelist. Read-only.
 /// <para>
 /// A slice, not the file: <c>offset</c>/<c>limit</c> count characters of the decoded text, and the answer says
-/// how far it got so the model can ask for the next piece. That is what keeps a large file from flooding a
-/// context window — the point of giving reading to a sub-agent at all.
+/// how far it got so the model can ask for the next piece.
 /// </para>
 /// <para>
-/// UTF-8 is tried strictly first; text that is not valid UTF-8 is decoded as GB18030, which is what Chinese
-/// Windows tools still write. The answer names the encoding it used. Binary files are refused.
+/// UTF-8 is tried strictly first; text that is not valid UTF-8 is decoded as GB18030, which Chinese Windows
+/// tools still write. The answer names the encoding it used. Binary files are refused.
 /// </para>
 /// </summary>
 public sealed class FileReadTool(FileAccessPolicy policy) : ITool

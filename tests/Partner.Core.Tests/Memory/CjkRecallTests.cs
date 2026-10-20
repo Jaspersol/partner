@@ -4,12 +4,11 @@ using Partner.Core.Tests.Sessions;
 namespace Partner.Core.Tests.Memory;
 
 /// <summary>
-/// CJK recall through the bigram index (todo M1.1).
+/// CJK recall through the bigram index.
 /// <para>
-/// These exist because the CJK path is the one the FTS tokenizer cannot serve: unicode61 has no word segmentation,
-/// so a question worded differently from the record shares no token with it. Nothing errors when that path is
-/// broken — recall is simply empty for the language this project is written in, which is why the store level had
-/// no test for it and the previous implementation had rotted into a full-table scan.
+/// The FTS tokenizer cannot serve this path: unicode61 has no word segmentation, so a question worded
+/// differently from the record shares no token with it. Nothing errors when the path breaks — recall is simply
+/// empty for the language this project is written in.
 /// </para>
 /// </summary>
 public sealed class CjkRecallTests : IDisposable
@@ -56,7 +55,7 @@ public sealed class CjkRecallTests : IDisposable
         await using var store = Open();
         await store.WriteAsync(Rec("m1", "用户不喜欢被反复确认"));
 
-        // The control for the test above: overlap has to mean something, or the index is matching everything.
+        // The control: overlap has to mean something, or the index is matching everything.
         Assert.Empty(await store.RecallAsync("明天去公园散步"));
     }
 
@@ -79,7 +78,7 @@ public sealed class CjkRecallTests : IDisposable
         await store.WriteAsync(Rec("m2", "蓝绿部署流程"));
 
         // The query has Chinese in it, but the only thing it shares with m1 is the English word. Choosing the
-        // index by "does the query contain CJK" sent this to the bigram table alone, where m1 has no entry.
+        // index by "does the query contain CJK" would send this to the bigram table alone, where m1 has no entry.
         var hits = await store.RecallAsync("部署 deployment");
 
         Assert.Contains(hits, h => h.RecordId == "m1");
@@ -96,7 +95,7 @@ public sealed class CjkRecallTests : IDisposable
             "stage the staging cluster with terraform and then restart the gateway service"));
 
         // The newcomer is mostly the same claim plus a Chinese word. With the index chosen by script, the
-        // candidate lookup only saw bigrams and found nothing to retire.
+        // candidate lookup would only see bigrams and find nothing to retire.
         await store.WriteAsync(Rec(
             "new",
             "部署 stage the staging cluster with terraform and then restart the gateway daemon"));
@@ -114,7 +113,7 @@ public sealed class CjkRecallTests : IDisposable
 
         await store.ReviseAsync("m1", "用户希望先看结论", Actor.Human);
 
-        // Both halves move: the new wording finds it, the old wording does not. An index left holding the previous
+        // Both halves move: the new wording finds it, the old wording does not. An index left holding the old
         // body would answer the opposite way on each.
         Assert.Contains(await store.RecallAsync("希望先看结论"), h => h.RecordId == "m1");
         Assert.DoesNotContain(await store.RecallAsync("反复确认"), h => h.RecordId == "m1");

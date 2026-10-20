@@ -7,9 +7,9 @@ import MarkdownBody from './MarkdownBody.vue'
 /**
  * One tool call and its result, as a single card.
  * <para>
- * A call and its result are two events in the log, but they are one thing to a reader: the log used to render
- * them as two unrelated rows, so a turn that called a tool looked like two fragments of noise. The summary
- * line carries what happened; opening the card carries what was asked and what came back.
+ * A call and its result are two events in the log but one thing to a reader; two unrelated rows make a tool
+ * call read as two fragments of noise. The summary line carries what happened; opening the card carries what
+ * was asked and what came back.
  * </para>
  */
 const props = defineProps<{

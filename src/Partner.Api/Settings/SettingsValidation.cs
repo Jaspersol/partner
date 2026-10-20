@@ -192,7 +192,7 @@ public static class SettingsValidation
         }
     }
 
-    /// <summary>托管一个进程的前提是命令可执行、端口在合法范围、宽限为正。Command 空 = 没托管，直接放过。</summary>
+    /// <summary>Managing a process requires an executable command, a valid port and a positive grace period. Empty Command = not managed, so skip.</summary>
     private static void ValidateEngine(string section, LocalEngineSettings engine, List<string> errors)
     {
         ArgumentNullException.ThrowIfNull(engine);

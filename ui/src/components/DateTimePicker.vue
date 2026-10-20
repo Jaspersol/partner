@@ -5,19 +5,12 @@ import Icon from './Icon.vue'
 /**
  * A future moment, picked from a month grid and two time columns.
  *
- * <para>
- * Replaces the browser's own `datetime-local` field, which is a row of spin boxes that differ between browsers
- * and webviews, cannot say "the past is not allowed" in a way a reader can see, and gives no way to say "tomorrow
- * morning" without doing the arithmetic. Here the past is simply not offered: earlier days and earlier times are
- * disabled, and picking today clamps the time to the first one that is still ahead — so the server's rule that
- * the time must be after now cannot be broken from this control.
- * </para>
+ * The past is simply not offered: earlier days and earlier times are disabled, and picking today clamps the
+ * time to the first one that is still ahead — so the server's rule that the time must be after now cannot be
+ * broken from this control.
  *
- * <para>
  * The value is the same `yyyy-MM-ddTHH:mm` local wall-clock string a `datetime-local` input holds (empty when
- * nothing is chosen), so the form around it did not have to change. Choosing a day with no time yet starts at
- * 09:00; choosing a time with no day starts today.
- * </para>
+ * nothing is chosen). Choosing a day with no time yet starts at 09:00; choosing a time with no day starts today.
  */
 defineOptions({ inheritAttrs: false })
 
@@ -88,7 +81,7 @@ function floorOn(year: number, month: number, date: number): { hour: number; min
     : { hour: 0, minute: 0 }
 }
 
-/** Keeps a choice inside the future: a time that is already behind us becomes the first one that is not. */
+/** Keeps a choice inside the future: a time already behind us becomes the first one that is not. */
 function clamp(stamp: Stamp): Stamp {
   const at = new Date(stamp.year, stamp.month, stamp.date, stamp.hour, stamp.minute)
   if (at.getTime() > now.value.getTime()) return stamp
@@ -122,9 +115,6 @@ function pickMinute(minute: number) {
   commit({ ...base, minute })
 }
 
-// ---- the month grid ------------------------------------------------------------------------------------
-
-/** Blank cells before the 1st (Monday first), then the days. Blanks are `null`, not disabled days. */
 const cells = computed<(number | null)[]>(() => {
   const lead = (new Date(viewYear.value, viewMonth.value, 1).getDay() + 6) % 7
   const count = new Date(viewYear.value, viewMonth.value + 1, 0).getDate()
@@ -148,7 +138,7 @@ function isSelectedDay(date: number): boolean {
   return stamp !== null && stamp.year === viewYear.value && stamp.month === viewMonth.value && stamp.date === date
 }
 
-/** One tab stop for the whole grid: the chosen day, else today, else the first day that is not in the past. */
+/** One tab stop for the whole grid: the chosen day, else today, else the first day. */
 function focusable(date: number): boolean {
   const stamp = selected.value
   if (stamp !== null && stamp.year === viewYear.value && stamp.month === viewMonth.value) return stamp.date === date
@@ -173,11 +163,9 @@ function onGridKeydown(event: KeyboardEvent, date: number) {
   })
 }
 
-// ---- the time columns ----------------------------------------------------------------------------------
-
 const hours = Array.from({ length: 24 }, (_, hour) => hour)
 
-/** Every fifth minute, plus the chosen one when it is not on the grid (a preset like "1 小时后" lands anywhere). */
+/** Every fifth minute, plus the chosen one when it is not on the grid. */
 const minutes = computed(() => {
   const grid = Array.from({ length: 60 / MINUTE_STEP }, (_, at) => at * MINUTE_STEP)
   const chosen = selected.value?.minute
@@ -196,8 +184,6 @@ function minuteDisabled(minute: number): boolean {
   const hour = selected.value?.hour ?? floor.hour
   return hour < floor.hour || (hour === floor.hour && minute < floor.minute)
 }
-
-// ---- shortcuts -----------------------------------------------------------------------------------------
 
 interface Preset {
   key: string
@@ -231,8 +217,6 @@ function usePreset(preset: Preset) {
   viewMonth.value = preset.at.getMonth()
 }
 
-// ---- trigger text and open/close -----------------------------------------------------------------------
-
 const label = computed(() => {
   const stamp = selected.value
   if (stamp === null) return '选择日期和时间'
@@ -256,9 +240,7 @@ function toggle() {
 }
 
 /**
- * Brings the chosen hour and minute into view. A column of 24 would otherwise stay scrolled to midnight, both when
- * the panel opens on an existing choice and when a shortcut sets a time the reader cannot see from where the
- * column is.
+ * Brings the chosen hour and minute into view; a 24-item column would otherwise stay scrolled to midnight.
  */
 function revealChosenTime() {
   void nextTick(() => {
@@ -282,7 +264,7 @@ function onOutside(event: Event) {
   if (root.value !== null && !root.value.contains(event.target as Node)) close(false)
 }
 
-// The listener lives only while the panel is open: a picker that is never opened should cost nothing.
+// The listener lives only while the panel is open.
 watch(open, (isOpen) => {
   if (isOpen) document.addEventListener('pointerdown', onOutside)
   else document.removeEventListener('pointerdown', onOutside)
@@ -557,8 +539,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
 }
 
 .dtp-option {
-  /* Fills the column instead of being a fixed width inside it: a fixed width plus the column's padding is what
-     made the column a few pixels too wide for its own content and grew a horizontal scrollbar. */
+  /* Fills the column instead of being a fixed width inside it: a fixed width plus the column's padding grows
+     a horizontal scrollbar. */
   inline-size: 100%;
   min-inline-size: 2.75rem;
   min-block-size: 2rem;

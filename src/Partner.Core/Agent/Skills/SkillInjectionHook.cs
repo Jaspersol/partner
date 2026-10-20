@@ -4,15 +4,15 @@ using Partner.Core.Agent.Hooks;
 namespace Partner.Core.Agent.Skills;
 
 /// <summary>
-/// 把当前技能清单注入系统提示的钩子（设计文档缺口 C：Skills 的注入格式）。
-/// <para>注入格式是其它模块依赖的契约：</para>
+/// Injects the current skill list into the system prompt.
+/// <para>The injected format is a contract other modules depend on:</para>
 /// <code>
 /// Available skills (load one with the skill tool before using it):
 /// - &lt;skillId&gt; — &lt;name&gt;: &lt;description&gt;
 /// </code>
 /// <para>
-/// 行按注册表顺序（即 <see cref="SkillDefinition.SkillId"/> 升序）拼接；
-/// 注册表为空时什么都不注入，因此不会为空列表写出 <c>system</c> 事件。
+/// Lines follow registry order (that is, <see cref="SkillDefinition.SkillId"/> ascending); an empty registry
+/// injects nothing, so no <c>system</c> event is written for an empty list.
 /// </para>
 /// </summary>
 public sealed class SkillInjectionHook : AgentHookBase
@@ -21,8 +21,8 @@ public sealed class SkillInjectionHook : AgentHookBase
 
     private readonly ISkillRegistry _registry;
 
-    /// <summary>创建钩子。</summary>
-    /// <exception cref="ArgumentNullException"><paramref name="registry"/> 为 <see langword="null"/>。</exception>
+    /// <summary>Creates the hook.</summary>
+    /// <exception cref="ArgumentNullException"><paramref name="registry"/> is <see langword="null"/>.</exception>
     public SkillInjectionHook(ISkillRegistry registry)
     {
         ArgumentNullException.ThrowIfNull(registry);
@@ -47,7 +47,7 @@ public sealed class SkillInjectionHook : AgentHookBase
         var skills = _registry.Skills;
         if (skills.Count == 0)
         {
-            // 没有技能就不注入：空列表不应产生 system 事件。
+            // No skills, no injection: an empty list should not produce a system event.
             return ValueTask.FromResult(HookOutcome.Continue);
         }
 

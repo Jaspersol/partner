@@ -5,7 +5,7 @@ using Partner.Core.Agent.Tools;
 namespace Partner.Core.Tests.Memory;
 
 /// <summary>
-/// Counting tokens for a budget. The local estimate is deliberately crude, so the design leans on a
+/// Token counting for a budget. The local estimate is deliberately crude, so the design leans on a
 /// provider-backed count where one exists and never trusts the optimistic side of a disagreement.
 /// </summary>
 public sealed class TokenCounterTests

@@ -12,7 +12,6 @@ namespace Partner.Desktop.Tests;
 /// </summary>
 public class DesktopSessionRegressionTests
 {
-    // ---- S1: the blind window says how to get its controls ------------------------------------------
 
     [Fact]
     public void A_window_with_almost_no_elements_gets_the_debug_port_hint()
@@ -32,7 +31,6 @@ public class DesktopSessionRegressionTests
         Assert.Equal(string.Empty, DesktopObserveTool.BlindWindows(observation));
     }
 
-    // ---- S2: scroll without coordinates resolves to the window centre --------------------------------
 
     [Fact]
     public void Scroll_with_the_window_centre_passes_the_guard()
@@ -51,7 +49,6 @@ public class DesktopSessionRegressionTests
         Assert.NotNull(DesktopActTool.Guard(ActionKind.Scroll, Entity(), null, ScrollArgs()));
     }
 
-    // ---- S3: aim-only kinds skip verification --------------------------------------------------------
 
     [Theory]
     [InlineData(ActionKind.Focus)]
@@ -68,7 +65,6 @@ public class DesktopSessionRegressionTests
     public void Picture_changing_kinds_still_verify(ActionKind kind) =>
         Assert.True(DesktopAutomation.NeedsVerification(kind));
 
-    // ---- S4: an out-of-rectangle refusal names the nearest control -----------------------------------
 
     [Fact]
     public void Nearest_control_finds_the_one_closest_to_a_refused_point()
@@ -101,7 +97,6 @@ public class DesktopSessionRegressionTests
         Assert.Null(DesktopActTool.NearestControl(fresh, "ff", (10, 10)));
     }
 
-    // ---- helpers --------------------------------------------------------------------------------------
 
     private static DesktopActTool.DesktopActArguments ScrollArgs() => new(
         null, null, "Scroll", null, null, null, null, null, null, 3);
@@ -130,9 +125,9 @@ public class DesktopSessionRegressionTests
         string role = "Button",
         bool offscreen = false) => new(
         id, WindowIdOf(id), name, role, new PixelRect(x, y, 60, 30), IdentityDigest: $"{id}:{name}")
-    {
-        IsOffscreen = offscreen,
-    };
+        {
+            IsOffscreen = offscreen,
+        };
 
     private static string WindowIdOf(string elementId) =>
         elementId[..elementId.IndexOf(':')];

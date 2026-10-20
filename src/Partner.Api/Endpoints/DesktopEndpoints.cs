@@ -7,12 +7,10 @@ using Partner.Desktop.Telemetry;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// The desktop capability over HTTP: what the model can do through its tools, plus the approval queue those
-/// tools wait in.
+/// The desktop capability over HTTP: the tools the model can use, plus the approval queue they wait in.
 /// <para>
-/// The endpoints exist for the UI and for diagnostics — a human clicking here *is* the approval, so these do
-/// not ask again. The model's path goes through the tools, where governance puts every action in the
-/// <c>ask</c> list.
+/// A human calling these endpoints <em>is</em> the approval, so they do not ask again. The model's path goes
+/// through the tools, where governance puts every action in the <c>ask</c> list.
 /// </para>
 /// </summary>
 public static class DesktopEndpoints
@@ -53,15 +51,9 @@ public static class DesktopEndpoints
             });
         });
 
-        // The tuning aggregates the todo's O phase exists to collect: snap hit rate, the verification
-        // verdict distribution, how often actions carry a picture and how heavy those are, and the walk /
-        // action latencies. Read-only — the sink is written by the tools, never by this endpoint.
         app.MapGet("/api/desktop/telemetry", (ApiContext ctx, double? hoursRaw = null) =>
         {
-            // The window is derived from the sink's retention, not written here a second time: two numbers that
-            // have to agree, kept in two places, is how a rate ends up computed over events the endpoint claims
-            // not to be looking at. The caller may narrow it, never widen it — asking for more than is kept can
-            // only return less than it says.
+            // The window is derived from the sink's retention; the caller may narrow it, never widen it.
             var retention = ctx.Telemetry.Retention;
             var hours = Math.Clamp(hoursRaw ?? retention.TotalHours, 0, retention.TotalHours);
             var since = ctx.Clock.GetUtcNow() - TimeSpan.FromHours(hours);
@@ -83,8 +75,7 @@ public static class DesktopEndpoints
                 acts = acts.Count,
 
                 // Of the calls that offered a px/py point, how many were upgraded to a control. The
-                // denominator is calls-that-could-snap, not all acts, so a rate of 100 with no
-                // candidates is reported as null rather than a misleading zero.
+                // denominator is calls-that-could-snap, so no candidates is null, not a misleading zero.
                 snapHitRate = snappedCandidates.Count == 0
                     ? (double?)null
                     : Math.Round(100.0 * snappedCandidates.Count(e => e.Snapped == true) / snappedCandidates.Count, 1),
@@ -105,9 +96,7 @@ public static class DesktopEndpoints
 
                 walkTruncated = observes.Count(e => e.StopReason is not null),
 
-                // The lease column the T-zone's step-count tuning reads: of the act decisions answered
-                // through governance, how many ran inside the human's grant, how many reparked. askShare
-                // over the same denominator is the friction number.
+                // Of the act decisions answered through governance: how many ran inside the human's grant.
                 leases = governance.Count == 0
                     ? null
                     : (int?)governance.Count(e => e.Kind == "inLease"),
@@ -123,8 +112,8 @@ public static class DesktopEndpoints
 
         app.MapPost("/api/desktop/approval", (ApprovalRequest request, ApiContext ctx) =>
         {
-            // An unknown gear is refused rather than coerced: the settings file falls back to the strictest
-            // gear on a typo, but a caller that asks for something this does not know should hear about it.
+            // An unknown gear is refused rather than coerced: a settings-file typo falls back to the strictest
+            // gear, but a caller asking for something unknown should hear about it.
             var requested = request.Approval ?? string.Empty;
             if (!ApprovalGears.Values.Contains(requested, StringComparer.OrdinalIgnoreCase))
             {
@@ -139,8 +128,8 @@ public static class DesktopEndpoints
                 return Results.Ok(new { approval = gear, changed = false });
             }
 
-            // No restart: the gear is a decision, and governance reads it per call. Restarting would interrupt
-            // a turn in flight — and would tear down a consumer started with an injected client.
+            // No restart: governance reads the gear per call, and restarting would interrupt a turn in flight
+            // and tear down a consumer started with an injected client.
             var stored = ctx.Settings.Save(before with { Desktop = before.Desktop with { Approval = gear } });
 
             return Results.Ok(new { approval = stored.Desktop.Approval, changed = true });
@@ -167,7 +156,7 @@ public static class DesktopEndpoints
                     process = entity.Value,
                     foreground = entity.IsForeground,
                     rect = new { x = entity.Rect.X, y = entity.Rect.Y, width = entity.Rect.Width, height = entity.Rect.Height },
-                    // The same controls the tool returns: an endpoint that listed only windows would make the
+                    // The same controls the tool returns: an endpoint listing only windows would make the
                     // element path look like it does not exist.
                     elements = observation.Elements
                         .Where(element => element.WindowId == entity.EntityId)

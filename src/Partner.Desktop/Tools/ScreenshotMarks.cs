@@ -19,10 +19,8 @@ public sealed record ScreenshotMark(int Index, string? ElementId, string Label, 
 /// Draws the reference marks a model needs in order to <i>read</i> a position off a picture rather than
 /// estimate it.
 /// <para>
-/// Estimating a pixel coordinate from a description of an image is a weak spot of every vision model, and the
-/// measured failures are large: a real session asked for a music player's play button at screen (1280,1032)
-/// and produced (957,948) — 334 px away, in empty sidebar background, while describing the button correctly
-/// in words. The picture is not the problem; the absence of anything to measure against is.
+/// Estimating a pixel coordinate from an image description is a weak spot of every vision model. The picture
+/// is not the problem; the absence of anything to measure against is.
 /// </para>
 /// <para>
 /// So the picture carries two kinds of reference: a <b>grid</b> whose labels are screen coordinates (works for
@@ -40,9 +38,9 @@ public static class ScreenshotMarks
     private static readonly double[] NiceSteps = { 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000 };
 
     // Frozen on purpose: these are shared by every screenshot, and screenshot calls arrive on whatever thread
-    // the tool loop happens to be on. An unfrozen Freezable carries its creating thread's dispatcher, so the
-    // second call from a different thread throws "belongs to a different thread than its parent Freezable".
-    // Freezing detaches them from any thread.
+    // the tool loop happens to be on. An unfrozen Freezable carries its creating thread's dispatcher, so a
+    // call from another thread throws "belongs to a different thread than its parent Freezable". Freezing
+    // detaches them from any thread.
     private static readonly Pen GridPen = FrozenPen(0x66, 0x00, 0xB0, 0xFF, 1);
     private static readonly Brush GridLabelBrush = Frozen(0xE6, 0x00, 0x20, 0x30);
     private static readonly Brush GridLabelBack = Frozen(0xCC, 0xE8, 0xF6, 0xFF);
@@ -118,9 +116,8 @@ public static class ScreenshotMarks
     /// about. Rects outside the window are skipped: the picture is a capture of the window, so they have no
     /// place on it.
     /// <para>
-    /// Pure geometry, no imaging — which is what lets the capability gate assert the part the model consumes
-    /// (every mark names a real control and carries that control's own click point) without dragging WPF into
-    /// the smoke.
+    /// Pure geometry, no imaging, so the capability gate can assert the part the model consumes (every mark
+    /// names a real control and carries that control's own click point) without dragging WPF in.
     /// </para>
     /// </summary>
     internal static IReadOnlyList<ScreenshotMark> Marks(IReadOnlyList<UiElement> elements, PixelRect window)
@@ -188,7 +185,7 @@ public static class ScreenshotMarks
     /// per-window picture carries — numbered chips (the mark's number is what the answer text lists) and a
     /// grid whose labels are screen coordinates — but the numbered things are the windows themselves, so
     /// the model can address a window by id straight from the picture instead of re-observing to learn
-    /// which hex handle the taskbar click belongs to.
+    /// which handle the taskbar click belongs to.
     /// </summary>
     public static (BitmapSource Annotated, IReadOnlyList<ScreenshotMark> Marks) DrawDesktop(
         BitmapSource source,

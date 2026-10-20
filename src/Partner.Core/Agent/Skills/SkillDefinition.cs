@@ -1,22 +1,22 @@
 namespace Partner.Core.Agent.Skills;
 
 /// <summary>
-/// 一个工作区技能（设计文档缺口 C）：<c>&lt;workspace&gt;/skills/&lt;skillId&gt;/SKILL.md</c> 的解析结果。
+/// One workspace skill: the parsed form of <c>&lt;workspace&gt;/skills/&lt;skillId&gt;/SKILL.md</c>.
 /// </summary>
 public sealed record SkillDefinition
 {
-    /// <summary>技能标识：技能目录名，全小写（等价于 <c>^[a-z0-9][a-z0-9._-]*$</c>）。</summary>
+    /// <summary>Skill id: the skill directory name, all lowercase (matches <c>^[a-z0-9][a-z0-9._-]*$</c>).</summary>
     public required string SkillId { get; init; }
 
-    /// <summary>展示名：取自前置元数据的 <c>name</c>。</summary>
+    /// <summary>Display name, from the front-matter <c>name</c>.</summary>
     public required string Name { get; init; }
 
-    /// <summary>单行描述：取自前置元数据的 <c>description</c>；超长时由加载器截断。</summary>
+    /// <summary>Single-line description, from the front-matter <c>description</c>; the loader truncates it when too long.</summary>
     public required string Description { get; init; }
 
-    /// <summary>技能目录的绝对路径。</summary>
+    /// <summary>Absolute path of the skill directory.</summary>
     public required string Directory { get; init; }
 
-    /// <summary>前置元数据之后的正文，原样保留（仅至多剥离一个前导换行）。</summary>
+    /// <summary>The body after the front matter, kept verbatim (at most one leading newline is stripped).</summary>
     public required string Instructions { get; init; }
 }

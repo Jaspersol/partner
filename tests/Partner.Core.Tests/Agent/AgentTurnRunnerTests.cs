@@ -83,7 +83,7 @@ internal sealed class GearRecordingLlmClient : ILlmClient
     }
 }
 
-/// <summary>Acceptance tests for the turn runner (design doc §2.9.8).</summary>
+/// <summary>Acceptance tests for the turn runner.</summary>
 public sealed class AgentTurnRunnerTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-tests", Guid.NewGuid().ToString("n"));
@@ -404,8 +404,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
         var (store, _) = JsonlSessionStore.Open(_dir);
         await using (store)
         {
-            // A reply is markdown, and its structure *is* the line breaks. Flattening them here is what made the
-            // session view render a formatted answer as one long line.
+            // A reply is markdown, and its structure *is* the line breaks.
             const string Reply = "## 步骤\n\n- 打开书房的灯\n- 关掉客厅的灯\n\n> 完成后再回报一次";
 
             var runner = Build(store, new ScriptedLlmClient(new[] { Say(Reply) }));
@@ -884,9 +883,8 @@ public sealed class AgentTurnRunnerTests : IDisposable
     [Fact]
     public async Task A_desktop_toolset_is_given_the_family_budget()
     {
-        // A real desktop task runs 20–40 look-act-look steps; the old single number said eight, which spent
-        // them all on the first two controls. The default toolset earns 32 — no test or configuration needed
-        // to get it, because the registry names the family.
+        // A real desktop task runs 20–40 look-act-look steps. The default toolset earns 32 with no test
+        // or configuration, because the registry names the family.
         await using var store = new JsonlSessionStore(new FakeSink());
 
         var tools = new InMemoryToolRegistry();
@@ -908,7 +906,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
 
         var result = await runner.RunAsync(Claimed());
 
-        // Thirteen steps under the old single number of eight would have ended as step-limit.
+        // Thirteen steps must complete rather than hit step-limit.
         Assert.Equal(TurnEndReason.Completed, result.Reason);
         Assert.Equal(13, result.Steps);
     }
@@ -917,7 +915,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
     public async Task A_plain_toolset_still_stops_at_the_default_budget()
     {
         // The larger ceiling only binds turns that were never going to finish quickly. Chat ends when the
-        // answer is written, so a non-desktop toolset must still hear the old number.
+        // answer is written, so a non-desktop toolset still stops at the base 8.
         await using var store = new JsonlSessionStore(new FakeSink());
 
         var tools = new InMemoryToolRegistry();
@@ -945,7 +943,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
     [Fact]
     public void The_family_budget_pick_the_largest_registered_match()
     {
-        var options = new AgentTurnOptions { MaxSteps = 8, ToolStepBudgets = new Dictionary<string,int> { ["desktop"] = 32 } };
+        var options = new AgentTurnOptions { MaxSteps = 8, ToolStepBudgets = new Dictionary<string, int> { ["desktop"] = 32 } };
 
         Assert.Equal(32, options.StepsAllowedFor(new[] { "desktop_act", "clock" }));
         Assert.Equal(32, options.StepsAllowedFor(new[] { "desktop_observe" }));
@@ -962,7 +960,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
     [Fact]
     public void A_web_toolset_gets_room_for_a_search_then_several_reads()
     {
-        // The web sub-agent runs search, fetch, fetch, … and used to be cut at the base 8 before it could report.
+        // The web sub-agent runs search, fetch, fetch, … and needs 24 steps to report.
         var options = new AgentTurnOptions();
 
         Assert.Equal(24, options.StepsAllowedFor(new[] { "web_search", "web_fetch", "task_report" }));
@@ -972,8 +970,8 @@ public sealed class AgentTurnRunnerTests : IDisposable
     [Fact]
     public async Task Flush_failure_surfaces_and_the_turn_is_not_marked_successful()
     {
-        // Buffered store: appends alone are not durable, so the runner's own end-of-turn barrier is what
-        // must fail loudly (design doc §2.9.7).
+        // Buffered store: appends alone are not durable, so the runner's own end-of-turn barrier
+        // must fail loudly.
         var sink = new FakeSink();
         var store = new JsonlSessionStore(sink, flushOnAppend: false);
         await using (store)
@@ -1058,15 +1056,6 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     private (JsonlSessionStore Store, long Repaired) SessionStore() => JsonlSessionStore.Open(_dir);
-    /// A retried turn must not log the reader's message a second time.
-    /// </summary>
-    /// <remarks>
-    /// The input queue re-runs an interrupted <c>Running</c> item on restart, and a re-run starts the turn
-    /// over rather than resuming it. If the turn appended a fresh <c>User</c> event each time, two things
-    /// broke at once: the conversation showed the same message twice, and memory's at-least-once guard —
-    /// which asks whether a record already exists for that event seq — stopped matching, so the fact was
-    /// stored twice and recall returned it as two independent pieces of evidence.
-    /// </remarks>
     [Fact]
     public async Task RetriedTurnDoesNotLogTheMessageTwice()
     {
@@ -1105,5 +1094,3 @@ public sealed class AgentTurnRunnerTests : IDisposable
         }
     }
 }
-
-    /// <summary>

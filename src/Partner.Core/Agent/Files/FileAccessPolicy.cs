@@ -18,10 +18,9 @@ public sealed record FileAccessDecision(FileAccessKind Kind, string FullPath, st
 /// <summary>
 /// Where the file tools may go: a whitelist of directories, with links followed to where they really lead.
 /// <para>
-/// A path that merely <i>starts with</i> an allowed root is not enough. <c>..</c> segments are collapsed
-/// first, and every directory or file on the way down is checked for being a link (symlink or junction): a
-/// link inside a root that points outside it would otherwise turn the whitelist into a suggestion. A link
-/// that cannot be resolved is refused — the check fails closed.
+/// A path that merely <i>starts with</i> an allowed root is not enough. <c>..</c> segments are collapsed first,
+/// and every directory or file on the way down is checked for being a link (symlink or junction). A link that
+/// cannot be resolved is refused — the check fails closed.
 /// </para>
 /// <para>
 /// On top of the whitelist sits a short list of things that are never readable even inside it: key and
@@ -49,8 +48,8 @@ public sealed class FileAccessPolicy
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // A root may itself be a link (a drive mapped through a junction, say). Files reached through it resolve
-        // to the real directory, so the real location is accepted as well — but only for roots the person wrote.
+        // A root may itself be a link. Files reached through it resolve to the real directory, so the real
+        // location is accepted as well — but only for roots the person wrote.
         _realRoots = _roots.Select(root => ResolveLinks(root) ?? root).ToList();
         _deniedDirectories = (deniedDirectories ?? Array.Empty<string>())
             .Where(directory => !string.IsNullOrWhiteSpace(directory))

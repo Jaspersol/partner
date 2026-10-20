@@ -1,9 +1,8 @@
 namespace Partner.Desktop.Telemetry;
 
 /// <summary>
-/// One thing a desktop tool did, as evidence for the tuning questions the todo lists. The fields are the
-/// ones the result text already carries — snapped, verify decision, picture size — moved one level earlier,
-/// so aggregates can be read without re-parsing result strings.
+/// One thing a desktop tool did. The fields mirror what the result text already carries — snapped, verify
+/// decision, picture size — so aggregates can be computed without re-parsing result strings.
 /// </summary>
 /// <param name="Ts">When it happened (UTC).</param>
 /// <param name="Tool">`desktop_act` / `desktop_observe` / `desktop_screenshot`.</param>
@@ -30,9 +29,8 @@ public sealed record DesktopTelemetryEvent(
     string? StopReason);
 
 /// <summary>
-/// Where desktop telemetry goes. A deliberately tiny write-side: the tool loop is single-threaded per
-/// turn, so an in-memory list behind a lock is enough data for a sliding-window aggregate, and anything
-/// heavier (files, exports) is a later answer to a question this one answers first.
+/// Where desktop telemetry goes. The tool loop is single-threaded per turn, so an in-memory list behind a
+/// lock is enough for a sliding-window aggregate.
 /// </summary>
 public interface ITelemetrySink
 {
@@ -51,18 +49,17 @@ public sealed class InMemoryTelemetrySink : ITelemetrySink
     private readonly List<DesktopTelemetryEvent> _events = new();
     private readonly TimeProvider _clock;
 
-    /// <summary>How long an event stays answerable: a tuning decision reads the recent past, not the
-    /// whole history — and unbounded memory for diagnostics is its own bug.</summary>
+    /// <summary>How long an event stays answerable. Retention is bounded so diagnostics cannot grow
+    /// memory without limit.</summary>
     internal static readonly TimeSpan DefaultRetention = TimeSpan.FromHours(1);
 
     private readonly TimeSpan _retention;
 
     /// <param name="clock">Time source; the retention cutoff is measured against it.</param>
     /// <param name="retention">
-    /// How long an event stays answerable. The aggregate endpoint derives its own window from this, so the two
-    /// cannot say different things about the same events — a sink that keeps an hour while the endpoint claims
-    /// two would report a rate over events it never had, and one that keeps two while the endpoint claims one
-    /// would silently ignore half of what it holds.
+    /// How long an event stays answerable. The aggregate endpoint derives its window from this, so the two
+    /// cannot disagree about the same events: a sink keeping an hour while the endpoint claims two would
+    /// report a rate over events it never had, and the reverse would ignore half of what it holds.
     /// </param>
     public InMemoryTelemetrySink(TimeProvider? clock = null, TimeSpan? retention = null)
     {

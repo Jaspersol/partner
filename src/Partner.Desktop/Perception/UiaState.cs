@@ -4,12 +4,11 @@ using System.Windows.Automation;
 namespace Partner.Desktop.Perception;
 
 /// <summary>
-/// What a control says about itself: checked or not, selected or not, expanded or not, what its value is.
+/// What a control says about itself: checked, selected, expanded, and its value.
 /// <para>
-/// A pixel diff answers "did something on the screen change" and is wrong in both directions for a small control:
-/// a checkbox that flipped is a few dozen pixels in a large window, under any sensible threshold, and a window that
-/// repainted elsewhere makes a click that did nothing look like success. Asking the control is exact: the state
-/// before and the state after are either the same string or they are not.
+/// A pixel diff is wrong in both directions for a small control: a checkbox that flipped is a few dozen pixels
+/// in a large window, and a repaint elsewhere makes a click that did nothing look like success. Asking the
+/// control is exact: the state before and after are either the same string or they are not.
 /// </para>
 /// </summary>
 public static class UiaState

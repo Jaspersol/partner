@@ -9,18 +9,17 @@ using Partner.Voice.Tts;
 namespace Partner.Api.Endpoints;
 
 /// <summary>
-/// Settings page's connectivity tests. One endpoint per service kind, each making the smallest real
-/// round-trip that proves the configured address speaks the configured protocol — a settings row showing
-/// "saved" proves nothing about reachability, so the UI runs these instead of hoping. ASR actually
-/// transcribes a TTS-generated sample (or plain silence when no voice is configured), TTS returns its
-/// audio for the UI to play, and the model test proves both text and vision with one-token completions.
+/// Settings page connectivity tests. One endpoint per service kind, each making the smallest real round-trip
+/// that proves the configured address speaks the configured protocol. ASR transcribes a TTS-generated sample (or
+/// plain silence when no voice is configured), TTS returns its audio for the UI to play, and the model test
+/// proves both text and vision with one-token completions.
 /// </summary>
 public static class VoiceTestEndpoints
 {
     /// <summary>AsrResult/TtsResult add the payload the settings cards render or play.</summary>
     public sealed record VoiceTestResult(bool Ok, string Detail, int LatencyMs);
 
-    /// <summary>Transcribed 是引擎转出来的原话；UI 即时显示。</summary>
+    /// <summary>Transcribed is the engine's raw output, shown in the UI immediately.</summary>
     public sealed record AsrTestResult(bool Ok, string Detail, int LatencyMs, string Transcribed);
 
     public sealed record TtsTestResult(bool Ok, string Detail, int LatencyMs, string? AudioBase64, double Seconds);
@@ -50,8 +49,9 @@ public static class VoiceTestEndpoints
     }
 
     /// <summary>
-    /// 测试失败时补一句本地引擎的状态：连不上多半是引擎根本没起来，原因就在 Partner 启动它时记下的那句话里。
-    /// 开关关着也要说，否则用户会以为是地址写错了。
+    /// Adds the local engine's state when a test fails: a connection failure usually means the engine never
+    /// started, and the reason is in the line Partner logged when it spawned it. Reported even when the switch is
+    /// off, or the user will blame the address.
     /// </summary>
     private static string EngineHint(LocalEngineState state, LocalEngineSettings settings, string? baseUrl)
     {
@@ -65,14 +65,14 @@ public static class VoiceTestEndpoints
             return $"；本地引擎没在运行：{state.Reason}";
         }
 
-        // Switch off: only worth saying when the client is pointed at the port that engine would have listened on.
+        // Switch off: only worth saying when the client points at the port that engine would have listened on.
         var local = Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && uri.IsLoopback && uri.Port == settings.Port;
         return local ? "；本地引擎的「由 Partner 启动」没开" : string.Empty;
     }
 
     /// <summary>
-    /// ASR 实测：在配置的输入设备上实听 2 秒，把录下的音频喂给引擎、返回识别文本——用户看到的
-    /// 就是这台引擎对他嗓音的转写。设备打不开退回启动级静音探测（只有线路连通性可判）。
+    /// ASR live test: listens on the configured input device for 2 s and feeds the audio to the engine, returning
+    /// its transcript. If the device cannot open, falls back to a silence probe (connectivity only).
     /// </summary>
     private static async Task<AsrTestResult> TestAsrAsync(ApiContext ctx, CancellationToken ct)
     {
@@ -113,7 +113,7 @@ public static class VoiceTestEndpoints
         }
     }
 
-    /// <summary>TTS 实测：合成一句完整话，音频以 base64 WAV 回 UI 播放——用户听到的是这台引擎的真实声音。</summary>
+    /// <summary>TTS live test: synthesizes a full sentence and returns base64 WAV for the UI to play.</summary>
     private static async Task<TtsTestResult> TestTtsAsync(ApiContext ctx, CancellationToken ct)
     {
         var tts = ctx.Settings.Load().Tts;
@@ -151,8 +151,9 @@ public static class VoiceTestEndpoints
         }
     }
 
-    /// <summary>在指定输入设备上实听 seconds 秒，收满一段 float32 PCM。独占的是同一只麦：
-    /// 语音输入半区若在跑会互踩——宿主保证先停（Reconfigure 已有门），测试级直接开录。</summary>
+    /// <summary>Listens on the given input device for <c>seconds</c>, collecting float32 PCM. The input half shares
+    /// the same microphone and the host guarantees it is stopped first (Reconfigure gates it), so recording here
+    /// is safe.</summary>
     private static float[] RecordFromInputAsync(string? deviceId, double seconds, int sampleRate, CancellationToken ct)
     {
         var collected = new List<float[]>();
@@ -223,9 +224,10 @@ public static class VoiceTestEndpoints
     }
 
     /// <summary>
-    /// 判定一次 ASR 实测的结果。抽成纯函数是因为它承载了「设置页假绿」的解药：整段低于判定阈值 =
-    /// 麦克风没送来任何东西，引擎可达也救不回来——管线上永远不会有转写，所以这一条必须红，
-    /// 否则「拔麦」「安静房间」「阈值配高了」在设置页上都长成绿色。
+    /// Judges an ASR live test. Extracted as a pure function because it carries the cure for "false green" in the
+    /// settings page: if the whole clip is below the threshold, the microphone delivered nothing and the engine
+    /// being reachable does not help — the pipeline can never produce a transcript, so this must be red, or
+    /// "unplugged mic", "quiet room" and "threshold set too high" all look green.
     /// </summary>
     internal static AsrTestResult JudgeAsr(
         float[] audio,
@@ -239,9 +241,9 @@ public static class VoiceTestEndpoints
 
         if (rms < silenceThreshold)
         {
-            // 有信号但低于阈值（引擎都转出来了）与「一根针都没有」是两回事：前者是音量/阈值配错，
-            // 后者是设备没送来东西。两者都该红，但话术不能一样——否则「引擎却转出」跟在「设备无信号」
-            // 后面自相矛盾。
+            // Signal below the threshold but transcribed by the engine differs from no signal at all: the first is
+            // a volume/threshold misconfiguration, the second is a device delivering nothing. Both are red, but
+            // the wording must differ.
             var noSignal = rms < NoSignalFloor;
             var detail = noSignal
                 ? $"没听到声音（RMS {rms:0.0000} 低于阈值 {silenceThreshold:0.0000}）：设备无信号，或测试时没说话（{note}）"
@@ -260,9 +262,9 @@ public static class VoiceTestEndpoints
     }
 
     /// <summary>
-    /// 最响一帧的 RMS（50 ms 窗）。整段平均会被一句话前后的静音稀释：2 s 里只说 0.15 s 的话，整段
-    /// RMS 掉到这句话本身的 1/3.6，正常响度也被判成「没声音」。取峰值才与判句机一致——那边用
-    /// <c>Ring.Energy(0.05)</c> 即 50 ms 窗 RMS 对阈值，这边用同一把尺子。
+    /// RMS of the loudest frame (50 ms window). A whole-clip average is diluted by silence around the sentence:
+    /// 0.15 s of speech in 2 s drops the average to about 1/3.6 of the sentence, flagging normal loudness as "no
+    /// sound". Peak matches the sentence detector, which uses the same 50 ms-window RMS against the threshold.
     /// </summary>
     private static double SpeechLevel(float[] pcm)
     {
@@ -271,7 +273,7 @@ public static class VoiceTestEndpoints
             return 0;
         }
 
-        const int frame = 800; // 50 ms @ 16 kHz（本路径恒定 16 kHz）
+        const int frame = 800; // 50 ms at 16 kHz (this path is always 16 kHz)
         var peak = 0.0;
         for (var i = 0; i < pcm.Length; i += frame)
         {
@@ -293,7 +295,7 @@ public static class VoiceTestEndpoints
         return peak;
     }
 
-    /// <summary>低于此值视为「设备根本没送信号」（纯静音 / 1 LSB 抖动），再往上才叫「声音太小」。</summary>
+    /// <summary>Below this, the device delivered no signal at all (pure silence / 1 LSB jitter); above it, "too quiet".</summary>
     private const double NoSignalFloor = 0.001;
 
     private static async Task<float[]> SynthesizeOnceAsync(TtsOptions options, string text, CancellationToken ct)
@@ -318,7 +320,7 @@ public static class VoiceTestEndpoints
         return merged;
     }
 
-    /// <summary>16-bit 单声道 WAV（voices 的 PcmWav 是 Partner.Voice internal，这里自拼一份与它同格式）。</summary>
+    /// <summary>16-bit mono WAV (Partner.Voice's PcmWav is internal, so this builds the same format).</summary>
     private static byte[] PcmToWav16(float[] pcm, int sampleRate)
     {
         var bytes = new byte[44 + pcm.Length * 2];
@@ -367,7 +369,7 @@ public static class VoiceTestEndpoints
     /// <summary>
     /// KWS: health + the live keyword list + one real probe. The probe feeds recorded audio into
     /// <c>/wake/infer</c>, because reading <c>/health</c> only proves the endpoint exists — a dictionary that
-    /// lists the right words while the wake path never fires is exactly the state this test has to separate.
+    /// lists the right words while the wake path never fires is exactly the state this test must separate.
     /// </summary>
     private static async Task<VoiceTestResult> TestKwsAsync(ApiContext ctx, CancellationToken ct)
     {
@@ -400,7 +402,7 @@ public static class VoiceTestEndpoints
             }
             catch (Exception)
             {
-                // /keywords 是本仓壳的扩展，第三方 sherpa 服务没有它不算失败。
+                // /keywords is an extension of this repo's shell; a third-party sherpa service lacking it is not a failure.
             }
 
             var (probeOk, probeText) = await WakeProbeAsync(http, base_!, settings, ct).ConfigureAwait(false);
@@ -422,10 +424,9 @@ public static class VoiceTestEndpoints
     }
 
     /// <summary>
-    /// 唤醒实测：录一段真实音频送进 <c>/wake/infer</c>，返回 (是否通过, 说明)。对着麦克风说一遍唤醒词
-    /// 就能看到命中——这正是「字典正常、引擎可达、却不响应」那类故障唯一能被一眼看出来的地方。
-    /// 没听到声音（设备无信号）算不通过；听到了但没命中算通过，因为「测试时没说话」与「词表不对」在
-    /// 音频里长得一样，如实写进说明而不是替用户下结论。
+    /// Wake probe: records real audio and sends it to <c>/wake/infer</c>, returning (passed, detail). No signal
+    /// counts as failure; signal heard but no hit counts as passed, because "did not speak during the test" and
+    /// "wrong word list" look identical in the audio — report it honestly instead of guessing.
     /// </summary>
     private static async Task<(bool Ok, string Detail)> WakeProbeAsync(
         HttpClient http,
@@ -433,7 +434,7 @@ public static class VoiceTestEndpoints
         Settings.RuntimeSettings settings,
         CancellationToken ct)
     {
-        // KWS 只吃 16 kHz 单声道 float32：采样率不是这一档时喂进去的是错的速度，宁可说跳过。
+        // KWS accepts only 16 kHz mono float32: at any other rate the audio would play at the wrong speed, so skip.
         if (settings.Asr.SampleRate != 16_000)
         {
             return (true, $"；唤醒实测跳过（KWS 只吃 16 kHz，当前 ASR 采样率 {settings.Asr.SampleRate}）");
@@ -483,9 +484,9 @@ public static class VoiceTestEndpoints
     }
 
     /// <summary>
-    /// Text model: one 1-token chat completion proves key+url+model all at once. Vision: a 1×1 red PNG
-    /// offered the same way — models that accept it say 2xx; text-only endpoints usually 400. The flag is
-    /// reported to the user rather than trusted for the desktop tool table (that stays SupportsImages).
+    /// Text model: one 1-token chat completion proves key+url+model at once. Vision: a 1×1 red PNG offered the
+    /// same way — models that accept it say 2xx; text-only endpoints usually 400. The flag is reported to the user
+    /// rather than trusted for the desktop tool table (that stays SupportsImages).
     /// </summary>
     private static async Task<VoiceTestResult> TestModelAsync(ApiContext ctx, CancellationToken ct)
     {
@@ -506,7 +507,7 @@ public static class VoiceTestEndpoints
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            // 视觉探测先发：最贵的就是这次请求，两次合成请求太浪费。
+            // Vision probe first: it is the expensive request, so avoid two synthesized calls.
             var vision = await ChatAsync(http, chat, VisionBody(settings.Model.Model), ct).ConfigureAwait(false);
             var visionOk = vision is not null;
 
@@ -548,7 +549,7 @@ public static class VoiceTestEndpoints
     private static string TextBody(string model) =>
         "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}";
 
-    // 1×1 红色 PNG，data URI：够证明端点收 multimodal 消息，也小到不占任何统计。
+    // 1×1 red PNG as a data URI: enough to prove the endpoint accepts multimodal messages, small enough to be free.
     private static string VisionBody(string model) =>
         "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":[" +
         "{\"type\":\"text\",\"text\":\"ping\"}," +

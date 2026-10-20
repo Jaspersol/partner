@@ -6,12 +6,11 @@ namespace Partner.Core.Agent.Web;
 /// <summary>
 /// What a public web request may not reach: anything on this machine or inside this network.
 /// <para>
-/// This is the one attack surface the network capability adds that nothing else in the repository covers. The
-/// desktop CDP debug port, the API itself and the voice engines all listen on loopback, so a model that reads
-/// "fetch http://127.0.0.1:9222/json" in a page it just fetched would be handed this machine's own control
-/// surfaces. The check therefore runs on <b>every hop</b>, including redirects, and the connection is made to
-/// the address that was checked — resolving again at connect time would open the DNS-rebinding window that
-/// makes the whole guard decorative.
+/// This is the one attack surface the network capability adds. The desktop CDP debug port, the API itself and
+/// the voice engines all listen on loopback, so a model that reads "fetch http://127.0.0.1:9222/json" in a page
+/// it just fetched would be handed this machine's own control surfaces. The check therefore runs on <b>every
+/// hop</b>, including redirects, and the connection is made to the address that was checked — resolving again at
+/// connect time would open the DNS-rebinding window that makes the whole guard decorative.
 /// </para>
 /// </summary>
 public static class WebAddressGuard

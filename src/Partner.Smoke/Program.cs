@@ -48,12 +48,12 @@ using Partner.Core.Sessions;
 namespace Partner.Smoke;
 
 /// <summary>
-/// Phase 1 smoke harness: runs the real end-to-end path (three input kinds → one FIFO queue →
+/// Smoke harness: runs the real end-to-end path (three input kinds → one FIFO queue →
 /// single consumer → one session log → projection), including a restart, and asserts the
-/// invariants the design doc requires. Exits non-zero on the first failed check.
+/// required invariants. Exits non-zero on the first failed check.
 /// <para>
-/// This is the "smoke 实跑" source that the capability manifest is generated from (doc §8.5 F):
-/// nothing here reads configuration to decide whether something works.
+/// The capability manifest is generated from these runs: nothing here reads configuration to decide
+/// whether something works.
 /// </para>
 /// </summary>
 internal static class Program
@@ -134,7 +134,7 @@ internal static class Program
         }
     }
 
-    /// <summary>Fails the build when a capability disappears or drops a level (design doc Phase 0).</summary>
+    /// <summary>Fails the build when a capability disappears or drops a level.</summary>
     private static bool VerifyBaseline(string path, CapabilityManifest current)
     {
         if (!File.Exists(path))
@@ -241,7 +241,6 @@ internal static class Program
 
         WarnIfPartnerAppIsRunning();
 
-        // ---- 1. three input kinds, interleaved arrival order -------------------------
         var (store, repaired) = JsonlSessionStore.Open(root, clock);
         Check("session log opens clean", repaired == 0, $"repaired={repaired}");
 
@@ -271,7 +270,6 @@ internal static class Program
         Check("queue depth counts the three distinct items", queue.Snapshot().Depth == 3,
             $"depth={queue.Snapshot().Depth}");
 
-        // ---- 2. single consumer: take → run → write session → complete ---------------
         var consumed = new List<InputItem>();
         for (var i = 0; i < 3; i++)
         {
@@ -314,7 +312,6 @@ internal static class Program
         Check("queue drained", queue.Snapshot().Depth == 0, $"depth={queue.Snapshot().Depth}");
         Check("no running item after drain", queue.Snapshot().RunningItemId is null);
 
-        // ---- 3. projection: order, edits, rebuildability -----------------------------
         var view = await store.ProjectAsync();
         Check("session has 6 content events (3 user + 3 assistant)", view.Items.Count == 6,
             $"count={view.Items.Count}");
@@ -361,7 +358,6 @@ internal static class Program
 
         await store.DisposeAsync();
 
-        // ---- 4. restart: unconsumed items come back, consumed stay consumed ----------
         // A real restart means the previous process is gone: release its handles first.
         await queue.DisposeAsync();
 
@@ -409,7 +405,6 @@ internal static class Program
             await queue3.DisposeAsync();
         }
 
-        // ---- 5. session survives restart with the same seq space ---------------------
         var (store2, repaired2) = JsonlSessionStore.Open(root, clock);
         Check("restart: session log still clean", repaired2 == 0, $"repaired={repaired2}");
         Check("restart: last seq preserved", store2.LastSeq == 7, $"lastSeq={store2.LastSeq}");
@@ -423,7 +418,6 @@ internal static class Program
         Check("restart: seq continues without reuse", appended == 8, $"seq={appended}");
         await store2.DisposeAsync();
 
-        // ---- 6. M3: a real turn through the agent runtime ---------------------------
         var (store3, _) = JsonlSessionStore.Open(root, clock);
         await using (store3)
         {
@@ -516,7 +510,6 @@ internal static class Program
             await queue4.DisposeAsync();
         }
 
-        // ---- 7. M4: scheduler → queue → turn ---------------------------------------
         var (store4, _) = JsonlSessionStore.Open(root, clock);
         await using (store4)
         {
@@ -617,7 +610,6 @@ internal static class Program
             await queue5.DisposeAsync();
         }
 
-        // ---- 8. M5: memory layer ----------------------------------------------------
         await using (var memory = new MemoryStore(Path.Combine(root, "memory", "memory.db"), clock: clock))
         {
             await memory.WriteAsync(new MemoryRecord
@@ -762,7 +754,7 @@ internal static class Program
                     $"demoted={dustRun.Demoted} trimmed={dustRun.Trimmed}");
             }
 
-            // Scale: the Phase 3 acceptance number (100k records, retrieval P99 < 500ms).
+            // Scale: 100k records, retrieval P99 < 500ms.
             const int scale = 100_000;
             var records = new List<MemoryRecord>(scale);
             for (var i = 0; i < scale; i++)
@@ -815,9 +807,8 @@ internal static class Program
         }
 
         // The same scale in Chinese, which is a different index: unicode61 cannot tokenize it, so those rows are
-        // found through the bigram index instead. The number matters here in a way it does not for the Latin
-        // store — the previous implementation of this path scanned every body once per bigram, and at 100k rows
-        // that is the difference between an index and a stopwatch.
+        // found through the bigram index instead. At 100k rows the bigram index is the difference between a
+        // lookup and a full scan.
         await using (var cjkStore = new MemoryStore(Path.Combine(root, "memory", "cjk-scale.db"), clock: clock))
         {
             const int cjkScale = 100_000;
@@ -867,7 +858,6 @@ internal static class Program
                 + $"seed={cjkSeedWatch.Elapsed.TotalSeconds:0.0}s");
         }
 
-        // ---- 9. M6: tool governance -------------------------------------------------
         var policyPath = Path.Combine(root, "tools.policy.json");
         File.WriteAllText(policyPath, """
             {
@@ -952,7 +942,6 @@ internal static class Program
             await queue6.DisposeAsync();
         }
 
-        // ---- 10. M7: MCP stdio client, bridged into a governed turn -------------------
         var mcpDll = FindMcpTestServer();
         if (mcpDll is null)
         {
@@ -1044,7 +1033,6 @@ internal static class Program
             }
         }
 
-        // ---- 11. M9: desktop layer (read-only checks; the smoke never injects input) --
         var windows = WindowEnumerator.List();
         Check("desktop: window enumeration finds visible windows",
             windows.Count > 0 && windows.All(w => w.Handle != 0 && w.Width > 0 && w.Height > 0),
@@ -1153,10 +1141,9 @@ internal static class Program
                 notGuessed,
                 sample is null ? "no UIA elements in this observation" : sample.ElementId);
 
-            // What goes on the picture the model reasons about. Estimating a position from an unmarked image is
-            // where a real session asked for a play button at (1280,1032) and produced (957,948) while
-            // describing the button correctly in words. A mark is not an estimate: it names a control the
-            // observation found and carries that control's own click point.
+            // What goes on the picture the model reasons about. Estimating a position from an unmarked image
+            // is unreliable. A mark is not an estimate: it names a control the observation found and carries
+            // that control's own click point.
             var sampleWindow = sample is null ? null : observation.Find(sample.WindowId);
 
             var marks = sampleWindow is null
@@ -1195,7 +1182,7 @@ internal static class Program
                 refused.GuardReason ?? "(none)");
         }
 
-        // The action's answer now carries the state after it: the same pipeline the screenshot tool runs,
+        // The action's answer carries the state after it: the same pipeline the screenshot tool runs,
         // attached to a result the model was already about to read. Two read-only evidences — when a picture
         // is promised (the decision matrix, which must exclude a refusal, the aim-only kinds and a caller who
         // said off) and what one render yields (a real PNG under a media id the server's px/py mapping can
@@ -1263,9 +1250,9 @@ internal static class Program
             }
         }
 
-        // The step budget is measured by tool family: a GUI task runs 20–40 look-act-look steps, so a flat
-        // single number spent them on the first two controls and ended the turn as step-limit. Keyed on what
-        // the registry holds, so the same turn runner gives a plain chat turn only the base number.
+        // The step budget is keyed by tool family: a GUI task runs 20–40 look-act-look steps, so a single
+        // flat number would run out on the first two controls. Keyed on what the registry holds, so the same
+        // turn runner gives a plain chat turn only the base number.
         {
             var desktopFamily = new InMemoryToolRegistry();
             desktopFamily.Register(new StubTool("desktop_act", "done"));
@@ -1306,9 +1293,9 @@ internal static class Program
             }
         }
 
-        // —— The desktop level: the observation level under “window” ——
-        // The taskbar/tray/notification don't belong to any top-level window, so they never appeared in observations;
-        // the full-frame screenshot brings them in along with the window marks, no prerequisite observation.
+        // The taskbar/tray/notification don't belong to any top-level window, so they never appear in
+        // observations; the full-frame screenshot brings them in along with the window marks, with no
+        // prerequisite observation.
         using (var scopeAutomation = new DesktopAutomation())
         {
             var workspace = Path.Combine(root, "desktop-scope");
@@ -1329,8 +1316,9 @@ internal static class Program
                 && mapped.ScreenRect == new PixelRect(expectations.X, expectations.Y, expectations.Width, expectations.Height),
                 shot.Ok ? $"media={mediaId} marks=?" : shot.Content[..Math.Min(70, shot.Content.Length)]);
 
-            // px/py on a full-frame image -> bare screen coordinate path (forwarding in input-free refusal). Pick the non-foreground
-            // window center; if ambiguity/wait-free window is not found, skip (such as full screen / foreground lockup environment).
+            // px/py on a full-frame image resolves to a bare screen coordinate (forwarded to the input-free
+            // refusal path). Pick a non-foreground window centre; skip when no unambiguous window is found
+            // (fullscreen or foreground lockup).
             var fresh = scopeAutomation.Observe();
             var background = fresh.Entities.FirstOrDefault(entity =>
                 !entity.IsForeground && !entity.IsMinimized && entity.Rect.Width > 100);
@@ -1357,7 +1345,9 @@ internal static class Program
             }
         }
 
-        // —— px/py 就近元素兜底 ——（安全的证明路径：背景窗口的 key 在 guard 拒绝，不注入；拒绝带出解析后的控件名 = 充分证据）
+        // px/py snap fallback: the proof path is safe because a key aimed at a background window is refused
+        // by the guard, so nothing is injected; the refusal names the resolved control, which is sufficient
+        // evidence.
         using (var snapAutomation = new DesktopAutomation())
         {
             var workspace = Path.Combine(root, "desktop-snap");
@@ -1380,7 +1370,8 @@ internal static class Program
                     shot.Content, "媒体 ([0-9a-f]{8,})").Groups[1].Value;
                 var picture = snapAutomation.PictureOf(mediaId);
 
-                // 刻意偏 5px：扣入单击应有的控件邻域（snap 半径 8px）——从图出来的一步误差由服务器摊平。
+                // Deliberately 5px off: lands inside the control's snap neighbourhood (8px radius); the
+                // server absorbs a one-step error from the picture.
                 var px = (int)Math.Round((element!.Centre.X + 5 - picture!.ScreenRect.X) * picture.PictureWidth / (double)picture.ScreenRect.Width);
                 var py = (int)Math.Round((element.Centre.Y - picture.ScreenRect.Y) * picture.PictureHeight / (double)picture.ScreenRect.Height);
 
@@ -1400,9 +1391,9 @@ internal static class Program
             InputInjector.InputSize == (IntPtr.Size == 8 ? 40 : 28),
             $"INPUT size = {InputInjector.InputSize}");
 
-        // The bug this replaces: every positional mouse event went out without MOUSEEVENTF_ABSOLUTE, so a
-        // screen coordinate was applied as a relative mouse delta and each click landed in the corner of the
-        // screen. Asserted on the records themselves, because the smoke must not move the user's pointer.
+        // Positional mouse events must carry MOUSEEVENTF_ABSOLUTE and MOUSEEVENTF_VIRTUALDESK; without them a
+        // screen coordinate is applied as a relative delta and the click lands in a corner. Asserted on the
+        // built records, because the smoke must not move the user's pointer.
         var pointerProbe = new InputInjector(() => new VirtualDesktop(0, 0, 2560, 1440));
         var positioned = pointerProbe.TryBuildPointer(1280, 720, 0, out var pointerRecords, out _);
         var positionalOk = positioned
@@ -1429,7 +1420,6 @@ internal static class Program
         // The minimized-window checks run last, on purpose: they take the reader's focus, and
         // anything they invalidated would then look like a regression in code it never ran.
 
-        // ---- 12. M10/M11: voice, driven by synthetic audio + a fake ASR/TTS server ------
         using (var server = new FakeVoiceServer(transcript: "turn on the desk lamp"))
         {
             var gate = new PlaybackGate();
@@ -1548,7 +1538,7 @@ internal static class Program
             await voiceQueue.DisposeAsync();
         }
 
-        // Threshold misconfiguration must be detected, not discovered by silence (R11).
+        // Threshold misconfiguration must be detected, not discovered by silence.
         using (var server = new FakeVoiceServer())
         {
             var gate = new PlaybackGate();
@@ -1579,11 +1569,11 @@ internal static class Program
 
         // A dead ASR service must be visible and must not fabricate an empty utterance.
         using (var deadAsr = new HttpAsrClient(new AsrOptions
-               {
-                   BaseUrl = "http://127.0.0.1:9",
-                   ConnectTimeout = TimeSpan.FromMilliseconds(300),
-                   ReadTimeout = TimeSpan.FromMilliseconds(300),
-               }))
+        {
+            BaseUrl = "http://127.0.0.1:9",
+            ConnectTimeout = TimeSpan.FromMilliseconds(300),
+            ReadTimeout = TimeSpan.FromMilliseconds(300),
+        }))
         {
             var gate = new PlaybackGate();
             var source = new SyntheticAudioSource();
@@ -1618,10 +1608,10 @@ internal static class Program
 
         // A dead TTS service must not stall playback: the failed sentence still gets a tombstone.
         using (var deadTts = new HttpTtsClient(new TtsOptions
-               {
-                   BaseUrl = "http://127.0.0.1:9",
-                   Timeout = TimeSpan.FromMilliseconds(300),
-               }))
+        {
+            BaseUrl = "http://127.0.0.1:9",
+            Timeout = TimeSpan.FromMilliseconds(300),
+        }))
         {
             var gate = new PlaybackGate();
             var sink = new SyntheticAudioSink();
@@ -1663,7 +1653,6 @@ internal static class Program
                 $"items={output.Items.Count} segments={sink.Segments.Count}");
         }
 
-        // ---- 13. M12: game layer over a real child process --------------------------
         var gameDll = FindGameTestServer();
         if (gameDll is null)
         {
@@ -1766,7 +1755,6 @@ internal static class Program
             Check("game: detaching stops the child process", !adapter.IsAttached);
         }
 
-        // ---- 14. M13/M14: UI data layer (the four views) over real HTTP ---------------
         var uiWorkspace = Path.Combine(root, "ui");
         var apiPort = FreePort();
         var uiToken = TokenAuth.Generate();
@@ -1998,7 +1986,6 @@ internal static class Program
             await apiContext.DisposeAsync();
         }
 
-        // ---- 15. consumer: the queue drains only when a model is configured ----------------
         {
             // Without a model the consumer must not run at all, and it must say so: work stays queued and the
             // state is visible rather than silently stuck.
@@ -2328,388 +2315,387 @@ internal static class Program
                         $"queueHasId={queueLog.Contains(mediaId!, StringComparison.Ordinal)}");
                 }
 
-            // The desktop capability end to end, with a scripted model: model → governance → tool → desktop.
-            // Nothing is injected here — the action is denied by the approval queue, which is the path that
-            // protects the user's pointer, and the smoke never takes it upon itself to click.
-            // The chain the log showed failing: observe → act → approval → lease. The model here is dynamic — it
-            // reads what it just observed and asks to press a key at a real window that is *not* in front, so
-            // the guards refuse it before anything is injected. What is being proven is what happens *before*
-            // that: a slow approval outlives the lease, and the action must still be about the same window.
-            var leaseWorkspace = Path.Combine(root, "desktop-lease");
-            Directory.CreateDirectory(Path.Combine(leaseWorkspace, "settings"));
-            await File.WriteAllTextAsync(
-                Path.Combine(leaseWorkspace, "settings", "runtime.json"),
-                """{"model":{"supportsImages":true},"desktop":{"enabled":true,"leaseTtlMs":1500,"allowedWindowTitles":[]}}""");
+                // The desktop capability end to end, with a scripted model: model → governance → tool → desktop.
+                // Nothing is injected here — the action is denied by the approval queue, which is the path that
+                // protects the user's pointer, and the smoke never takes it upon itself to click.
+                // The model is dynamic: it reads what it just observed and asks to press a key at a real window
+                // that is *not* in front, so the guards refuse it before anything is injected. The point is what
+                // happens *before* that: a slow approval outlives the lease, and the action must still be about
+                // the same window.
+                var leaseWorkspace = Path.Combine(root, "desktop-lease");
+                Directory.CreateDirectory(Path.Combine(leaseWorkspace, "settings"));
+                await File.WriteAllTextAsync(
+                    Path.Combine(leaseWorkspace, "settings", "runtime.json"),
+                    """{"model":{"supportsImages":true},"desktop":{"enabled":true,"leaseTtlMs":1500,"allowedWindowTitles":[]}}""");
 
-            var leasePort = FreePort();
-            var leaseToken = TokenAuth.Generate();
-            var leaseLlm = new ObserveThenActLlm();
+                var leasePort = FreePort();
+                var leaseToken = TokenAuth.Generate();
+                var leaseLlm = new ObserveThenActLlm();
 
-            var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _, _) =
-                await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, new DesktopAgentShim(leaseLlm));
-            var leaseRun = leaseApp.RunAsync();
-            using var leaseHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{leasePort}") };
-            leaseHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", leaseToken);
+                var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _, _) =
+                    await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, new DesktopAgentShim(leaseLlm));
+                var leaseRun = leaseApp.RunAsync();
+                using var leaseHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{leasePort}") };
+                leaseHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", leaseToken);
 
-            try
-            {
-                await WaitForHostAsync(leaseHttp);
-                await leaseHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "按一下 C" });
-
-                // The action parks in the approval queue.
-                string? parked = null;
-                for (var attempt = 0; attempt < 600 && parked is null; attempt++)
+                try
                 {
-                    var parkedQueue = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/approvals");
-                    var pending = parkedQueue.GetProperty("pending").EnumerateArray().ToList();
-                    if (pending.Count > 0)
+                    await WaitForHostAsync(leaseHttp);
+                    await leaseHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "按一下 C" });
+
+                    // The action parks in the approval queue.
+                    string? parked = null;
+                    for (var attempt = 0; attempt < 600 && parked is null; attempt++)
                     {
-                        parked = pending[0].GetProperty("approvalId").GetString();
+                        var parkedQueue = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/approvals");
+                        var pending = parkedQueue.GetProperty("pending").EnumerateArray().ToList();
+                        if (pending.Count > 0)
+                        {
+                            parked = pending[0].GetProperty("approvalId").GetString();
+                        }
+
+                        await Task.Delay(25);
                     }
 
-                    await Task.Delay(25);
-                }
+                    Check("desktop: a key press waits for approval", parked is not null, $"id={parked}");
 
-                Check("desktop: a key press waits for approval", parked is not null, $"id={parked}");
+                    var obsBefore = (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop"))
+                        .GetProperty("lastObsId").GetString();
 
-                var obsBefore = (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop"))
-                    .GetProperty("lastObsId").GetString();
-
-                // Wait well past the lease TTL (the policy floors it at 2s), then approve: the lease is long
-                // dead, the window is not. Acting without looking again would be refused as Expired here.
-                await Task.Delay(6000);
-                if (parked is not null)
-                {
-                    await leaseHttp.PostAsJsonAsync($"/api/approvals/{parked}", new { approved = true });
-                }
-
-                string? outcome = null;
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    var polled = await JobSessionAsync(leaseHttp);
-                    var results = polled.GetProperty("items").EnumerateArray()
-                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
-                        .ToList();
-
-                    // The keystroke's refusal specifically: by the time the approval lands the turn may
-                    // already have moved on, and "the last result" then means something else.
-                    var refusal = results
-                        .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
-                        .LastOrDefault(body => body.Contains("前台", StringComparison.Ordinal));
-
-                    if (refusal is not null)
+                    // Wait well past the lease TTL (the policy floors it at 2s), then approve: the lease is long
+                    // dead, the window is not. Acting without looking again would be refused as Expired here.
+                    await Task.Delay(6000);
+                    if (parked is not null)
                     {
-                        outcome = refusal;
-                        break;
+                        await leaseHttp.PostAsJsonAsync($"/api/approvals/{parked}", new { approved = true });
                     }
 
-                    await Task.Delay(25);
-                }
+                    string? outcome = null;
+                    for (var attempt = 0; attempt < 400; attempt++)
+                    {
+                        var polled = await JobSessionAsync(leaseHttp);
+                        var results = polled.GetProperty("items").EnumerateArray()
+                            .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                            .ToList();
 
-                // The keystroke was refused (that window is not in front), so nothing was typed — and the tool
-                // looked again before deciding, which is what makes a lease that died during the approval
-                // harmless. Without the re-look the lease is dead and the action is refused as Expired.
-                var obsAfter = (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop"))
-                    .GetProperty("lastObsId").GetString();
+                        // The keystroke's refusal specifically: by the time the approval lands the turn may
+                        // already have moved on, and "the last result" then means something else.
+                        var refusal = results
+                            .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                            .LastOrDefault(body => body.Contains("前台", StringComparison.Ordinal));
 
-                Check("desktop: an approved action looks again instead of trusting a dead lease",
-                    outcome is not null
-                    && outcome.Contains("前台", StringComparison.Ordinal)
-                    && obsAfter != obsBefore,
-                    $"reObserved={obsAfter != obsBefore} result={(outcome ?? "(none)")[..Math.Min(70, (outcome ?? "(none)").Length)]}");
+                        if (refusal is not null)
+                        {
+                            outcome = refusal;
+                            break;
+                        }
 
-                // The blind-app fallback: a screenshot reaches the model as an image, and the log keeps only the
-                // media id. This is what replaces OCR — the model reads the pixels itself. Waited for, because
-                // the turn is still running when the approval lands.
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    var hasImage = leaseLlm.Requests
+                        await Task.Delay(25);
+                    }
+
+                    // The keystroke was refused (that window is not in front), so nothing was typed — and the tool
+                    // looked again before deciding, which is what makes a lease that died during the approval
+                    // harmless. Without the re-look the lease is dead and the action is refused as Expired.
+                    var obsAfter = (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop"))
+                        .GetProperty("lastObsId").GetString();
+
+                    Check("desktop: an approved action looks again instead of trusting a dead lease",
+                        outcome is not null
+                        && outcome.Contains("前台", StringComparison.Ordinal)
+                        && obsAfter != obsBefore,
+                        $"reObserved={obsAfter != obsBefore} result={(outcome ?? "(none)")[..Math.Min(70, (outcome ?? "(none)").Length)]}");
+
+                    // The blind-app fallback: a screenshot reaches the model as an image, and the log keeps only the
+                    // media id. The model reads the pixels itself instead of OCR. Waited for, because the turn is
+                    // still running when the approval lands.
+                    for (var attempt = 0; attempt < 400; attempt++)
+                    {
+                        var hasImage = leaseLlm.Requests
+                            .SelectMany(request => request.Messages)
+                            .Any(message => message.Images is { Count: > 0 });
+
+                        if (hasImage)
+                        {
+                            break;
+                        }
+
+                        await Task.Delay(25);
+                    }
+
+                    var shown = leaseLlm.Requests
                         .SelectMany(request => request.Messages)
-                        .Any(message => message.Images is { Count: > 0 });
-
-                    if (hasImage)
-                    {
-                        break;
-                    }
-
-                    await Task.Delay(25);
-                }
-
-                var shown = leaseLlm.Requests
-                    .SelectMany(request => request.Messages)
-                    .Where(message => message.Images is { Count: > 0 })
-                    .ToList();
-
-                var screenshotResult = await JobSessionAsync(leaseHttp);
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    if (screenshotResult.GetProperty("items").EnumerateArray()
-                        .Any(item => (item.GetProperty("body").GetString() ?? string.Empty).Contains("媒体 ", StringComparison.Ordinal)))
-                    {
-                        break;
-                    }
-
-                    await Task.Delay(25);
-                    screenshotResult = await JobSessionAsync(leaseHttp);
-                }
-                var shot = screenshotResult.GetProperty("items").EnumerateArray()
-                    .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
-                    .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
-                    .LastOrDefault(body => body.Contains("媒体 ", StringComparison.Ordinal));
-
-                // The turn keeps going after the screenshot: the bare-point move, then the point no window
-                // covers. Waited for, because those results are the point of the check — and approved as they
-                // arrive, because every desktop_act parks (the gear is on "all" in this workspace).
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    var bodies = screenshotResult.GetProperty("items").EnumerateArray()
-                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
-                        .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                        .Where(message => message.Images is { Count: > 0 })
                         .ToList();
 
-                    if (bodies.Any(body => body.StartsWith("MovePointer", StringComparison.Ordinal))
-                        && bodies.Any(body => body.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal)))
+                    var screenshotResult = await JobSessionAsync(leaseHttp);
+                    for (var attempt = 0; attempt < 400; attempt++)
                     {
-                        break;
+                        if (screenshotResult.GetProperty("items").EnumerateArray()
+                            .Any(item => (item.GetProperty("body").GetString() ?? string.Empty).Contains("媒体 ", StringComparison.Ordinal)))
+                        {
+                            break;
+                        }
+
+                        await Task.Delay(25);
+                        screenshotResult = await JobSessionAsync(leaseHttp);
                     }
-
-                    foreach (var pending in (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
-                        .GetProperty("pending").EnumerateArray().ToList())
-                    {
-                        await leaseHttp.PostAsJsonAsync(
-                            $"/api/approvals/{pending.GetProperty("approvalId").GetString()}",
-                            new { approved = true });
-                    }
-
-                    await Task.Delay(25);
-                    screenshotResult = await JobSessionAsync(leaseHttp);
-                }
-
-                var allResults = screenshotResult.GetProperty("items").EnumerateArray()
-                    .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
-                    .Select(item => (item.GetProperty("body").GetString() ?? string.Empty).Replace("\n", " "))
-                    .ToList();
-
-                // The failure this check has to be diagnosable for: a lease that expired while the model was
-                // thinking. The timestamps are what say whether the action was late or the lease was short.
-                var timeline = string.Join(" | ", screenshotResult.GetProperty("items").EnumerateArray()
-                    .Where(item => item.GetProperty("kind").GetString() is "ToolCall" or "ToolResult")
-                    .Select(item => item.TryGetProperty("at", out var at)
-                        ? $"{at.GetDateTime():HH:mm:ss.fff} {(item.GetProperty("body").GetString() ?? string.Empty)[..Math.Min(28, (item.GetProperty("body").GetString() ?? string.Empty).Length)]}"
-                        : item.GetRawText()[..Math.Min(40, item.GetRawText().Length)]));
-
-                Check("desktop: a screenshot reaches the model as an image",
-                    shown.Count > 0 && shown[^1].Images!.Any(image => image.StartsWith("data:image/png;base64,", StringComparison.Ordinal)),
-                    $"imageMessages={shown.Count} results=[{string.Join(" | ", allResults.Select(r => r[..Math.Min(60, r.Length)]))}]");
-
-                Check("desktop: the log records the screenshot by media id, not by pixels",
-                    shot is not null && !screenshotResult.GetRawText().Contains("iVBORw0KGgo", StringComparison.Ordinal),
-                    $"result={(shot ?? "(none)")[..Math.Min(60, (shot ?? "(none)").Length)]}");
-
-                // The call models actually make: coordinates, no window id. It used to be refused four times in
-                // a row — "缺少 entityId" — and the turn died on the step limit with the app untouched.
-                var barePoint = allResults.LastOrDefault(r => r.StartsWith("MovePointer", StringComparison.Ordinal));
-
-                Check("desktop: a point with no window id resolves to the window that covers it",
-                    barePoint is not null && barePoint.Contains("注入成功", StringComparison.Ordinal),
-                    $"result={barePoint ?? "(none)"} | every result=["
-                        + string.Join(" | ", allResults.Select(body => body[..Math.Min(70, body.Length)]))
-                        + $"] | timeline=[{timeline}]");
-
-                // And when no window covers the point, the refusal has to name the candidates — telling the model
-                // to "observe first" when it has just observed is what produced the loop.
-                var noWindow = allResults.LastOrDefault(r => r.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal));
-
-                Check("desktop: a point no window covers is refused with the candidates named",
-                    noWindow is not null
-                        && noWindow.Contains("entityId", StringComparison.Ordinal)
-                        && noWindow.Contains("'", StringComparison.Ordinal),
-                    $"result={(noWindow ?? "(none)")[..Math.Min(90, (noWindow ?? "(none)").Length)]}");
-
-                // The telemetry aggregates: the turn above ran through observe → act → screenshot, so the
-                // endpoint must hold at least one act and one picture — without those, a tuning decision has
-                // no denominator. Verdicts are NOT required non-zero: the scripted turn refuses most acts
-                // (guards) and the aim-only kinds no longer verify (they promise no picture), so every
-                // verdict field can legitimately be 0 on a scripted turn.
-                var telemetry = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
-                var hasAct = telemetry.GetProperty("acts").GetInt32() > 0;
-                var hasPicture = telemetry.GetProperty("pictures").GetProperty("count").GetInt32() > 0;
-
-                Check("desktop: telemetry aggregates the turn the model just ran",
-                    hasAct && hasPicture,
-                    $"acts={(telemetry.GetProperty("acts").GetInt32())} "
-                        + $"pictures={(telemetry.GetProperty("pictures").GetProperty("count").GetInt32())} "
-                        + $"verdicts={telemetry.GetProperty("verdicts").GetRawText()} "
-                        + $"walkTruncated={telemetry.GetProperty("walkTruncated").GetInt32()}");
-            }
-            finally
-            {
-                await leaseApp.StopAsync();
-                await leaseRun;
-                await leaseVoice.DisposeAsync();
-                await leaseConsumer.DisposeAsync();
-                await leaseContext.DisposeAsync();
-            }
-
-            // ---- The continuing grant: approve once, the same window does not re-ask -------------
-            var grantWorkspace = Path.Combine(root, "desktop-lease-grant");
-            Directory.CreateDirectory(Path.Combine(grantWorkspace, "settings"));
-            await File.WriteAllTextAsync(
-                Path.Combine(grantWorkspace, "settings", "runtime.json"),
-                """{"model":{"supportsImages":false},"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
-
-            var grantConsumerLlm = new LeaseThenActLlm();
-            var grantPort = FreePort();
-            var grantToken = TokenAuth.Generate();
-            var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
-            var (grantApp, grantContext, grantConsumer, grantVoice, _, _) =
-                await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, new DesktopAgentShim(grantConsumerLlm));
-            var grantRun = grantApp.RunAsync();
-            using var grantHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{grantPort}") };
-            grantHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", grantToken);
-
-            try
-            {
-                await WaitForHostAsync(grantHttp);
-                await grantHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "连续操作一个窗口" });
-
-                // The first act parks; approved here, which is where the continuing grant is minted —
-                // not through any desktop endpoint, because a "yes" is the human's whole intent.
-                string? grantApprovalId = null;
-                for (var attempt = 0; attempt < 600 && grantApprovalId is null; attempt++)
-                {
-                    var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
-                        .GetProperty("pending").EnumerateArray().ToList();
-                    if (pending.Count > 0)
-                    {
-                        grantApprovalId = pending[0].GetProperty("approvalId").GetString();
-                    }
-
-                    await Task.Delay(25);
-                }
-                var granted = grantApprovalId is not null
-                    && (await grantHttp.PostAsJsonAsync($"/api/approvals/{grantApprovalId}", new { approved = true })).IsSuccessStatusCode;
-
-                // The granted state must be server-visible, so a run and a restart see the same fact.
-                TaskLeaseState? shownLease = null;
-                for (var attempt = 0; attempt < 200 && shownLease is null; attempt++)
-                {
-                    shownLease = grantContext.TaskLeases.Snapshot().FirstOrDefault();
-                    await Task.Delay(25);
-                }
-
-                Check("desktop: an approved action opens a continuing grant on its window",
-                    granted && shownLease is not null
-                    && shownLease.EntityId == PickTargetOf(grantConsumerLlm.Requests)
-                    && shownLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps,
-                    shownLease is null ? "no lease was minted" : $"entity={shownLease.EntityId} steps={shownLease.RemainingSteps}");
-
-                // The second act on the same window is what the grant is for: it must not park, and it
-                // must reach the tool (where the guard refuses it — the window is not in front), which
-                // costs one of the ten.
-                var secondResult = default(string?);
-                var secondActParked = false;
-                for (var attempt = 0; attempt < 400 && secondResult is null; attempt++)
-                {
-                    var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
-                        .GetProperty("pending").EnumerateArray().ToList();
-                    if (pending.Count > 0 && pending[0].GetProperty("toolName").GetString() == "desktop_act")
-                    {
-                        // A parked second act is the failure this check exists to catch — deny it so the
-                        // turn finishes, and report it precisely rather than as a timeout.
-                        secondActParked = true;
-                        secondResult = "(still parked: governance did not see the grant)";
-                        await grantHttp.PostAsJsonAsync(
-                            $"/api/approvals/{pending[0].GetProperty("approvalId").GetString()}",
-                            new { approved = false });
-                        break;
-                    }
-
-                    var polled = await JobSessionAsync(grantHttp);
-                    var results = polled.GetProperty("items").EnumerateArray()
+                    var shot = screenshotResult.GetProperty("items").EnumerateArray()
                         .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                         .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
-                        .Where(body => body.Contains("不在前台", StringComparison.Ordinal))
+                        .LastOrDefault(body => body.Contains("媒体 ", StringComparison.Ordinal));
+
+                    // The turn keeps going after the screenshot: the bare-point move, then the point no window
+                    // covers. Waited for, because those results are the point of the check — and approved as they
+                    // arrive, because every desktop_act parks (the gear is on "all" in this workspace).
+                    for (var attempt = 0; attempt < 400; attempt++)
+                    {
+                        var bodies = screenshotResult.GetProperty("items").EnumerateArray()
+                            .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                            .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                            .ToList();
+
+                        if (bodies.Any(body => body.StartsWith("MovePointer", StringComparison.Ordinal))
+                            && bodies.Any(body => body.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal)))
+                        {
+                            break;
+                        }
+
+                        foreach (var pending in (await leaseHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                            .GetProperty("pending").EnumerateArray().ToList())
+                        {
+                            await leaseHttp.PostAsJsonAsync(
+                                $"/api/approvals/{pending.GetProperty("approvalId").GetString()}",
+                                new { approved = true });
+                        }
+
+                        await Task.Delay(25);
+                        screenshotResult = await JobSessionAsync(leaseHttp);
+                    }
+
+                    var allResults = screenshotResult.GetProperty("items").EnumerateArray()
+                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                        .Select(item => (item.GetProperty("body").GetString() ?? string.Empty).Replace("\n", " "))
                         .ToList();
 
-                    // The first act's result is the guard refusal it earned the grant; find the second one.
-                    if (results.Count >= 2)
+                    // The failure this check has to be diagnosable for: a lease that expired while the model was
+                    // thinking. The timestamps are what say whether the action was late or the lease was short.
+                    var timeline = string.Join(" | ", screenshotResult.GetProperty("items").EnumerateArray()
+                        .Where(item => item.GetProperty("kind").GetString() is "ToolCall" or "ToolResult")
+                        .Select(item => item.TryGetProperty("at", out var at)
+                            ? $"{at.GetDateTime():HH:mm:ss.fff} {(item.GetProperty("body").GetString() ?? string.Empty)[..Math.Min(28, (item.GetProperty("body").GetString() ?? string.Empty).Length)]}"
+                            : item.GetRawText()[..Math.Min(40, item.GetRawText().Length)]));
+
+                    Check("desktop: a screenshot reaches the model as an image",
+                        shown.Count > 0 && shown[^1].Images!.Any(image => image.StartsWith("data:image/png;base64,", StringComparison.Ordinal)),
+                        $"imageMessages={shown.Count} results=[{string.Join(" | ", allResults.Select(r => r[..Math.Min(60, r.Length)]))}]");
+
+                    Check("desktop: the log records the screenshot by media id, not by pixels",
+                        shot is not null && !screenshotResult.GetRawText().Contains("iVBORw0KGgo", StringComparison.Ordinal),
+                        $"result={(shot ?? "(none)")[..Math.Min(60, (shot ?? "(none)").Length)]}");
+
+                    // The call models actually make: coordinates, no window id. It must resolve rather than be
+                    // refused for a missing entityId, which would burn the step budget with the app untouched.
+                    var barePoint = allResults.LastOrDefault(r => r.StartsWith("MovePointer", StringComparison.Ordinal));
+
+                    Check("desktop: a point with no window id resolves to the window that covers it",
+                        barePoint is not null && barePoint.Contains("注入成功", StringComparison.Ordinal),
+                        $"result={barePoint ?? "(none)"} | every result=["
+                            + string.Join(" | ", allResults.Select(body => body[..Math.Min(70, body.Length)]))
+                            + $"] | timeline=[{timeline}]");
+
+                    // And when no window covers the point, the refusal has to name the candidates: telling the model
+                    // to "observe first" when it has just observed sends it into a loop.
+                    var noWindow = allResults.LastOrDefault(r => r.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal));
+
+                    Check("desktop: a point no window covers is refused with the candidates named",
+                        noWindow is not null
+                            && noWindow.Contains("entityId", StringComparison.Ordinal)
+                            && noWindow.Contains("'", StringComparison.Ordinal),
+                        $"result={(noWindow ?? "(none)")[..Math.Min(90, (noWindow ?? "(none)").Length)]}");
+
+                    // The telemetry aggregates: the turn above ran through observe → act → screenshot, so the
+                    // endpoint must hold at least one act and one picture — without those, a tuning decision has
+                    // no denominator. Verdicts are NOT required non-zero: the scripted turn refuses most acts
+                    // (guards) and the aim-only kinds promise no picture, so every verdict field can legitimately
+                    // be 0 on a scripted turn.
+                    var telemetry = await leaseHttp.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+                    var hasAct = telemetry.GetProperty("acts").GetInt32() > 0;
+                    var hasPicture = telemetry.GetProperty("pictures").GetProperty("count").GetInt32() > 0;
+
+                    Check("desktop: telemetry aggregates the turn the model just ran",
+                        hasAct && hasPicture,
+                        $"acts={(telemetry.GetProperty("acts").GetInt32())} "
+                            + $"pictures={(telemetry.GetProperty("pictures").GetProperty("count").GetInt32())} "
+                            + $"verdicts={telemetry.GetProperty("verdicts").GetRawText()} "
+                            + $"walkTruncated={telemetry.GetProperty("walkTruncated").GetInt32()}");
+                }
+                finally
+                {
+                    await leaseApp.StopAsync();
+                    await leaseRun;
+                    await leaseVoice.DisposeAsync();
+                    await leaseConsumer.DisposeAsync();
+                    await leaseContext.DisposeAsync();
+                }
+
+                var grantWorkspace = Path.Combine(root, "desktop-lease-grant");
+                Directory.CreateDirectory(Path.Combine(grantWorkspace, "settings"));
+                await File.WriteAllTextAsync(
+                    Path.Combine(grantWorkspace, "settings", "runtime.json"),
+                    """{"model":{"supportsImages":false},"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
+
+                var grantConsumerLlm = new LeaseThenActLlm();
+                var grantPort = FreePort();
+                var grantToken = TokenAuth.Generate();
+                var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
+                var (grantApp, grantContext, grantConsumer, grantVoice, _, _) =
+                    await ApiHost.BuildAsync(grantWorkspace, grantPort, grantToken, grantClock, new DesktopAgentShim(grantConsumerLlm));
+                var grantRun = grantApp.RunAsync();
+                using var grantHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{grantPort}") };
+                grantHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", grantToken);
+
+                try
+                {
+                    await WaitForHostAsync(grantHttp);
+                    await grantHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "连续操作一个窗口" });
+
+                    // The first act parks; approved here, which is where the continuing grant is minted —
+                    // not through any desktop endpoint, because a "yes" is the human's whole intent.
+                    string? grantApprovalId = null;
+                    for (var attempt = 0; attempt < 600 && grantApprovalId is null; attempt++)
                     {
-                        secondResult = results[^1];
-                        break;
+                        var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                            .GetProperty("pending").EnumerateArray().ToList();
+                        if (pending.Count > 0)
+                        {
+                            grantApprovalId = pending[0].GetProperty("approvalId").GetString();
+                        }
+
+                        await Task.Delay(25);
+                    }
+                    var granted = grantApprovalId is not null
+                        && (await grantHttp.PostAsJsonAsync($"/api/approvals/{grantApprovalId}", new { approved = true })).IsSuccessStatusCode;
+
+                    // The granted state must be server-visible, so a run and a restart see the same fact.
+                    TaskLeaseState? shownLease = null;
+                    for (var attempt = 0; attempt < 200 && shownLease is null; attempt++)
+                    {
+                        shownLease = grantContext.TaskLeases.Snapshot().FirstOrDefault();
+                        await Task.Delay(25);
                     }
 
-                    await Task.Delay(25);
-                }
+                    Check("desktop: an approved action opens a continuing grant on its window",
+                        granted && shownLease is not null
+                        && shownLease.EntityId == PickTargetOf(grantConsumerLlm.Requests)
+                        && shownLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps,
+                        shownLease is null ? "no lease was minted" : $"entity={shownLease.EntityId} steps={shownLease.RemainingSteps}");
 
-                var spentLease = grantContext.TaskLeases.Snapshot().FirstOrDefault();
-                Check("desktop: a granted window does not re-ask for the same kind",
-                    secondResult is not null && !secondActParked
-                    && spentLease is not null
-                    && spentLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps - 1,
-                    $"result={secondResult ?? "(timed out)"} "
-                    + $"remaining={spentLease?.RemainingSteps.ToString() ?? "none"}");
-
-                // What a grant must never cover: leaving the GUI parks even under a live grant.
-                string? execApproval = null;
-                for (var attempt = 0; attempt < 600 && execApproval is null; attempt++)
-                {
-                    var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
-                        .GetProperty("pending").EnumerateArray().ToList();
-                    if (pending.Count > 0 && pending[0].GetProperty("toolName").GetString() == "desktop_exec")
+                    // The second act on the same window is what the grant is for: it must not park, and it
+                    // must reach the tool (where the guard refuses it — the window is not in front), which
+                    // costs one of the ten.
+                    var secondResult = default(string?);
+                    var secondActParked = false;
+                    for (var attempt = 0; attempt < 400 && secondResult is null; attempt++)
                     {
-                        execApproval = pending[0].GetProperty("approvalId").GetString();
+                        var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                            .GetProperty("pending").EnumerateArray().ToList();
+                        if (pending.Count > 0 && pending[0].GetProperty("toolName").GetString() == "desktop_act")
+                        {
+                            // A parked second act is the failure this check exists to catch — deny it so the
+                            // turn finishes, and report it precisely rather than as a timeout.
+                            secondActParked = true;
+                            secondResult = "(still parked: governance did not see the grant)";
+                            await grantHttp.PostAsJsonAsync(
+                                $"/api/approvals/{pending[0].GetProperty("approvalId").GetString()}",
+                                new { approved = false });
+                            break;
+                        }
+
+                        var polled = await JobSessionAsync(grantHttp);
+                        var results = polled.GetProperty("items").EnumerateArray()
+                            .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                            .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
+                            .Where(body => body.Contains("不在前台", StringComparison.Ordinal))
+                            .ToList();
+
+                        // The first act's result is the guard refusal it earned the grant; find the second one.
+                        if (results.Count >= 2)
+                        {
+                            secondResult = results[^1];
+                            break;
+                        }
+
+                        await Task.Delay(25);
                     }
 
-                    await Task.Delay(25);
-                }
+                    var spentLease = grantContext.TaskLeases.Snapshot().FirstOrDefault();
+                    Check("desktop: a granted window does not re-ask for the same kind",
+                        secondResult is not null && !secondActParked
+                        && spentLease is not null
+                        && spentLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps - 1,
+                        $"result={secondResult ?? "(timed out)"} "
+                        + $"remaining={spentLease?.RemainingSteps.ToString() ?? "none"}");
 
-                if (execApproval is not null)
-                {
-                    await grantHttp.PostAsJsonAsync($"/api/approvals/{execApproval}", new { approved = false });
-                }
-
-                // A denied exec is still “the tool could not run”: it settles without losing the grant.
-                TaskLeaseState? afterDeny = null;
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    var polled = await JobSessionAsync(grantHttp);
-                    if (polled.GetProperty("items").EnumerateArray()
-                        .Any(item => (item.GetProperty("body").GetString() ?? string.Empty)
-                            .Contains("denied:", StringComparison.Ordinal)))
+                    // What a grant must never cover: leaving the GUI parks even under a live grant.
+                    string? execApproval = null;
+                    for (var attempt = 0; attempt < 600 && execApproval is null; attempt++)
                     {
-                        afterDeny = grantContext.TaskLeases.Snapshot().FirstOrDefault();
-                        break;
+                        var pending = (await grantHttp.GetFromJsonAsync<JsonElement>("/api/approvals"))
+                            .GetProperty("pending").EnumerateArray().ToList();
+                        if (pending.Count > 0 && pending[0].GetProperty("toolName").GetString() == "desktop_exec")
+                        {
+                            execApproval = pending[0].GetProperty("approvalId").GetString();
+                        }
+
+                        await Task.Delay(25);
                     }
 
-                    await Task.Delay(25);
+                    if (execApproval is not null)
+                    {
+                        await grantHttp.PostAsJsonAsync($"/api/approvals/{execApproval}", new { approved = false });
+                    }
+
+                    // A denied exec is still “the tool could not run”: it settles without losing the grant.
+                    TaskLeaseState? afterDeny = null;
+                    for (var attempt = 0; attempt < 400; attempt++)
+                    {
+                        var polled = await JobSessionAsync(grantHttp);
+                        if (polled.GetProperty("items").EnumerateArray()
+                            .Any(item => (item.GetProperty("body").GetString() ?? string.Empty)
+                                .Contains("denied:", StringComparison.Ordinal)))
+                        {
+                            afterDeny = grantContext.TaskLeases.Snapshot().FirstOrDefault();
+                            break;
+                        }
+
+                        await Task.Delay(25);
+                    }
+
+                    Check("desktop: a grant never covers leaving the GUI even while one is live",
+                        execApproval is not null
+                        && afterDeny is not null
+                        && afterDeny.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps - 1,
+                        execApproval is null ? "desktop_exec never parked" : $"denied, grant steps={afterDeny?.RemainingSteps.ToString() ?? "(none)"}");
+                }
+                finally
+                {
+                    await grantApp.StopAsync();
+                    await grantRun;
+                    await grantVoice.DisposeAsync();
+                    await grantConsumer.DisposeAsync();
+                    await grantContext.DisposeAsync();
                 }
 
-                Check("desktop: a grant never covers leaving the GUI even while one is live",
-                    execApproval is not null
-                    && afterDeny is not null
-                    && afterDeny.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps - 1,
-                    execApproval is null ? "desktop_exec never parked" : $"denied, grant steps={afterDeny?.RemainingSteps.ToString() ?? "(none)"}");
-            }
-            finally
-            {
-                await grantApp.StopAsync();
-                await grantRun;
-                await grantVoice.DisposeAsync();
-                await grantConsumer.DisposeAsync();
-                await grantContext.DisposeAsync();
-            }
+                var desktopWorkspace = Path.Combine(root, "desktop-tools");
+                Directory.CreateDirectory(Path.Combine(desktopWorkspace, "settings"));
+                await File.WriteAllTextAsync(
+                    Path.Combine(desktopWorkspace, "settings", "runtime.json"),
+                    """{"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
 
-            var desktopWorkspace = Path.Combine(root, "desktop-tools");
-            Directory.CreateDirectory(Path.Combine(desktopWorkspace, "settings"));
-            await File.WriteAllTextAsync(
-                Path.Combine(desktopWorkspace, "settings", "runtime.json"),
-                """{"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
-
-            var desktopPort = FreePort();
-            var desktopToken = TokenAuth.Generate();
-            var desktopScripted = new ScriptedLlmClient(new[]
-            {
+                var desktopPort = FreePort();
+                var desktopToken = TokenAuth.Generate();
+                var desktopScripted = new ScriptedLlmClient(new[]
+                {
                 // Turn 1: look. Read-only, so it runs without approval.
                 new LlmResponse(null, new[] { new LlmToolCall("c1", "desktop_observe", "{}") }, "tool_calls"),
                 new LlmResponse("看过了。", Array.Empty<LlmToolCall>(), "stop"),
@@ -2721,154 +2707,154 @@ internal static class Program
                 new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
             });
 
-            var (desktopApp, desktopContext, desktopConsumer, desktopVoice, _, _) =
-                await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, new DesktopAgentShim(desktopScripted));
-            var desktopRun = desktopApp.RunAsync();
-            using var desktopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{desktopPort}") };
-            desktopHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", desktopToken);
+                var (desktopApp, desktopContext, desktopConsumer, desktopVoice, _, _) =
+                    await ApiHost.BuildAsync(desktopWorkspace, desktopPort, desktopToken, clock, new DesktopAgentShim(desktopScripted));
+                var desktopRun = desktopApp.RunAsync();
+                using var desktopHttp = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{desktopPort}") };
+                desktopHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", desktopToken);
 
-            try
-            {
-                await WaitForHostAsync(desktopHttp);
-
-                async Task<List<string>> ExposedToolsAsync()
+                try
                 {
-                    // The desktop tools belong to the desktop sub-agent now, so that is where the table is read.
-                    var consumer = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
-                    return consumer.GetProperty("agentTools").EnumerateArray()
-                        .First(agent => agent.GetProperty("scenario").GetString() == "desktop")
-                        .GetProperty("tools").EnumerateArray()
-                        .Select(tool => $"{tool.GetProperty("name").GetString()}:{tool.GetProperty("decision").GetString()}")
-                        .ToList();
-                }
+                    await WaitForHostAsync(desktopHttp);
 
-                var gearAll = await ExposedToolsAsync();
-                Check("desktop: the default gear asks for every action but never for looking",
-                    gearAll.Contains("desktop_observe:allow")
-                    && gearAll.Contains("desktop_act:ask")
-                    && gearAll.Contains("desktop_exec:ask"),
-                    string.Join(",", gearAll));
-
-                await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "dangerous" });
-                var gearDangerous = await ExposedToolsAsync();
-                Check("desktop: the middle gear frees the GUI and still gates commands",
-                    gearDangerous.Contains("desktop_act:allow")
-                    && gearDangerous.Contains("desktop_exec:ask")
-                    && gearDangerous.Contains("desktop_launch:ask"),
-                    string.Join(",", gearDangerous));
-
-                await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
-                var gearNone = await ExposedToolsAsync();
-                Check("desktop: the open gear asks for nothing",
-                    gearNone.All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
-                    string.Join(",", gearNone));
-
-                await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "all" });
-
-                var state = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/desktop");
-                Check("desktop: the capability reports itself enabled",
-                    state.GetProperty("enabled").GetBoolean(),
-                    $"enabled={state.GetProperty("enabled").GetBoolean()}");
-
-                await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "看看桌面" });
-
-                var observed = false;
-                string? observeResult = null;
-                for (var attempt = 0; attempt < 400 && !observed; attempt++)
-                {
-                    var polled = await JobSessionAsync(desktopHttp);
-                    var results = polled.GetProperty("items").EnumerateArray()
-                        .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
-                        .ToList();
-
-                    if (results.Count > 0)
+                    async Task<List<string>> ExposedToolsAsync()
                     {
-                        observeResult = results[^1].GetProperty("body").GetString();
-                        observed = true;
+                        // The desktop tools belong to the desktop sub-agent now, so that is where the table is read.
+                        var consumer = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/consumer");
+                        return consumer.GetProperty("agentTools").EnumerateArray()
+                            .First(agent => agent.GetProperty("scenario").GetString() == "desktop")
+                            .GetProperty("tools").EnumerateArray()
+                            .Select(tool => $"{tool.GetProperty("name").GetString()}:{tool.GetProperty("decision").GetString()}")
+                            .ToList();
                     }
 
-                    await Task.Delay(25);
-                }
+                    var gearAll = await ExposedToolsAsync();
+                    Check("desktop: the default gear asks for every action but never for looking",
+                        gearAll.Contains("desktop_observe:allow")
+                        && gearAll.Contains("desktop_act:ask")
+                        && gearAll.Contains("desktop_exec:ask"),
+                        string.Join(",", gearAll));
 
-                // The model's tool call reached the real desktop: the result names the windows it enumerated.
-                Check("desktop: the model can observe through its tool",
-                    observed
-                    && observeResult is not null
-                    && observeResult.Contains("\"obsId\"", StringComparison.Ordinal)
-                    // The controls, not just the windows: addressing "the 播放 button" is the whole point.
-                    && observeResult.Contains("\"elementId\"", StringComparison.Ordinal),
-                    $"result={(observeResult ?? "(none)")[..Math.Min(80, (observeResult ?? "(none)").Length)]}");
+                    await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "dangerous" });
+                    var gearDangerous = await ExposedToolsAsync();
+                    Check("desktop: the middle gear frees the GUI and still gates commands",
+                        gearDangerous.Contains("desktop_act:allow")
+                        && gearDangerous.Contains("desktop_exec:ask")
+                        && gearDangerous.Contains("desktop_launch:ask"),
+                        string.Join(",", gearDangerous));
 
-                // Acting is irreversible, so governance parks it. The smoke answers — and denies.
-                // One job at a time per sub-agent: the second request waits for the first to report.
-                await WaitJobsIdleAsync(desktopHttp);
-                await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "点一下" });
+                    await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
+                    var gearNone = await ExposedToolsAsync();
+                    Check("desktop: the open gear asks for nothing",
+                        gearNone.All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
+                        string.Join(",", gearNone));
 
-                string? approvalId = null;
-                for (var attempt = 0; attempt < 400 && approvalId is null; attempt++)
-                {
-                    var approvalQueue = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/approvals");
-                    var pending = approvalQueue.GetProperty("pending").EnumerateArray().ToList();
-                    if (pending.Count > 0)
-                    {
-                        approvalId = pending[0].GetProperty("approvalId").GetString();
-                        Check("desktop: an action waits for approval instead of running",
-                            pending[0].GetProperty("toolName").GetString() == "desktop_act",
-                            pending[0].GetProperty("toolName").GetString() ?? "(none)");
-                    }
+                    await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "all" });
 
-                    await Task.Delay(25);
-                }
+                    var state = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/desktop");
+                    Check("desktop: the capability reports itself enabled",
+                        state.GetProperty("enabled").GetBoolean(),
+                        $"enabled={state.GetProperty("enabled").GetBoolean()}");
 
-                Check("desktop: the approval queue surfaces the parked action", approvalId is not null, $"id={approvalId}");
+                    await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "看看桌面" });
 
-                if (approvalId is not null)
-                {
-                    var answered = await desktopHttp.PostAsJsonAsync(
-                        $"/api/approvals/{approvalId}",
-                        new { approved = false });
-
-                    Check("desktop: answering the queue settles it", answered.IsSuccessStatusCode, $"status={answered.StatusCode}");
-
-                    var denied = false;
-                    string? denyResult = null;
-                    for (var attempt = 0; attempt < 400 && !denied; attempt++)
+                    var observed = false;
+                    string? observeResult = null;
+                    for (var attempt = 0; attempt < 400 && !observed; attempt++)
                     {
                         var polled = await JobSessionAsync(desktopHttp);
                         var results = polled.GetProperty("items").EnumerateArray()
                             .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
                             .ToList();
 
-                        if (results.Count > 1)
+                        if (results.Count > 0)
                         {
-                            denyResult = results[^1].GetProperty("body").GetString();
-                            denied = denyResult is not null && denyResult.Contains("approval denied", StringComparison.Ordinal);
+                            observeResult = results[^1].GetProperty("body").GetString();
+                            observed = true;
                         }
 
                         await Task.Delay(25);
                     }
 
-                    // Nothing was injected: the refusal is what the model gets back, and the turn continues.
-                    Check("desktop: a denied action is refused, not performed",
-                        denied,
-                        $"result={(denyResult ?? "(none)")[..Math.Min(90, (denyResult ?? "(none)").Length)]}");
-                }
+                    // The model's tool call reached the real desktop: the result names the windows it enumerated.
+                    Check("desktop: the model can observe through its tool",
+                        observed
+                        && observeResult is not null
+                        && observeResult.Contains("\"obsId\"", StringComparison.Ordinal)
+                        // The controls, not just the windows: addressing a named button is the whole point.
+                        && observeResult.Contains("\"elementId\"", StringComparison.Ordinal),
+                        $"result={(observeResult ?? "(none)")[..Math.Min(80, (observeResult ?? "(none)").Length)]}");
 
-                // The tool calls are in the sub-agent's own session, not the main one.
-                var log = (await JobSessionAsync(desktopHttp)).GetRawText();
-                Check("desktop: the refusal is in the log with the tool's name",
-                    log.Contains("desktop_act", StringComparison.Ordinal)
-                    && log.Contains("approval denied", StringComparison.Ordinal),
-                    $"hasCall={log.Contains("\"desktop_act\"", StringComparison.Ordinal)}");
-            }
-            finally
-            {
-                await desktopApp.StopAsync();
-                await desktopRun;
-                await desktopVoice.DisposeAsync();
-                await desktopConsumer.DisposeAsync();
-                await desktopContext.DisposeAsync();
-            }
+                    // Acting is irreversible, so governance parks it. The smoke answers — and denies.
+                    // One job at a time per sub-agent: the second request waits for the first to report.
+                    await WaitJobsIdleAsync(desktopHttp);
+                    await desktopHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "点一下" });
+
+                    string? approvalId = null;
+                    for (var attempt = 0; attempt < 400 && approvalId is null; attempt++)
+                    {
+                        var approvalQueue = await desktopHttp.GetFromJsonAsync<JsonElement>("/api/approvals");
+                        var pending = approvalQueue.GetProperty("pending").EnumerateArray().ToList();
+                        if (pending.Count > 0)
+                        {
+                            approvalId = pending[0].GetProperty("approvalId").GetString();
+                            Check("desktop: an action waits for approval instead of running",
+                                pending[0].GetProperty("toolName").GetString() == "desktop_act",
+                                pending[0].GetProperty("toolName").GetString() ?? "(none)");
+                        }
+
+                        await Task.Delay(25);
+                    }
+
+                    Check("desktop: the approval queue surfaces the parked action", approvalId is not null, $"id={approvalId}");
+
+                    if (approvalId is not null)
+                    {
+                        var answered = await desktopHttp.PostAsJsonAsync(
+                            $"/api/approvals/{approvalId}",
+                            new { approved = false });
+
+                        Check("desktop: answering the queue settles it", answered.IsSuccessStatusCode, $"status={answered.StatusCode}");
+
+                        var denied = false;
+                        string? denyResult = null;
+                        for (var attempt = 0; attempt < 400 && !denied; attempt++)
+                        {
+                            var polled = await JobSessionAsync(desktopHttp);
+                            var results = polled.GetProperty("items").EnumerateArray()
+                                .Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+                                .ToList();
+
+                            if (results.Count > 1)
+                            {
+                                denyResult = results[^1].GetProperty("body").GetString();
+                                denied = denyResult is not null && denyResult.Contains("approval denied", StringComparison.Ordinal);
+                            }
+
+                            await Task.Delay(25);
+                        }
+
+                        // Nothing was injected: the refusal is what the model gets back, and the turn continues.
+                        Check("desktop: a denied action is refused, not performed",
+                            denied,
+                            $"result={(denyResult ?? "(none)")[..Math.Min(90, (denyResult ?? "(none)").Length)]}");
+                    }
+
+                    // The tool calls are in the sub-agent's own session, not the main one.
+                    var log = (await JobSessionAsync(desktopHttp)).GetRawText();
+                    Check("desktop: the refusal is in the log with the tool's name",
+                        log.Contains("desktop_act", StringComparison.Ordinal)
+                        && log.Contains("approval denied", StringComparison.Ordinal),
+                        $"hasCall={log.Contains("\"desktop_act\"", StringComparison.Ordinal)}");
+                }
+                finally
+                {
+                    await desktopApp.StopAsync();
+                    await desktopRun;
+                    await desktopVoice.DisposeAsync();
+                    await desktopConsumer.DisposeAsync();
+                    await desktopContext.DisposeAsync();
+                }
 
 
             }
@@ -2958,9 +2944,9 @@ internal static class Program
                     && !string.IsNullOrWhiteSpace(deadBody.GetProperty("error").GetString()),
                     deadBody.GetProperty("error").GetString() ?? "(no reason)");
 
-                // The failure this guards: a window containing hook injections and tool results used to be sent
-                // as system messages in the middle of the conversation, which providers reject outright. The
-                // first turn has an empty window, so only a second turn can catch it.
+                // A window containing hook injections and tool results must not be sent as system messages in
+                // the middle of the conversation: providers reject those outright. The first turn has an empty
+                // window, so only a second turn can catch it.
                 var second = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "第二轮" });
                 var secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
@@ -3299,7 +3285,7 @@ internal static class Program
                 }
 
                 // The reported level has to follow the microphone: a dead device, a quiet room and speech
-                // under the threshold used to be the same "运行中" on the settings page.
+                // under the threshold must be distinguishable on the settings page.
                 var levelWhileSpeaking = 0.0;
                 for (var attempt = 0; attempt < 40 && levelWhileSpeaking < 0.03; attempt++)
                 {
@@ -3325,7 +3311,8 @@ internal static class Program
                     levelWhileQuiet < 0.03,
                     $"rms={levelWhileQuiet:0.0000}");
 
-                // 底噪探测不能把「一开始就说话」的能量当底噪——那会报出假的阈值误配。
+                // Noise-floor probing must not treat speech that starts immediately as the floor: that reports
+                // a false threshold misconfiguration.
                 var loopInput = (await loopHttp.GetFromJsonAsync<JsonElement>("/api/voice")).GetProperty("input");
                 Check("voice: speech at startup is not mistaken for the noise floor",
                     !loopInput.GetProperty("thresholdMisconfigured").GetBoolean(),
@@ -3391,15 +3378,9 @@ internal static class Program
             }
         }
 
-        // ---- 16. the minimized-window checks, last on purpose ----
         await MinimizedWindowChecksAsync(root);
     }
 
-    /// <summary>
-    /// Creates the state under test. Nothing in the product minimizes a window — the observation, the picture
-    /// and the click guard only have to cope with the state — so the smoke produces it, and the check focuses
-    /// the window afterwards to put the desktop back.
-    /// </summary>
     /// <summary>
     /// Everything about a minimized window: is it reported as one, is it refused as a picture, is it refused
     /// as a click target, and can a person get it back. The last two need a real window with a message pump and
@@ -3457,7 +3438,6 @@ internal static class Program
                 }
             }
 
-            // ---- the two checks that need a real window ----
             if (!LiveDesktop)
             {
                 Skip("desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
@@ -3506,9 +3486,9 @@ internal static class Program
                             focused.Injection?.Ok == true && restored is { IsMinimized: false } && restored.Rect.Y > -32000,
                             $"injection={focused.Injection?.Detail} win32={focused.Injection?.ErrorCode} minimized={restored?.IsMinimized} rect={restored?.Rect.X},{restored?.Rect.Y}");
 
-                        // The log's next trap: the picture was refused from the observation taken *before* the
-                        // focus, so a restore that had already happened looked like it had not. The tool has to
-                        // ask the window.
+                        // The picture must not be refused from the observation taken *before* the focus: a
+                        // restore that already happened would look like it had not. The tool has to ask the
+                        // window.
                         var afterRestore = await new DesktopScreenshotTool(shotAutomation, new FileMediaStore(Path.Combine(root, "media")))
                             .InvokeAsync($"{{\"entityId\":\"{stale.EntityId}\"}}");
 
@@ -3535,13 +3515,12 @@ internal static class Program
         public static void Minimize(nint handle) => ShowWindow(handle, 6);
     }
 
-/// <summary>
+    /// <summary>
     /// A window the smoke run owns, so the minimized-window checks never touch the reader's own.
     /// <para>
-    /// The state has to be produced — nothing in the product minimizes a window — and it used to be produced
-    /// on whatever was in front, which made the result a property of the machine rather than of the code: a
-    /// fullscreen window takes the focus back the moment it is minimized, and the check reported the product
-    /// broken on a desktop where nothing had changed.
+    /// The state has to be produced — nothing in the product minimizes a window — and it must be produced on
+    /// a window the run owns: minimizing whatever was in front makes the result a property of the machine
+    /// rather than of the code, because a fullscreen window takes the focus back the moment it is minimized.
     /// </para>
     /// <para>
     /// It lives on a thread of its own with a real message pump, and both halves of that are load-bearing.
@@ -4152,7 +4131,7 @@ internal static class Program
             return "1";
         }
 
-        // The observation now carries a trailing note (the blind-Electron hint) after the JSON; the pick
+        // The observation carries a trailing note (the blind-Electron hint) after the JSON; the pick
         // reads only the JSON document, which ends at the last '}' before the note.
         var jsonEnd = observed.LastIndexOf('}');
         using var document = JsonDocument.Parse(observed[..(jsonEnd + 1)]);
@@ -4468,12 +4447,11 @@ internal static class Program
     /// <summary>
     /// A check that did not run, and why — reported as neither pass nor fail.
     /// <para>
-    /// This exists because "the capability regressed" and "this machine's desktop was busy" are different
-    /// facts, and the gate used to hear them as the same one: a check that manipulates the reader's real
-    /// windows fails for reasons that have nothing to do with the code (a fullscreen game takes the focus
-    /// back the moment you minimize it), and a build that goes red on such a machine is a build people learn
-    /// to ignore. A skipped check is not a passed one — the capability it belongs to reports as *not
-    /// verified this round*, which is a state the manifest can say out loud.
+    /// "The capability regressed" and "this machine's desktop was busy" are different facts: a check that
+    /// manipulates the reader's real windows fails for reasons that have nothing to do with the code (a
+    /// fullscreen game takes the focus back the moment you minimize it), and a build that goes red on such a
+    /// machine is a build people learn to ignore. A skipped check is not a passed one — the capability it
+    /// belongs to reports as *not verified this round*, which is a state the manifest can say out loud.
     /// </para>
     /// </summary>
     private static void Skip(string what, string reason)
@@ -4491,7 +4469,7 @@ internal static class Program
 
     /// <summary>
     /// Capability declarations: a capability's level is derived from smoke checks that actually ran —
-    /// never from configuration (doc §8.5 F / §2.0 rule 5).
+    /// never from configuration.
     /// </summary>
     private static readonly (string Id, string Owner, string[] Checks)[] Capabilities =
     {
@@ -4908,8 +4886,8 @@ internal static class Program
             var skipped = byEvidence.Values.SelectMany(r => r).Count(o => o.Skipped);
             var failed = observed.Count(o => !o.Passed);
 
-            // A capability reaches product-supported only if every check it names actually ran. Two of the five that were
-            // skipped leave it covered — not supported, and not silently promoted either.
+            // A capability reaches product-supported only if every check it names actually ran; a skipped
+            // check leaves it covered — not supported, and not silently promoted either.
             var level = observed.Count == 0
                 ? CapabilityLevel.NotSupported
                 : missing.Length == 0 && failed == 0 && skipped == 0

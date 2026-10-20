@@ -81,8 +81,8 @@ public sealed class CdpDeepDomLiveTests
             Assert.Contains("影子按钮", names);
             Assert.Contains("框架内按钮", names);
 
-            // The frame's button sits inside the frame, which sits below the first button: its page coordinate
-            // must include the frame's own offset, not be relative to the frame's top-left corner.
+            // The frame's button must get a page coordinate that includes the frame's own offset, not one
+            // relative to the frame's top-left corner.
             var inner = snapshot.Elements.Single(element => element.Name == "框架内按钮");
             var plain = snapshot.Elements.Single(element => element.Name == "普通按钮");
             Assert.True(inner.Y > plain.Y + 40, $"inner.Y={inner.Y} plain.Y={plain.Y}");
@@ -118,7 +118,7 @@ public sealed class CdpDeepDomLiveTests
             }
             catch (IOException)
             {
-                // The browser can hold its profile for a moment after it is killed; a temp directory is not worth failing for.
+                // The browser can hold its profile briefly after it is killed; a temp directory is not worth failing for.
             }
         }
     }
@@ -144,8 +144,8 @@ public sealed class CdpDeepDomLiveTests
 
         try
         {
-            // The process that was started may be a launcher that hands over to another one and exits; the window
-            // belongs to whoever listens on the port, so that is the pid to ask about.
+            // The started process may be a launcher that hands over to another and exits; the window belongs to
+            // whoever listens on the port, so that is the pid to ask about.
             int? owner = null;
             for (var attempt = 0; attempt < 60 && owner is null; attempt++)
             {
@@ -183,7 +183,7 @@ public sealed class CdpDeepDomLiveTests
             }
             catch (IOException)
             {
-                // The browser can hold its profile for a moment after it is killed.
+                // The browser can hold its profile briefly after it is killed.
             }
         }
     }
