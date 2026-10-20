@@ -52,6 +52,7 @@ public sealed partial class SubAgentHost : IAsyncDisposable
     private readonly TimeSpan _deadline;
     private readonly object _gate = new();
     private readonly List<AgentJob> _jobs = [];
+    private int _generation;
 
     /// <param name="models">Resolves the model a job should use, or null when there is none (no consumer is running).</param>
     public SubAgentHost(
@@ -112,6 +113,7 @@ public sealed partial class SubAgentHost : IAsyncDisposable
                 _clock.GetUtcNow())
             {
                 Context = Combine(extra, background),
+                Generation = Volatile.Read(ref _generation),
             };
             predecessor = active.Count > 0 ? active[^1] : null;
             if (predecessor is not null)
@@ -317,6 +319,44 @@ public sealed partial class SubAgentHost : IAsyncDisposable
 
         await Task.WhenAny(Task.WhenAll(running.Select(job => job.Done)), Task.Delay(TimeSpan.FromSeconds(10)))
             .ConfigureAwait(false);
+
+        // Whatever is still running after the wait belongs to the consumer being replaced. When it finally ends,
+        // its report is dropped rather than queued as a message to the new one.
+        Interlocked.Increment(ref _generation);
+    }
+
+    /// <summary>Whether any job is queued or running — what a history edit has to wait out.</summary>
+    public bool HasActiveJobs
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _jobs.Any(job => job.IsRunning);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Asks a job to stop and waits (briefly) until it has. True when there was a job to stop. The wait is bounded:
+    /// a round that ignores its token is abandoned by the engine after its own grace period, not waited on here.
+    /// </summary>
+    public async Task<bool> CancelAsync(string id, TimeSpan? wait = null)
+    {
+        AgentJob? job;
+        lock (_gate)
+        {
+            job = _jobs.FirstOrDefault(other => other.Id == id);
+        }
+
+        if (job is null || !job.IsRunning)
+        {
+            return false;
+        }
+
+        job.Cancel.Cancel();
+        await Task.WhenAny(job.Done, Task.Delay(wait ?? TimeSpan.FromSeconds(5))).ConfigureAwait(false);
+        return true;
     }
 
     public async ValueTask DisposeAsync() => await CancelAllAsync().ConfigureAwait(false);

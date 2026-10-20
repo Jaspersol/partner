@@ -167,7 +167,8 @@ public sealed class ApiContext : IAsyncDisposable
             memoryOptions = memoryOptions with { Embeddings = new HashingEmbeddingProvider() };
         }
 
-        var memory = new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), memoryOptions, clock);
+        // One caller at a time: the maintenance timer and a turn are different threads over one SQLite connection.
+        var memory = new SerializedMemoryStore(new MemoryStore(Path.Combine(workspace, "memory", "memory.db"), memoryOptions, clock));
 
         // Holds the whole runtime configuration now, not just the voice halves.
         var media = FileMediaStore.Open(workspace);
@@ -175,7 +176,16 @@ public sealed class ApiContext : IAsyncDisposable
         // The machine's own zone: "every day at 9" means 9 on the wall clock of whoever wrote it, and a cron
         // expression read in UTC would be off by their offset.
         var scheduler = new JsonlScheduler(
-            workspace, queue, clock, new SchedulerOptions { TimeZone = TimeZoneInfo.Local });
+            workspace, queue, clock, new SchedulerOptions
+            {
+                TimeZone = TimeZoneInfo.Local,
+                // The machine's zone can change under a running app; the cached copy has to be dropped to see it.
+                TimeZoneSource = () =>
+                {
+                    TimeZoneInfo.ClearCachedData();
+                    return TimeZoneInfo.Local;
+                },
+                MaxTasks = Partner.Api.Endpoints.ScheduleRules.MaxTasks });
 
         // The TTL comes from the settings at call time rather than at construction: a lease policy is a
         // per-observation decision, and the settings can change while the process runs.

@@ -485,6 +485,12 @@ public sealed record ModelSettings
     public string? Model { get; init; }
 
     /// <summary>
+    /// Mark the system prompt as cacheable (<c>cache_control</c>). For endpoints that support prompt caching;
+    /// a server that does not know the field may reject the request, so it is off until asked for.
+    /// </summary>
+    public bool PromptCache { get; init; }
+
+    /// <summary>
     /// Never serialised into a response: the settings endpoint is reachable by anything holding the bearer
     /// token, and a key echoed back is a key leaked. On write, absent means "keep", empty means "clear".
     /// </summary>
@@ -543,6 +549,8 @@ public sealed record ModelSettings
 public sealed record ModelSettingsView
 {
     public string? BaseUrl { get; init; }
+
+    public bool PromptCache { get; init; }
 
 
     public string? Model { get; init; }
@@ -614,6 +622,7 @@ public sealed record SettingsView
             ContextTokens = settings.Model.ContextTokens,
             MaxTokens = settings.Model.MaxTokens,
             SupportsImages = settings.Model.SupportsImages,
+            PromptCache = settings.Model.PromptCache,
             ReasoningEffort = ReasoningEfforts.Normalize(settings.Model.ReasoningEffort),
             // Normalized here too, so the list the editor writes back is exactly what it was handed.
             ReasoningGears = settings.Model.ReasoningGears

@@ -109,6 +109,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     }
 
     private readonly SubAgentHost _agents;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, HttpClient> _subClients = new(StringComparer.Ordinal);
 
     /// <summary>The sub-agents' jobs. Owned here because a job's life is tied to the consumer's: rebuilding one cancels the other's work.</summary>
     public SubAgentHost Agents => _agents;
@@ -121,7 +122,11 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         if (agent.Model is { } own)
         {
-            var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            // One client per endpoint for the life of the consumer, not one per job: a job used to open its own
+            // connection (and TLS handshake) and throw it away, for a model it had just been talking to.
+            var http = _subClients.GetOrAdd(
+                own.BaseUrl!.TrimEnd('/'),
+                _ => new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
             var client = new HttpLlmClient(http, new HttpLlmOptions
             {
                 BaseUrl = own.BaseUrl!.TrimEnd('/'),
@@ -136,8 +141,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 new DualArmTokenCounter(client, new ApproximateTokenCounter()),
                 own.ContextTokens,
                 own.MaxTokens,
-                own.SupportsImages,
-                http);
+                own.SupportsImages);
         }
 
         var llm = _llm;
@@ -210,6 +214,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// The counter in use: the model's own tokenizer when one is configured, the local estimate otherwise.
     /// </summary>
     public ITokenCounter Tokens { get; private set; } = new ApproximateTokenCounter();
+
+    private int _toolSchemaTokens;
 
     /// <summary>What the model is writing right now, for the session view to show as it grows.</summary>
     public LiveAssistant? LiveAssistant
@@ -290,7 +296,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             _context.Session,
             settings.Model.ContextTokens,
             settings.Model.MaxTokens,
-            Tokens);
+            Tokens,
+            reservedTokens: () => Volatile.Read(ref _toolSchemaTokens));
 
         return await assembler.MeasureAsync(ct).ConfigureAwait(false);
     }
@@ -343,7 +350,45 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
 
         return llm is null
             ? Task.FromResult(new CompactionResult(0, null, "未配置模型，无法压缩"))
-            : new SessionCompactor(_context.Session, llm, Tokens).CompactAsync(promptBudget, ct);
+            : CompactAndRememberAsync(llm, promptBudget, ct);
+    }
+
+    /// <summary>
+    /// Compacts, then keeps what the summary calls facts: the history that was folded away is hidden from the next
+    /// prompt, but a name or a number in it is exactly what a later question will need, and the memory store is
+    /// where a later question looks. Written as semantic records with ids derived from the summary, so doing it
+    /// twice for the same summary writes nothing new.
+    /// </summary>
+    private async Task<CompactionResult> CompactAndRememberAsync(ILlmClient llm, int promptBudget, CancellationToken ct)
+    {
+        var result = await new SessionCompactor(_context.Session, llm, Tokens).CompactAsync(promptBudget, ct).ConfigureAwait(false);
+
+        if (result is { Compacted: true, SummaryText: { } text, SummarySeq: { } seq })
+        {
+            var index = 0;
+            foreach (var fact in SummaryFacts.From(text))
+            {
+                try
+                {
+                    await _context.Memory.WriteAsync(
+                        new Partner.Core.Memory.MemoryRecord
+                        {
+                            RecordId = $"summary-{seq}-{index++}",
+                            Tier = Partner.Core.Memory.MemoryTier.Semantic,
+                            Scope = Partner.Core.Memory.MemoryScope.Recall,
+                            Body = fact,
+                            SourceEventSeq = seq,
+                        },
+                        ct).ConfigureAwait(false);
+                }
+                catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
+                {
+                    // Already written for this summary, or refused as a duplicate: nothing to add.
+                }
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -398,6 +443,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 ApiKey = config.ApiKey,
                 Timeout = config.Timeout,
                 ReasoningEffort = config.ReasoningEffort,
+                PromptCacheMarkers = config.PromptCache,
             });
 
             llm = client;
@@ -426,7 +472,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             Tokens,
             turnOptions.BaseSystemPrompt,
             _context.Media,
-            turnOptions.PromptSource);
+            turnOptions.PromptSource,
+            reservedTokens: () => Volatile.Read(ref _toolSchemaTokens));
 
         var settings = _context.Settings.Load();
         var tools = new InMemoryToolRegistry();
@@ -463,6 +510,9 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         }
 
         _toolNames = tools.Specs.Select(spec => spec.Name).ToList();
+
+        // The definitions ride on every request; the window has that much less room for history.
+        Volatile.Write(ref _toolSchemaTokens, ToolResultBudget.SchemaTokens(tools.Specs, Tokens));
 
         var governance = new DesktopGovernance(_context);
         _governance = governance;
@@ -661,6 +711,11 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         {
             await _agents.DisposeAsync().ConfigureAwait(false);
             await StopAsync().ConfigureAwait(false);
+
+            foreach (var client in _subClients.Values)
+            {
+                client.Dispose();
+            }
         }
         finally
         {

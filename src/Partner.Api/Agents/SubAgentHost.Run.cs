@@ -54,6 +54,11 @@ public sealed partial class SubAgentHost
                 MaxTokens = binding.MaxTokens,
                 SessionId = $"agent:{job.Id}",
                 BaseSystemPrompt = AgentRouting.SubAgentPrompt(agent),
+                // The settings number, when there is one, is the budget for every family of tools this agent holds.
+                MaxSteps = agent.MaxSteps ?? new AgentTurnOptions().MaxSteps,
+                ToolStepBudgets = agent.MaxSteps is { } steps
+                    ? new Dictionary<string, int>(StringComparer.Ordinal)
+                    : new AgentTurnOptions().ToolStepBudgets,
             };
             var assembler = new SessionWindowContextAssembler(
                 session,
@@ -67,7 +72,7 @@ public sealed partial class SubAgentHost
             var runner = new AgentTurnRunner(
                 session,
                 binding.Llm,
-                tools,
+                new ObservedToolRegistry(tools, job.SetActivity),
                 new DesktopGovernance(_context),
                 new LeaseGrantingApprovalHandler(new OriginApprovalHandler(_context.Approvals, origin), _context.TaskLeases),
                 new HookRegistry(),
@@ -112,6 +117,16 @@ public sealed partial class SubAgentHost
     private async Task FinishAsync(AgentJob job, string agentName, JobOutcome outcome)
     {
         job.Finish(outcome, _clock.GetUtcNow());
+        Partner.Core.Diagnostics.LatencyTracker.Record("delegation", (_clock.GetUtcNow() - job.StartedAt).TotalMilliseconds);
+        if (job.Generation != Volatile.Read(ref _generation))
+        {
+            // The consumer this job was started under has been replaced. A report now would arrive as a message
+            // to a conversation that never asked for it.
+            Journal("finished-late", job, agentName, outcome.Category ?? "completed");
+            TrimFinished();
+            return;
+        }
+
         Journal("finished", job, agentName, outcome.Category ?? "completed");
         await QueueReportAsync(job.Id, agentName, job.Goal, outcome).ConfigureAwait(false);
         TrimFinished();
@@ -185,7 +200,26 @@ public sealed partial class SubAgentHost
             await QueueReportAsync(id, agentName, goal, outcome).ConfigureAwait(false);
         }
 
+        // Every job the journal knew about is closed now, so there is nothing left in it that a restart would need.
+        // Emptied rather than left to grow for the life of the installation and be read in full on every start.
+        TruncateJournal();
+
         return open.Count;
+    }
+
+    private void TruncateJournal()
+    {
+        try
+        {
+            lock (_journalGate)
+            {
+                File.WriteAllText(JournalPath, string.Empty);
+            }
+        }
+        catch (IOException)
+        {
+            // Left as it was: a long journal is slower to read, not wrong.
+        }
     }
 
     private void Journal(string kind, AgentJob job, string agentName, string? status = null) =>

@@ -252,6 +252,54 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
     }
 
     [Fact]
+    public async Task History_cannot_be_withdrawn_while_a_sub_agent_still_has_a_job_running()
+    {
+        await EnableReaderAsync();
+        var gate = new GatedLlm(new ScriptedLlmClient([Report("s1", true, "好了"), Say("ok")]));
+        _llm.Sub = gate;
+        _llm.Main = new ScriptedLlmClient([
+            new LlmResponse(null, [new LlmToolCall("m1", "agent_delegate", """{"scenario":"file-read","goal":"甲"}""")], "tool_calls"),
+            Say("交出去了")]);
+
+        await SendAsync("读一个");
+        await WaitForAssistantAsync("交出去了");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_consumer.Agents.HasActiveJobs)));
+
+        // The turn is over, but the job will report back as a new message: taking history away now would drop it
+        // into a conversation that no longer has the question it answers.
+        var items = (await _http.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/session")).GetProperty("items");
+        var seq = items.EnumerateArray().First(i => i.GetProperty("kind").GetString() == "User").GetProperty("seq").GetInt64();
+        var response = await _http.PostAsync($"/api/session/{seq}/withdraw", content: null);
+
+        Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Contains("子 agent", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        gate.Release();
+    }
+
+    [Fact]
+    public async Task Cancelling_a_job_waits_until_it_has_stopped()
+    {
+        await EnableReaderAsync();
+        var gate = new GatedLlm(new ScriptedLlmClient([Report("s1", true, "好了"), Say("ok")]));
+        _llm.Sub = gate;
+        _llm.Main = new ScriptedLlmClient([
+            new LlmResponse(null, [new LlmToolCall("m1", "agent_delegate", """{"scenario":"file-read","goal":"甲"}""")], "tool_calls"),
+            Say("交出去了"),
+            Say("取消已收到")]);
+
+        await SendAsync("读一个");
+        await WaitForAssistantAsync("交出去了");
+        var job = Assert.Single(_consumer.Agents.Jobs());
+
+        Assert.True(await _consumer.Agents.CancelAsync(job.Id));
+
+        // Not "asked to stop" but stopped: by the time CancelAsync returns the job has its final state.
+        Assert.Equal("cannot_execute", _consumer.Agents.Job(job.Id)!.Status);
+        Assert.False(await _consumer.Agents.CancelAsync(job.Id)); // already over
+    }
+
+    [Fact]
     public async Task The_same_goal_is_not_handed_over_again_right_after_it_failed()
     {
         await EnableReaderAsync(maxRounds: 1);
@@ -309,6 +357,9 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
 
         var report = (await EventsAsync()).Single(e => e.Kind == SessionEventKind.User && e.Source == InputSource.Agent);
         Assert.Contains("interrupted", report.Body, StringComparison.Ordinal);
+
+        // Everything it knew about is closed, so the journal is emptied instead of growing for ever.
+        Assert.Equal(string.Empty, await File.ReadAllTextAsync(Path.Combine(_workspace, "agents", "jobs.jsonl")));
 
         // The journal now says it finished, so a second start finds nothing to report.
         Assert.Equal(0, await _consumer.Agents.RecoverAsync());

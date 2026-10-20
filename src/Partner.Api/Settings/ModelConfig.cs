@@ -18,7 +18,8 @@ public sealed record ModelConfig(
     string Origin,
     int ContextTokens = 32768,
     int MaxTokens = 4096,
-    string ReasoningEffort = ReasoningEfforts.Default)
+    string ReasoningEffort = ReasoningEfforts.Default,
+    bool PromptCache = false)
 {
     public static (ModelConfig? Config, string Reason) Resolve(RuntimeSettings settings)
     {
@@ -35,7 +36,8 @@ public sealed record ModelConfig(
                 "设置",
                 fromSettings.ContextTokens,
                 fromSettings.MaxTokens,
-                fromSettings.ReasoningEffort), "运行中（设置）");
+                fromSettings.ReasoningEffort,
+                fromSettings.PromptCache), "运行中（设置）");
         }
 
         var (options, reason) = HttpLlmClient.OptionsFromEnvironment();
@@ -58,6 +60,7 @@ public sealed record ModelConfig(
         !string.Equals(left.BaseUrl, right.BaseUrl, StringComparison.Ordinal)
         || !string.Equals(left.Model, right.Model, StringComparison.Ordinal)
         || !string.Equals(left.ApiKey, right.ApiKey, StringComparison.Ordinal)
+        || left.PromptCache != right.PromptCache
         || left.TimeoutSeconds != right.TimeoutSeconds
         // The turn window and output ceiling are part of the same configuration: changing either has to
         // reach the running runner, which only happens through a restart.

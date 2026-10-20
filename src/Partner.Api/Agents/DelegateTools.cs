@@ -32,7 +32,18 @@ public sealed class AgentDelegateTool : ITool
             + string.Join("；", scenarios.Select(scenario => $"{scenario.Key}={scenario.Name}（{scenario.When}）")),
             """{"type":"object","properties":{"scenario":{"type":"string","enum":"""
             + keys
-            + """},"goal":{"type":"string","description":"要子 agent 做什么，写完整：它看不到你和用户的对话"},"context":{"type":"string","description":"可选：它做这件事需要知道的背景"}},"required":["scenario","goal"]}""");
+            + """},"goal":{"type":"string","description":"要子 agent 做什么，写完整：它看不到你和用户的对话"},"context":{"type":"string","description":"可选：它做这件事需要知道的背景"},"attachments":{"type":"array","items":{"type":"string"},"description":"可选：相关文件的绝对路径（如用户发来的文档），子 agent 会按路径读取"}},"required":["scenario","goal"]}""");
+    }
+
+    private static string? WithAttachments(string? context, IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0)
+        {
+            return context;
+        }
+
+        var listed = "相关文件（按路径读取）：\n" + string.Join("\n", paths.Select(path => $"- {path}"));
+        return string.IsNullOrWhiteSpace(context) ? listed : context + "\n\n" + listed;
     }
 
     public ToolSpec Spec { get; }
@@ -46,6 +57,7 @@ public sealed class AgentDelegateTool : ITool
 
         // The sub-agent cannot see this conversation, and a goal like "read the file we just talked about" is
         // meaningless to it. The last few turns ride along as background so such references can be resolved.
+        context = WithAttachments(context, Delegation.Strings(argumentsJson, "attachments"));
         var background = await _host.RecentConversationAsync(ct).ConfigureAwait(false);
         var result = _host.Start(scenario, goal, context, background);
         if (result.Started)
@@ -99,6 +111,11 @@ public sealed class AgentJobStatusTool(SubAgentHost host) : ITool
             text.Append($" · {job.Category}");
         }
 
+        if (job.Activity is { Length: > 0 } activity)
+        {
+            text.Append($"\n正在：{activity}");
+        }
+
         text.Append($"\n目标：{job.Goal}");
         foreach (var round in job.Rounds)
         {
@@ -119,22 +136,42 @@ public sealed class AgentJobCancelTool(SubAgentHost host) : ITool
         "取消一个正在进行的子 agent 任务。",
         """{"type":"object","properties":{"jobId":{"type":"string"}},"required":["jobId"]}""");
 
-    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
         var jobId = Delegation.Text(argumentsJson, "jobId");
         if (jobId is null)
         {
-            return Task.FromResult(new ToolResult(false, "invalid_args: 需要 jobId"));
+            return new ToolResult(false, "invalid_args: 需要 jobId");
         }
 
-        return Task.FromResult(host.Cancel(jobId)
+        return await host.CancelAsync(jobId).ConfigureAwait(false)
             ? new ToolResult(true, $"已请求取消任务 {jobId}；结束后会有一条汇报回来。")
-            : new ToolResult(false, $"not_found: 任务 {jobId} 不存在，或已经结束"));
+            : new ToolResult(false, $"not_found: 任务 {jobId} 不存在，或已经结束");
     }
 }
 
 internal static class Delegation
 {
+    /// <summary>A JSON array of strings, or empty when the property is missing or not one.</summary>
+    public static IReadOnlyList<string> Strings(string json, string name)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            return document.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array
+                ? value.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+                    .Select(item => item.GetString()!.Trim())
+                    .Take(10)
+                    .ToList()
+                : [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
     public static bool TryRead(string json, out string scenario, out string goal, out string? context, out string problem)
     {
         scenario = Text(json, "scenario") ?? string.Empty;

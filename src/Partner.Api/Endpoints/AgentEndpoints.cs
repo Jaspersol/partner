@@ -17,6 +17,9 @@ public static class AgentEndpoints
     {
         app.MapGet("/api/agents", (ApiContext ctx) => Results.Ok(AgentsView.From(ctx.Settings.Load())));
 
+        // Latencies a person feels, measured where they happen (see LatencyTracker). Read-only.
+        app.MapGet("/api/latency", () => Results.Ok(new { latencies = Partner.Core.Diagnostics.LatencyTracker.Snapshot() }));
+
         app.MapPut("/api/agents", async (AgentsSettings incoming, ApiContext ctx, ConsumerHost consumer) =>
         {
             var before = ctx.Settings.Load();
@@ -85,8 +88,8 @@ public static class AgentEndpoints
             });
         });
 
-        app.MapPost("/api/agent-jobs/{id}/cancel", (string id, ConsumerHost consumer) =>
-            consumer.Agents.Cancel(id)
+        app.MapPost("/api/agent-jobs/{id}/cancel", async (string id, ConsumerHost consumer) =>
+            await consumer.Agents.CancelAsync(id).ConfigureAwait(false)
                 ? Results.Ok(new { cancelled = true })
                 : Results.NotFound(new { error = $"任务 {id} 不存在，或已经结束" }));
     }

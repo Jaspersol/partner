@@ -68,6 +68,11 @@ public static partial class AgentsValidation
                 errors.Add($"「{label}」的最大轮数必须在 1–{AgentsSettings.MaxRoundsCeiling} 之间");
             }
 
+            if (agent.MaxSteps is < 1 or > 100)
+            {
+                errors.Add($"「{label}」的每轮最大步数必须在 1–100 之间");
+            }
+
             if (PromptSize.Estimate(agent.Prompt) > limit)
             {
                 errors.Add($"「{label}」的提示词过长（约 {PromptSize.Estimate(agent.Prompt)} token，上限 {limit}）");

@@ -19,6 +19,40 @@ public sealed record ModelBinding(
     IDisposable? Owned = null);
 
 /// <summary>
+/// The tool table a job runs with, reporting which tool is running so the job can say what it is doing. The
+/// tools themselves are untouched; each is wrapped for the length of one call.
+/// </summary>
+internal sealed class ObservedToolRegistry(IToolRegistry inner, Action<string?> onActivity) : IToolRegistry
+{
+    public IReadOnlyList<ToolSpec> Specs => inner.Specs;
+
+    public ITool? Find(string name) => inner.Find(name) is { } tool ? new Observed(tool, onActivity) : null;
+
+    public void Register(ITool tool) => inner.Register(tool);
+
+    private sealed class Observed(ITool tool, Action<string?> onActivity) : ITimedTool
+    {
+        public ToolSpec Spec => tool.Spec;
+
+        // The inner tool's own budget when it has one; zero never extends anything.
+        public TimeSpan Timeout => tool is ITimedTool timed ? timed.Timeout : TimeSpan.Zero;
+
+        public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+        {
+            onActivity(tool.Spec.Name);
+            try
+            {
+                return await tool.InvokeAsync(argumentsJson, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                onActivity(null);
+            }
+        }
+    }
+}
+
+/// <summary>
 /// Approval requests that say who is asking. A sub-agent has no screen of its own, so the question reaches the
 /// person through the same banner as everything else — and has to name the job, or it is anonymous.
 /// </summary>
@@ -47,6 +81,8 @@ internal static class DesktopToolSet
         }
 
         tools.Register(new DesktopActTool(context.Desktop, policy, context.Media, supportsImages: supportsImages));
+
+        tools.Register(new DesktopWindowTool(context.Desktop, policy));
 
         // Waiting is read-only and self-bounded (≤5 s): a slow page spends seconds, not steps.
         tools.Register(new DesktopWaitTool(context.Desktop));

@@ -562,7 +562,11 @@ public static class ViewEndpoints
     private static IResult? Busy(ApiContext ctx, ConsumerHost consumer) =>
         consumer.LiveAssistant is not null || ctx.Queue.Snapshot().RunningItemId is not null
             ? Results.Conflict(new { error = "正在回复：等它结束（或先停止）再删除或撤回" })
-            : null;
+            : consumer.Agents.HasActiveJobs
+                // A running job reports back as a new message, which would land in a conversation that has just had its
+                // history taken away from under it.
+                ? Results.Conflict(new { error = "子 agent 还有任务在进行：等它汇报，或先取消任务，再删除或撤回" })
+                : null;
 
     /// <summary>
     /// Whether the desktop section changed in a way the running consumer cannot absorb: the tool table and the

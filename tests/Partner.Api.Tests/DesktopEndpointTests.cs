@@ -163,6 +163,7 @@ public sealed partial class ViewEndpointsTests
         Assert.Contains("desktop_clipboard_get:allow", all);
         Assert.Contains("desktop_act:ask", all);
         Assert.Contains("desktop_exec:ask", all);
+        Assert.Contains("desktop_window:ask", all);
 
         // The middle gear: what a person can watch happen goes through, what leaves the GUI waits.
         var middle = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "dangerous" });
@@ -170,6 +171,7 @@ public sealed partial class ViewEndpointsTests
 
         var dangerous = await ToolsAsync();
         Assert.Contains("desktop_act:allow", dangerous);
+        Assert.Contains("desktop_window:allow", dangerous);
         Assert.Contains("desktop_clipboard_get:allow", dangerous);
         Assert.Contains("desktop_exec:ask", dangerous);
         Assert.Contains("desktop_launch:ask", dangerous);
@@ -180,7 +182,7 @@ public sealed partial class ViewEndpointsTests
 
         var none = await ToolsAsync();
         Assert.All(none, tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
-        Assert.Equal(7, none.Count);
+        Assert.Equal(8, none.Count);
 
         // An unknown gear is refused rather than silently stored.
         var bogus = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "whatever" });

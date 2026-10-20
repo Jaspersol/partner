@@ -65,6 +65,12 @@ public sealed record SubAgentSettings
     /// <summary>Rounds per job, counting the first. A round is one full try; see the job engine.</summary>
     public int MaxRounds { get; init; } = AgentsSettings.DefaultMaxRounds;
 
+    /// <summary>
+    /// Steps per round (a step is one model call and its tools). Null = the scenario's default: more for a web
+    /// agent that searches and then reads several pages, fewer for a plain chat turn.
+    /// </summary>
+    public int? MaxSteps { get; init; }
+
     [JsonIgnore]
     public bool IsBuiltin => Id == AgentsSettings.DesktopId;
 }

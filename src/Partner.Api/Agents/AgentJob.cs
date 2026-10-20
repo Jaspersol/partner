@@ -18,7 +18,8 @@ public sealed record AgentJobView(
     string? Summary,
     string? Error,
     IReadOnlyList<string> Rounds,
-    int Ahead = 0);
+    int Ahead = 0,
+    string? Activity = null);
 
 /// <summary>The states a job can be in. <c>running</c> is the only one that is not final.</summary>
 public static class AgentJobStatus
@@ -46,6 +47,7 @@ internal sealed class AgentJob(
 
     private string _status = AgentJobStatus.Running;
     private int _ahead;
+    private string? _activity;
     private int _round;
     private DateTimeOffset? _finishedAt;
     private JobOutcome? _outcome;
@@ -63,6 +65,12 @@ internal sealed class AgentJob(
     public int MaxRounds { get; } = maxRounds;
 
     public DateTimeOffset StartedAt { get; } = startedAt;
+
+    /// <summary>
+    /// The host's generation when the job was accepted. A job that outlives the reconfiguration which cancelled
+    /// it belongs to a consumer that no longer exists, and its report must not be handed to the new one.
+    /// </summary>
+    public int Generation { get; init; }
 
     /// <summary>Anything the main agent added beyond the goal.</summary>
     public string? Context { get; init; }
@@ -154,6 +162,15 @@ internal sealed class AgentJob(
         }
     }
 
+    /// <summary>What the job is doing at this moment (the tool it is inside), or null between steps.</summary>
+    public void SetActivity(string? activity)
+    {
+        lock (_gate)
+        {
+            _activity = activity;
+        }
+    }
+
     public void StartRound(int round)
     {
         lock (_gate)
@@ -200,7 +217,8 @@ internal sealed class AgentJob(
                 _outcome?.Summary,
                 _outcome?.Error,
                 _rounds.ToList(),
-                _ahead);
+                _ahead,
+                _status == AgentJobStatus.Running ? _activity : null);
         }
     }
 }
