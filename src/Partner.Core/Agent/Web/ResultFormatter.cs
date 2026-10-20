@@ -49,6 +49,14 @@ public sealed class ResultFormatter
         {
             for (var index = 0; index < hits.Count; index++)
             {
+                // Past the character budget the rest is left out and said so, rather than silently shortening the
+                // list: the model should know there was more to ask for. The first hit is always kept.
+                if (index > 0 && text.Length >= MaxChars)
+                {
+                    text.AppendLine($"（其余 {hits.Count - index} 条因篇幅省略；需要时缩小 limit 或换更具体的查询词重搜。）");
+                    break;
+                }
+
                 AppendHit(text, hits[index], index + 1);
             }
         }
@@ -68,6 +76,24 @@ public sealed class ResultFormatter
         return text.ToString();
     }
 
+    /// <summary>The most one result may spend on its snippet; arXiv and Wikipedia hand back whole abstracts.</summary>
+    public const int MaxSnippetChars = 300;
+
+    /// <summary>Soft ceiling on the hit list: the hit that crosses it is the last one printed.</summary>
+    public const int MaxChars = 6000;
+
+    private static string Shorten(string snippet)
+    {
+        if (snippet.Length <= MaxSnippetChars)
+        {
+            return snippet;
+        }
+
+        // Never cut between the halves of a surrogate pair.
+        var cut = char.IsHighSurrogate(snippet[MaxSnippetChars - 1]) ? MaxSnippetChars - 1 : MaxSnippetChars;
+        return snippet[..cut] + "…";
+    }
+
     private static void AppendHit(StringBuilder text, SearchHit hit, int order)
     {
         text.AppendLine($"{order}. {hit.Title}");
@@ -78,7 +104,7 @@ public sealed class ResultFormatter
 
         if (hit.Snippet.Length > 0)
         {
-            text.AppendLine($"   {hit.Snippet}");
+            text.AppendLine($"   {Shorten(hit.Snippet)}");
         }
 
         var stamps = new List<string> { DescribeDate(hit) };

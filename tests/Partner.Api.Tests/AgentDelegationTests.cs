@@ -203,28 +203,52 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
     }
 
     [Fact]
-    public async Task A_second_job_for_a_busy_agent_is_refused_with_the_running_one_named()
+    public async Task A_busy_agent_queues_two_more_jobs_and_refuses_the_next_with_the_newest_named()
     {
         await EnableReaderAsync();
         var gate = new GatedLlm(new ScriptedLlmClient([Report("s1", true, "好了"), Say("ok")]));
         _llm.Sub = gate;
         _llm.Main = new ScriptedLlmClient([
             new LlmResponse(null, [new LlmToolCall("m1", "agent_delegate", """{"scenario":"file-read","goal":"甲"}"""),
-                new LlmToolCall("m2", "agent_delegate", """{"scenario":"file-read","goal":"乙"}""")], "tool_calls"),
-            Say("一个交出去了，一个在排队"),
+                new LlmToolCall("m2", "agent_delegate", """{"scenario":"file-read","goal":"乙"}"""),
+                new LlmToolCall("m3", "agent_delegate", """{"scenario":"file-read","goal":"丙"}"""),
+                new LlmToolCall("m4", "agent_delegate", """{"scenario":"file-read","goal":"丁"}""")], "tool_calls"),
+            Say("一个在做，两个在排队，一个被拒"),
             Say("报告收到")]);
 
-        await SendAsync("读两个");
-        await WaitForAssistantAsync("一个交出去了");
+        await SendAsync("读四个");
+        await WaitForAssistantAsync("一个在做");
 
         var results = (await EventsAsync()).Where(e => e.Kind == SessionEventKind.ToolResult).ToList();
-        Assert.Equal(2, results.Count);
-        Assert.Single(results, e => e.Meta!["ok"] == "true" && e.Body.Contains("已交给", StringComparison.Ordinal));
+        Assert.Equal(4, results.Count);
+
+        // The first starts at once; the next two are accepted and wait their turn.
+        Assert.Single(results, e => e.Body.Contains("已开始", StringComparison.Ordinal));
+        Assert.Equal(2, results.Count(e => e.Meta!["ok"] == "true" && e.Body.Contains("在排队", StringComparison.Ordinal)));
+
+        // The fourth finds the queue full.
         var busy = Assert.Single(results, e => e.Meta!["ok"] == "false");
         Assert.StartsWith("busy:", busy.Body, StringComparison.Ordinal);
 
+        // The status tool shows the waiting ones as queued, not as running.
+        Assert.Equal(2, _consumer.Agents.Jobs().Count(job => job.Status == "queued"));
+
         gate.Release();
-        await WaitForAssistantAsync("报告收到");
+    }
+
+    [Fact]
+    public async Task A_sub_agent_is_given_the_last_few_turns_so_that_references_can_be_resolved()
+    {
+        _llm.Main = new ScriptedLlmClient([Say("我看看那份报告。")]);
+
+        await SendAsync("把刚才那个文件读完");
+        await WaitForAssistantAsync("我看看");
+
+        var background = await _consumer.Agents.RecentConversationAsync();
+
+        Assert.NotNull(background);
+        Assert.Contains("用户：把刚才那个文件读完", background, StringComparison.Ordinal);
+        Assert.Contains("助手：我看看那份报告。", background, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -369,6 +393,10 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         await SendAsync("第一句");
         await WaitForAssistantAsync("一");
         Assert.Equal("You are a single-user local assistant.", _llm.Main.Requests[0].Messages[0].Content);
+
+        // The reply is in the log a moment before the loop counts the turn as handled; wait for the count, or the
+        // "nothing restarted" comparison below races it.
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_consumer.State.Stats.Handled >= 1)));
 
         var handledBefore = _consumer.State.Stats.Handled;
         var saved = await _http.PutAsJsonAsync("/api/agents", new

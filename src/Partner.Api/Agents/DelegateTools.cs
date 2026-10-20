@@ -37,24 +37,30 @@ public sealed class AgentDelegateTool : ITool
 
     public ToolSpec Spec { get; }
 
-    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
         if (!Delegation.TryRead(argumentsJson, out var scenario, out var goal, out var context, out var problem))
         {
-            return Task.FromResult(new ToolResult(false, $"invalid_args: {problem}"));
+            return new ToolResult(false, $"invalid_args: {problem}");
         }
 
-        var result = _host.Start(scenario, goal, context);
+        // The sub-agent cannot see this conversation, and a goal like "read the file we just talked about" is
+        // meaningless to it. The last few turns ride along as background so such references can be resolved.
+        var background = await _host.RecentConversationAsync(ct).ConfigureAwait(false);
+        var result = _host.Start(scenario, goal, context, background);
         if (result.Started)
         {
             var job = result.Job!;
-            return Task.FromResult(new ToolResult(
+            var where = job.Status == AgentJobStatus.Queued
+                ? $"任务 {job.Id} 在排队（前面还有 {job.Ahead} 个任务，轮到它时才开始，最多 {job.MaxRounds} 轮）"
+                : $"任务 {job.Id} 已开始（最多 {job.MaxRounds} 轮）";
+            return new ToolResult(
                 true,
-                $"已交给「{job.AgentName}」，任务 {job.Id} 已开始（最多 {job.MaxRounds} 轮）。结果会作为一条消息回到这里。"
-                + "现在先告诉用户已经交出去了，不要等。"));
+                $"已交给「{job.AgentName}」，{where}。结果会作为一条消息回到这里。"
+                + "现在先告诉用户已经交出去了，不要等。");
         }
 
-        return Task.FromResult(new ToolResult(false, $"{(result.Busy ? "busy" : "refused")}: {result.Refusal}"));
+        return new ToolResult(false, $"{(result.Busy ? "busy" : "refused")}: {result.Refusal}");
     }
 }
 
@@ -87,7 +93,7 @@ public sealed class AgentJobStatusTool(SubAgentHost host) : ITool
     internal static string Describe(AgentJobView job)
     {
         var text = new StringBuilder($"任务 {job.Id}（{job.AgentName}）· {job.Status}");
-        text.Append(job.Status == AgentJobStatus.Running ? $" · 第 {job.Round}/{job.MaxRounds} 轮" : $" · {job.Round}/{job.MaxRounds} 轮");
+        text.Append(job.Status == AgentJobStatus.Running ? $" · 第 {job.Round}/{job.MaxRounds} 轮" : job.Status == AgentJobStatus.Queued ? $" · 前面还有 {job.Ahead} 个任务" : $" · {job.Round}/{job.MaxRounds} 轮");
         if (job.Category is not null)
         {
             text.Append($" · {job.Category}");

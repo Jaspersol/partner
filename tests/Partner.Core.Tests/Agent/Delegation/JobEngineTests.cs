@@ -367,4 +367,29 @@ public sealed class JobEngineTests : IAsyncLifetime
 
         return count;
     }
+
+    [Fact]
+    public void A_long_report_is_cut_for_the_main_agent_and_says_where_the_rest_is()
+    {
+        var outcome = new JobOutcome(
+            true, null, new string('结', 5000), new string('证', 5000), null, 1, 3, [], []);
+
+        var message = outcome.ToMessage("job-9", "联网搜索", "查一下");
+
+        Assert.DoesNotContain(new string('结', JobOutcome.SummaryChars + 1), message, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('证', JobOutcome.EvidenceChars + 1), message, StringComparison.Ordinal);
+        Assert.Contains("/api/agent-jobs/job-9/session", message, StringComparison.Ordinal);
+        Assert.Contains("原文共 5000 字", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_short_report_is_sent_whole()
+    {
+        var outcome = new JobOutcome(true, null, "搞定", "校验：画面已变化", null, 1, 3, [], []);
+
+        var message = outcome.ToMessage("job-9", "桌面操控", "打开记事本");
+
+        Assert.Contains("结论：搞定", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("已截断", message, StringComparison.Ordinal);
+    }
 }

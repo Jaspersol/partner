@@ -17,11 +17,15 @@ public sealed record AgentJobView(
     string? Category,
     string? Summary,
     string? Error,
-    IReadOnlyList<string> Rounds);
+    IReadOnlyList<string> Rounds,
+    int Ahead = 0);
 
 /// <summary>The states a job can be in. <c>running</c> is the only one that is not final.</summary>
 public static class AgentJobStatus
 {
+    /// <summary>Accepted, waiting for the agent to finish the job ahead of it. Not final.</summary>
+    public const string Queued = "queued";
+
     public const string Running = "running";
     public const string Completed = "completed";
     public const string CannotExecute = "cannot_execute";
@@ -41,6 +45,7 @@ internal sealed class AgentJob(
     private readonly List<string> _rounds = [];
 
     private string _status = AgentJobStatus.Running;
+    private int _ahead;
     private int _round;
     private DateTimeOffset? _finishedAt;
     private JobOutcome? _outcome;
@@ -65,6 +70,16 @@ internal sealed class AgentJob(
     /// <summary>Cancels the job. Its token is what the engine and the running turn listen to.</summary>
     public CancellationTokenSource Cancel { get; } = new();
 
+    private readonly TaskCompletionSource _turnOver = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Completes when this job no longer holds its agent (it ran to its end, or was cancelled while waiting). The
+    /// job behind it waits on this, which is what makes the queue first-in first-out.
+    /// </summary>
+    public Task TurnOver => _turnOver.Task;
+
+    public void ReleaseTurn() => _turnOver.TrySetResult();
+
     /// <summary>Completes when the job has finished and its report has been queued.</summary>
     public Task Done { get; set; } = Task.CompletedTask;
 
@@ -74,7 +89,7 @@ internal sealed class AgentJob(
         {
             lock (_gate)
             {
-                return _status == AgentJobStatus.Running;
+                return _status is AgentJobStatus.Running or AgentJobStatus.Queued;
             }
         }
     }
@@ -97,6 +112,44 @@ internal sealed class AgentJob(
             lock (_gate)
             {
                 return _finishedAt;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Puts a job behind <paramref name="ahead"/> others on the same agent. The job is accepted either way: a
+    /// refusal would make the main agent wait for a free agent and ask again, which is the queue's job.
+    /// </summary>
+    public void MarkQueued(int ahead)
+    {
+        lock (_gate)
+        {
+            _status = AgentJobStatus.Queued;
+            _ahead = ahead;
+        }
+    }
+
+    /// <summary>The agent is free: the job starts now.</summary>
+    public void MarkStarted()
+    {
+        lock (_gate)
+        {
+            if (_status == AgentJobStatus.Queued)
+            {
+                _status = AgentJobStatus.Running;
+                _ahead = 0;
+            }
+        }
+    }
+
+    /// <summary>How many jobs on the same agent were ahead when this one was accepted; 0 when it started at once.</summary>
+    public int Ahead
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _ahead;
             }
         }
     }
@@ -146,7 +199,8 @@ internal sealed class AgentJob(
                 _outcome?.Category,
                 _outcome?.Summary,
                 _outcome?.Error,
-                _rounds.ToList());
+                _rounds.ToList(),
+                _ahead);
         }
     }
 }

@@ -57,6 +57,28 @@ public sealed record JobOutcome(
     IReadOnlyList<RoundRecord> History,
     IReadOnlyList<string> Actions)
 {
+    /// <summary>The most of a sub-agent's conclusion that is sent to the main agent whole.</summary>
+    public const int SummaryChars = 1500;
+
+    /// <summary>The most of its evidence. Evidence is what a web agent copies out of pages, and it can be long.</summary>
+    public const int EvidenceChars = 2000;
+
+    /// <summary>
+    /// A report is read into the main agent's context, so it is bounded; what is left out is not lost — the
+    /// sub-agent's own session holds the whole thing, and the cut says where.
+    /// </summary>
+    private static string Limit(string? text, int max, string jobId)
+    {
+        if (text is null || text.Length <= max)
+        {
+            return text ?? string.Empty;
+        }
+
+        var cut = char.IsHighSurrogate(text[max - 1]) ? max - 1 : max;
+        return text[..cut]
+            + $"…（已截断，原文共 {text.Length} 字；完整内容在任务 {jobId} 的子会话里，GET /api/agent-jobs/{jobId}/session 可读）";
+    }
+
     /// <summary>
     /// The message the main agent receives. The first line is the discriminator: <c>已完成</c> or <c>无法执行</c>,
     /// so a model (or a person reading the log) can tell the two apart without reading further.
@@ -68,8 +90,8 @@ public sealed record JobOutcome(
         {
             text.Line($"[子 agent「{agentName}」任务 {jobId} · 已完成 · 第 {Rounds}/{MaxRounds} 轮]");
             text.Line($"目标：{goal}");
-            text.Line($"结论：{Summary}");
-            text.Append($"证据：{Evidence}");
+            text.Line($"结论：{Limit(Summary, SummaryChars, jobId)}");
+            text.Append($"证据：{Limit(Evidence, EvidenceChars, jobId)}");
             return text.ToString();
         }
 
