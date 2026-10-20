@@ -462,7 +462,7 @@ onUnmounted(() => {
             :api="api"
             :summary="summary ?? undefined"
             :consumer="consumer ?? undefined"
-            :approval="desktop?.enabled === true ? desktop.approval : null"
+            :approval="desktop?.approval ?? null"
             :approvals="approvals"
             :desktop="desktop"
             :gears="gears"

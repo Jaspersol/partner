@@ -16,7 +16,7 @@ namespace Partner.Api;
 /// <para>
 /// Fail-closed like every other governance: a tool this host does not know is denied rather than allowed by
 /// omission. MCP tools are known but not trusted — each one is another process's code — so they ask unless the
-/// allow list says otherwise.
+/// allow list says otherwise. The gear itself covers every tool that acts, not only the desktop's.
 /// </para>
 /// </summary>
 public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
@@ -26,6 +26,10 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
     public GovernanceDecision Decide(string toolName, string argumentsJson)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+
+        // Read once: every branch below answers to the same gear.
+        var desktop = _context.Settings.Load().Desktop;
+        var gear = ApprovalGears.Normalize(desktop.Approval);
 
         if (NamespacedMcpTool.TryUnprefix(toolName, out _, out _))
         {
@@ -51,21 +55,29 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
             return new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 只传递信息");
         }
 
-        // Timed tasks. Reading them is harmless. Creating or deleting one is not: a task's message comes back later
-        // as if the person had typed it, so it is a standing instruction — and one the assistant could be talked
-        // into leaving behind by something it read. A human sees the rule and the message before it exists.
+        // Timed tasks. Reading them is harmless.
         if (toolName == Agents.ScheduleListTool.ToolName)
         {
             return new GovernanceDecision(ToolDecision.Allow, "'schedule_list' 只读");
         }
 
+        // Creating can be undone by deleting; deleting cannot. So the dangerous gear asks for the delete, and
+        // only the strictest gear asks for both.
         if (toolName is Agents.ScheduleCreateTool.ToolName or Agents.ScheduleDeleteTool.ToolName)
         {
+            var deleting = toolName == Agents.ScheduleDeleteTool.ToolName;
+            var asks = deleting ? gear != ApprovalGears.None : gear == ApprovalGears.All;
+
+            if (!asks)
+            {
+                return new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 在当前挡位下可直接执行（{gear}）");
+            }
+
             return new GovernanceDecision(
                 ToolDecision.Ask,
-                toolName == Agents.ScheduleCreateTool.ToolName
-                    ? "'schedule_create' 会让助手之后按时收到一条消息并照做，需要你批准"
-                    : "'schedule_delete' 会删除一个定时任务，需要你批准");
+                deleting
+                    ? "'schedule_delete' 会删掉一个已存在的定时任务，且无法恢复，需要你批准"
+                    : "'schedule_create' 会让助手之后按时收到一条消息并照做，需要你批准");
         }
 
         // Reading is read-only and never asks, like the desktop's own reads; what bounds it is the directory
@@ -82,7 +94,7 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
         // destination. The switch covers both, and both read it live so turning it off takes effect at once.
         if (toolName is Partner.Core.Agent.Web.WebSearchTool.Name or Partner.Core.Agent.Web.WebFetchTool.Name)
         {
-            return WebDecision(toolName, argumentsJson);
+            return WebDecision(toolName, argumentsJson, gear);
         }
 
         if (!DesktopToolCatalog.All.Contains(toolName, StringComparer.Ordinal))
@@ -90,13 +102,10 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
             return new GovernanceDecision(ToolDecision.Deny, $"'{toolName}' 不是桌面工具（fail-closed）");
         }
 
-        var desktop = _context.Settings.Load().Desktop;
         if (!desktop.Enabled)
         {
             return new GovernanceDecision(ToolDecision.Deny, "桌面能力未启用");
         }
-
-        var gear = ApprovalGears.Normalize(desktop.Approval);
 
         // Reads never ask; actions ask by gear; what leaves the GUI asks unless the gear says nothing does.
         var needsApproval = DesktopToolCatalog.IsReadOnly(toolName)
@@ -118,12 +127,11 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
     }
 
     /// <summary>
-    /// Search is allowed whenever the capability is on; fetching is allowed only for a host this session has
-    /// already seen. The distinction is who chose the address: a host that came out of the person's own question
-    /// or out of a search it started is a lead being followed, while any other host is the model picking a
-    /// destination and sending a request to it — which is the user's decision the first time, not the model's.
+    /// A search is allowed whenever the capability is on. A fetch asks, and only under the strictest gear, for a
+    /// host this session never saw: a host from the person's own words is a lead being followed, any other is the
+    /// model picking a destination.
     /// </summary>
-    private GovernanceDecision WebDecision(string toolName, string argumentsJson)
+    private GovernanceDecision WebDecision(string toolName, string argumentsJson, string gear)
     {
         var web = _context.Web;
         if (!_context.Settings.Load().Web.Enabled)
@@ -146,7 +154,9 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
 
         return web.Ledger.Saw(host)
             ? new GovernanceDecision(ToolDecision.Allow, $"'{host}' 出现在本次会话的搜索结果或用户消息中")
-            : new GovernanceDecision(ToolDecision.Ask, $"要打开 '{host}'：这个地址不在本次会话的搜索结果里，需要你确认");
+            : gear == ApprovalGears.All
+                ? new GovernanceDecision(ToolDecision.Ask, $"要打开 '{host}'：这个地址不在本次会话的搜索结果里，需要你确认")
+                : new GovernanceDecision(ToolDecision.Allow, $"'web_fetch' 在当前挡位下可直接执行（{gear}）");
     }
 
     /// <summary>The host of the URL argument, or null when there is nothing to judge.</summary>

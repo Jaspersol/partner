@@ -1,3 +1,5 @@
+using Partner.Api.Settings;
+using Partner.Core.Agent.Tools;
 using Partner.Core.Agent.Web;
 using System.Net;
 using System.Net.Http.Json;
@@ -119,6 +121,40 @@ public sealed class WebEndpointTests : ApiFixture
         Assert.Equal(12, view.GetProperty("timeBudgetSeconds").GetInt32());
         Assert.Equal(8, view.GetProperty("maxResults").GetInt32());
         Assert.Equal(JsonValueKind.Null, view.GetProperty("proxy").ValueKind);
+    }
+
+    [Fact]
+    public void Fetching_an_address_this_session_never_saw_only_asks_under_the_strictest_gear()
+    {
+        // Following a lead is not a decision; picking a destination is. The strictest gear confirms that choice, the
+        // two looser ones treat a fetch like a click — it only reads someone else's page.
+        var governance = new DesktopGovernance(_context);
+        const string fetch = """{"url":"https://never-seen.example/page"}""";
+
+        try
+        {
+            SaveGear(ApprovalGears.All);
+            Assert.Equal(ToolDecision.Ask, governance.Decide("web_fetch", fetch).Decision);
+
+            SaveGear(ApprovalGears.Dangerous);
+            Assert.Equal(ToolDecision.Allow, governance.Decide("web_fetch", fetch).Decision);
+
+            SaveGear(ApprovalGears.None);
+            Assert.Equal(ToolDecision.Allow, governance.Decide("web_fetch", fetch).Decision);
+
+            // A search is never the model choosing a destination — no gear asks for it.
+            Assert.Equal(ToolDecision.Allow, governance.Decide("web_search", """{"query":"x"}""").Decision);
+        }
+        finally
+        {
+            SaveGear(ApprovalGears.All);
+        }
+    }
+
+    private void SaveGear(string gear)
+    {
+        var settings = _context.Settings.Load();
+        _context.Settings.Save(settings with { Desktop = settings.Desktop with { Approval = gear } });
     }
 
     private static JsonElement Engine(List<JsonElement> engines, string id) =>

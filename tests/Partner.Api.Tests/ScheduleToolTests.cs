@@ -1,3 +1,4 @@
+using Partner.Api.Settings;
 using Partner.Api.Agents;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Scheduler;
@@ -6,7 +7,7 @@ namespace Partner.Api.Tests;
 
 /// <summary>
 /// The assistant's timed-task tools: what it can set up, what it is told back (the model has no clock), that it is
-/// held to the page's rules, and that making or removing a task asks a human first.
+/// held to the page's rules, and which approval gear asks a human about making or removing a task.
 /// </summary>
 public sealed class ScheduleToolTests : ApiFixture
 {
@@ -152,12 +153,38 @@ public sealed class ScheduleToolTests : ApiFixture
     }
 
     [Fact]
-    public void Reading_is_allowed_outright_but_creating_and_deleting_ask_a_human()
+    public void Reading_is_allowed_outright_but_creating_and_deleting_follow_the_gear()
     {
+        // Creating a task is put away for later and can be deleted again; deleting one is what cannot be undone.
+        // So the middle gear asks for the deletion only, and the loosest gear asks for neither.
         var governance = new DesktopGovernance(_context);
-
         Assert.Equal(ToolDecision.Allow, governance.Decide("schedule_list", "{}").Decision);
+
         Assert.Equal(ToolDecision.Ask, governance.Decide("schedule_create", "{}").Decision);
         Assert.Equal(ToolDecision.Ask, governance.Decide("schedule_delete", "{}").Decision);
+
+        try
+        {
+            SaveGear(ApprovalGears.Dangerous);
+            Assert.Equal(ToolDecision.Allow, governance.Decide("schedule_create", "{}").Decision);
+            Assert.Equal(ToolDecision.Ask, governance.Decide("schedule_delete", "{}").Decision);
+
+            SaveGear(ApprovalGears.None);
+            Assert.Equal(ToolDecision.Allow, governance.Decide("schedule_create", "{}").Decision);
+            Assert.Equal(ToolDecision.Allow, governance.Decide("schedule_delete", "{}").Decision);
+
+            // Reading stays the same in every gear: the gear is about acting.
+            Assert.Equal(ToolDecision.Allow, governance.Decide("schedule_list", "{}").Decision);
+        }
+        finally
+        {
+            SaveGear(ApprovalGears.All);
+        }
+    }
+
+    private void SaveGear(string gear)
+    {
+        var settings = _context.Settings.Load();
+        _context.Settings.Save(settings with { Desktop = settings.Desktop with { Approval = gear } });
     }
 }
