@@ -61,8 +61,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private string _reason = "未启动";
 
     /// <summary>The main model's window, kept so a sub-agent that follows the main model gets the same numbers.</summary>
-    private int _mainContextTokens = 32768;
-    private int _mainMaxTokens = 4096;
+    private int _mainContextTokens = 128000;
+    private int _mainMaxTokens = 32000;
 
     /// <summary>
     /// The MCP servers this consumer started, kept so a reconfigure can stop them.
@@ -454,8 +454,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
 
         var turnOptions = new AgentTurnOptions
         {
-            ContextWindowTokens = config?.ContextTokens ?? 32768,
-            MaxTokens = config?.MaxTokens ?? 4096,
+            ContextWindowTokens = config?.ContextTokens ?? 128000,
+            MaxTokens = config?.MaxTokens ?? 32000,
 
             // Read at the start of every turn, so editing the main prompt does not restart anything.
             PromptSource = () => AgentRouting.MainPrompt(_context.Settings.Load()),

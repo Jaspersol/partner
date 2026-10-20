@@ -63,7 +63,7 @@ const form = reactive<RuntimeSettings>({
     tts: { enabled: false, command: 'engines/tts/python/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102, readyTimeoutSeconds: 30, keywords: [] as string[] },
     kws: { enabled: false, command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
-  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
+  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 128000, maxTokens: 32000, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', inputMode: 'foreground', allowedWindowTitles: [] as string[] },
 
   // Carried through untouched so the two capability pages' state survives a save made here. Not editable on
@@ -812,7 +812,7 @@ const section = ref('model')
 /**
  * Which 「更多选项」 are open. Remembered, because the views are `v-if`: without it, opening the options you
  * actually use would have to be redone on every tab switch. Closed on a first visit — the point is that most
- * people do not need them.
+ * people do not need them. The model section has none: its three limits sit in the connection card.
  */
 const advanced = ref<Record<string, boolean>>({})
 
@@ -980,6 +980,17 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <span class="g-chip" :class="apiKeySet ? 'is-ok' : ''" data-test="model-api-key-state">{{ apiKeySet ? '已设置' : '未设置' }}</span>
                 <button class="ghost" type="button" data-test="model-api-key-clear" @click.prevent="clearKey">清除</button>
               </SettingRow>
+
+              <SettingRow label="最长等待" unit="秒" hint="模型超过这个时间还没答完，就放弃这次请求。">
+                <input type="number" v-model.number="form.model.timeoutSeconds" />
+              </SettingRow>
+              <SettingRow label="记忆长度" unit="token">
+                <template #hint>模型一次最多能「看」多少内容，约 1 个汉字算 1 token。改小并保存后，较早的对话会立刻被压缩。</template>
+                <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
+              </SettingRow>
+              <SettingRow label="单次回复上限" unit="token" hint="一次回复最多写多长，必须小于「记忆长度」。">
+                <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
+              </SettingRow>
             </div>
 
             <div class="g-card">
@@ -1000,22 +1011,6 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
             </div>
 
-            <button class="ghost more" :aria-expanded="advanced.model === true" data-test="settings-more-model" @click="toggleAdvanced('model')">
-              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.model === true }" />
-              更多选项
-            </button>
-            <div v-show="advanced.model === true" class="g-card">
-              <SettingRow label="最长等待" unit="秒" hint="模型超过这个时间还没答完，就放弃这次请求。">
-                <input type="number" v-model.number="form.model.timeoutSeconds" />
-              </SettingRow>
-              <SettingRow label="记忆长度" unit="token">
-                <template #hint>模型一次最多能「看」多少内容，约 1 个汉字算 1 token。改小并保存后，较早的对话会立刻被压缩。</template>
-                <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
-              </SettingRow>
-              <SettingRow label="单次回复上限" unit="token" hint="一次回复最多写多长，必须小于「记忆长度」。">
-                <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
-              </SettingRow>
-            </div>
           </section>
 
           <!-- ================= 语音输入 ================= -->

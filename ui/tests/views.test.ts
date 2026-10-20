@@ -1926,24 +1926,19 @@ describe('settings view', () => {
     second.unmount()
   })
 
-  it('keeps the rarely-changed options behind one 更多选项, and remembers it was opened', async () => {
+  it('shows the three model limits in the connection card, with no 更多选项', async () => {
     const { stub } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
 
-    const more = () => wrapper.find('[data-test="settings-more-model"]')
-    const body = () => wrapper.find('[data-test="model-context-tokens"]').element.closest('.g-card')?.getAttribute('style') ?? ''
-    expect(more().attributes('aria-expanded')).toBe('false')
-    expect(body()).toContain('display: none')
+    expect(wrapper.find('[data-test="settings-more-model"]').exists()).toBe(false)
 
-    await more().trigger('click')
-    expect(more().attributes('aria-expanded')).toBe('true')
-    expect(body()).not.toContain('display: none')
-
-    const second = mount(SettingsViewComponent, { props: { api: stub } })
-    await flushPromises()
-    expect(second.find('[data-test="settings-more-model"]').attributes('aria-expanded')).toBe('true')
-    second.unmount()
+    const card = wrapper.find('[data-test="model-api-key"]').element.closest('.g-card')
+    expect(card).not.toBeNull()
+    const labels = [...(card?.querySelectorAll('.g-row-label') ?? [])].map((node) => node.textContent?.trim())
+    expect(labels).toContain('最长等待')
+    expect(labels).toContain('记忆长度')
+    expect(labels).toContain('单次回复上限')
   })
 
   it('offers the image capability, and saves it with the model', async () => {

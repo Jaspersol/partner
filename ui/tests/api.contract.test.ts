@@ -228,8 +228,8 @@ describe('the API contract the UI binds to', () => {
     const usage = session.context
 
     // The budget is the window minus the room reserved for the completion.
-    expect(usage.contextTokens).toBe(32768)
-    expect(usage.maxTokens).toBe(4096)
+    expect(usage.contextTokens).toBe(128000)
+    expect(usage.maxTokens).toBe(32000)
     expect(usage.budgetTokens).toBe(usage.contextTokens - usage.maxTokens)
     expect(usage.usedTokens).toBeGreaterThan(0)
     expect(usage.usedTokens).toBeLessThanOrEqual(usage.budgetTokens)

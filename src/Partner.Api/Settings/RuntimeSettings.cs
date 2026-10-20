@@ -520,10 +520,10 @@ public sealed record ModelSettings
     public double TimeoutSeconds { get; init; } = 120;
 
     /// <summary>The model's context window in tokens. The prompt budget is this minus <see cref="MaxTokens"/>.</summary>
-    public int ContextTokens { get; init; } = 32768;
+    public int ContextTokens { get; init; } = 128000;
 
     /// <summary>Output ceiling for one completion.</summary>
-    public int MaxTokens { get; init; } = 4096;
+    public int MaxTokens { get; init; } = 32000;
 
     /// <summary>
     /// Whether this model can look at pictures.
@@ -580,9 +580,9 @@ public sealed record ModelSettingsView
 
     public double TimeoutSeconds { get; init; } = 120;
 
-    public int ContextTokens { get; init; } = 32768;
+    public int ContextTokens { get; init; } = 128000;
 
-    public int MaxTokens { get; init; } = 4096;
+    public int MaxTokens { get; init; } = 32000;
 
     public bool SupportsImages { get; init; }
 

@@ -16,8 +16,8 @@ public sealed record ModelConfig(
     string? ApiKey,
     TimeSpan Timeout,
     string Origin,
-    int ContextTokens = 32768,
-    int MaxTokens = 4096,
+    int ContextTokens = 128000,
+    int MaxTokens = 32000,
     string ReasoningEffort = ReasoningEfforts.Default,
     bool PromptCache = false)
 {

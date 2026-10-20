@@ -526,7 +526,7 @@ async function main() {
       cdp,
       `document.querySelector('[data-test="model-context-tokens"]')?.value + '/' + document.querySelector('[data-test="model-max-tokens"]')?.value`,
     )
-    check('the model card exposes the context window and the output ceiling in tokens', limits === '32768/4096', limits)
+    check('the model card exposes the context window and the output ceiling in tokens', limits === '128000/32000', limits)
     check(
       'the settings page covers every configurable subsystem',
       cards.includes('语音识别') && cards.includes('语音合成') && cards.includes('模型') && cards.includes('桌面'),
