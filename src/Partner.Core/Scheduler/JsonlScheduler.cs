@@ -24,6 +24,15 @@ public sealed record SchedulerOptions
 
     /// <summary>Floor on the wait so a perpetually-due (failing) task cannot spin the driver.</summary>
     public TimeSpan MinWait { get; init; } = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>Wait before the first retry of a failed delivery; each further failure doubles it.</summary>
+    public TimeSpan RetryBaseDelay { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Cap on the retry backoff, so a failing task is still retried but never hammers the queue or the disk.</summary>
+    public TimeSpan RetryMaxDelay { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long one delivery may wait for the input queue to take an item before it counts as a failed attempt.</summary>
+    public TimeSpan EnqueueTimeout { get; init; } = TimeSpan.FromSeconds(10);
 }
 
 /// <summary>
@@ -52,7 +61,11 @@ public sealed class JsonlScheduler : IScheduler
     private readonly SchedulerOptions _options;
     private readonly Dictionary<string, ScheduleTask> _byId = new(StringComparer.Ordinal);
     private readonly HashSet<string> _receiptKeys = new(StringComparer.Ordinal);
+
+    /// <summary>Earliest next attempt per failing task. In memory on purpose: a restart simply retries once at once.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _retryAt = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _deliverGate = new(1, 1);
     private readonly SemaphoreSlim _wake = new(0, 1);
     private DateTimeOffset? _nextDueAt;
     private bool _disposed;
@@ -163,6 +176,7 @@ public sealed class JsonlScheduler : IScheduler
             }
 
             var updated = task with { Status = status };
+            _retryAt.Remove(taskId);
 
             // Resuming a paused task: the occurrences that passed while it was paused are skipped rather than
             // fired as one late burst (the same rule a restart follows). A Failed task is different — it keeps
@@ -212,6 +226,7 @@ public sealed class JsonlScheduler : IScheduler
             _tasks.Append(JsonSerializer.Serialize(TaskRecord.Tombstone(taskId), Json));
             _tasks.FlushToDisk();
             _byId.Remove(taskId);
+            _retryAt.Remove(taskId);
             RecomputeNextDue();
             return true;
         }
@@ -245,17 +260,31 @@ public sealed class JsonlScheduler : IScheduler
     {
         ThrowIfDisposed();
 
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        // One pass at a time, but not under _gate: the gate is what ListAsync, ScheduleAsync and the HTTP
+        // endpoints wait on, and a pass that sits inside it while the input queue is full (EnqueueAsync waits for
+        // a free slot) would freeze every one of them behind a queue that is merely busy.
+        await _deliverGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var now = _clock.GetUtcNow();
+            DateTimeOffset now;
+            List<ScheduleTask> due;
 
-            // The due set comes from persisted state, not from the timer (design doc §2.4 rule 2).
-            var due = _byId.Values
-                .Where(t => t.Status != ScheduleTaskStatus.Inactive && t.NextScheduledAt <= now)
-                .OrderBy(t => t.NextScheduledAt)
-                .ThenBy(t => t.TaskId, StringComparer.Ordinal)
-                .ToList();
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                now = _clock.GetUtcNow();
+
+                // The due set comes from persisted state, not from the timer (design doc §2.4 rule 2).
+                due = _byId.Values
+                    .Where(t => t.Status != ScheduleTaskStatus.Inactive && EffectiveDueAt(t) <= now)
+                    .OrderBy(t => t.NextScheduledAt)
+                    .ThenBy(t => t.TaskId, StringComparer.Ordinal)
+                    .ToList();
+            }
+            finally
+            {
+                _gate.Release();
+            }
 
             var delivered = 0;
             var failed = 0;
@@ -268,38 +297,87 @@ public sealed class JsonlScheduler : IScheduler
                 var occurrence = task.NextScheduledAt;
                 var key = ReceiptKey(task.TaskId, occurrence);
 
-                if (_receiptKeys.Contains(key))
+                bool alreadyReceipted;
+                await _gate.WaitAsync(ct).ConfigureAwait(false);
+                try
                 {
-                    // Crash landed between the receipt and the state advance: finish the advance only.
-                    skipped++;
-                    await AdvanceAsync(task, occurrence, now, ct).ConfigureAwait(false);
+                    alreadyReceipted = _receiptKeys.Contains(key);
+                    if (alreadyReceipted)
+                    {
+                        // Crash landed between the receipt and the state advance: finish the advance only.
+                        skipped++;
+                        await AdvanceAsync(task, occurrence, now, ct).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+
+                if (alreadyReceipted)
+                {
                     continue;
                 }
 
                 try
                 {
                     var itemId = ItemId(task.TaskId, occurrence);
-                    await _queue.EnqueueAsync(new InputItem
-                    {
-                        ItemId = itemId,
-                        Source = InputSource.Schedule,
-                        Payload = task.Payload,
-                        IdempotencyKey = $"schedule:{task.TaskId}:{occurrence.UtcDateTime:O}",
-                    }, ct).ConfigureAwait(false);
 
-                    // Receipt is committed BEFORE the state advance; if this throws the task stays due.
-                    await AppendReceiptAsync(new DeliveryReceipt
+                    // Outside the gate and bounded: a full queue means "try again later" (with backoff), not
+                    // "hold everything else until there is room".
+                    using (var enqueue = CancellationTokenSource.CreateLinkedTokenSource(ct))
                     {
-                        TaskId = task.TaskId,
-                        OccurrenceAt = occurrence,
-                        DeliveredAt = now,
-                        ItemId = itemId,
-                        Attempt = task.Attempt,
-                    }, ct).ConfigureAwait(false);
+                        enqueue.CancelAfter(_options.EnqueueTimeout);
 
-                    _receiptKeys.Add(key);
-                    await AdvanceAsync(task, occurrence, now, ct).ConfigureAwait(false);
-                    delivered++;
+                        try
+                        {
+                            await _queue.EnqueueAsync(new InputItem
+                            {
+                                ItemId = itemId,
+                                Source = InputSource.Schedule,
+                                Payload = task.Payload,
+                                IdempotencyKey = $"schedule:{task.TaskId}:{occurrence.UtcDateTime:O}",
+                            }, enqueue.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                        {
+                            throw new TimeoutException(
+                                $"input queue did not accept the item within {_options.EnqueueTimeout.TotalSeconds:0.#}s");
+                        }
+                    }
+
+                    await _gate.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        // The task may have been removed, paused or rescheduled while the gate was free. The item
+                        // is already in the queue under its idempotency key, so the only thing left is not to
+                        // write bookkeeping for a state that no longer exists.
+                        if (!_byId.TryGetValue(task.TaskId, out var current)
+                            || current.NextScheduledAt != occurrence
+                            || current.Status == ScheduleTaskStatus.Inactive)
+                        {
+                            skipped++;
+                            continue;
+                        }
+
+                        // Receipt is committed BEFORE the state advance; if this throws the task stays due.
+                        await AppendReceiptAsync(new DeliveryReceipt
+                        {
+                            TaskId = task.TaskId,
+                            OccurrenceAt = occurrence,
+                            DeliveredAt = now,
+                            ItemId = itemId,
+                            Attempt = current.Attempt,
+                        }, ct).ConfigureAwait(false);
+
+                        _receiptKeys.Add(key);
+                        await AdvanceAsync(current, occurrence, now, ct).ConfigureAwait(false);
+                        delivered++;
+                    }
+                    finally
+                    {
+                        _gate.Release();
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -308,16 +386,36 @@ public sealed class JsonlScheduler : IScheduler
                 catch (Exception ex)
                 {
                     failed++;
-                    await RecordFailureAsync(task, ex, ct).ConfigureAwait(false);
+
+                    await _gate.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        if (_byId.TryGetValue(task.TaskId, out var current) && current.NextScheduledAt == occurrence)
+                        {
+                            await RecordFailureAsync(current, ex, ct).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        _gate.Release();
+                    }
                 }
             }
 
-            RecomputeNextDue();
-            return new DeliveryOutcome(delivered, failed, skipped, _nextDueAt);
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                RecomputeNextDue();
+                return new DeliveryOutcome(delivered, failed, skipped, _nextDueAt);
+            }
+            finally
+            {
+                _gate.Release();
+            }
         }
         finally
         {
-            _gate.Release();
+            _deliverGate.Release();
         }
     }
 
@@ -371,6 +469,7 @@ public sealed class JsonlScheduler : IScheduler
         _tasks.Dispose();
         _receipts.Dispose();
         _gate.Dispose();
+        _deliverGate.Dispose();
         _wake.Dispose();
         await Task.CompletedTask.ConfigureAwait(false);
     }
@@ -396,6 +495,7 @@ public sealed class JsonlScheduler : IScheduler
 
     private async Task AdvanceAsync(ScheduleTask task, DateTimeOffset occurrence, DateTimeOffset now, CancellationToken ct)
     {
+        _retryAt.Remove(task.TaskId);
         var next = task.Trigger.NextAfter(occurrence, _options.TimeZone);
 
         // Occurrences missed while the process was down are skipped, never replayed as a burst.
@@ -419,6 +519,7 @@ public sealed class JsonlScheduler : IScheduler
     private async Task RecordFailureAsync(ScheduleTask task, Exception error, CancellationToken ct)
     {
         var attempt = task.Attempt + 1;
+        _retryAt[task.TaskId] = _clock.GetUtcNow() + RetryDelay(attempt);
 
         // The obligation is kept: NextScheduledAt is unchanged, so the task is due again next pass.
         var updated = task with
@@ -450,6 +551,17 @@ public sealed class JsonlScheduler : IScheduler
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
+    private DateTimeOffset EffectiveDueAt(ScheduleTask task) =>
+        _retryAt.TryGetValue(task.TaskId, out var retryAt) && retryAt > task.NextScheduledAt ? retryAt : task.NextScheduledAt;
+
+    private TimeSpan RetryDelay(int attempt)
+    {
+        // base * 2^(attempt-1), capped; the exponent is clamped first so the multiplication cannot overflow.
+        var factor = Math.Pow(2, Math.Min(attempt - 1, 20));
+        var delay = TimeSpan.FromTicks((long)Math.Min(_options.RetryBaseDelay.Ticks * factor, _options.RetryMaxDelay.Ticks));
+        return delay < _options.RetryBaseDelay ? _options.RetryBaseDelay : delay;
+    }
+
     private void RecomputeNextDue()
     {
         DateTimeOffset? min = null;
@@ -460,9 +572,9 @@ public sealed class JsonlScheduler : IScheduler
                 continue;
             }
 
-            if (min is null || task.NextScheduledAt < min.Value)
+            if (min is null || EffectiveDueAt(task) < min.Value)
             {
-                min = task.NextScheduledAt;
+                min = EffectiveDueAt(task);
             }
         }
 

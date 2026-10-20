@@ -16,10 +16,28 @@ internal sealed class RecordingQueue : IInputQueue
 
     public int FailuresRemaining { get; set; }
 
+    public bool AlwaysFail { get; set; }
+
+    public int EnqueueCalls { get; private set; }
+
     public IReadOnlyList<InputItem> Items => _items;
 
-    public ValueTask<long> EnqueueAsync(InputItem item, CancellationToken ct = default)
+    /// <summary>While set and unfinished, an enqueue waits on it: a queue with no free slot.</summary>
+    public TaskCompletionSource? Block { get; set; }
+
+    public async ValueTask<long> EnqueueAsync(InputItem item, CancellationToken ct = default)
     {
+        EnqueueCalls++;
+        if (Block is { } block)
+        {
+            await block.Task.WaitAsync(ct).ConfigureAwait(false);
+        }
+
+        if (AlwaysFail)
+        {
+            throw new IOException("simulated enqueue failure");
+        }
+
         if (FailuresRemaining > 0)
         {
             FailuresRemaining--;
@@ -34,7 +52,7 @@ internal sealed class RecordingQueue : IInputQueue
 
         if (_byKey.TryGetValue(item.IdempotencyKey, out var existing))
         {
-            return ValueTask.FromResult(existing);
+            return existing;
         }
 
         var seq = (long)(_items.Count + 1);
@@ -50,7 +68,7 @@ internal sealed class RecordingQueue : IInputQueue
             Attempt = item.Attempt,
         });
         _byKey[item.IdempotencyKey] = seq;
-        return ValueTask.FromResult(seq);
+        return seq;
     }
 
     public ValueTask<InputItem?> TakeAsync(CancellationToken ct = default) =>
@@ -162,21 +180,29 @@ public sealed class JsonlSchedulerTests : IDisposable
 
         await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromMinutes(1), clock.GetUtcNow()));
 
+        var dueAt = clock.GetUtcNow();
+
         for (var i = 1; i <= 5; i++)
         {
+            if (i > 1)
+            {
+                clock.Advance(TimeSpan.FromMinutes(10)); // past the retry backoff
+            }
+
             var outcome = await scheduler.DeliverDueAsync();
             Assert.Equal(1, outcome.Failed);
             Assert.Equal(0, outcome.Delivered);
 
             var task = Assert.Single(await scheduler.ListAsync());
             Assert.Equal(i, task.Attempt);
-            Assert.Equal(clock.GetUtcNow(), task.NextScheduledAt); // unchanged: still due
+            Assert.Equal(dueAt, task.NextScheduledAt); // unchanged: still owed
             Assert.Equal(i >= 5 ? ScheduleTaskStatus.Failed : ScheduleTaskStatus.Active, task.Status);
         }
 
         Assert.Empty(queue.Items);
 
         // A failing task is never lost: it is still in the due set and recovers when the queue does.
+        clock.Advance(TimeSpan.FromMinutes(10));
         var recovered = await scheduler.DeliverDueAsync();
         Assert.Equal(1, recovered.Delivered);
         var healed = Assert.Single(await scheduler.ListAsync());
@@ -212,13 +238,14 @@ public sealed class JsonlSchedulerTests : IDisposable
 
         // The item did reach the queue before the receipt failed; the retry must not duplicate it.
         Assert.Single(queue.Items);
+        clock.Advance(TimeSpan.FromSeconds(2)); // past the retry backoff
         var retry = await scheduler.DeliverDueAsync();
         Assert.Equal(1, retry.Delivered);
         Assert.Single(queue.Items); // the queue's idempotency key absorbed the retry
 
         var healed = Assert.Single(await scheduler.ListAsync());
         Assert.Equal(0, healed.Attempt);
-        Assert.Equal(clock.GetUtcNow().AddMinutes(1), healed.NextScheduledAt);
+        Assert.Equal(clock.GetUtcNow().AddSeconds(-2).AddMinutes(1), healed.NextScheduledAt);
     }
 
     [Fact]
@@ -501,18 +528,102 @@ public sealed class JsonlSchedulerTests : IDisposable
     public async Task Resuming_a_failed_task_retries_the_delivery_it_owes()
     {
         var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var dueAt = clock.GetUtcNow();
         var queue = new RecordingQueue { FailuresRemaining = 2 };
         await using var scheduler = new JsonlScheduler(
             _dir, queue, clock, new SchedulerOptions { MaxAttempts = 2 });
 
         await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromMinutes(10), clock.GetUtcNow()));
         await scheduler.DeliverDueAsync();
+        clock.Advance(TimeSpan.FromMinutes(1));
         await scheduler.DeliverDueAsync();
         Assert.Equal(ScheduleTaskStatus.Failed, (await scheduler.ListAsync()).Single().Status);
 
         var resumed = await scheduler.SetStatusAsync("t1", ScheduleTaskStatus.Active);
         Assert.Equal(0, resumed.Attempt);
-        Assert.Equal(clock.GetUtcNow(), resumed.NextScheduledAt);
+        Assert.Equal(dueAt, resumed.NextScheduledAt);
         Assert.Equal(1, (await scheduler.DeliverDueAsync()).Delivered);
+    }
+
+    [Fact]
+    public async Task A_permanently_failing_queue_is_retried_with_backoff_not_every_pass()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue { AlwaysFail = true };
+        await using var scheduler = new JsonlScheduler(_dir, queue, clock);
+
+        await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromHours(1), clock.GetUtcNow()));
+
+        // Ten seconds of a driver that looks every 50 ms: 1 s, 2 s, 4 s backoff allows 4 attempts at most.
+        for (var elapsedMs = 0; elapsedMs < 10_000; elapsedMs += 50)
+        {
+            await scheduler.DeliverDueAsync();
+            clock.Advance(TimeSpan.FromMilliseconds(50));
+        }
+
+        Assert.InRange(queue.EnqueueCalls, 1, 5);
+        var task = Assert.Single(await scheduler.ListAsync());
+        Assert.Equal(queue.EnqueueCalls, task.Attempt);
+
+        // The wait the driver sleeps is the backoff, not the 50 ms floor.
+        var outcome = await scheduler.DeliverDueAsync();
+        Assert.True(outcome.NextDueAt > clock.GetUtcNow().AddMilliseconds(500));
+    }
+
+    [Fact]
+    public async Task A_full_input_queue_does_not_freeze_listing_while_a_delivery_waits_for_room()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue { Block = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var scheduler = new JsonlScheduler(
+            _dir, queue, clock, new SchedulerOptions { EnqueueTimeout = TimeSpan.FromSeconds(30) });
+
+        await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromMinutes(10), clock.GetUtcNow()));
+
+        var delivery = Task.Run(() => scheduler.DeliverDueAsync());
+        Assert.True(await Eventually(() => queue.EnqueueCalls > 0), "the delivery never reached the queue");
+
+        // The pass is parked inside EnqueueAsync. Everything that only reads or edits tasks must still answer.
+        var listing = scheduler.ListAsync();
+        var finished = await Task.WhenAny(listing, Task.Delay(TimeSpan.FromSeconds(2)));
+        Assert.Same(listing, finished);
+        Assert.Single(await listing);
+
+        queue.Block.SetResult();
+        var outcome = await delivery;
+        Assert.Equal(1, outcome.Delivered);
+    }
+
+    [Fact]
+    public async Task A_queue_that_never_has_room_fails_the_attempt_and_backs_off_instead_of_waiting_forever()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var queue = new RecordingQueue { Block = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var scheduler = new JsonlScheduler(
+            _dir, queue, clock, new SchedulerOptions { EnqueueTimeout = TimeSpan.FromMilliseconds(100) });
+
+        await scheduler.ScheduleAsync(Every("t1", TimeSpan.FromMinutes(10), clock.GetUtcNow()));
+
+        var outcome = await scheduler.DeliverDueAsync();
+
+        Assert.Equal(1, outcome.Failed);
+        var task = Assert.Single(await scheduler.ListAsync());
+        Assert.Equal(1, task.Attempt);
+        Assert.Contains("did not accept", task.LastError);
+    }
+
+    private static async Task<bool> Eventually(Func<bool> condition)
+    {
+        for (var i = 0; i < 200; i++)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(10);
+        }
+
+        return condition();
     }
 }
