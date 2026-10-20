@@ -10,6 +10,13 @@ public sealed record SchedulerOptions
 {
     public TimeZoneInfo TimeZone { get; init; } = TimeZoneInfo.Utc;
 
+    /// <summary>
+    /// Where the wall-clock zone comes from when it can change while the process runs (the machine travels, or the
+    /// user changes it). Re-read at most once a minute; when it differs, cron tasks are recomputed in the new zone.
+    /// Null keeps <see cref="TimeZone"/> for good.
+    /// </summary>
+    public Func<TimeZoneInfo>? TimeZoneSource { get; init; }
+
     /// <summary>Consecutive failures after which a task is flagged <see cref="ScheduleTaskStatus.Failed"/> (it stays schedulable).</summary>
     public int MaxAttempts { get; init; } = 5;
 
@@ -33,6 +40,21 @@ public sealed record SchedulerOptions
 
     /// <summary>How long one delivery may wait for the input queue to take an item before it counts as a failed attempt.</summary>
     public TimeSpan EnqueueTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The most tasks the scheduler keeps; 0 means no limit. Enforced under the scheduler's own lock, because a caller
+    /// that counts first and schedules afterwards lets two concurrent creations both pass.
+    /// </summary>
+    public int MaxTasks { get; init; }
+
+    /// <summary>The task log is rewritten to one line per task once it has grown past this many lines (and four per task).</summary>
+    public int CompactTaskLogAbove { get; init; } = 200;
+
+    /// <summary>
+    /// How long a delivery receipt is kept. A receipt only has to outlive the chance of the same occurrence being
+    /// delivered again, which ends when the task has moved on; a month is far past that.
+    /// </summary>
+    public TimeSpan ReceiptRetention { get; init; } = TimeSpan.FromDays(30);
 
     /// <summary>How late an occurrence may be before <see cref="CatchUpPolicy.Skip"/> treats it as missed.</summary>
     public TimeSpan MissedGrace { get; init; } = TimeSpan.FromMinutes(5);
@@ -111,6 +133,7 @@ public sealed class JsonlScheduler : IScheduler
         _tasks.RepairTail();
         _receipts.RepairTail();
         Replay();
+        CompactLogs(_clock.GetUtcNow());
         RecomputeNextDue();
     }
 
@@ -144,10 +167,15 @@ public sealed class JsonlScheduler : IScheduler
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_options.MaxTasks > 0 && !_byId.ContainsKey(task.TaskId) && _byId.Count >= _options.MaxTasks)
+            {
+                throw new InvalidOperationException($"定时任务最多 {_options.MaxTasks} 个，先删掉不用的");
+            }
+
             var stored = task;
             if (task.NextScheduledAt == default)
             {
-                var next = task.Trigger.NextAfter(_clock.GetUtcNow(), _options.TimeZone)
+                var next = task.Trigger.NextAfter(_clock.GetUtcNow(), Zone)
                     ?? throw new InvalidOperationException(
                         $"Trigger '{task.Trigger.Describe()}' has no occurrence in the search horizon.");
 
@@ -192,7 +220,7 @@ public sealed class JsonlScheduler : IScheduler
                 var now = _clock.GetUtcNow();
                 if (task.NextScheduledAt < now)
                 {
-                    var next = task.Trigger.NextAfter(now, _options.TimeZone);
+                    var next = task.Trigger.NextAfter(now, Zone);
                     updated = next is null ? task : updated with { NextScheduledAt = next.Value, Attempt = 0, LastError = null };
                 }
             }
@@ -301,6 +329,7 @@ public sealed class JsonlScheduler : IScheduler
             try
             {
                 now = _clock.GetUtcNow();
+                await RefreshZoneAsync(now, ct).ConfigureAwait(false);
 
                 // The due set comes from persisted state, not from the timer (design doc §2.4 rule 2).
                 due = _byId.Values
@@ -466,6 +495,11 @@ public sealed class JsonlScheduler : IScheduler
             try
             {
                 RecomputeNextDue();
+                if (_appendsSinceCompact >= CompactCheckEvery)
+                {
+                    CompactLogs(_clock.GetUtcNow());
+                }
+
                 return new DeliveryOutcome(delivered, failed, skipped, _nextDueAt);
             }
             finally
@@ -561,7 +595,7 @@ public sealed class JsonlScheduler : IScheduler
         bool delivered = true)
     {
         _retryAt.Remove(task.TaskId);
-        var next = task.Trigger.NextAfter(occurrence, _options.TimeZone);
+        var next = task.Trigger.NextAfter(occurrence, Zone);
 
         // Occurrences missed while the process was down are skipped, never replayed as a burst — unless the task
         // asked for them: All keeps the newest few and delivers them one pass at a time.
@@ -569,7 +603,7 @@ public sealed class JsonlScheduler : IScheduler
         while (next is not null && next <= now)
         {
             missed.Add(next.Value);
-            next = task.Trigger.NextAfter(next.Value, _options.TimeZone);
+            next = task.Trigger.NextAfter(next.Value, Zone);
         }
 
         if (task.CatchUp == CatchUpPolicy.All && missed.Count > 0)
@@ -612,6 +646,7 @@ public sealed class JsonlScheduler : IScheduler
 
         _tasks.Append(JsonSerializer.Serialize(TaskRecord.From(task), Json));
         _tasks.FlushToDisk();
+        _appendsSinceCompact++;
         _byId[task.TaskId] = task;
         await Task.CompletedTask.ConfigureAwait(false);
     }
@@ -622,6 +657,7 @@ public sealed class JsonlScheduler : IScheduler
 
         _receipts.Append(JsonSerializer.Serialize(receipt, Json));
         _receipts.FlushToDisk();
+        _appendsSinceCompact++;
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
@@ -632,11 +668,11 @@ public sealed class JsonlScheduler : IScheduler
     private async Task<bool> DropBeyondCapAsync(ScheduleTask task, DateTimeOffset occurrence, DateTimeOffset now, CancellationToken ct)
     {
         var overdue = new List<DateTimeOffset> { occurrence };
-        var next = task.Trigger.NextAfter(occurrence, _options.TimeZone);
+        var next = task.Trigger.NextAfter(occurrence, Zone);
         while (next is not null && next <= now)
         {
             overdue.Add(next.Value);
-            next = task.Trigger.NextAfter(next.Value, _options.TimeZone);
+            next = task.Trigger.NextAfter(next.Value, Zone);
         }
 
         if (overdue.Count <= _options.CatchUpAllCap)
@@ -666,6 +702,100 @@ public sealed class JsonlScheduler : IScheduler
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private TimeZoneInfo? _zone;
+    private DateTimeOffset _zoneCheckedAt = DateTimeOffset.MinValue;
+
+    /// <summary>The zone cron expressions are read in right now.</summary>
+    private TimeZoneInfo Zone => _zone ??= _options.TimeZone;
+
+    /// <summary>
+    /// Notices a changed system zone and moves every cron task onto it: a task stored as "next 09:00" in the old
+    /// zone would otherwise fire at 09:00 of a place the machine is no longer in. Called under the gate.
+    /// </summary>
+    private async Task RefreshZoneAsync(DateTimeOffset now, CancellationToken ct)
+    {
+        if (_options.TimeZoneSource is not { } source || now - _zoneCheckedAt < TimeSpan.FromMinutes(1))
+        {
+            return;
+        }
+
+        _zoneCheckedAt = now;
+        var current = source();
+        if (_zone is null)
+        {
+            _zone = current;
+            return;
+        }
+
+        if (string.Equals(_zone.Id, current.Id, StringComparison.Ordinal) && _zone.BaseUtcOffset == current.BaseUtcOffset)
+        {
+            return;
+        }
+
+        _zone = current;
+        foreach (var task in _byId.Values.Where(t => t.Trigger is CronTrigger && t.Status != ScheduleTaskStatus.Inactive).ToList())
+        {
+            if (task.Trigger.NextAfter(now, current) is { } next && next != task.NextScheduledAt)
+            {
+                await PersistTaskAsync(task with { NextScheduledAt = next }, ct).ConfigureAwait(false);
+            }
+        }
+
+        RecomputeNextDue();
+    }
+
+    private int _appendsSinceCompact;
+
+    /// <summary>How many appends are let through before the logs are looked at again while running.</summary>
+    private const int CompactCheckEvery = 500;
+
+    /// <summary>
+    /// Keeps the two logs from growing for the life of the installation. Every change appends a full task snapshot,
+    /// so a task that fires every minute writes a line a minute; the file is replayed in full at every start. Last
+    /// wins on replay, so the log is rewritten to the last line of each task. Receipts older than the retention
+    /// window are dropped for the same reason: nothing can deliver an occurrence that old again.
+    /// </summary>
+    private void CompactLogs(DateTimeOffset now)
+    {
+        _appendsSinceCompact = 0;
+
+        var taskLines = _tasks.ReadLines();
+        if (taskLines.Count > Math.Max(_options.CompactTaskLogAbove, _byId.Count * 4))
+        {
+            _tasks.Rewrite(_byId.Values
+                .OrderBy(task => task.TaskId, StringComparer.Ordinal)
+                .Select(task => JsonSerializer.Serialize(TaskRecord.From(task), Json))
+                .ToList());
+        }
+
+        var receiptLines = _receipts.ReadLines();
+        var keep = new List<string>(receiptLines.Count);
+        var oldest = now - _options.ReceiptRetention;
+
+        foreach (var line in receiptLines)
+        {
+            var receipt = TryDeserialize<DeliveryReceipt>(line);
+            if (receipt is null)
+            {
+                continue;
+            }
+
+            if (receipt.OccurrenceAt >= oldest)
+            {
+                keep.Add(line);
+            }
+            else
+            {
+                _receiptKeys.Remove(receipt.Key);
+            }
+        }
+
+        if (keep.Count < receiptLines.Count)
+        {
+            _receipts.Rewrite(keep);
         }
     }
 

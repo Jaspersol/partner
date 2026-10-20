@@ -719,4 +719,102 @@ public sealed class JsonlSchedulerTests : IDisposable
         Assert.True(task.LastRunOk);
         Assert.NotNull(task.LastRunAt);
     }
+
+    [Fact]
+    public async Task Concurrent_creations_cannot_pass_the_task_limit_together()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        await using var scheduler = new JsonlScheduler(_dir, new RecordingQueue(), clock, new SchedulerOptions { MaxTasks = 5 });
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(i => Task.Run(async () =>
+        {
+            try
+            {
+                await scheduler.ScheduleAsync(Every($"t{i}", TimeSpan.FromHours(1), clock.GetUtcNow().AddHours(1)));
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        })));
+
+        Assert.Equal(5, results.Count(accepted => accepted));
+        Assert.Equal(5, (await scheduler.ListAsync()).Count);
+
+        // Changing a task that exists is not creating one.
+        await scheduler.ScheduleAsync(Every("t" + Array.IndexOf(results, true), TimeSpan.FromHours(2), clock.GetUtcNow().AddHours(2)));
+    }
+
+    [Fact]
+    public async Task A_changed_system_zone_moves_cron_tasks_to_the_new_wall_clock()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var zone = TimeZoneInfo.Utc;
+        await using var scheduler = new JsonlScheduler(
+            _dir,
+            new RecordingQueue(),
+            clock,
+            new SchedulerOptions { TimeZone = TimeZoneInfo.Utc, TimeZoneSource = () => zone });
+
+        var created = await scheduler.ScheduleAsync(new ScheduleTask
+        {
+            TaskId = "morning",
+            Trigger = new CronTrigger("0 9 * * *"),
+            Payload = "早安",
+        });
+
+        // 09:00 UTC tomorrow.
+        Assert.Equal(new DateTimeOffset(2026, 9, 27, 9, 0, 0, TimeSpan.Zero), created.NextScheduledAt);
+
+        // The machine moves to UTC+8. "Every day at 9" now means 09:00 there, which is 01:00 UTC.
+        zone = TimeZoneInfo.CreateCustomTimeZone("test+8", TimeSpan.FromHours(8), "test+8", "test+8");
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await scheduler.DeliverDueAsync();
+
+        var moved = Assert.Single(await scheduler.ListAsync());
+        Assert.Equal(new DateTimeOffset(2026, 9, 27, 1, 0, 0, TimeSpan.Zero), moved.NextScheduledAt);
+    }
+
+    /// <summary>Read while the scheduler still holds the file open.</summary>
+    private static string[] LinesOf(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd().Split("\n", StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    [Fact]
+    public async Task The_logs_are_compacted_on_start_so_they_do_not_grow_with_every_delivery()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var options = new SchedulerOptions { CompactTaskLogAbove = 50, ReceiptRetention = TimeSpan.FromMinutes(30) };
+
+        await using (var scheduler = new JsonlScheduler(_dir, new RecordingQueue(), clock, options))
+        {
+            await scheduler.ScheduleAsync(Every("tick", TimeSpan.FromMinutes(1), clock.GetUtcNow().AddMinutes(1)));
+
+            // A task firing every minute: two log lines per delivery (a receipt and the advanced task).
+            for (var i = 0; i < 120; i++)
+            {
+                clock.Advance(TimeSpan.FromMinutes(1));
+                Assert.Equal(1, (await scheduler.DeliverDueAsync()).Delivered);
+            }
+        }
+
+        var tasksFile = Path.Combine(_dir, "scheduler", "tasks.jsonl");
+        var receiptsFile = Path.Combine(_dir, "scheduler", "receipts.jsonl");
+        Assert.True(LinesOf(tasksFile).Length > 100, "the fixture should have grown the log");
+
+        await using var reopened = new JsonlScheduler(_dir, new RecordingQueue(), clock, options);
+
+        // One line for the one task; receipts only for the last half hour.
+        Assert.Single(LinesOf(tasksFile));
+        Assert.InRange(LinesOf(receiptsFile).Length, 1, 32);
+
+        // And the task is intact: it carries on from where it was, without redelivering an occurrence.
+        var task = Assert.Single(await reopened.ListAsync());
+        Assert.Equal(clock.GetUtcNow().AddMinutes(1), task.NextScheduledAt);
+        Assert.Equal(0, (await reopened.DeliverDueAsync()).Delivered);
+    }
 }
