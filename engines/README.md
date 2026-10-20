@@ -1,7 +1,8 @@
 # engines/ — 本地语音引擎（模型与运行时不进 git）
 
-真实引擎的安装目标目录。装好后 `scripts/build-shell.sh` 把整个目录打进安装包（tauri resources），
-在设置页「本地引擎进程」卡片里指向具体可执行文件即可。
+真实引擎的安装目标目录。**安装包只带这里的两个服务脚本**（`tts/tts-server.py`、`kws-asr/asr-server.py`）；
+运行时和模型不打包，用户在「设置 → 本地引擎」点下载，解压到 `<应用目录>/engines/`。开发机用下面的脚本装进本目录，
+设置页「检测」即可发现。发布用的压缩包里路径相对本目录（`tts/…`、`kws-asr/…`），详见根目录 README 的「本地引擎」一节。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1              # both

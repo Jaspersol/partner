@@ -3,8 +3,14 @@
 把 HaujetZhao/Qwen3-TTS-GGUF 的 TTSEngine 包成 OpenAI 兼容端点，给 Partner
 设置里的 `tts.protocol=openai` 直接用：
 
-    POST /v1/audio/speech     { "input": …, "voice": …, "response_format": "wav", "speed": 1 }
+    POST /v1/audio/speech     { "input": …, "voice": …, "reference_text": …,
+                                "response_format": "wav", "speed": 1 }
                               → audio/wav（16-bit PCM @ 24 kHz，一次性返回）
+
+`reference_text` 是音频克隆源的转写文本（参考录音里实际说的话）。不传时依次退到
+`<wav>.txt` / `<wav 同名>.txt` 旁的 sidecar，再没有就走零样本克隆（只用音色向量）。
+它**不是**要朗读的文本——把 `input` 当转写会把参考音频的音色特征和错误的文本拼在
+一起，合成出来就是乱读。
 
 用法（engines/tts 下，先 pip install -r requirements.txt）:
 
@@ -98,10 +104,24 @@ def resolve_voice(voice: str | None) -> str | None:
     return None
 
 
+def read_reference_text(voice: str) -> str:
+    """音频锚点旁的转写 sidecar：`<path>.txt` 优先，其次 `<stem>.txt`。没有就返回空。"""
+    path = Path(voice)
+    if path.suffix.lower() == ".json":
+        return ""
+    for candidate in (Path(str(path) + ".txt"), path.with_suffix(".txt")):
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return ""
+
+
 class EngineState:
     """一个流一个音色锚点；并发请求排队串行化（引擎本质是单流推理）。"""
 
-    def __init__(self, model_dir: str, default_voice: str | None, device: str):
+    def __init__(self, model_dir: str, default_voice: str | None, default_reference_text: str, device: str):
         onnx_provider = {"vulkan": "DML", "cpu": "CPUExecutionProvider"}.get(device, "DML")
         # 绝对路径：解码器子进程（multiprocessing spawn）的 cwd 不保证一样。
         model_path = str(Path(model_dir).resolve())
@@ -128,14 +148,52 @@ class EngineState:
                 )
             default_voice = resolved
         self.default_voice = default_voice
+        self.current_voice: str | None = None
+        self.current_ref_text = ""
+
         if default_voice:
-            # config 只在「内置说话人 ID」那条路上被 set_voice 透传（json 锚点直接读文件，不合成）；
-            # 传上是为了那种情况下合成锚点样音时不外放。
-            if not self.stream.set_voice(default_voice, "你好，很高兴见到你。", config=OFFLINE):
+            if not self.apply_voice(default_voice, default_reference_text):
                 raise SystemExit(f"voice anchor failed for {default_voice}")
         print(
             f"tts-server ready: model={model_dir} voice={default_voice!r} device={device} "
             f"playback={'off' if not OFFLINE.streaming else 'ON'}"
+        )
+
+    def apply_voice(self, voice: str | None, reference_text: str = "") -> bool:
+        """切换音色锚点；同一个 (voice, 转写) 不重复提取特征——每句都重建锚点会慢且音色漂。
+
+        音频源需要它自己的转写：文本和 codes 在 ICL prompt 里逐位对齐，转写错了合成就会乱读。
+        没有转写时退到 sidecar，再没有就按零样本克隆（只用 spk_emb）。
+        """
+        if not voice:
+            return True
+
+        text = (reference_text or "").strip() or read_reference_text(voice)
+        if voice == self.current_voice and text == self.current_ref_text:
+            return True
+
+        path = Path(voice)
+        if path.suffix.lower() == ".json" or voice.lower() in SPEAKER_MAP:
+            # json 锚点自带转写，忽略传入文本；内置 ID 用固定样句生成锚点。
+            ok = bool(self.stream.set_voice(voice, "你好，很高兴见到你。", config=OFFLINE))
+        else:
+            ok = bool(self.stream.set_voice(voice, text=text, config=OFFLINE))
+
+        if ok:
+            self.current_voice, self.current_ref_text = voice, text
+        return ok
+
+    @property
+    def zero_shot(self) -> bool:
+        """音频锚点没有转写时只能零样本：只把 spk_emb 放进 prompt，codec codes 会错位到文本上。"""
+        voice = self.current_voice
+        if not voice:
+            return True
+        path = Path(voice)
+        return (
+            path.suffix.lower() != ".json"
+            and voice.lower() not in SPEAKER_MAP
+            and not self.current_ref_text
         )
 
 
@@ -193,15 +251,16 @@ class Handler(BaseHTTPRequestHandler):
             voice = self.state.default_voice
         language = request.get("language") or "chinese"
         speed = float(request.get("speed") or 1.0)
+        reference_text = (request.get("reference_text") or "").strip()
 
         with self.state.lock:
             try:
-                if voice and voice != self.state.default_voice:
-                    if not self.state.stream.set_voice(voice, text=text, config=OFFLINE):
-                        self._json(400, {"error": f"voice anchor failed for {voice!r}"})
-                        return
+                if voice and not self.state.apply_voice(voice, reference_text):
+                    self._json(400, {"error": f"voice anchor failed for {voice!r}"})
+                    return
 
-                result = self.state.stream.clone(text, language=language, config=OFFLINE)
+                result = self.state.stream.clone(
+                    text, language=language, config=OFFLINE, zero_shot=self.state.zero_shot)
                 if result is None or result.audio is None:
                     self._json(500, {"error": "synthesis failed"})
                     return
@@ -252,7 +311,7 @@ def warm_up(state: "EngineState") -> None:
     started = time.monotonic()
     try:
         with state.lock:
-            state.stream.clone("好的。", language="chinese", config=OFFLINE)
+            state.stream.clone("好的。", language="chinese", config=OFFLINE, zero_shot=state.zero_shot)
         print(f"tts-server warm-up done in {time.monotonic() - started:.2f}s")
     except Exception as error:  # noqa: BLE001
         print(f"tts-server warm-up skipped: {error}", file=sys.stderr)
@@ -262,11 +321,13 @@ def serve():
     parser = argparse.ArgumentParser(description="Qwen3-TTS GGUF OpenAI-compatible server")
     parser.add_argument("--model-dir", default=str(ENGINE_DIR / "model"), help="默认 engines/tts/model")
     parser.add_argument("--voice", default="Vivian", help="锚点名/路径/内置 ID；默认 Vivian（zip 自带锚点）")
+    parser.add_argument("--reference-text", default="",
+                        help="音频锚点的转写；为空时读 <wav>.txt，再没有走零样本")
     parser.add_argument("--port", type=int, default=45102)
     parser.add_argument("--device", default="vulkan", choices=["vulkan", "cpu"])
     args = parser.parse_args()
 
-    Handler.state = EngineState(args.model_dir, args.voice, args.device)
+    Handler.state = EngineState(args.model_dir, args.voice, args.reference_text, args.device)
     warm_up(Handler.state)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"tts-server listening on http://127.0.0.1:{args.port}")

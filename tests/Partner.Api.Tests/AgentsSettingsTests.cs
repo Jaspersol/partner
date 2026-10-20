@@ -126,6 +126,19 @@ public sealed class AgentsSettingsTests : IDisposable
         Assert.EndsWith("也会在用户消息里给你。", prompt, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("native", "http://127.0.0.1:45102", "local")]
+    [InlineData("native", "http://example.com:45102", "native")]
+    [InlineData("openai", "http://127.0.0.1:45102", "openai")]
+    public void A_speech_client_aimed_at_the_local_engine_is_the_local_one(string stored, string url, string expected)
+    {
+        var path = Path.Combine(_dir, "runtime.json");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(path, "{\"tts\":{\"baseUrl\":\"" + url + "\",\"protocol\":\"" + stored + "\"}}");
+
+        Assert.Equal(expected, new SettingsStore(path).Load().Tts.Protocol);
+    }
+
     [Fact]
     public void A_file_that_lost_the_builtin_agent_still_loads_and_gets_it_back()
     {

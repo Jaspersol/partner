@@ -317,7 +317,7 @@ public sealed record InputSettings
     public string? DeviceId { get; init; }
 
     /// <summary>Fixed RMS gate; must sit above the room noise floor or silence is never detected.</summary>
-    public double SilenceThreshold { get; init; } = 0.03;
+    public double SilenceThreshold { get; init; } = 0.003;
 
     /// <summary>唤醒命中时在输出设备上播放一声提示（叮）。跟输入同卡，因为它是唤醒门的附属反馈。</summary>
     public bool WakeTone { get; init; } = true;
@@ -366,10 +366,11 @@ public sealed record OutputSettings
 /// <summary>Mirrors <c>AsrOptions</c>. An absent <see cref="BaseUrl"/> means speech input is not configured.</summary>
 public sealed record AsrSettings
 {
-    public string? BaseUrl { get; init; }
+    /// <summary>Defaults to the managed local KWS+ASR engine (port 45103), so enabling it needs no further wiring.</summary>
+    public string? BaseUrl { get; init; } = "http://127.0.0.1:45103";
 
-    /// <summary>Endpoint protocol: <see cref="AsrProtocols.ChatAudio"/> (default) or <see cref="AsrProtocols.OpenAi"/>.</summary>
-    public string Protocol { get; init; } = AsrProtocols.ChatAudio;
+    /// <summary>Endpoint protocol; defaults to <see cref="AsrProtocols.SenseVoice"/>, what the local engine speaks.</summary>
+    public string Protocol { get; init; } = AsrProtocols.SenseVoice;
 
     public string Model { get; init; } = "qwen3-asr";
 
@@ -386,10 +387,11 @@ public sealed record AsrSettings
 /// <summary>Mirrors <c>TtsOptions</c>. An absent <see cref="BaseUrl"/> means speech output is not configured.</summary>
 public sealed record TtsSettings
 {
-    public string? BaseUrl { get; init; }
+    /// <summary>Defaults to the managed local TTS engine (port 45102).</summary>
+    public string? BaseUrl { get; init; } = "http://127.0.0.1:45102";
 
-    /// <summary>Endpoint protocol: <see cref="TtsProtocols.Native"/> (default) or <see cref="TtsProtocols.OpenAi"/>.</summary>
-    public string Protocol { get; init; } = TtsProtocols.Native;
+    /// <summary>Endpoint protocol; defaults to <see cref="TtsProtocols.Local"/>, the managed local engine.</summary>
+    public string Protocol { get; init; } = TtsProtocols.Local;
 
     /// <summary>OpenAI protocol's model name (e.g. <c>tts-1</c>); unused by native.</summary>
     public string? Model { get; init; }
@@ -406,6 +408,13 @@ public sealed record TtsSettings
 
     /// <summary>Reference audio for voice cloning; read once when the client is built.</summary>
     public string? SpeakerRefPath { get; init; }
+
+    /// <summary>
+    /// Transcript of <see cref="SpeakerRefPath"/> (what is actually said in the clip). The cloner aligns the
+    /// text with the reference audio's codec codes, so a wrong or missing transcript is what turns cloning
+    /// into gibberish. Blank = zero-shot clone (timbre only).
+    /// </summary>
+    public string? SpeakerRefText { get; init; }
 
     public double TimeoutSeconds { get; init; } = 600;
 
@@ -429,10 +438,22 @@ public sealed record TtsSettings
 public sealed record LocalSettings
 {
     /// <summary>托管本地 TTS 引擎进程。服务地址在 tts 段里配（协议 openai 时）。</summary>
-    public LocalEngineSettings Tts { get; init; } = new();
+    public LocalEngineSettings Tts { get; init; } = new()
+    {
+        Command = "engines/tts/python/python.exe",
+        Arguments = ["tts-server.py", "--port", "{port}"],
+        WorkingDirectory = "engines/tts",
+        Port = 45102,
+    };
 
     /// <summary>托管本地 KWS+VAD+ASR 引擎进程。服务地址在 asr 段里配。</summary>
-    public LocalEngineSettings Kws { get; init; } = new();
+    public LocalEngineSettings Kws { get; init; } = new()
+    {
+        Command = "engines/kws-asr/python/python.exe",
+        Arguments = ["asr-server.py", "--port", "{port}"],
+        WorkingDirectory = "engines/kws-asr",
+        Port = 45103,
+    };
 
     public bool Equals(LocalSettings? other) =>
         other is not null && Tts == other.Tts && Kws == other.Kws;

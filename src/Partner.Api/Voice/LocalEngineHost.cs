@@ -21,9 +21,15 @@ public sealed class LocalEngineHost : IAsyncDisposable
 
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    private readonly string? _appDir;
+
     private ManagedEngine? _tts;
     private ManagedEngine? _kws;
     private bool _disposed;
+
+    /// <param name="appDir">Relative command and working-directory paths are resolved against it. 引擎模块随应用目录
+    /// 存放，设置里存相对路径，应用搬家或重装后仍然有效。Null = 路径按原样使用。</param>
+    public LocalEngineHost(string? appDir = null) => _appDir = appDir;
 
     public LocalEnginesState State => new(
         _tts?.State ?? new LocalEngineState(false, "未托管", null),
@@ -39,8 +45,8 @@ public sealed class LocalEngineHost : IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            _tts = await ApplyAsync(_tts, settings.Tts, "TTS").ConfigureAwait(false);
-            _kws = await ApplyAsync(_kws, settings.Kws, "KWS/ASR").ConfigureAwait(false);
+            _tts = await ApplyAsync(_tts, settings.Tts, "TTS", _appDir).ConfigureAwait(false);
+            _kws = await ApplyAsync(_kws, settings.Kws, "KWS/ASR", _appDir).ConfigureAwait(false);
             if (_kws is { IsRunning: true })
             {
                 await PushKeywordsAsync(_kws).ConfigureAwait(false);
@@ -55,7 +61,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
 
     /// <summary>Idempotent convergence: a correctly-running engine is left alone. 词表在引擎活着时才推，
     /// 所以引擎中途重启（Exited→下次 Reconfigure 重拉）后 _keywordsSynced 随新实例归零，会重新下发。</summary>
-    private static async Task<ManagedEngine?> ApplyAsync(ManagedEngine? current, LocalEngineSettings wanted, string name)
+    private static async Task<ManagedEngine?> ApplyAsync(ManagedEngine? current, LocalEngineSettings wanted, string name, string? appDir)
     {
         // 同配置且进程活着：什么都不做——设置保存不应抖动已在跑的引擎。
         if (current is not null && current.Matches(wanted) && current.IsRunning)
@@ -75,7 +81,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
                 : null;
         }
 
-        return await ManagedEngine.StartAsync(wanted, name).ConfigureAwait(false);
+        return await ManagedEngine.StartAsync(wanted, name, appDir).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -183,21 +189,40 @@ public sealed class LocalEngineHost : IAsyncDisposable
             }
         }
 
+        private static string? Resolve(string? appDir, string? path) =>
+            appDir is null ? path : EnginePackage.ResolveStored(appDir, path);
+
+        /// <summary>
+        /// The default interpreter is the relocatable <c>python/python.exe</c> shipped in the engine package. On a
+        /// dev machine that folder does not exist and the engine lives in a venv instead; fall back to it rather
+        /// than failing to spawn the process.
+        /// </summary>
+        private static string? ResolveCommand(string? appDir, string? path)
+        {
+            var resolved = Resolve(appDir, path);
+            if (appDir is null || string.IsNullOrWhiteSpace(resolved) || File.Exists(resolved))
+            {
+                return resolved;
+            }
+
+            return EnginePackage.FallbackInterpreter(resolved) ?? resolved;
+        }
+
         public bool Matches(LocalEngineSettings other) => other.Equals(_settings);
 
         /// <summary>An engine that is wanted but unreachable without a command (used for the state report).</summary>
         public static ManagedEngine NotStarted(LocalEngineSettings settings, string reason) =>
             new(settings, new LocalEngineState(false, reason, null));
 
-        public static async Task<ManagedEngine> StartAsync(LocalEngineSettings settings, string name)
+        public static async Task<ManagedEngine> StartAsync(LocalEngineSettings settings, string name, string? appDir)
         {
             var engine = new ManagedEngine(settings, new LocalEngineState(false, "启动中", null));
             var startInfo = new ProcessStartInfo
             {
-                FileName = settings.Command,
+                FileName = ResolveCommand(appDir, settings.Command) ?? string.Empty,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                WorkingDirectory = settings.WorkingDirectory ?? string.Empty,
+                WorkingDirectory = Resolve(appDir, settings.WorkingDirectory) ?? string.Empty,
                 RedirectStandardOutput = false,
                 RedirectStandardError = false,
             };

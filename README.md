@@ -378,7 +378,20 @@ local.kws  → engines/kws-asr/asr-server.py  POST /recognize + /wake/infer（as
 
 **唤醒后的宽限期**（`input.wakeTimeoutMs`，默认 5000）：提示音到用户开口之间那段沉默是「在想说什么」，不是「说完了」——命中后还没听到人说话时，静默按宽限期计而不是 `utteranceGapMs`（默认 1200）；一听到语音就立刻回到正常判句。这条是必须分开的：只喊唤醒词不说话时 `_dirty` 必须立起来（否则 G2 永不成立、会话卡死，见上），而 `_dirty` 一旦立起来，用判句间隔去关会话就变成「唤醒后约 1.1 s 内不开口，会话就关」——实测唤醒后停 1.2 s / 2.0 s 再说话，`utterance` 为 0、ASR 调用 0 次，用户看到的就是「唤醒之后说的话没变成输入」。宽限期之外的静默仍照常关会话（误唤醒不会一直敞着闸门收环境音），纯静音块也仍然不提交 ASR。流式模式（`asrStream`）下 G1 的句界判定同样跳过宽限期内的静默。**唤醒提示音是外放的，非耳机时会被麦克风原样收回来**（幅度轻松过 `silenceThreshold`），宿主在提示音窗口内（`ToneEchoSeconds`，0.6 s = 提示音 0.16 s + 出声延迟 + 余响）不判开口，否则提示音自己就把宽限期打掉、会话在它结束后 ~1.1 s 关上——真机上命令一个字都进不了 ASR（单测里提示音只是个计数回调、从不回灌，所以改前全绿）；同时「开口」要在**同一簇声音里累计** ≥ `WakeOnsetMs`（200 ms）过阈值才算数，一个 50 ms 能量窗不够（咳嗽、键盘、桌面磕碰同样能打掉宽限期）。累计而不是连续：汉语一个音节过阈值只有 60–190 ms，音节之间就掉到阈值以下，要求连续 200 ms 则整句命令都打不掉宽限期；簇内短于 `OnsetBridgeSeconds`（300 ms）的间隙不清零，簇起点还要回退 `OnsetPreRollSeconds`（300 ms），否则首字辅音起音被掐掉。
 
-安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`；装好后 `engines/` 随安装包一起打进去（`tauri.conf.json` 的 resources）。实测事实与踩坑清单见 [engines/README.md](engines/README.md)：官方 KWS 包只有 **chunk-16**（~320ms 延迟）、`keywords.txt` 自带 8 个词、`get_result()` 返回字符串、**不用 Silero VAD 切段**（切出来的段喂回 SenseVoice 会得到空文本，30 s 保命条款改由定长切分承担）、下载必须校验长度（`Invoke-WebRequest` 曾把 999MiB 静默截成 670MB 并报成功）。
+**引擎包是独立模块，不在安装包里。** 安装包只带两个很小的服务脚本（`asr-server.py`、`tts-server.py`，见 `tauri.conf.json` 的 resources）；运行时和模型（约 3GB）放在应用目录下的 `engines/`，由「设置 → 本地引擎」里的「下载」按钮取回（`Api/Voice/EnginePackage.cs`，`/api/local-engines/package*`）。
+
+| 设计点 | 为什么 |
+|---|---|
+| 检测看磁盘，不看设置 | `GET /api/local-engines/package` 每次重读：按文件是否齐全判断「已就绪」，并列出缺什么。设置页的「检测」就是它 |
+| 找到才展示引擎设置 | 程序路径、启动参数、运行目录等只在引擎就绪（或此前已配过路径）时出现；否则页面给下载、检测、手动指定 |
+| 默认路径存相对路径 | `engines/tts/…` 相对应用目录，`LocalEngineHost` 启动时再解析，所以应用搬家或重装不用改设置；手动指定的目录在别处，存绝对路径 |
+| 应用目录由壳告知 | 壳通过 `PARTNER_APP_DIR` 传给 API；开发时是仓库根（`engines/` 就在那里） |
+| 下载可续传、先校验再解压 | 落成 `.part`，用 `Range` 续；有 SHA-256 就校验；解压拒绝越界路径；服务端给了长度就核对，截断不算成功 |
+| 手动指定要通过检查 | `PUT /api/local-engines/package/root` 只在目录里确有完整引擎时才记下（存在 `<workspace>/local-engines-root.txt`，不进设置表单） |
+
+压缩包里的路径相对 `engines/`（`tts/…` 或 `kws-asr/…`）。地址在 `EnginePackage` 的常量里，或用环境变量 `PARTNER_ENGINE_TTS_URL` / `PARTNER_ENGINE_KWS_URL`（及 `_SHA256`）覆盖。解释器按顺序找 `<引擎>/python/python.exe`（可搬走的运行时，推荐放进压缩包）再找 venv——venv 的 `pyvenv.cfg` 写死了建它那台机器的 Python 路径，换机器用不了。
+
+开发机安装：`powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 [-Engine tts|kws|both]`，装进仓库的 `engines/`（同一个位置，设置页直接能检测到）。实测事实与踩坑清单见 [engines/README.md](engines/README.md)：官方 KWS 包只有 **chunk-16**（~320ms 延迟）、`keywords.txt` 自带 8 个词、`get_result()` 返回字符串、**不用 Silero VAD 切段**（切出来的段喂回 SenseVoice 会得到空文本，30 s 保命条款改由定长切分承担）、下载必须校验长度（`Invoke-WebRequest` 曾把 999MiB 静默截成 670MB 并报成功）。
 
 ---
 

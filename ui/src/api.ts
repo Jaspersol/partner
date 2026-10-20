@@ -265,6 +265,8 @@ export interface TtsSettings {
   lang: string
   sampleRate: number
   speakerRefPath: string | null
+  /** What is actually said in the reference clip; blank = zero-shot clone. */
+  speakerRefText: string | null
   timeoutSeconds: number
   chunkMs: number
 }
@@ -303,6 +305,44 @@ export interface LocalEngineState {
 export interface LocalEnginesState {
   tts: LocalEngineState
   kws: LocalEngineState
+}
+
+/** One engine's on-disk readiness. `missing` lists what is absent, relative to the engines folder. */
+export interface EngineReadiness {
+  installed: boolean
+  missing: string[]
+}
+
+/** What the page fills in for an engine it has found. Relative to the app dir unless the folder was chosen by hand. */
+export interface EngineDefaults {
+  command: string
+  arguments: string[]
+  workingDirectory: string
+  port: number
+}
+
+export type EngineDownloadPhase = 'idle' | 'downloading' | 'extracting' | 'done' | 'failed' | 'cancelled'
+
+export interface EngineDownloadState {
+  phase: EngineDownloadPhase
+  detail: string | null
+  bytesDone: number
+  bytesTotal: number | null
+  error: string | null
+}
+
+/** The local-engine module (runtimes + models) as a unit that lives beside the app instead of in the installer. */
+export interface EnginePackageStatus {
+  root: string
+  /** True when the user pointed at a folder of their own instead of <app>/engines. */
+  customRoot: boolean
+  tts: EngineReadiness
+  kws: EngineReadiness
+  ttsDefaults: EngineDefaults
+  kwsDefaults: EngineDefaults
+  /** False when no download address is published for what is missing. */
+  downloadAvailable: boolean
+  download: EngineDownloadState
 }
 
 /** What a client sends: the key is optional and write-only. */
@@ -866,6 +906,8 @@ export interface PartnerApiSurface {
     options?: { idempotencyKey?: string; media?: string[]; reasoningEffort?: string | null },
   ): Promise<SubmitResult>
   uploadMedia(file: Blob, contentType?: string, fileName?: string): Promise<UploadedMedia>
+  /** Stores a voice-cloning reference clip in the workspace and returns the path the speech engine can open. */
+  uploadVoiceReference(file: Blob, fileName: string): Promise<{ path: string; fileName: string; bytes: number }>
   mediaBlob(mediaId: string): Promise<Blob>
   /** Every record, including the ones a later statement retired — "fully visible" means seeing what replaced it. */
   memoryAll(): Promise<MemoryItem[]>
@@ -906,6 +948,13 @@ export interface PartnerApiSurface {
   /** False when the task was already gone — nothing to delete, not an error. */
   deleteSchedule(id: string): Promise<boolean>
   testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult>
+  /** Re-reads the disk each time, so this is also the "检测" button. */
+  enginePackage(): Promise<EnginePackageStatus>
+  /** Rejects with an `ApiError` carrying the reason when nothing can be downloaded or a download is running. */
+  downloadEnginePackage(): Promise<EnginePackageStatus>
+  cancelEnginePackage(): Promise<EnginePackageStatus>
+  /** Points at a folder that already holds the engines; null returns to <app>/engines. Rejects with the reason. */
+  setEngineRoot(root: string | null): Promise<EnginePackageStatus>
   approvals(): Promise<ApprovalQueue>
   answerApproval(approvalId: string, approved: boolean): Promise<void>
   desktop(): Promise<DesktopState>
@@ -1019,6 +1068,31 @@ export class PartnerApi implements PartnerApiSurface {
    * can be passed straight through without being read into memory first; what comes back is the id the delivery
    * refers to, plus the name and path the model is told.
    */
+  async uploadVoiceReference(file: Blob, fileName: string): Promise<{ path: string; fileName: string; bytes: number }> {
+    const response = await this.fetchImpl(`${this.base}/api/voice/reference`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/octet-stream',
+        [FILE_NAME_HEADER]: encodeURIComponent(fileName),
+      },
+      body: file,
+    })
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      let message = detail
+      try {
+        message = (JSON.parse(detail) as { error?: string }).error ?? detail
+      } catch {
+        // Not JSON: the raw text is the best there is.
+      }
+      throw new ApiError(response.status, message || `上传失败（${response.status}）`)
+    }
+
+    return (await response.json()) as { path: string; fileName: string; bytes: number }
+  }
+
   async uploadMedia(file: Blob, contentType?: string, fileName?: string): Promise<UploadedMedia> {
     const type = contentType ?? file.type ?? ''
     const response = await this.fetchImpl(`${this.base}/api/media`, {
@@ -1235,6 +1309,22 @@ export class PartnerApi implements PartnerApiSurface {
   /** Settings-page connectivity probe against /api/voice/test/{kind}. */
   testVoice(kind: 'asr' | 'tts' | 'kws' | 'model'): Promise<VoiceTestResult> {
     return this.request('POST', `/api/voice/test/${kind}`)
+  }
+
+  enginePackage(): Promise<EnginePackageStatus> {
+    return this.request('GET', '/api/local-engines/package')
+  }
+
+  downloadEnginePackage(): Promise<EnginePackageStatus> {
+    return this.request('POST', '/api/local-engines/package/download')
+  }
+
+  cancelEnginePackage(): Promise<EnginePackageStatus> {
+    return this.request('POST', '/api/local-engines/package/cancel')
+  }
+
+  setEngineRoot(root: string | null): Promise<EnginePackageStatus> {
+    return this.request('PUT', '/api/local-engines/package/root', { root })
   }
 
   /**

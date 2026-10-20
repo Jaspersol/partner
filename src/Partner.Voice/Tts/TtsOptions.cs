@@ -9,7 +9,13 @@ public static class TtsProtocols
     /// <summary>OpenAI 标准：<c>POST /audio/speech</c>，响应是完整 WAV。</summary>
     public const string OpenAi = "openai";
 
-    public static IReadOnlyList<string> Values { get; } = new[] { Native, OpenAi };
+    /// <summary>
+    /// 本机朗读引擎（engines/tts）。线上格式和 <see cref="OpenAi"/> 一样（<c>/audio/speech</c>），但模型、音色、
+    /// 语速都由引擎自己定，设置里不用填；单独成一个值，是为了让界面只摆「本地 / 通用标准接口」两个选项。
+    /// </summary>
+    public const string Local = "local";
+
+    public static IReadOnlyList<string> Values { get; } = new[] { Native, OpenAi, Local };
 
     public static string Normalize(string? value) =>
         Values.FirstOrDefault(p => string.Equals(p, value, StringComparison.OrdinalIgnoreCase)) ?? Native;
@@ -41,6 +47,12 @@ public sealed record TtsOptions
 
     /// <summary>Reference audio for voice cloning; read and base64-encoded **once** at construction.</summary>
     public string? SpeakerRefPath { get; init; }
+
+    /// <summary>
+    /// 参考录音里实际说的话。克隆音色用它和参考音频的 codec 逐位对齐；留空 = 零样本克隆
+    /// （只用音色向量）。填错比留空更糟：会直接合成出乱读。
+    /// </summary>
+    public string? SpeakerRefText { get; init; }
 
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(600);
 

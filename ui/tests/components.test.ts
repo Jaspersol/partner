@@ -894,6 +894,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     queue: vi.fn(async () => ({ headSeq: 0, runningItemId: null, depth: 0, items: [] })),
     cancel: vi.fn(async () => true),
     submitInput: vi.fn(async () => ({ itemId: 'in-1', seq: 1, status: 'Queued', deduplicated: false })),
+    uploadVoiceReference: vi.fn(async (file: Blob) => ({ path: `C:/w/voices/${(file as File).name}`, fileName: (file as File).name, bytes: 10 })),
     uploadMedia: vi.fn(async (file: Blob) => {
       const name = (file as File).name ?? 'a.png'
       return { mediaId: 'm1', contentType: 'image/png', fileName: name, path: `C:/w/media/m1__${name}`, bytes: 2048 }
@@ -904,6 +905,10 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     setApprovalGear: vi.fn(async () => ({ approval: 'all', changed: false })),
     testVoice: vi.fn(async (kind: string) => ({ ok: true, detail: `可达${kind}`, latencyMs: 3 })),
+    enginePackage: vi.fn(async () => { throw new Error('no engine module in this fixture') }),
+    downloadEnginePackage: vi.fn(),
+    cancelEnginePackage: vi.fn(),
+    setEngineRoot: vi.fn(),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], })),
     devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),
@@ -922,7 +927,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true, bargeIn: false },
       output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
       asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-      tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+      tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
       local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
       model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },

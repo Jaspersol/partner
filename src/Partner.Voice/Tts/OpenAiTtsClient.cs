@@ -31,6 +31,7 @@ public sealed class OpenAiTtsClient : ITtsClient
     private readonly Uri _endpoint;
     private readonly int _chunkSamples;
     private readonly string? _voice;
+    private readonly string? _referenceText;
     private readonly double _speed;
     private bool _disposed;
 
@@ -45,7 +46,19 @@ public sealed class OpenAiTtsClient : ITtsClient
         };
         _endpoint = new Uri(options.BaseUrl.TrimEnd('/') + "/audio/speech", UriKind.Absolute);
         _chunkSamples = Math.Max(1, options.SampleRate * options.ChunkMs / 1000);
-        _voice = string.IsNullOrWhiteSpace(options.Voice) ? "alloy" : options.Voice;
+        // A generic service wants some voice name, so it gets "alloy". The local engine has no such voice and rejects
+        // the name with a 400; left out, it speaks with the anchor it was started with.
+        var local = TtsProtocols.Normalize(options.Protocol) == TtsProtocols.Local;
+        _voice = local && !string.IsNullOrWhiteSpace(options.SpeakerRefPath) ? options.SpeakerRefPath
+            : !string.IsNullOrWhiteSpace(options.Voice) ? options.Voice
+            : local ? null
+            : "alloy";
+        // Only the local engine understands the cloning transcript; a generic OpenAI endpoint would 400 on it.
+        _referenceText = local
+            && !string.IsNullOrWhiteSpace(options.SpeakerRefPath)
+            && !string.IsNullOrWhiteSpace(options.SpeakerRefText)
+            ? options.SpeakerRefText.Trim()
+            : null;
         _speed = options.Speed <= 0 ? 1.0 : options.Speed;
     }
 
@@ -110,7 +123,16 @@ public sealed class OpenAiTtsClient : ITtsClient
             writer.WriteStartObject();
             writer.WriteString("model", _options.Model ?? "tts-1");
             writer.WriteString("input", text);
-            writer.WriteString("voice", _voice);
+            if (_voice is not null)
+            {
+                writer.WriteString("voice", _voice);
+            }
+
+            if (_referenceText is not null)
+            {
+                writer.WriteString("reference_text", _referenceText);
+            }
+
             writer.WriteString("response_format", "wav");
             writer.WriteNumber("speed", _speed);
             writer.WriteEndObject();

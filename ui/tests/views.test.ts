@@ -75,7 +75,7 @@ const SETTINGS_FIXTURE: SettingsView = {
     muteDuringTts: true,
   },
   asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-  tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+  tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
   local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
   model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
@@ -282,6 +282,10 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     pauseSchedule: vi.fn(),
     resumeSchedule: vi.fn(),
     deleteSchedule: vi.fn(async () => true),
+    enginePackage: vi.fn(async () => { throw new Error('no engine module in this fixture') }),
+    downloadEnginePackage: vi.fn(),
+    cancelEnginePackage: vi.fn(),
+    setEngineRoot: vi.fn(),
     testVoice: vi.fn(async (kind: 'asr' | 'tts' | 'kws' | 'model') => {
       calls.probes.push(kind)
       return kind === 'model'
@@ -297,6 +301,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
         compaction: null,
       }
     }),
+    uploadVoiceReference: vi.fn(async (file: Blob) => ({ path: `C:/w/voices/${(file as File).name}`, fileName: (file as File).name, bytes: 10 })),
     uploadMedia: vi.fn(async (file: Blob) => {
       const name = (file as File).name ?? 'a.png'
       return { mediaId: 'm1', contentType: 'image/png', fileName: name, path: `C:/w/media/m1__${name}`, bytes: 2048 }
@@ -1721,6 +1726,185 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="settings-section-input"] [data-test="local-kws-keywords"]').exists()).toBe(true)
   })
 
+  describe('local engine package', () => {
+    const readiness = (installed: boolean) => ({ installed, missing: installed ? [] : ['tts/python/python.exe', 'tts/model/tokenizer.json'] })
+    const packageStatus = (overrides: Record<string, unknown> = {}) => ({
+      root: 'C:\\Apps\\Partner\\engines',
+      customRoot: false,
+      tts: readiness(false),
+      kws: readiness(false),
+      ttsDefaults: { command: 'engines/tts/python/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102 },
+      kwsDefaults: { command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103 },
+      downloadAvailable: true,
+      download: { phase: 'idle', detail: null, bytesDone: 0, bytesTotal: null, error: null },
+      ...overrides,
+    })
+
+    it('offers download, detect and manual pick, and hides the engine settings, while nothing is installed', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus() as never)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="engine-download"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="engine-detect"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="engine-manual"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="engine-missing-tts"]').text()).toContain('tts/python/python.exe')
+      expect(wrapper.find('[data-test="local-engine-tts"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="local-engine-kws"]').exists()).toBe(false)
+    })
+
+    it('shows the engine settings with package-relative defaults once the engines are found', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({ tts: readiness(true), kws: readiness(true) }) as never)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="local-engine-tts"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="local-engine-kws"]').exists()).toBe(true)
+      expect((wrapper.find('[data-test="local-tts-command"]').element as HTMLInputElement).value).toBe('engines/tts/python/python.exe')
+      expect((wrapper.find('[data-test="local-kws-arguments"]').element as HTMLInputElement).value).toBe('asr-server.py --port {port}')
+      expect(wrapper.find('[data-test="engine-download"]').exists()).toBe(false)
+    })
+
+    it('starts the download and reports its progress, then fills the settings when it finishes', async () => {
+      vi.useFakeTimers()
+      try {
+        const { stub } = createStub()
+        const running = packageStatus({ download: { phase: 'downloading', detail: '朗读引擎（1/2）', bytesDone: 512 * 1024 ** 2, bytesTotal: 1024 ** 3, error: null } })
+        vi.mocked(stub.enginePackage).mockResolvedValueOnce(packageStatus() as never)
+        vi.mocked(stub.downloadEnginePackage).mockResolvedValue(running as never)
+        const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+        await flushPromises()
+
+        await wrapper.find('[data-test="engine-download"]').trigger('click')
+        await flushPromises()
+        expect(wrapper.find('[data-test="engine-progress"]').text()).toContain('512 MB / 1.00 GB（50%）')
+        expect(wrapper.find('[data-test="engine-cancel"]').exists()).toBe(true)
+
+        vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({ tts: readiness(true), kws: readiness(true), download: { phase: 'done', detail: null, bytesDone: 0, bytesTotal: null, error: null } }) as never)
+        await vi.advanceTimersByTimeAsync(1100)
+        await flushPromises()
+
+        expect(wrapper.find('[data-test="engine-note"]').text()).toContain('下载完成')
+        expect((wrapper.find('[data-test="local-tts-command"]').element as HTMLInputElement).value).toBe('engines/tts/python/python.exe')
+        expect(wrapper.find('[data-test="engine-progress"]').exists()).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('defaults the recognition and speech clients to the local engines', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({ tts: readiness(true), kws: readiness(true) }) as never)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      // No separate "point at the engine" step: the client addresses are filled in when the stored ones are empty.
+      expect(wrapper.find('[data-test="local-kws-link"]').exists()).toBe(false)
+      expect((wrapper.find('[data-test="asr-base-url"]').element as HTMLInputElement).value).toBe('http://127.0.0.1:45103')
+      expect((wrapper.find('[data-test="asr-protocol"]').element as HTMLSelectElement).value).toBe('sensevoice')
+      expect((wrapper.find('[data-test="tts-base-url"]').element as HTMLInputElement).value).toBe('http://127.0.0.1:45102')
+      expect((wrapper.find('[data-test="tts-protocol"]').element as HTMLSelectElement).value).toBe('local')
+    })
+
+    it('keeps the connection tests on the voice pages only', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({ tts: readiness(true), kws: readiness(true) }) as never)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="local-engine-tts"] [data-test="tts-engine-test-row"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="local-engine-kws"] [data-test="kws-test-row"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="tts-test-row"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="asr-test-row"]').exists()).toBe(true)
+    })
+
+    it('uploads a reference clip for voice cloning and keeps the stored path', async () => {
+      const { stub } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('未选择')
+      const input = wrapper.find('[data-test="tts-clone-file"]')
+      const file = new File(['RIFF'], '我的声音.wav', { type: 'audio/wav' })
+      Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+      await input.trigger('change')
+      await flushPromises()
+
+      expect(stub.uploadVoiceReference).toHaveBeenCalledWith(file, '我的声音.wav')
+      expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('我的声音.wav')
+
+      await wrapper.find('[data-test="tts-clone-clear"]').trigger('click')
+      expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('未选择')
+    })
+
+    it('says why a reference clip was refused', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.uploadVoiceReference).mockRejectedValue(new Error('参考音频需要是 .wav 文件'))
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      const input = wrapper.find('[data-test="tts-clone-file"]')
+      Object.defineProperty(input.element, 'files', { value: [new File(['x'], 'a.mp3')], configurable: true })
+      await input.trigger('change')
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="tts-clone-error"]').text()).toContain('.wav')
+    })
+
+    it('offers only local and standard interfaces', async () => {
+      const { stub } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      const values = (test: string) => wrapper.findAll(`[data-test="${test}"] option`).map((option) => option.attributes('value'))
+      expect(values('asr-protocol')).toEqual(['sensevoice', 'openai'])
+      expect(values('tts-protocol')).toEqual(['local', 'openai'])
+    })
+
+    it('says why a download cannot start instead of failing silently', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({ downloadAvailable: false }) as never)
+      vi.mocked(stub.downloadEnginePackage).mockRejectedValue(new Error('还没有配置下载地址'))
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      await wrapper.find('[data-test="engine-download"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="engine-note"]').text()).toContain('还没有配置下载地址')
+    })
+
+    it('points at a folder the user already has and shows the server\'s reason when it holds no engine', async () => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus() as never)
+      vi.mocked(stub.setEngineRoot).mockRejectedValueOnce(new Error('这个目录里没有找到完整的引擎'))
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      await wrapper.find('[data-test="engine-manual"]').trigger('click')
+      await wrapper.find('[data-test="engine-manual-root"]').setValue('D:\\empty')
+      await wrapper.find('[data-test="engine-manual-apply"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="engine-note"]').text()).toContain('没有找到完整的引擎')
+      expect(wrapper.find('[data-test="local-engine-tts"]').exists()).toBe(false)
+
+      vi.mocked(stub.setEngineRoot).mockResolvedValueOnce(packageStatus({
+        root: 'D:\\mine',
+        customRoot: true,
+        tts: readiness(true),
+        ttsDefaults: { command: 'D:\\mine\\tts\\python\\python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'D:\\mine\\tts', port: 45102 },
+      }) as never)
+      await wrapper.find('[data-test="engine-manual-root"]').setValue('D:\\mine')
+      await wrapper.find('[data-test="engine-manual-apply"]').trigger('click')
+      await flushPromises()
+
+      expect(stub.setEngineRoot).toHaveBeenLastCalledWith('D:\\mine')
+      expect((wrapper.find('[data-test="local-tts-command"]').element as HTMLInputElement).value).toBe('D:\\mine\\tts\\python\\python.exe')
+    })
+  })
+
   it('shows one category at a time and remembers which', async () => {
     const { stub } = createStub()
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
@@ -1860,7 +2044,7 @@ describe('settings view', () => {
         input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true, bargeIn: false },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-        tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+        tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
         local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
         model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
@@ -1887,7 +2071,7 @@ describe('settings view', () => {
         input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true, bargeIn: false },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-        tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+        tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
         local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
         model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
@@ -2035,7 +2219,7 @@ describe('settings view', () => {
         input: { enabled: false, deviceId: '拔掉的麦克风', silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true, bargeIn: false },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-        tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+        tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
         local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
         model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
         desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
@@ -2115,7 +2299,7 @@ describe('settings view', () => {
             input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40, wakeTone: true, bargeIn: false },
             output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
             asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-            tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+            tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
             local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
             model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens, supportsImages: patch.model.supportsImages, reasoningEffort: patch.model.reasoningEffort, reasoningGears: patch.model.reasoningGears },
             desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },

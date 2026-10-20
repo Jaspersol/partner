@@ -20,7 +20,8 @@ public static class ApiHost
         string token,
         TimeProvider? clock = null,
         ILlmClient? llm = null,
-        IVoiceComponents? components = null)
+        IVoiceComponents? components = null,
+        EnginePackage? enginePackage = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
@@ -32,7 +33,8 @@ public static class ApiHost
         // before anything new can start.
         await consumer.Agents.RecoverAsync().ConfigureAwait(false);
         var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents(), () => consumer.LiveAssistant);
-        var localEngines = new LocalEngineHost();
+        var package = enginePackage ?? new EnginePackage(EnginePackage.ResolveAppDir(), workspace);
+        var localEngines = new LocalEngineHost(package.AppDir);
 
         // The store ages whether or not a model is configured: the TTL and promotion rules do not need one.
         var maintenance = new MemoryMaintenanceService(context.Memory, clock);
@@ -64,6 +66,7 @@ public static class ApiHost
         builder.Services.AddSingleton(consumer);
         builder.Services.AddSingleton(voice);
         builder.Services.AddSingleton(localEngines);
+        builder.Services.AddSingleton(package);
         builder.Services.AddSingleton(maintenance);
 
         // The shell serves the UI from its own origin, so every API call is cross-origin. CORS here is a
@@ -98,6 +101,7 @@ public static class ApiHost
         // is a history rather than a state, and a caller refreshing a badge has no reason to read it.
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
+        EnginePackageEndpoints.Map(app);
 
         return (app, context, consumer, voice, localEngines, maintenance);
     }

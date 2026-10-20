@@ -106,6 +106,7 @@ public static class VoiceSettingsMapping
             Lang = settings.Lang,
             SampleRate = settings.SampleRate,
             SpeakerRefPath = settings.SpeakerRefPath,
+            SpeakerRefText = settings.SpeakerRefText,
             Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds),
             ChunkMs = settings.ChunkMs,
         };
@@ -158,9 +159,9 @@ public sealed class WasapiVoiceComponents : IVoiceComponents
         };
 
     public static ITtsClient CreateTtsClient(TtsOptions options) =>
-        TtsProtocols.Normalize(options.Protocol) == TtsProtocols.OpenAi
-            ? new OpenAiTtsClient(options)
-            : new HttpTtsClient(options);
+        TtsProtocols.Normalize(options.Protocol) == TtsProtocols.Native
+            ? new HttpTtsClient(options)
+            : new OpenAiTtsClient(options);
 }
 
 /// <summary>What one half is doing. The device and the reason are reported, never assumed.</summary>

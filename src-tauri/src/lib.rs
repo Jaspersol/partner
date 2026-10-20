@@ -80,6 +80,10 @@ fn start_api(port: u16, token: &str) -> Result<Child, String> {
         // of lingering as an orphan holding the port and the SQLite lock. The handle must stay alive for the
         // whole process, which is why it is never taken out of the Child.
         .env("PARTNER_API_PARENT_WATCH", "1")
+        // The local engines are a separate module that lives beside the app (<app>/engines) and is downloaded
+        // from the settings page instead of shipped in the installer. The API cannot reliably infer where the
+        // app was installed from its own location, so the shell, which knows, says so.
+        .env("PARTNER_APP_DIR", app_dir()?)
         .env("PARTNER_API_TOKEN", token)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -165,6 +169,20 @@ fn newest_api_build(debug_root: &std::path::Path) -> Option<PathBuf> {
         })
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, candidate)| candidate)
+}
+
+/// The directory the app is installed in. A debug shell reports the repository root, where `engines/` lives
+/// during development; the `..` is left for the API to normalize, because canonicalizing on Windows would
+/// produce a `\\?\` path.
+fn app_dir() -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) {
+        return Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
+    }
+
+    std::env::current_exe()
+        .ok()
+        .and_then(|current| current.parent().map(PathBuf::from))
+        .ok_or_else(|| "cannot locate the application directory".to_string())
 }
 
 /// One workspace per user, shared with any hand-started API: the session log is the source of truth either way.

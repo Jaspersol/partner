@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Partner.Core.Agent.Llm;
+using Partner.Voice.Tts;
 
 namespace Partner.Api.Settings;
 
@@ -56,7 +57,23 @@ public sealed class SettingsStore
         Agents = (loaded.Agents ?? new AgentsSettings()).WithBuiltins(),
         Files = loaded.Files ?? new FilesSettings(),
         Web = loaded.Web ?? new WebSettings(),
+        Tts = LocalTtsMigrated(loaded),
     };
+
+    /// <summary>
+    /// An earlier default stored the speech client as <c>native</c> (POST /tts) while pointing it at the managed local
+    /// engine, which only serves /audio/speech: every request came back 404. A client aimed at that engine's own port
+    /// is the local one, whatever an old file says.
+    /// </summary>
+    private static TtsSettings LocalTtsMigrated(RuntimeSettings loaded)
+    {
+        var tts = loaded.Tts ?? new TtsSettings();
+        var port = loaded.Local?.Tts?.Port ?? 0;
+        return tts.Protocol == TtsProtocols.Native
+            && Uri.TryCreate(tts.BaseUrl, UriKind.Absolute, out var uri) && uri.IsLoopback && uri.Port == port
+                ? tts with { Protocol = TtsProtocols.Local }
+                : tts;
+    }
 
     /// <summary>
     /// Applies <paramref name="incoming"/> on top of what is stored and persists the result.

@@ -23,7 +23,7 @@ public sealed record VoiceInputSetting
     public string? DeviceId { get; init; }
 
     /// <summary>Fixed RMS gate. Must sit above the room noise floor or silence is never detected (R11).</summary>
-    public double SilenceThreshold { get; init; } = 0.03;
+    public double SilenceThreshold { get; init; } = 0.003;
 
     /// <summary>
     /// Speaking over the assistant stops it. Off by default: without echo cancellation a speaker in the room is

@@ -27,17 +27,47 @@ public static class VoiceTestEndpoints
 
     public static void Map(WebApplication app, ApiContext ctx)
     {
-        app.MapPost("/api/voice/test/asr", async (CancellationToken ct) =>
-            Results.Ok(await TestAsrAsync(ctx, ct).ConfigureAwait(false)));
+        app.MapPost("/api/voice/test/asr", async (LocalEngineHost engines, CancellationToken ct) =>
+        {
+            var result = await TestAsrAsync(ctx, ct).ConfigureAwait(false);
+            return Results.Ok(result.Ok ? result : result with { Detail = result.Detail + EngineHint(engines.State.Kws, ctx.Settings.Load().Local.Kws, ctx.Settings.Load().Asr.BaseUrl) });
+        });
 
-        app.MapPost("/api/voice/test/tts", async (CancellationToken ct) =>
-            Results.Ok(await TestTtsAsync(ctx, ct).ConfigureAwait(false)));
+        app.MapPost("/api/voice/test/tts", async (LocalEngineHost engines, CancellationToken ct) =>
+        {
+            var result = await TestTtsAsync(ctx, ct).ConfigureAwait(false);
+            return Results.Ok(result.Ok ? result : result with { Detail = result.Detail + EngineHint(engines.State.Tts, ctx.Settings.Load().Local.Tts, ctx.Settings.Load().Tts.BaseUrl) });
+        });
 
-        app.MapPost("/api/voice/test/kws", async (CancellationToken ct) =>
-            Results.Ok(await TestKwsAsync(ctx, ct).ConfigureAwait(false)));
+        app.MapPost("/api/voice/test/kws", async (LocalEngineHost engines, CancellationToken ct) =>
+        {
+            var result = await TestKwsAsync(ctx, ct).ConfigureAwait(false);
+            return Results.Ok(result.Ok ? result : result with { Detail = result.Detail + EngineHint(engines.State.Kws, ctx.Settings.Load().Local.Kws, ctx.Settings.Load().Asr.BaseUrl) });
+        });
 
         app.MapPost("/api/voice/test/model", async (CancellationToken ct) =>
             Results.Ok(await TestModelAsync(ctx, ct).ConfigureAwait(false)));
+    }
+
+    /// <summary>
+    /// 测试失败时补一句本地引擎的状态：连不上多半是引擎根本没起来，原因就在 Partner 启动它时记下的那句话里。
+    /// 开关关着也要说，否则用户会以为是地址写错了。
+    /// </summary>
+    private static string EngineHint(LocalEngineState state, LocalEngineSettings settings, string? baseUrl)
+    {
+        if (state.Running)
+        {
+            return string.Empty;
+        }
+
+        if (settings.Enabled)
+        {
+            return $"；本地引擎没在运行：{state.Reason}";
+        }
+
+        // Switch off: only worth saying when the client is pointed at the port that engine would have listened on.
+        var local = Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && uri.IsLoopback && uri.Port == settings.Port;
+        return local ? "；本地引擎的「由 Partner 启动」没开" : string.Empty;
     }
 
     /// <summary>

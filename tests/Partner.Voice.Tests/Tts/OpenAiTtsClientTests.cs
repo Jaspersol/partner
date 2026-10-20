@@ -166,18 +166,93 @@ public sealed class OpenAiTtsClientTests
         }
     }
 
+    [Fact]
+    public async Task The_local_engine_is_sent_no_voice_unless_one_is_chosen()
+    {
+        var wav = Wav(new[] { 0.5f });
+        foreach (var (voice, expected) in new (string?, string?)[] { (null, null), ("晓晓", "晓晓") })
+        {
+            var (client, handler) = Create((_, _) => Task.FromResult(WavResponse(wav)), voice: voice, protocol: TtsProtocols.Local);
+            using (client)
+            {
+                await foreach (var _ in client.SynthesizeAsync("hi")) { }
+            }
+
+            using var document = JsonDocument.Parse(handler.LastBody!);
+            Assert.Equal(expected is not null, document.RootElement.TryGetProperty("voice", out var sent));
+            if (expected is not null)
+            {
+                Assert.Equal(expected, sent.GetString());
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_clone_clip_is_what_the_local_engine_is_asked_to_speak_with()
+    {
+        var (client, handler) = Create(
+            (_, _) => Task.FromResult(WavResponse(Wav(new[] { 0.5f }))),
+            voice: "晓晓", protocol: TtsProtocols.Local, speakerRefPath: @"C:woicesme.wav");
+        using (client)
+        {
+            await foreach (var _ in client.SynthesizeAsync("hi")) { }
+        }
+
+        using var document = JsonDocument.Parse(handler.LastBody!);
+        Assert.Equal(@"C:woicesme.wav", document.RootElement.GetProperty("voice").GetString());
+    }
+
+    [Fact]
+    public async Task A_clone_clip_carries_its_transcript_to_the_local_engine()
+    {
+        var (client, handler) = Create(
+            (_, _) => Task.FromResult(WavResponse(Wav(new[] { 0.5f }))),
+            protocol: TtsProtocols.Local,
+            speakerRefPath: @"C:\voices\me.wav",
+            speakerRefText: "  你好，很高兴认识你。  ");
+        using (client)
+        {
+            await foreach (var _ in client.SynthesizeAsync("hi")) { }
+        }
+
+        using var document = JsonDocument.Parse(handler.LastBody!);
+        Assert.Equal("你好，很高兴认识你。", document.RootElement.GetProperty("reference_text").GetString());
+    }
+
+    [Fact]
+    public async Task The_transcript_is_not_sent_to_a_generic_openai_endpoint()
+    {
+        var (client, handler) = Create(
+            (_, _) => Task.FromResult(WavResponse(Wav(new[] { 0.5f }))),
+            protocol: TtsProtocols.OpenAi,
+            speakerRefText: "你好。");
+        using (client)
+        {
+            await foreach (var _ in client.SynthesizeAsync("hi")) { }
+        }
+
+        using var document = JsonDocument.Parse(handler.LastBody!);
+        Assert.False(document.RootElement.TryGetProperty("reference_text", out _));
+    }
+
     private static (OpenAiTtsClient Client, RecordingHandler Handler) Create(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond,
         string? model = null,
         string? voice = null,
-        double speed = 0)
+        double speed = 0,
+        string protocol = TtsProtocols.OpenAi,
+        string? speakerRefPath = null,
+        string? speakerRefText = null)
     {
         var handler = new RecordingHandler(respond);
         var options = new TtsOptions
         {
             BaseUrl = "http://127.0.0.1:45102",
+            Protocol = protocol,
             Model = model,
             Voice = voice,
+            SpeakerRefPath = speakerRefPath,
+            SpeakerRefText = speakerRefText,
             Speed = speed,
         };
         return (new OpenAiTtsClient(options, handler), handler);

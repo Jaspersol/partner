@@ -14,6 +14,7 @@ import type { IconName } from '../icons'
 import type {
   ConsumerState,
   DeviceList,
+  EnginePackageStatus,
   PartnerApiSurface,
   RuntimeSettings,
   VoiceState,
@@ -36,7 +37,7 @@ const form = reactive<RuntimeSettings>({
   input: {
     enabled: false,
     deviceId: null,
-    silenceThreshold: 0.03,
+    silenceThreshold: 0.003,
     utteranceGapMs: 1200,
     wakeTimeoutMs: 5000,
     sentenceGapMs: 450,
@@ -56,11 +57,11 @@ const form = reactive<RuntimeSettings>({
     sampleRate: 24000,
     muteDuringTts: true,
   },
-  asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
-  tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, timeoutSeconds: 600, chunkMs: 100 },
+  asr: { baseUrl: 'http://127.0.0.1:45103', protocol: 'sensevoice', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
+  tts: { baseUrl: 'http://127.0.0.1:45102', protocol: 'local', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
   local: {
-    tts: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] as string[] },
-    kws: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
+    tts: { enabled: false, command: 'engines/tts/python/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102, readyTimeoutSeconds: 30, keywords: [] as string[] },
+    kws: { enabled: false, command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', inputMode: 'foreground', allowedWindowTitles: [] as string[] },
@@ -283,6 +284,12 @@ async function probeModels() {
   }
 }
 
+/** 出厂默认：相对应用目录。与后端 LocalSettings 的默认值一致。 */
+const LOCAL_ENGINE_DEFAULTS = {
+  tts: { command: 'engines/tts/python/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102 },
+  kws: { command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103 },
+} as const
+
 function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
   Object.assign(form.input, settings.input)
   Object.assign(form.output, settings.output)
@@ -293,6 +300,28 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     tts: { ...settings.local?.tts, arguments: [...(settings.local?.tts?.arguments ?? [])], keywords: [...(settings.local?.tts?.keywords ?? [])] },
     kws: { ...settings.local?.kws, arguments: [...(settings.local?.kws?.arguments ?? [])], keywords: [...(settings.local?.kws?.keywords ?? [])] },
   })
+  // 存下来的设置里这几项可能是空的（旧版本存的，或服务端还是旧版本）；空着就用出厂默认，页面上不留一排空框。
+  for (const engine of ['tts', 'kws'] as const) {
+    const target = form.local[engine]
+    const defaults = LOCAL_ENGINE_DEFAULTS[engine]
+    if ((target.command ?? '').trim() === '') target.command = defaults.command
+    if (target.arguments.length === 0) target.arguments = [...defaults.arguments]
+    if ((target.workingDirectory ?? '').trim() === '') target.workingDirectory = defaults.workingDirectory
+    if (!(target.port > 0)) target.port = defaults.port
+  }
+  // 朗读/识别的客户端默认连本地引擎；以前存成空的也补上（用户自己填过的不动）。
+  if ((form.asr.baseUrl ?? '').trim() === '') {
+    form.asr.baseUrl = `http://127.0.0.1:${form.local.kws.port}`
+    form.asr.protocol = 'sensevoice'
+  }
+  const localTtsUrl = `http://127.0.0.1:${form.local.tts.port}`
+  if ((form.tts.baseUrl ?? '').trim() === '') {
+    form.tts.baseUrl = localTtsUrl
+    form.tts.protocol = 'local'
+  } else if ((form.tts.baseUrl ?? '').replace(/\/+$/, '') === localTtsUrl && form.tts.protocol === 'native') {
+    // 本地 tts-server 只有 /audio/speech；以前存成 native 的，对着它请求只会 404。
+    form.tts.protocol = 'local'
+  }
   keywordDrafts.value = { tts: form.local.tts.keywords.join(','), kws: form.local.kws.keywords.join(',') }
   Object.assign(form.desktop, {
     enabled: settings.desktop?.enabled ?? false,
@@ -358,6 +387,7 @@ async function refresh() {
   }
 
   await refreshWeb()
+  await refreshEnginePackage()
 }
 
 /**
@@ -379,6 +409,182 @@ async function refreshWeb() {
     webView.value = null
   }
 }
+
+// ---- 本地引擎包 -------------------------------------------------------------------------------
+//
+// 引擎（运行时 + 模型，约 3GB）不在安装包里，而是作为一个模块放在应用目录下的 engines/，由这里下载。
+// 它的状态来自磁盘，不属于表单：检测、下载、指定位置都是立即生效的动作，不经过「保存」。
+
+const enginePackage = ref<EnginePackageStatus | null>(null)
+const enginePackageNote = ref('')
+const engineManualOpen = ref(false)
+const engineManualRoot = ref('')
+let enginePackageTimer: ReturnType<typeof setInterval> | null = null
+
+const ENGINE_NAMES = { tts: '朗读引擎', kws: '唤醒与识别引擎' } as const
+
+const downloadRunning = computed(() => {
+  const phase = enginePackage.value?.download.phase
+  return phase === 'downloading' || phase === 'extracting'
+})
+
+const allEnginesInstalled = computed(() => enginePackage.value?.tts.installed === true && enginePackage.value?.kws.installed === true)
+
+/**
+ * 程序路径是不是用户自己配的。空的，或者就是引擎包的标准位置（出厂默认、上一次检测填的），都算没配：
+ * 检测到引擎时换成实际找到的那个解释器（可搬走的 python/ 或 venv），不会被出厂默认挡住。
+ */
+function isCustomCommand(command: string | null | undefined): boolean {
+  const value = (command ?? '').trim()
+  return value !== '' && !/^engines\/(tts|kws-asr)\/.*python\.exe$/.test(value)
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`
+  return `${Math.max(0, Math.round(bytes / 1024))} KB`
+}
+
+const downloadText = computed(() => {
+  const download = enginePackage.value?.download
+  if (!download) return ''
+  if (download.phase === 'extracting') return `${download.detail ?? ''} 解压中…`
+  if (download.phase !== 'downloading') return ''
+  const total = download.bytesTotal
+  const sizes = total ? `${formatBytes(download.bytesDone)} / ${formatBytes(total)}（${Math.floor((download.bytesDone / total) * 100)}%）` : formatBytes(download.bytesDone)
+  return `${download.detail ?? '下载中'} ${sizes}`
+})
+
+/**
+ * 找到了的引擎，把程序路径、参数、运行目录、端口填成默认值（相对应用目录，指到手选的目录时是绝对路径）。
+ * 只填空的，已经配过的不动；`force` 用于刚换了位置，旧的默认值指向别处。填完表单会变成「未保存」，由用户确认。
+ */
+function fillEngineDefaults(force = false) {
+  const status = enginePackage.value
+  if (!status) return
+
+  for (const engine of ['tts', 'kws'] as const) {
+    if (!status[engine].installed) continue
+    const target = form.local[engine]
+    if (!force && isCustomCommand(target.command)) continue
+
+    const defaults = engine === 'tts' ? status.ttsDefaults : status.kwsDefaults
+    target.command = defaults.command
+    target.arguments = [...defaults.arguments]
+    target.workingDirectory = defaults.workingDirectory
+    target.port = defaults.port
+  }
+}
+
+/** 下载进行时每秒问一次进度；结束（成功、失败、取消）后停。 */
+function syncEnginePolling() {
+  if (downloadRunning.value && enginePackageTimer === null) {
+    enginePackageTimer = setInterval(() => void pollEnginePackage(), 1000)
+  } else if (!downloadRunning.value && enginePackageTimer !== null) {
+    clearInterval(enginePackageTimer)
+    enginePackageTimer = null
+  }
+}
+
+async function pollEnginePackage() {
+  try {
+    const wasRunning = downloadRunning.value
+    enginePackage.value = await props.api.enginePackage()
+    syncEnginePolling()
+
+    if (wasRunning && !downloadRunning.value) {
+      const download = enginePackage.value.download
+      enginePackageNote.value =
+        download.phase === 'done' ? '下载完成，已填入默认设置，保存后生效。'
+          : download.phase === 'failed' ? `下载失败：${download.error ?? '未知原因'}`
+            : '已取消，再点下载会从断点继续。'
+      if (download.phase === 'done') fillEngineDefaults()
+    }
+  } catch {
+    // 轮询失败不覆盖屏幕上已有的状态；下一秒再问。
+  }
+}
+
+function describeFailure(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure)
+}
+
+/** 「检测」：重新读磁盘。找到就填默认值，没找到就说缺什么。 */
+async function detectEngines() {
+  enginePackageNote.value = ''
+  try {
+    enginePackage.value = await props.api.enginePackage()
+    syncEnginePolling()
+    fillEngineDefaults()
+
+    const status = enginePackage.value
+    if (status.tts.installed || status.kws.installed) {
+      enginePackageNote.value = `已检测到：${[status.tts.installed ? '朗读引擎' : '', status.kws.installed ? '唤醒与识别引擎' : ''].filter(Boolean).join('、')}。`
+    } else {
+      enginePackageNote.value = `没有在 ${status.root} 找到引擎。可以下载，或手动指定已有的位置。`
+    }
+  } catch (failure) {
+    enginePackageNote.value = `检测失败：${describeFailure(failure)}`
+  }
+}
+
+async function startEngineDownload() {
+  enginePackageNote.value = ''
+  try {
+    enginePackage.value = await props.api.downloadEnginePackage()
+    syncEnginePolling()
+  } catch (failure) {
+    enginePackageNote.value = describeFailure(failure)
+  }
+}
+
+async function cancelEngineDownload() {
+  try {
+    enginePackage.value = await props.api.cancelEnginePackage()
+  } catch (failure) {
+    enginePackageNote.value = describeFailure(failure)
+  }
+}
+
+/** 手动指定：服务端会检查这个目录里确实有引擎才记下，写错了不会悄悄换掉能用的位置。留空 = 回到默认位置。 */
+async function applyEngineRoot() {
+  enginePackageNote.value = ''
+  try {
+    enginePackage.value = await props.api.setEngineRoot(engineManualRoot.value.trim() === '' ? null : engineManualRoot.value.trim())
+    fillEngineDefaults(true)
+    engineManualOpen.value = false
+    enginePackageNote.value = enginePackage.value.customRoot
+      ? `已指向 ${enginePackage.value.root}，默认设置已填入，保存后生效。`
+      : '已回到应用目录下的默认位置。'
+  } catch (failure) {
+    enginePackageNote.value = describeFailure(failure)
+  }
+}
+
+async function refreshEnginePackage() {
+  try {
+    enginePackage.value = await props.api.enginePackage()
+    syncEnginePolling()
+    fillEngineDefaults()
+  } catch {
+    // 读不到（例如服务端版本较旧）就当没有这个模块：引擎卡片照旧显示，不把整页变成空白。
+    enginePackage.value = null
+  }
+}
+
+/** 已装好的引擎，或者之前就配过程序路径的，才显示后面的设置；读不到引擎包状态时保持旧行为。 */
+function showEngine(engine: 'tts' | 'kws'): boolean {
+  const status = enginePackage.value
+  if (!status) return true
+  return status[engine].installed || isCustomCommand(form.local[engine].command)
+}
+
+onUnmounted(() => {
+  if (enginePackageTimer !== null) {
+    clearInterval(enginePackageTimer)
+    enginePackageTimer = null
+  }
+})
 
 /** 开关一个引擎。存的是「关掉了谁」，所以新加进列表的引擎默认是开的。 */
 function toggleEngine(id: string) {
@@ -431,6 +637,33 @@ function engineStateClass(engine: WebEngineView): string {
   return engine.cooling || engine.strikes > 0 ? 'is-warn' : 'is-ok'
 }
 
+const cloneInput = ref<HTMLInputElement | null>(null)
+const cloneBusy = ref(false)
+const cloneError = ref('')
+const cloneName = computed(() => (form.tts.speakerRefPath ?? '').split(/[\/]/).pop() ?? '')
+
+/** 选了文件就上传到工作区，设置里存落盘后的路径：浏览器给不了磁盘路径，引擎要的却正是路径。 */
+async function onCloneFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  cloneBusy.value = true
+  cloneError.value = ''
+  try {
+    const stored = await props.api.uploadVoiceReference(file, file.name)
+    form.tts.speakerRefPath = stored.path
+  } catch (failure) {
+    cloneError.value = failure instanceof Error ? failure.message : String(failure)
+  } finally {
+    cloneBusy.value = false
+  }
+}
+
+function blankToNull(value: string | null | undefined): string | null {
+  return value === null || value === undefined || value.trim() === '' ? null : value.trim()
+}
+
 async function persist() {
   error.value = ''
   status.value = ''
@@ -439,8 +672,17 @@ async function persist() {
     desktop: { ...form.desktop },
     input: { ...form.input },
     output: { ...form.output },
-    asr: { ...form.asr },
-    tts: { ...form.tts },
+    asr: { ...form.asr, baseUrl: blankToNull(form.asr.baseUrl) },
+    // 空框是「没填」，不是空字符串；语速清空了就回到 1，别把 '' 发给要数字的字段而整页保存失败。
+    tts: {
+      ...form.tts,
+      baseUrl: blankToNull(form.tts.baseUrl),
+      model: blankToNull(form.tts.model),
+      voice: blankToNull(form.tts.voice),
+      speakerRefPath: blankToNull(form.tts.speakerRefPath),
+      speakerRefText: blankToNull(form.tts.speakerRefText),
+      speed: typeof form.tts.speed === 'number' && Number.isFinite(form.tts.speed) ? form.tts.speed : 1,
+    },
     local: {
       tts: { ...form.local.tts, arguments: [...form.local.tts.arguments], keywords: [...form.local.tts.keywords] },
       kws: { ...form.local.kws, arguments: [...form.local.kws.arguments], keywords: [...form.local.kws.keywords] },
@@ -869,9 +1111,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               </div>
               <SettingRow label="接口类型" hint="按你的识别服务支持的方式选，不确定就看它的文档。">
                 <select v-model="form.asr.protocol" data-test="asr-protocol">
-                  <option value="chat-audio">对话接口 · chat/completions</option>
-                  <option value="openai">OpenAI 标准 · audio/transcriptions</option>
-                  <option value="sensevoice">本地 SenseVoice · /recognize</option>
+                  <option value="sensevoice">本地</option>
+                  <option value="openai">通用标准接口 · audio/transcriptions</option>
+                  <option v-if="form.asr.protocol === 'chat-audio'" value="chat-audio">对话接口 · chat/completions（旧）</option>
                 </select>
               </SettingRow>
               <SettingRow label="服务地址" hint="识别服务（ASR）的网址。留空则不会把语音转成文字。">
@@ -884,8 +1126,8 @@ defineExpose({ refresh, hasUnsavedChanges })
 
             <div class="g-card">
               <div class="g-card-head"><h3>断句</h3></div>
-              <SettingRow label="多小声算安静" hint="音量低于这个值，就当作你没在说话。环境吵就调大，老是收不到你说话就调小。默认 0.03。">
-                <input type="number" step="0.01" min="0" v-model.number="form.input.silenceThreshold" />
+              <SettingRow label="多小声算安静" hint="音量低于这个值，就当作你没在说话。环境吵就调大，老是收不到你说话就调小。默认 0.003。">
+                <input type="number" step="0.001" min="0" v-model.number="form.input.silenceThreshold" />
               </SettingRow>
               <SettingRow label="停顿多久算说完" unit="毫秒" hint="你停顿超过这个时间，就当这句话说完了。默认 1200，即 1.2 秒。">
                 <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
@@ -945,9 +1187,6 @@ defineExpose({ refresh, hasUnsavedChanges })
                 </select>
                 <input v-else type="text" v-model="form.output.deviceId" placeholder="（默认设备）" data-test="output-device" />
               </SettingRow>
-              <SettingRow label="音色" hint="留空使用朗读服务默认的声音。">
-                <input type="text" v-model="form.output.voice" placeholder="（服务默认音色）" />
-              </SettingRow>
               <SettingRow label="语速" hint="1 是正常，0.8 慢一点，1.2 快一点。">
                 <input type="number" step="0.05" v-model.number="form.output.speed" />
               </SettingRow>
@@ -977,8 +1216,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               </div>
               <SettingRow label="接口类型" hint="选和你的朗读服务一致的那种。">
                 <select v-model="form.tts.protocol" data-test="tts-protocol">
-                  <option value="native">本地服务 · 流式</option>
-                  <option value="openai">OpenAI 标准 · audio/speech</option>
+                  <option value="local">本地</option>
+                  <option value="openai">通用标准接口 · audio/speech</option>
+                  <option v-if="form.tts.protocol === 'native'" value="native">本地服务 · 流式（旧）</option>
                 </select>
               </SettingRow>
               <SettingRow label="服务地址" hint="朗读服务（TTS）的网址。留空则助手的回复不会被念出来。">
@@ -992,7 +1232,24 @@ defineExpose({ refresh, hasUnsavedChanges })
                   <input type="text" v-model="form.tts.speakerRefPath" placeholder="（不使用克隆）" />
                 </SettingRow>
               </template>
-              <template v-else>
+              <template v-else-if="form.tts.protocol === 'local'">
+                <SettingRow label="音色" hint="留空用引擎启动时的默认音色。也可以填 engines/tts/output/elaborate 里的音色名，例如 晓晓、心悦。">
+                  <input type="text" v-model="form.tts.voice" placeholder="（引擎默认）" data-test="tts-local-voice" />
+                </SettingRow>
+                <SettingRow label="克隆音色" hint="选一段清晰的人声录音（.wav，几秒到十几秒），朗读时会模仿它的声音。选了之后，上面的音色名不再生效。">
+                  <div class="clone-pick">
+                    <span class="clone-name" data-test="tts-clone-name">{{ cloneName || '未选择' }}</span>
+                    <input ref="cloneInput" type="file" accept=".wav,audio/wav,audio/x-wav" hidden data-test="tts-clone-file" @change="onCloneFile" />
+                    <button class="ghost" type="button" data-test="tts-clone-pick" :disabled="cloneBusy" @click="cloneInput?.click()">选择音频文件</button>
+                    <button v-if="form.tts.speakerRefPath" class="ghost" type="button" data-test="tts-clone-clear" @click="form.tts.speakerRefPath = null">清除</button>
+                  </div>
+                  <p v-if="cloneError" class="pkg-note" role="alert" data-test="tts-clone-error">{{ cloneError }}</p>
+                </SettingRow>
+                <SettingRow label="参考文本" hint="参考录音里实际说的话，逐字填写。填了克隆更像；留空按零样本克隆，只取音色。填错会乱读。">
+                  <input type="text" v-model="form.tts.speakerRefText" placeholder="（留空 = 零样本克隆）" data-test="tts-clone-ref-text" />
+                </SettingRow>
+              </template>
+              <template v-else-if="form.tts.protocol === 'openai'">
                 <SettingRow label="模型" hint="例如 tts-1。">
                   <input type="text" v-model="form.tts.model" placeholder="tts-1" />
                 </SettingRow>
@@ -1256,23 +1513,79 @@ defineExpose({ refresh, hasUnsavedChanges })
               </HintTip>
             </header>
 
-            <div v-for="engine in (['tts', 'kws'] as const)" :key="engine" class="g-card" :data-test="`local-engine-${engine}`">
+            <div v-if="enginePackage" class="g-card" data-test="engine-package">
+              <div class="g-card-head">
+                <h3>
+                  引擎包
+                  <HintTip>
+                    引擎的运行环境和模型（约 3GB）不在安装包里，放在应用目录下的 engines 文件夹。
+                    下载完成后会自动填好下面的设置；已经有一份的话，用「手动指定」指到它所在的文件夹。
+                  </HintTip>
+                </h3>
+                <button class="ghost" type="button" data-test="engine-detect" :disabled="downloadRunning" @click="detectEngines">检测</button>
+              </div>
+
+              <SettingRow v-for="engine in (['tts', 'kws'] as const)" :key="engine" :label="ENGINE_NAMES[engine]">
+                <template #hint>
+                  <span v-if="!enginePackage[engine].installed" :data-test="`engine-missing-${engine}`">
+                    缺少：{{ enginePackage[engine].missing.slice(0, 3).join('、') }}{{ enginePackage[engine].missing.length > 3 ? ` 等 ${enginePackage[engine].missing.length} 项` : '' }}
+                  </span>
+                </template>
+                <span class="g-chip" :class="enginePackage[engine].installed ? 'is-ok' : ''" :data-test="`engine-state-${engine}`">
+                  {{ enginePackage[engine].installed ? '已就绪' : '未安装' }}
+                </span>
+              </SettingRow>
+
+              <SettingRow label="位置" :hint="enginePackage.customRoot ? '手动指定的位置。' : '应用目录下的默认位置。'">
+                <code class="pkg-root" data-test="engine-root">{{ enginePackage.root }}</code>
+              </SettingRow>
+
+              <template v-if="!allEnginesInstalled || enginePackage.customRoot">
+                <SettingRow v-if="!allEnginesInstalled" label="下载" hint="下载缺少的引擎和模型到上面的位置，支持断点续传。">
+                  <div class="pkg-actions">
+                    <button
+                      v-if="!downloadRunning"
+                      class="primary"
+                      type="button"
+                      data-test="engine-download"
+                      @click="startEngineDownload"
+                    >下载引擎和模型</button>
+                    <template v-else>
+                      <span class="pkg-progress" role="status" data-test="engine-progress">{{ downloadText }}</span>
+                      <button class="ghost" type="button" data-test="engine-cancel" @click="cancelEngineDownload">取消</button>
+                    </template>
+                  </div>
+                </SettingRow>
+
+                <SettingRow label="手动指定" hint="引擎和模型已经在别处时，填它们所在的文件夹（里面是 tts 和 kws-asr）。留空确认则回到默认位置。">
+                  <div class="pkg-actions">
+                    <button
+                      v-if="!engineManualOpen"
+                      class="ghost"
+                      type="button"
+                      data-test="engine-manual"
+                      :disabled="downloadRunning"
+                      @click="engineManualOpen = true; engineManualRoot = enginePackage.customRoot ? enginePackage.root : ''"
+                    >手动指定…</button>
+                    <template v-else>
+                      <input type="text" v-model="engineManualRoot" placeholder="例如 D:\engines" data-test="engine-manual-root" @keydown.enter.prevent="applyEngineRoot" />
+                      <button class="primary" type="button" data-test="engine-manual-apply" @click="applyEngineRoot">确定</button>
+                      <button class="ghost" type="button" @click="engineManualOpen = false">取消</button>
+                    </template>
+                  </div>
+                </SettingRow>
+              </template>
+
+              <p v-if="enginePackageNote" class="pkg-note" role="status" data-test="engine-note">{{ enginePackageNote }}</p>
+            </div>
+
+            <template v-for="engine in (['tts', 'kws'] as const)" :key="engine">
+            <div v-if="showEngine(engine)" class="g-card" :data-test="`local-engine-${engine}`">
               <div class="g-card-head">
                 <h3>
                   {{ engine === 'tts' ? '朗读引擎' : '唤醒与识别引擎' }}
                   <HintTip>{{ engine === 'tts' ? '例如 qwentts.cpp server。' : '例如 sherpa-onnx。开启后语音输入进入「唤醒模式」。' }}</HintTip>
                 </h3>
-                <TestButton
-                  v-if="engine === 'kws'"
-                  kind="kws"
-                  label="测试"
-                  :testing="voiceTesting.kws === true"
-                  :result="voiceTest.kws"
-                  :stale="testStale('kws')"
-                  :unsaved="dirty"
-                  data-test="kws-test-row"
-                  @test="testConnection('kws')"
-                />
               </div>
               <SettingRow label="由 Partner 启动" hint="开启后，启动时自动运行这个程序，关闭时自动结束。">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.local[engine].enabled" :data-test="`local-${engine}-enabled`" />
@@ -1299,6 +1612,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
               </SettingRow>
             </div>
+            </template>
           </section>
 
           <!-- ================= 外观 ================= -->
@@ -1657,6 +1971,49 @@ defineExpose({ refresh, hasUnsavedChanges })
 .engine-state.is-off {
   color: var(--text-3);
   opacity: 0.7;
+}
+
+/* ---- engine package ---------------------------------------------------------------------------- */
+.pkg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.pkg-actions input[type='text'] {
+  flex: 1 1 14rem;
+  min-inline-size: 0;
+}
+
+.pkg-root {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.pkg-progress {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.clone-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.clone-name {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.pkg-note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
 }
 
 /* ---- narrow: categories become a row of chips ------------------------------------------------- */
