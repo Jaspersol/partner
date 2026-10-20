@@ -94,7 +94,110 @@ public static class UiaScroll
         }
     }
 
-    /// <summary>Expands a collapsed node — a tree item, a disclosure — so its children can be seen at all.</summary>
+    /// <summary>How many ancestors are searched for something that scrolls. A scrollable list is a few levels up
+    /// from a row; a search that climbs to the desktop would scroll something the model did not name.</summary>
+    private const int MaxAncestors = 8;
+
+    /// <summary>One wheel notch, in the small steps <c>ScrollPattern</c> offers (Windows' own default is three lines).</summary>
+    private const int StepsPerNotch = 3;
+
+    /// <summary>The most small steps one call makes. Each is a cross-process call, and a runaway delta is a typo.</summary>
+    private const int MaxSteps = 60;
+
+    /// <summary>
+    /// Scrolls the control, or the nearest container above it that scrolls, by wheel notches (positive is up).
+    /// <para>
+    /// The pattern call reaches the container itself, so it needs neither the foreground nor the pointer over
+    /// it. Null when nothing in reach scrolls: that is a reason to try another channel, not a failure.
+    /// </para>
+    /// </summary>
+    public static UiaInvocation? ScrollBy(AutomationElement node, int notches)
+    {
+        if (notches == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var walker = TreeWalker.ControlViewWalker;
+            var current = node;
+
+            for (var depth = 0; depth <= MaxAncestors && current is not null; depth++)
+            {
+                if (current.TryGetCurrentPattern(ScrollPattern.Pattern, out var found)
+                    && found is ScrollPattern scroll
+                    && scroll.Current.VerticallyScrollable)
+                {
+                    var amount = notches > 0 ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement;
+                    var steps = Math.Min(MaxSteps, Math.Abs(notches) * StepsPerNotch);
+
+                    for (var step = 0; step < steps; step++)
+                    {
+                        scroll.Scroll(ScrollAmount.NoAmount, amount);
+                    }
+
+                    return new UiaInvocation(
+                        true,
+                        "uia.scrollby",
+                        $"已用 ScrollPattern 滚动{(depth == 0 ? "该控件" : "它上层的可滚动容器")}（后台：不需要前台，也不动用户的指针）");
+                }
+
+                current = walker.GetParent(current);
+            }
+
+            return null;
+        }
+        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
+        {
+            return new UiaInvocation(false, "uia.scrollby", $"滚动失败：{error.GetType().Name}");
+        }
+    }
+
+    /// <summary>
+    /// Types into a field by writing its value, for a field that offers a value pattern.
+    /// <para>
+    /// <c>ValuePattern.SetValue</c> replaces everything, and a typing action is not allowed to wipe a half-filled
+    /// form — so what is written is the existing text <i>plus</i> the new text. That is "type at the end", which
+    /// is only what the caller asked for when the caret was at the end; the pattern cannot say where the caret
+    /// is, and the result says so rather than letting it pass for ordinary typing. Null for a field with no value
+    /// pattern or a read-only one: the caller then tries another channel.
+    /// </para>
+    /// </summary>
+    public static UiaInvocation? AppendText(AutomationElement node, string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (!node.TryGetCurrentPattern(ValuePattern.Pattern, out var found)
+                || found is not ValuePattern value
+                || value.Current.IsReadOnly)
+            {
+                return null;
+            }
+
+            var existing = value.Current.Value ?? string.Empty;
+            value.SetValue(existing + text);
+
+            return new UiaInvocation(
+                true,
+                "uia.value",
+                existing.Length == 0
+                    ? $"已用 ValuePattern 写入 {text.Length} 个字符（字段原本为空；后台：不需要前台）"
+                    : $"已用 ValuePattern 把 {text.Length} 个字符追加到原有 {existing.Length} 个字符之后"
+                      + "（后台下无法知道光标在哪，所以只能加在末尾）");
+        }
+        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
+        {
+            return new UiaInvocation(false, "uia.value", $"ValuePattern 写入失败：{error.GetType().Name}");
+        }
+    }
+
+    /// <summary>Expands a collapsed node — a tree item, a disclosure — so its children can be seen at all.
     public static UiaInvocation? Expand(AutomationElement node)
     {
         try
@@ -442,10 +545,14 @@ public static class UiaTree
     /// <param name="kind">
     /// Pattern-shaped: <see cref="ActionKind.LeftClick"/> and <see cref="ActionKind.Focus"/> press a control,
     /// <see cref="ActionKind.ScrollIntoView"/> makes it reachable.
-    /// <c>TypeText</c> is deliberately excluded: <c>ValuePattern.SetValue</c> replaces a field's entire
+    /// <c>TypeText</c> is excluded by default: <c>ValuePattern.SetValue</c> replaces a field's entire
     /// contents, and silently wiping a half-filled form is not what "type this" means. A double click is
     /// excluded too: there is no pattern for "press twice in time", and sending <c>Invoke</c> twice is not it.
+    /// With <paramref name="background"/>, <c>TypeText</c> becomes an append (existing text is kept) and
+    /// <see cref="ActionKind.Scroll"/> becomes a <c>ScrollPattern</c> call.
     /// </param>
+    /// <param name="parameters">The action's amounts and text; needed only by the two background kinds.</param>
+    /// <param name="background">Whether the caller has agreed to patterns standing in for wheel and typing.</param>
     /// <param name="known">
     /// The walk this action was decided on, when the caller already has it. Re-walking is what turns an id
     /// back into a live control and doubles as an "is it still there" check — but the caller re-observed this
@@ -461,9 +568,17 @@ public static class UiaTree
         string windowId,
         string elementId,
         ActionKind kind,
-        (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes)? known = null)
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes)? known = null,
+        ActionParams? parameters = null,
+        bool background = false)
     {
-        if (kind is not (ActionKind.LeftClick or ActionKind.Focus or ActionKind.ScrollIntoView))
+        // Wheel and typing are patterns only when the caller has agreed to the trade: ScrollPattern moves a
+        // container rather than turning the wheel over it, and ValuePattern appends rather than types. Where
+        // the foreground is available a real wheel and real keystrokes are the more faithful action, so that
+        // stays the default.
+        var backgroundKind = background && kind is ActionKind.Scroll or ActionKind.TypeText;
+
+        if (kind is not (ActionKind.LeftClick or ActionKind.Focus or ActionKind.ScrollIntoView) && !backgroundKind)
         {
             return null;
         }
@@ -500,6 +615,16 @@ public static class UiaTree
         if (kind == ActionKind.Focus)
         {
             return TrySetFocus(node);
+        }
+
+        if (kind == ActionKind.Scroll)
+        {
+            return UiaScroll.ScrollBy(node, parameters?.ScrollDelta ?? 0);
+        }
+
+        if (kind == ActionKind.TypeText)
+        {
+            return UiaScroll.AppendText(node, parameters?.Text);
         }
 
         if (kind == ActionKind.ScrollIntoView)

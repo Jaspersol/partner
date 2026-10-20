@@ -175,6 +175,17 @@ public sealed record DesktopSettings
     public IReadOnlyList<string> AllowedWindowTitles { get; init; } = Array.Empty<string>();
 
     /// <summary>
+    /// 动作能走多远去够到目标：<c>foreground</c>（默认：该抢前台就抢）/ <c>auto</c>（能在后台完成就在后台，
+    /// 不行再接管屏幕）/ <c>background</c>（绝不接管屏幕，做不到就拒绝并说明）。
+    /// <para>
+    /// 坐标点击、按键、打字走的 <c>SendInput</c> 是全局输入，只能抢前台、动真实指针；后台通道是浏览器 / Electron
+    /// 程序的页面调试端口（要由 <c>desktop_launch</c> 启动）和点名控件的界面自动化 pattern。每次动作和启动时现读，
+    /// 改了不用重启。
+    /// </para>
+    /// </summary>
+    public string InputMode { get; init; } = Partner.Desktop.Input.InputModes.Foreground;
+
+    /// <summary>
     /// Value equality that actually compares the titles. A record holding a list compares it by reference, so
     /// two defaults — each with its own empty array — would look different, and every settings save would
     /// restart the consumer (resetting the counters of a turn in flight).
@@ -184,9 +195,10 @@ public sealed record DesktopSettings
         && Enabled == other.Enabled
         && LeaseTtlMs == other.LeaseTtlMs
         && Approval == other.Approval
+        && InputMode == other.InputMode
         && AllowedWindowTitles.SequenceEqual(other.AllowedWindowTitles, StringComparer.Ordinal);
 
-    public override int GetHashCode() => HashCode.Combine(Enabled, LeaseTtlMs, Approval, AllowedWindowTitles.Count);
+    public override int GetHashCode() => HashCode.Combine(Enabled, LeaseTtlMs, Approval, InputMode, AllowedWindowTitles.Count);
 }
 
 /// <summary>The three approval gears, in the order the UI offers them.</summary>

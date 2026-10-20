@@ -185,6 +185,32 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
+    public async Task A_background_act_is_remembered_like_any_other_successful_act()
+    {
+        // A click carried by a page's debug protocol reads "已在后台执行"; if the memory filter only knew the
+        // older phrases, a day of background work would leave nothing behind.
+        var (session, memory) = Open();
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User,
+            Source = InputSource.Text,
+            Body = "播放器里点一下播放",
+        });
+
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.ToolResult,
+            Source = InputSource.Text,
+            Body = "LeftClick · 已在后台执行（没有动你的前台窗口和指针） · 校验：画面已变化 · 目标 '播放' [button] @ 播放器",
+            Meta = new Dictionary<string, string> { ["name"] = "desktop_act", ["ok"] = "true" },
+        });
+
+        await new MemoryDistilHook(memory, session).RunAsync(Context("播放器里点一下播放"), default);
+
+        Assert.Single(await memory.ListAsync());
+    }
+
+    [Fact]
     public async Task A_all_failed_tool_turn_leaves_no_memory()
     {
         // Only executed-and-verified act results count: a refusal or an unverifiable click is not a fact the

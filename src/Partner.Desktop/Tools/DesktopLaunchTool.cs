@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Partner.Core.Agent.Tools;
+using Partner.Desktop.Input;
 using Partner.Desktop.Perception;
 
 namespace Partner.Desktop.Tools;
@@ -37,10 +38,20 @@ public sealed class DesktopLaunchTool : ITool
     /// </summary>
     private readonly CdpRegistry? _ports;
 
-    public DesktopLaunchTool(IReadOnlyList<string>? startMenuRoots = null, CdpRegistry? ports = null)
+    /// <summary>
+    /// Whether this launch may take the screen. Read at launch time, not construction: the mode is a setting
+    /// and it can change while the process runs. Null is the foreground behaviour every earlier build had.
+    /// </summary>
+    private readonly Func<InputMode>? _inputMode;
+
+    public DesktopLaunchTool(
+        IReadOnlyList<string>? startMenuRoots = null,
+        CdpRegistry? ports = null,
+        Func<InputMode>? inputMode = null)
     {
         _roots = startMenuRoots ?? DefaultRoots;
         _ports = ports;
+        _inputMode = inputMode;
     }
 
     public ToolSpec Spec { get; } = new(
@@ -128,15 +139,7 @@ internal static int? RequestedPort(string? arguments)
         string? arguments,
         CancellationToken ct)
     {
-        var info = new ProcessStartInfo(resolved.Path)
-        {
-            UseShellExecute = true,
-        };
-
-        if (!string.IsNullOrEmpty(arguments))
-        {
-            info.Arguments = arguments;
-        }
+        var background = (_inputMode?.Invoke() ?? InputMode.Foreground) != InputMode.Foreground;
 
         // A port the caller already asked for is used as it stands. Adding a second one would be a duplicate
         // flag, and which of the two an application honours is not worth guessing.
@@ -144,12 +147,28 @@ internal static int? RequestedPort(string? arguments)
         var port = asked ?? 0;
         var chromium = asked is not null || CdpRegistry.IsChromiumFamily(resolved.Path);
 
+        var commandLine = arguments;
         if (chromium && asked is null)
         {
             port = CdpRegistry.FreePort();
-            info.Arguments = string.IsNullOrEmpty(info.Arguments)
+            commandLine = string.IsNullOrEmpty(commandLine)
                 ? $"--remote-debugging-port={port}"
-                : $"{info.Arguments} --remote-debugging-port={port}";
+                : $"{commandLine} --remote-debugging-port={port}";
+        }
+
+        if (background)
+        {
+            return await LaunchInBackgroundAsync(target, resolved, commandLine, chromium, port, ct).ConfigureAwait(false);
+        }
+
+        var info = new ProcessStartInfo(resolved.Path)
+        {
+            UseShellExecute = true,
+        };
+
+        if (!string.IsNullOrEmpty(commandLine))
+        {
+            info.Arguments = commandLine;
         }
 
         using var started = Process.Start(info);
@@ -175,6 +194,48 @@ internal static int? RequestedPort(string? arguments)
         }
 
         return BuildResult(target, resolved.Note, started.Id, chromium: true, opened, port);
+    }
+
+    /// <summary>
+    /// The same launch, without taking the screen: started with "show, don't activate", its windows sent to the
+    /// bottom of the z-order, and the foreground handed back if the program grabbed it.
+    /// </summary>
+    private async Task<ToolResult> LaunchInBackgroundAsync(
+        string target,
+        (string Path, string? Note) resolved,
+        string? commandLine,
+        bool chromium,
+        int port,
+        CancellationToken ct)
+    {
+        // Behind other windows a browser decides it is covered and stops painting; keep it rendering so its
+        // picture and its page's timers stay live while nobody is looking at it.
+        if (chromium)
+        {
+            commandLine = BackgroundLaunch.WithRenderingFlags(commandLine);
+        }
+
+        var before = BackgroundLaunch.Snapshot.Take();
+        var processId = BackgroundLaunch.Start(resolved.Path, commandLine);
+
+        // Settled alongside the port wait rather than after it: the window appears while the port is still
+        // opening, and parking it late is parking it after the user already saw it.
+        var settling = BackgroundLaunch.SettleAsync(before, processId, ct);
+
+        var opened = false;
+        if (chromium && processId != 0 && _ports is not null)
+        {
+            opened = await _ports.WaitForPortAsync(processId, port, ct).ConfigureAwait(false);
+            if (opened)
+            {
+                _ports.Register(processId, port);
+            }
+        }
+
+        var placement = BackgroundLaunch.Describe(await settling.ConfigureAwait(false));
+        var result = BuildResult(target, resolved.Note, processId, chromium, opened, chromium ? port : 0);
+
+        return new ToolResult(result.Ok, $"{result.Content}\n{placement}");
     }
 
     /// <summary>

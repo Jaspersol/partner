@@ -212,9 +212,9 @@ describe('app shell', () => {
     await flushPromises()
 
     const tabs = wrapper.findAll('[data-test^=tab-]')
-    // Six: the queue is the composer's list now, not a page of its own, and 提示词 joined the capability
+    // Six: the queue is the composer's list now, not a page of its own, and agent joined the capability
     // pages — it edits what the agents are told, not the installation.
-    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '记忆', 'MCP', '技能', '提示词', '设置'])
+    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '记忆', 'MCP', '技能', 'agent', '设置'])
 
     for (const tab of tabs) {
       await tab.trigger('click')

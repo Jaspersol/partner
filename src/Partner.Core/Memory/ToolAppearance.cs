@@ -23,6 +23,7 @@ public static class ToolAppearance
     private static readonly string[] SuccessMarkers =
     {
         "已通过界面自动化执行",
+        "已在后台执行",
         "注入成功",
         "已按控件中心点执行",
     };

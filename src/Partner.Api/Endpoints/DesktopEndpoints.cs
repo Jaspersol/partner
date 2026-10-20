@@ -28,6 +28,7 @@ public static class DesktopEndpoints
                 enabled = settings.Enabled,
                 leaseTtlMs = settings.LeaseTtlMs,
                 approval = settings.Approval,
+                inputMode = settings.InputMode,
                 allowedWindowTitles = settings.AllowedWindowTitles,
 
                 // Server-owned: the banner announces "approve this window" with this number, so a change

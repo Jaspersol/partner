@@ -137,12 +137,20 @@ public sealed class ApiContext : IAsyncDisposable
         // that opened them.
         var cdpPorts = new CdpRegistry();
         var telemetry = new InMemoryTelemetrySink(clock);
+        //
+        // The input mode is read from the settings at each action and each launch rather than captured here:
+        // it is the one desktop setting that has to take effect while a turn is running (a user who sees the
+        // agent taking over their screen turns it down, and expects the very next action to obey).
+        Func<Partner.Desktop.Input.InputMode> inputMode = () =>
+            Partner.Desktop.Input.InputModes.Parse(settings.Load().Desktop.InputMode);
+
         var desktop = new DesktopAutomation(
             ttlPolicy: LeaseTtlPolicyFor(settings.Load()),
             cdp: new CdpDomSource(),
             cdpPorts: cdpPorts,
-            desktopLaunch: new DesktopLaunchTool(startMenuRoots: null, ports: cdpPorts),
-            telemetry: telemetry);
+            desktopLaunch: new DesktopLaunchTool(startMenuRoots: null, ports: cdpPorts, inputMode: inputMode),
+            telemetry: telemetry,
+            inputMode: inputMode);
 
         return await Task.FromResult(new ApiContext(
             workspace,

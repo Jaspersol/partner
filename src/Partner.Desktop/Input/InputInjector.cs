@@ -222,6 +222,45 @@ public sealed class InputInjector
     }
 
     /// <summary>
+    /// The most "focus" can mean when the screen is not to be taken over: a minimized window is restored
+    /// <i>without activating it</i> and sent behind the user's windows; a window that is already showing is left
+    /// exactly where it is.
+    /// <para>
+    /// There is no background equivalent of keyboard focus for a native window — the keyboard belongs to the
+    /// foreground. So this reports what it did and did not do, and the caller does not treat it as having
+    /// given the window the keyboard.
+    /// </para>
+    /// </summary>
+    public InjectionResult FocusInBackground(nint handle)
+    {
+        if (handle == 0)
+        {
+            return new InjectionResult(false, 0, "no window handle");
+        }
+
+        if (!NativeMethods.IsIconic(handle))
+        {
+            return new InjectionResult(true, 0, "bg.focus: 窗口没有最小化，前台没有动（后台模式下不会把它带到前台，也拿不到键盘焦点）");
+        }
+
+        NativeMethods.ShowWindow(handle, NativeMethods.SwShowNoActivate);
+
+        // The restore puts the window at the top of the z-order, which is the very thing being avoided.
+        NativeMethods.SetWindowPos(
+            handle,
+            NativeMethods.HwndBottom,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNomove | NativeMethods.SwpNosize | NativeMethods.SwpNoactivate);
+
+        return NativeMethods.IsIconic(handle)
+            ? new InjectionResult(false, 0, "bg.focus: 还原失败，窗口仍是最小化")
+            : new InjectionResult(true, 0, "bg.focus: 已还原但没有激活，窗口放在其他窗口后面");
+    }
+
+    /// <summary>
     /// Puts the window at the top of its own z-order band without activating it, moving it or changing
     /// whether it is always-on-top. Focus is not only "give it the keyboard": a window can be the active one
     /// and still be covered, and then the click the caller makes next lands on the cover.

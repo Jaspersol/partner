@@ -47,7 +47,7 @@ const NAV: NavItem[] = [
 
   // What the agents are told, and who they may hand work to. Between the capability pages and settings
   // because it edits the thing the capabilities are offered to, not the installation itself.
-  { key: 'prompts', label: '提示词', icon: 'prompt' },
+  { key: 'prompts', label: 'agent', icon: 'prompt' },
   { key: 'settings', label: '设置', icon: 'settings' },
 ]
 

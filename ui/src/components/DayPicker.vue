@@ -227,6 +227,13 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
   box-shadow: var(--glass-hi), var(--shadow-1);
   font-size: var(--fs-meta);
   white-space: nowrap;
+  opacity: 0.82;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+
+.day-trigger:hover,
+.day-trigger:focus-visible {
+  opacity: 1;
 }
 
 .day-panel {

@@ -154,7 +154,19 @@ public sealed class DesktopAutomation : IDisposable
     /// </para>
     /// </summary>
     public DesktopLaunchTool? LaunchTool => _launch
-        ?? (_cdpPorts is null ? null : new DesktopLaunchTool(startMenuRoots: null, ports: _cdpPorts));
+        ?? (_cdpPorts is null ? null : new DesktopLaunchTool(startMenuRoots: null, ports: _cdpPorts, inputMode: _inputMode));
+
+    /// <summary>
+    /// How far an action may go to reach its target, read at the moment of each action: the mode is a setting,
+    /// and it can change while the process runs.
+    /// </summary>
+    private readonly Func<InputMode> _inputMode;
+
+    /// <summary>The window's client area on the screen. Overridable so the page-coordinate conversion needs no desktop.</summary>
+    private readonly Func<nint, PixelRect?> _clientRect;
+
+    /// <summary>The mode in force now.</summary>
+    public InputMode Mode => _inputMode();
     private readonly List<double> _actionLatenciesMs = new();
 
     /// <summary>
@@ -222,8 +234,24 @@ public sealed class DesktopAutomation : IDisposable
         DesktopLaunchTool? desktopLaunch = null,
         Func<nint, string?>? integrityRefusal = null,
         ITelemetrySink? telemetry = null,
-        Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)>? walk = null)
+        Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)>? walk = null,
+        Func<InputMode>? inputMode = null,
+        Func<nint, PixelRect?>? clientRect = null)
     {
+        _inputMode = inputMode ?? (() => InputMode.Foreground);
+        _clientRect = clientRect ?? (handle =>
+        {
+            if (!NativeMethods.GetClientRect(handle, out var size))
+            {
+                return null;
+            }
+
+            var origin = new NativeMethods.Point { X = 0, Y = 0 };
+            return NativeMethods.ClientToScreen(handle, ref origin)
+                ? new PixelRect(origin.X, origin.Y, size.Width, size.Height)
+                : null;
+        });
+
         // Both seams exist so the observation's shared state can be exercised without a real desktop: a walk
         // that returns a chosen truncation reason is the only way to drive the concurrent case, and window
         // enumeration is a real API that would otherwise decide which windows the test is about.
@@ -623,12 +651,35 @@ public sealed class DesktopAutomation : IDisposable
         //
         // A page's own control comes first, because a Chromium window's controls are not UI Automation
         // controls at all: there, "the control" is a DOM node and the way to press it is to press that node.
+        var mode = _inputMode();
+        var background = mode != InputMode.Foreground;
+
+        // Typing into a page's own field starts with that field holding the focus: the page's debug protocol
+        // inserts text wherever the focus is, and the field the model named is not necessarily it.
+        if (background && kind == ActionKind.TypeText && parameters.ElementId is { Length: > 0 } fieldId)
+        {
+            await TryActDomAsync(handle, entityId, fieldId, ActionKind.Focus, ct).ConfigureAwait(false);
+        }
+
         var injection = parameters.ElementId is { Length: > 0 } domElementId
             ? await TryActDomAsync(handle, entityId, domElementId, kind, ct).ConfigureAwait(false) is { } dom
                 ? new InjectionResult(dom.Ok, 0, $"{dom.Method}：{dom.Detail}")
-                : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId))
-            : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId));
+                : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId), background)
+            : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId), background);
         var raised = false;
+
+        // The channels that leave the user's screen alone, before the one that takes it over. Null means none
+        // applies and the foreground path below is what is left; a refusal means the mode forbids that path.
+        if (injection is null && background)
+        {
+            var (carried, refusal) = await RouteInBackgroundAsync(mode, kind, handle, entity, parameters, ct).ConfigureAwait(false);
+            if (refusal is not null)
+            {
+                return Refused(actionId, observation.ObsId, entityId, kind, parameters, refusal);
+            }
+
+            injection = carried;
+        }
 
         if (injection is null)
         {
@@ -903,18 +954,214 @@ public sealed class DesktopAutomation : IDisposable
         string entityId,
         ActionKind kind,
         ActionParams parameters,
-        (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? known)
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? known,
+        bool background = false)
     {
         if (parameters.ElementId is not { Length: > 0 } elementId)
         {
             return null;
         }
 
-        var invocation = UiaTree.TryAct(handle, entityId, elementId, kind, known);
+        var invocation = UiaTree.TryAct(handle, entityId, elementId, kind, known, parameters, background);
 
         return invocation is null
             ? null
             : new InjectionResult(invocation.Ok, 0, $"{invocation.Method}：{invocation.Detail}");
+    }
+
+    /// <summary>
+    /// Whether an action on this window can be delivered without the window being in front.
+    /// <para>
+    /// The tool layer asks before it applies its foreground rule for keys and text: a key sent while another
+    /// window is in front goes to that other window, which is the whole reason the rule exists. A page reached
+    /// through its debug port is addressed directly, so the rule has nothing to protect there. In
+    /// <see cref="InputMode.Background"/> every action is answered here — carried or refused with a reason — so
+    /// the foreground rule is moot rather than something to satisfy.
+    /// </para>
+    /// </summary>
+    public bool DeliversInBackground(string entityId) => _inputMode() switch
+    {
+        InputMode.Background => true,
+        InputMode.Auto => HasPage(_lastObservation?.Find(entityId)),
+        _ => false,
+    };
+
+    /// <summary>Whether the window's process opened a debug port this agent can talk to.</summary>
+    private bool HasPage(UiEntity? entity) =>
+        entity is not null && _cdp is not null && _cdpPorts?.PortOf(entity.ProcessId) is not null;
+
+    /// <summary>
+    /// Carries an action by a channel that leaves the user's screen alone, or says why none can.
+    /// </summary>
+    /// <returns>
+    /// The result when a channel carried it; both null when none applies and the foreground path should run; a
+    /// refusal when none applies and the mode forbids the foreground path.
+    /// </returns>
+    private async Task<(InjectionResult? Injection, string? Refusal)> RouteInBackgroundAsync(
+        InputMode mode,
+        ActionKind kind,
+        nint handle,
+        UiEntity entity,
+        ActionParams parameters,
+        CancellationToken ct)
+    {
+        var hasPage = HasPage(entity);
+
+        switch (BackgroundRoute.Decide(mode, kind, hasPage))
+        {
+            case Route.RestoreOnly:
+                return (_injector.FocusInBackground(handle), null);
+
+            case Route.Refuse:
+                return (null, BackgroundRoute.Refusal(kind, entity.Label));
+
+            case Route.Cdp:
+                var carried = await CdpInputAsync(kind, handle, entity, parameters, ct).ConfigureAwait(false);
+                if (carried is not null)
+                {
+                    return (carried, null);
+                }
+
+                // The page stopped answering (it navigated, or the app closed its port). Auto falls back to the
+                // foreground; Background has nothing else it is allowed to try.
+                return mode == InputMode.Background
+                    ? (null, $"后台模式：'{entity.Label}' 的页面调试端口没有应答（页面刚跳转，或程序关掉了端口）：重新 desktop_observe 看它还在不在，"
+                        + "必要时关掉后用 desktop_launch 重新启动")
+                    : (null, null);
+
+            default:
+                return (null, null);
+        }
+    }
+
+    /// <summary>
+    /// An action delivered to the page itself. Null when the page cannot be reached, so the caller can tell a
+    /// channel that is down from a page that answered no.
+    /// </summary>
+    private async Task<InjectionResult?> CdpInputAsync(
+        ActionKind kind,
+        nint handle,
+        UiEntity entity,
+        ActionParams parameters,
+        CancellationToken ct)
+    {
+        if (_cdp is null || _cdpPorts?.PortOf(entity.ProcessId) is not { } port)
+        {
+            return null;
+        }
+
+        var title = entity.Label;
+        UiaInvocation? done;
+
+        switch (kind)
+        {
+            case ActionKind.Focus:
+                // A minimized window is restored first (without being activated); the page is then told to
+                // behave as the focused one, which is what lets key input reach it from the background.
+                var restored = NativeMethods.IsIconic(handle) ? _injector.FocusInBackground(handle) : null;
+                if (restored is { Ok: false })
+                {
+                    return restored;
+                }
+
+                done = await _cdp.FocusAsync(port, title, ct).ConfigureAwait(false);
+                break;
+
+            case ActionKind.KeyPress:
+                done = await _cdp.PressKeyAsync(port, title, parameters.VirtualKey, parameters.Modifiers, ct).ConfigureAwait(false);
+                break;
+
+            case ActionKind.TypeText:
+                done = await _cdp.TypeAsync(port, title, parameters.Text ?? string.Empty, ct).ConfigureAwait(false);
+                break;
+
+            case ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.DoubleClick
+                or ActionKind.Scroll or ActionKind.Drag:
+                var viewport = await _cdp.ViewportAsync(port, title, ct).ConfigureAwait(false);
+                if (viewport is null)
+                {
+                    return null;
+                }
+
+                var placed = PageCoordinates(handle, parameters, kind == ActionKind.Drag, viewport, out var failure);
+                if (placed is not { } points)
+                {
+                    return failure;
+                }
+
+                done = kind switch
+                {
+                    ActionKind.MovePointer => await _cdp.MoveAsync(port, title, points.From.X, points.From.Y, ct).ConfigureAwait(false),
+                    ActionKind.Scroll => await _cdp.WheelAsync(port, title, points.From.X, points.From.Y, parameters.ScrollDelta, ct).ConfigureAwait(false),
+                    ActionKind.Drag => await _cdp.DragAsync(port, title, points.From.X, points.From.Y, points.To.X, points.To.Y, ct).ConfigureAwait(false),
+                    _ => await _cdp.ClickAsync(
+                        port,
+                        title,
+                        points.From.X,
+                        points.From.Y,
+                        right: kind == ActionKind.RightClick,
+                        count: kind == ActionKind.DoubleClick || parameters.ClickCount == 2 ? 2 : 1,
+                        ct).ConfigureAwait(false),
+                };
+                break;
+
+            default:
+                return null;
+        }
+
+        return done is null ? null : new InjectionResult(done.Ok, 0, $"{done.Method}：{done.Detail}");
+    }
+
+    /// <summary>
+    /// The action's screen points as page CSS pixels, or the reason they cannot be.
+    /// <para>
+    /// A refusal here is an <see cref="InjectionResult"/> with <c>Ok = false</c>, not a null: the channel is up,
+    /// and what it was asked is something it cannot do safely. Guessing an origin is a click on the neighbouring
+    /// control with every step reporting success, so a geometry that does not fit is refused outright.
+    /// </para>
+    /// </summary>
+    private ((double X, double Y) From, (double X, double Y) To)? PageCoordinates(
+        nint handle,
+        ActionParams parameters,
+        bool needsEnd,
+        CdpDomSource.CdpViewport viewport,
+        out InjectionResult? failure)
+    {
+        failure = null;
+
+        if (_clientRect(handle) is not { } client)
+        {
+            failure = new InjectionResult(false, 0, "cdp.coordinates：读不到窗口的客户区，没法把屏幕坐标换算成页面坐标");
+            return null;
+        }
+
+        if (CdpInput.ViewportOrigin(client, viewport.InnerWidth, viewport.InnerHeight, viewport.DevicePixelRatio) is not { } origin)
+        {
+            failure = new InjectionResult(
+                false,
+                0,
+                $"cdp.coordinates：页面视口（{viewport.InnerWidth:0}×{viewport.InnerHeight:0} CSS 像素，缩放 {viewport.DevicePixelRatio:0.##}）"
+                + $"和窗口客户区（{client.Width}×{client.Height}）对不上，没法确定页面从屏幕哪里开始——"
+                + "不猜，免得点到旁边的控件。点名控件（elementId）不依赖这个换算");
+            return null;
+        }
+
+        var from = CdpInput.ToViewport(parameters.X, parameters.Y, origin, viewport.InnerWidth, viewport.InnerHeight, viewport.DevicePixelRatio);
+        var to = needsEnd
+            ? CdpInput.ToViewport(parameters.ToX, parameters.ToY, origin, viewport.InnerWidth, viewport.InnerHeight, viewport.DevicePixelRatio)
+            : from;
+
+        if (from is null || to is null)
+        {
+            failure = new InjectionResult(
+                false,
+                0,
+                $"cdp.coordinates：({parameters.X},{parameters.Y}) 不在页面内容上（在窗口边框、标题栏，或浏览器的标签栏/地址栏上）："
+                + "页面调试协议只能操作页面里的东西");
+            return null;
+        }
+
+        return (from.Value, to.Value);
     }
 
     /// <summary>
@@ -1054,6 +1301,7 @@ public sealed class DesktopAutomation : IDisposable
         ActionKind.LeftClick => parameters.ClickCount == 2
             ? _injector.DoubleClick(parameters.X, parameters.Y)
             : _injector.LeftClick(parameters.X, parameters.Y),
+        ActionKind.DoubleClick => _injector.DoubleClick(parameters.X, parameters.Y),
         ActionKind.RightClick => _injector.RightClick(parameters.X, parameters.Y),
         ActionKind.KeyPress => _injector.KeyPress(parameters.VirtualKey, parameters.Modifiers),
         ActionKind.TypeText => _injector.TypeText(parameters.Text ?? string.Empty),

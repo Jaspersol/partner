@@ -264,6 +264,9 @@ public sealed class DesktopActTool(
         + "x/y 落在哪个已观察窗口里，就作用于那个窗口；跨多个窗口有歧义时会拒绝并列出候选，此时要显式传 entityId。"
         + "点还必须真的能落到目标窗口上：若该点被别的窗口挡住（包括本应用自己的窗口），会拒绝并报出挡住的窗口——"
         + "先对目标 focus 把它带到前台，再点。"
+        + "若结果里写「已在后台执行」，说明这次没有动用户的前台窗口和指针：桌面输入模式为 auto / background 时，"
+        + "desktop_launch 启动的浏览器 / Electron 程序，坐标、按键、打字、滚轮都走页面协议在后台完成；"
+        + "background 下做不到后台的动作会被拒绝并列出替代办法——照着换通道，不要重试同一个动作。"
         + "offset 是控件内部的相对位置（0..1，左上角为 0,0）：拆分按钮的箭头这类「一个控件里两个作用」才需要它，"
         + "不传就是控件中心。"
         + "typeText 需要 text；keyPress 需要 virtualKey，可选 modifiers（[\"ctrl\"]、[\"ctrl\",\"shift\"] 这样的组合键）；"
@@ -489,7 +492,7 @@ public sealed class DesktopActTool(
             resolved = (target.Rect.X + target.Rect.Width / 2, target.Rect.Y + target.Rect.Height / 2);
         }
 
-        if (Guard(kind, target, resolved, arguments) is { } blocked)
+        if (Guard(kind, target, resolved, arguments, automation.DeliversInBackground(entityId)) is { } blocked)
         {
             // The refusal names the control that was resolved, when one was: the model's next decision
             // turns on whether it was aiming at that control — snap or named — not at the window overall.
@@ -705,7 +708,7 @@ public sealed class DesktopActTool(
     /// A missing point is refused rather than defaulted: the fields arrive from a model, and "no coordinates"
     /// silently becoming (0,0) is a click in the corner of the screen that nobody asked for.
     /// </remarks>
-    public static string? Guard(ActionKind kind, UiEntity target, (int X, int Y)? point, DesktopActArguments arguments) => kind switch
+    public static string? Guard(ActionKind kind, UiEntity target, (int X, int Y)? point, DesktopActArguments arguments, bool background = false) => kind switch
     {
         // A minimized window's rect is a 160×28 stub at -32000,-32000, so a point "inside" it passes every
         // containment check and still lands in the void. Focus first — that also restores it.
@@ -724,7 +727,7 @@ public sealed class DesktopActTool(
         ActionKind.Drag when point is null || arguments.ToX is null || arguments.ToY is null =>
             "drag 需要 x/y（起点）+ toX/toY（终点），都是屏幕坐标",
 
-        ActionKind.KeyPress or ActionKind.TypeText when !target.IsForeground =>
+        ActionKind.KeyPress or ActionKind.TypeText when !target.IsForeground && !background =>
             $"'{target.Label}' 不在前台，输入会打到别的窗口：先对它执行 focus",
 
         ActionKind.MovePointer or ActionKind.LeftClick or ActionKind.RightClick or ActionKind.Scroll
@@ -992,9 +995,14 @@ public sealed class DesktopActTool(
         }
 
         var viaPattern = action.Injection?.Detail.StartsWith("uia.", StringComparison.Ordinal) == true;
+
+        // The page's debug protocol and the no-activate restore are neither a pattern call nor injected input,
+        // and the difference is the one the user cares about: nothing of theirs was touched.
+        var viaBackground = action.Injection?.Detail.StartsWith("cdp.", StringComparison.Ordinal) == true
+            || action.Injection?.Detail.StartsWith("bg.", StringComparison.Ordinal) == true;
         var injected = action.Injection?.Ok == true
-            ? viaPattern ? "已通过界面自动化执行" : "注入成功"
-            : $"{(viaPattern ? "自动化调用失败" : "注入失败")}（{action.Injection?.Detail}）";
+            ? viaPattern ? "已通过界面自动化执行" : viaBackground ? "已在后台执行（没有动你的前台窗口和指针）" : "注入成功"
+            : $"{(viaPattern ? "自动化调用失败" : viaBackground ? "后台执行失败" : "注入失败")}（{action.Injection?.Detail}）";
 
         // The user's foreground window moved, so it is said out loud rather than left for them to notice.
         var raised = action.Raised ? " · 目标原来被挡住，已把它带到前台" : string.Empty;

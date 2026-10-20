@@ -228,6 +228,9 @@ internal static class NativeMethods
     /// <summary>Top of the z-order <i>within the window's own band</i> — it does not make a window topmost.</summary>
     internal static readonly nint HwndTop = 0;
 
+    /// <summary>Bottom of the z-order: behind every other window that is not itself bottom-most.</summary>
+    internal static readonly nint HwndBottom = 1;
+
     internal const uint SwpNosize = 0x0001;
     internal const uint SwpNomove = 0x0002;
     internal const uint SwpNoactivate = 0x0010;
@@ -342,6 +345,53 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool CloseHandle(nint handle);
+
+    // ---- launching without taking the foreground ------------------------------------------------
+
+    /// <summary>The client area's size (origin is always 0,0 — <see cref="ClientToScreen"/> places it).</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetClientRect(nint hWnd, out Rect rect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindow(nint hWnd);
+
+    /// <summary>Shown at its last size and position, without being activated. Also what restores a minimized
+    /// window without stealing the foreground.</summary>
+    internal const int SwShowNoActivate = 4;
+
+    internal const uint SeeMaskNoCloseProcess = 0x00000040;
+    internal const uint SeeMaskFlagNoUi = 0x00000400;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct ShellExecuteInfo
+    {
+        public int Size;
+        public uint Mask;
+        public nint Window;
+        public string? Verb;
+        public string File;
+        public string? Parameters;
+        public string? Directory;
+        public int Show;
+        public nint InstApp;
+        public nint IdList;
+        public string? Class;
+        public nint KeyClass;
+        public uint HotKey;
+        public nint IconOrMonitor;
+        public nint Process;
+    }
+
+    /// <summary>ShellExecute with a show command and a process handle. <c>Process.Start</c> offers neither: its
+    /// window styles have no "show without activating".</summary>
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "ShellExecuteExW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ShellExecuteEx(ref ShellExecuteInfo info);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern uint GetProcessId(nint process);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct MouseInput

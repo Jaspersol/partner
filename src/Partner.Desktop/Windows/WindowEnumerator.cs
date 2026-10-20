@@ -191,7 +191,7 @@ public static class WindowEnumerator
     /// The owning process's start time, as UTC ticks. Part of the window's identity because a handle alone is
     /// not: Windows recycles handles, and a restarted process reuses its name and often its pid range.
     /// </summary>
-    private static long? TryGetProcessStartTicks(uint processId)
+    internal static long? TryGetProcessStartTicks(uint processId)
     {
         try
         {

@@ -364,6 +364,124 @@ public sealed class CdpDomSource
         }
     }
 
+    /// <summary>What the page says about its own viewport — the numbers a screen point is converted with.</summary>
+    public sealed record CdpViewport(double InnerWidth, double InnerHeight, double DevicePixelRatio);
+
+    /// <summary>How long one batch of input commands may take. A drag is the longest and still well inside it.</summary>
+    internal static readonly TimeSpan InputTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The page's viewport size and scale, or null when the page cannot be reached. Asked at the moment of the
+    /// action, not remembered from the observation: a window resized in between would otherwise convert every
+    /// screen point with the old size.
+    /// </summary>
+    public async Task<CdpViewport?> ViewportAsync(int port, string? windowTitle = null, CancellationToken ct = default)
+    {
+        var reply = await EvaluateAsync(
+            port,
+            "{ w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio || 1 }",
+            windowTitle,
+            ct).ConfigureAwait(false);
+
+        if (reply is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(reply);
+            var root = document.RootElement;
+            return new CdpViewport(root.GetProperty("w").GetDouble(), root.GetProperty("h").GetDouble(), root.GetProperty("dpr").GetDouble());
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Sends input commands to the page the window names. Null when the page cannot be reached, so the caller
+    /// can tell "this channel is not available" from "the page refused" — the first is a reason to try another
+    /// channel, the second is an answer.
+    /// </summary>
+    internal async Task<UiaInvocation?> SendInputAsync(
+        int port,
+        string? windowTitle,
+        IReadOnlyList<CdpCommand> commands,
+        string method,
+        string okDetail,
+        CancellationToken ct)
+    {
+        try
+        {
+            var connection = await ConnectionAsync(port, windowTitle, ct).ConfigureAwait(false);
+            if (connection is null)
+            {
+                return null;
+            }
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(InputTimeout);
+
+            var outcome = await connection.RunAsync(commands, timeout.Token).ConfigureAwait(false);
+
+            return outcome switch
+            {
+                null => null,
+                { Length: 0 } => new UiaInvocation(true, method, okDetail),
+                _ => new UiaInvocation(false, method, $"页面调试协议拒绝了命令（{outcome}）"),
+            };
+        }
+        catch (Exception error) when (
+            error is WebSocketException or OperationCanceledException or JsonException or UriFormatException
+                or InvalidOperationException or ObjectDisposedException)
+        {
+            return null;
+        }
+    }
+
+    private const string Quiet = "（后台：页面调试协议，不需要前台，也不动用户的指针）";
+
+    /// <summary>
+    /// Tells the page to behave as the focused one without touching the window's real focus. This is "focus" for
+    /// a window that is not to be brought forward: key input reaches a page that believes it has the focus.
+    /// </summary>
+    public Task<UiaInvocation?> FocusAsync(int port, string? windowTitle, CancellationToken ct = default) =>
+        SendInputAsync(port, windowTitle, Array.Empty<CdpCommand>(), "cdp.focus", $"页面已设为聚焦{Quiet}", ct);
+
+    /// <summary>Clicks at a viewport point (CSS pixels): once, or twice for a double click.</summary>
+    public Task<UiaInvocation?> ClickAsync(int port, string? windowTitle, double x, double y, bool right, int count, CancellationToken ct = default) =>
+        SendInputAsync(port, windowTitle, CdpInput.ClickCommands(x, y, right, count), "cdp.click-at", $"已点击{Quiet}", ct);
+
+    /// <summary>Moves the page's pointer to a viewport point, so hover styles and tooltips happen.</summary>
+    public Task<UiaInvocation?> MoveAsync(int port, string? windowTitle, double x, double y, CancellationToken ct = default) =>
+        SendInputAsync(port, windowTitle, CdpInput.MoveCommands(x, y), "cdp.move", $"已移动页面指针{Quiet}", ct);
+
+    /// <summary>Turns the wheel at a viewport point; positive notches scroll up.</summary>
+    public Task<UiaInvocation?> WheelAsync(int port, string? windowTitle, double x, double y, int notches, CancellationToken ct = default) =>
+        SendInputAsync(port, windowTitle, CdpInput.WheelCommands(x, y, notches), "cdp.wheel", $"已滚动{Quiet}", ct);
+
+    /// <summary>Drags between two viewport points.</summary>
+    public Task<UiaInvocation?> DragAsync(int port, string? windowTitle, double fromX, double fromY, double toX, double toY, CancellationToken ct = default) =>
+        SendInputAsync(port, windowTitle, CdpInput.DragCommands(fromX, fromY, toX, toY), "cdp.drag", $"已拖拽{Quiet}", ct);
+
+    /// <summary>
+    /// Presses a key, with modifiers held around it. A key the protocol has no name for is refused here with
+    /// the key's code, not sent as something else.
+    /// </summary>
+    public Task<UiaInvocation?> PressKeyAsync(int port, string? windowTitle, ushort virtualKey, IReadOnlyList<ushort> modifiers, CancellationToken ct = default)
+    {
+        var commands = CdpInput.KeyCommands(virtualKey, modifiers);
+        return commands is null
+            ? Task.FromResult<UiaInvocation?>(new UiaInvocation(false, "cdp.key", $"页面调试协议没有对应虚拟键 {virtualKey} 的键名：不发，免得发成别的键"))
+            : SendInputAsync(port, windowTitle, commands, "cdp.key", $"已按键{Quiet}", ct);
+    }
+
+    /// <summary>Types text into whatever the page has focused.</summary>
+    public Task<UiaInvocation?> TypeAsync(int port, string? windowTitle, string text, CancellationToken ct = default) =>
+        SendInputAsync(port, windowTitle, CdpInput.TextCommands(text), "cdp.type", $"已输入 {text.Length} 个字符{Quiet}", ct);
+
     /// <summary>
     /// The first page on a debug port that matches what was asked for, falling back to the first page at all.
     /// Several tabs share one port, and without this rule they do not share it safely — a second window reads
@@ -586,52 +704,12 @@ public sealed class CdpDomSource
 
             try
             {
-                var id = ++_nextId;
-                var request = JsonSerializer.Serialize(new
-                {
-                    id,
-                    method = "Runtime.evaluate",
-                    @params = new { expression, returnByValue = true, awaitPromise = true },
-                });
+                var reply = await RoundTripAsync(
+                    "Runtime.evaluate",
+                    new { expression, returnByValue = true, awaitPromise = true },
+                    ct).ConfigureAwait(false);
 
-                await _socket
-                    .SendAsync(Encoding.UTF8.GetBytes(request), WebSocketMessageType.Text, true, ct)
-                    .ConfigureAwait(false);
-
-                var buffer = new byte[64 * 1024];
-                var message = new StringBuilder();
-
-                // A websocket *message* is one protocol message, and that is the framing that matters here: two
-                // replies read into one string are not parseable as a single document, so a buffer that kept
-                // accumulating them would fail every read after the first — which is exactly a walk followed by
-                // a press, the sequence this whole mechanism exists for.
-                for (var received = 0; received < 64; received++)
-                {
-                    var result = await _socket.ReceiveAsync(buffer, ct).ConfigureAwait(false);
-
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        return null;
-                    }
-
-                    message.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
-
-                    if (!result.EndOfMessage)
-                    {
-                        continue;
-                    }
-
-                    // The browser pushes its own events on this socket, so a message answering a different id
-                    // is stepped over rather than returned as this one's answer.
-                    if (TryTake(message.ToString(), id) is { } ready)
-                    {
-                        return ready;
-                    }
-
-                    message.Clear();
-                }
-
-                return null;
+                return reply is null ? null : Extract(reply);
             }
             catch (WebSocketException)
             {
@@ -645,9 +723,137 @@ public sealed class CdpDomSource
             }
         }
 
-        /// <summary>The reply to <paramref name="id"/>, if this message is one.</summary>
-        private static string? TryTake(string message, int id) =>
-            IsReplyTo(message, id) ? Extract(message) : null;
+        /// <summary>Whether the page has been told to behave as the focused one. Per connection: it dies with the socket.</summary>
+        private bool _focusEmulated;
+
+        /// <summary>
+        /// Sends a sequence of commands in order, holding the connection for the whole of it so another caller's
+        /// request cannot land between a press and its release.
+        /// <para>
+        /// The page is first told to behave as the focused one (<c>Emulation.setFocusEmulationEnabled</c>). A
+        /// window in the background is not focused as far as the browser is concerned, and a page that is not
+        /// focused ignores key input and drops <c>:focus</c> styling — which is the one thing that would turn
+        /// "works in the foreground" into "silently does nothing in the background". It changes what the page
+        /// believes, not what the user sees.
+        /// </para>
+        /// </summary>
+        /// <returns>Null when the connection died; otherwise the first protocol error, or an empty string for success.</returns>
+        public async Task<string?> RunAsync(IReadOnlyList<CdpCommand> commands, CancellationToken ct)
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+
+            try
+            {
+                if (!_focusEmulated)
+                {
+                    var enabled = await RoundTripAsync(
+                        "Emulation.setFocusEmulationEnabled", new { enabled = true }, ct).ConfigureAwait(false);
+                    if (enabled is null)
+                    {
+                        return null;
+                    }
+
+                    _focusEmulated = ErrorOf(enabled) is null;
+                }
+
+                foreach (var command in commands)
+                {
+                    var reply = await RoundTripAsync(command.Method, command.Params, ct).ConfigureAwait(false);
+                    if (reply is null)
+                    {
+                        return null;
+                    }
+
+                    if (ErrorOf(reply) is { } error)
+                    {
+                        return $"{command.Method}: {error}";
+                    }
+
+                    if (command.DelayMs > 0)
+                    {
+                        await Task.Delay(command.DelayMs, ct).ConfigureAwait(false);
+                    }
+                }
+
+                return string.Empty;
+            }
+            catch (WebSocketException)
+            {
+                return null;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        /// <summary>
+        /// One request and the message that answers it. The gate is the caller's: this assumes it is the only
+        /// request in flight.
+        /// </summary>
+        private async Task<string?> RoundTripAsync(string method, object parameters, CancellationToken ct)
+        {
+            var id = ++_nextId;
+            var request = JsonSerializer.Serialize(new { id, method, @params = parameters });
+
+            await _socket
+                .SendAsync(Encoding.UTF8.GetBytes(request), WebSocketMessageType.Text, true, ct)
+                .ConfigureAwait(false);
+
+            var buffer = new byte[64 * 1024];
+            var message = new StringBuilder();
+
+            // A websocket *message* is one protocol message, and that is the framing that matters here: two
+            // replies read into one string are not parseable as a single document, so a buffer that kept
+            // accumulating them would fail every read after the first — which is exactly a walk followed by
+            // a press, the sequence this whole mechanism exists for.
+            for (var received = 0; received < 64; received++)
+            {
+                var result = await _socket.ReceiveAsync(buffer, ct).ConfigureAwait(false);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    return null;
+                }
+
+                message.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+
+                if (!result.EndOfMessage)
+                {
+                    continue;
+                }
+
+                // The browser pushes its own events on this socket, so a message answering a different id
+                // is stepped over rather than returned as this one's answer.
+                if (IsReplyTo(message.ToString(), id))
+                {
+                    return message.ToString();
+                }
+
+                message.Clear();
+            }
+
+            return null;
+        }
+
+        /// <summary>The protocol error a reply carries, or null when it succeeded.</summary>
+        private static string? ErrorOf(string reply)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(reply);
+                if (!document.RootElement.TryGetProperty("error", out var error))
+                {
+                    return null;
+                }
+
+                return error.TryGetProperty("message", out var text) ? text.GetString() ?? "error" : "error";
+            }
+            catch (JsonException)
+            {
+                return "unreadable reply";
+            }
+        }
 
         /// <summary>
         /// Whether this message answers <paramref name="id"/>.

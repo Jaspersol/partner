@@ -578,8 +578,21 @@ export interface DesktopSettings {
   leaseTtlMs: number
   /** 'none' | 'dangerous' | 'all' — see ApprovalGear. */
   approval: string
+  /**
+   * 'foreground' | 'auto' | 'background' — how far an action may go to reach its target. Optional because a
+   * server older than the setting does not send it; the page then reads it as 'foreground', which is what
+   * that server does.
+   */
+  inputMode?: string
   allowedWindowTitles: string[]
 }
+
+/** The input modes, in the order the UI offers them. */
+export const INPUT_MODES = [
+  { value: 'foreground', label: '可以占用屏幕', hint: '需要时把窗口带到前台、移动鼠标（默认）' },
+  { value: 'auto', label: '尽量后台', hint: '能在后台完成就不打扰你，做不到再占用屏幕' },
+  { value: 'background', label: '只在后台', hint: '绝不占用屏幕；做不到的动作会被拒绝并说明原因' },
+] as const
 
 /** The three approval gears, in the order the UI offers them. */
 export const APPROVAL_GEARS = [

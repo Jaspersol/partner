@@ -2386,6 +2386,26 @@ describe('settings view', () => {
     await wrapper.find('[data-test="desktop-agent-fix"]').trigger('click')
     expect(wrapper.emitted('navigate')?.[0]).toEqual(['prompts'])
   })
+
+  it('offers how far the assistant may go to reach a window, defaulting to the old behaviour', async () => {
+    // A server older than the setting sends no inputMode; the page must read that as the behaviour that
+    // server has — taking the screen when needed — and not as a quiet switch to background-only.
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const select = wrapper.find<HTMLSelectElement>('[data-test="desktop-input-mode"]')
+    expect(select.exists()).toBe(true)
+    expect(select.element.value).toBe('foreground')
+    expect(select.findAll('option').map((option) => option.element.value)).toEqual(['foreground', 'auto', 'background'])
+
+    await select.setValue('auto')
+    expect(wrapper.find('[data-test="desktop-input-mode-hint"]').text()).toContain('做不到再占用屏幕')
+
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.desktop.inputMode).toBe('auto')
+  })
 })
 
 describe('prompts view', () => {

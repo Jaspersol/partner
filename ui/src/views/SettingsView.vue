@@ -7,6 +7,7 @@ import SaveBar from '../components/SaveBar.vue'
 import Segmented from '../components/Segmented.vue'
 import SettingRow from '../components/SettingRow.vue'
 import TestButton from '../components/TestButton.vue'
+import { INPUT_MODES } from '../api'
 import { normalizeGear } from '../gears'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
 import type { IconName } from '../icons'
@@ -61,7 +62,7 @@ const form = reactive<RuntimeSettings>({
     kws: { enabled: false, command: null, arguments: [] as string[], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
   model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
-  desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] as string[] },
+  desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', inputMode: 'foreground', allowedWindowTitles: [] as string[] },
 
   // Carried through untouched so the two capability pages' state survives a save made here. Not editable on
   // this page: a server row and a skill row need more room than a card in a settings form gives them.
@@ -296,6 +297,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     enabled: settings.desktop?.enabled ?? false,
     leaseTtlMs: settings.desktop?.leaseTtlMs ?? 15000,
     approval: settings.desktop?.approval ?? 'all',
+    inputMode: settings.desktop?.inputMode ?? 'foreground',
     allowedWindowTitles: settings.desktop?.allowedWindowTitles ?? [],
   })
   Object.assign(form.model, {
@@ -1057,6 +1059,15 @@ defineExpose({ refresh, hasUnsavedChanges })
                   data-test="desktop-allowed-titles"
                   @input="onTitlesInput"
                 />
+              </SettingRow>
+              <SettingRow label="操作时占用屏幕吗">
+                <template #hint>
+                  <span data-test="desktop-input-mode-hint">{{ INPUT_MODES.find((mode) => mode.value === form.desktop.inputMode)?.hint }}</span>
+                  点击和打字默认要把窗口带到前台、移动你的鼠标。选「尽量后台」后，由助手启动的浏览器和 Electron 程序可以在后台完成，其余照旧；选「只在后台」则做不到的动作直接拒绝。
+                </template>
+                <select v-model="form.desktop.inputMode" data-test="desktop-input-mode">
+                  <option v-for="mode in INPUT_MODES" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+                </select>
               </SettingRow>
             </div>
 

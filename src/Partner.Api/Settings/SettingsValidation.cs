@@ -78,6 +78,11 @@ public static class SettingsValidation
             errors.Add("tts.speed 不能为负");
         }
 
+        if (!Partner.Desktop.Input.InputModes.IsValid(settings.Desktop.InputMode))
+        {
+            errors.Add("desktop.inputMode 必须是 foreground / auto / background");
+        }
+
         ValidateEngine("local.tts", settings.Local.Tts, errors);
         ValidateEngine("local.kws", settings.Local.Kws, errors);
 
