@@ -229,4 +229,29 @@ public sealed class VoiceOutputHalfTests
         {
         }
     }
+
+    [Fact]
+    public async Task Interrupting_stops_the_sink_and_drops_what_has_not_been_spoken_until_the_person_speaks_again()
+    {
+        var sink = new RecordingSink();
+        var tts = new ScriptedTts();
+        using var output = TimedHalf(sink, tts, () => 0);
+
+        output.OnText("第一句话。第二句话。", sessionEventSeq: 1);
+        output.StopPlayback();
+
+        // The sentences that had not been synthesized are not spoken, and nothing more is synthesized.
+        await output.PlayPendingAsync();
+        Assert.Empty(tts.Requests);
+        Assert.All(output.Items, item => Assert.Equal(SpeechStatus.Failed, item.Status));
+
+        // The rest of the interrupted reply keeps arriving and is dropped as it does.
+        Assert.Empty(output.OnText("第三句话。", sessionEventSeq: 1));
+
+        // A new utterance from the person: the next reply is spoken again.
+        output.ResumeAfterInterruption();
+        Assert.Single(output.OnText("新的回答。", sessionEventSeq: 2));
+        await output.PlayPendingAsync();
+        Assert.Equal(new[] { "新的回答。" }, tts.Requests);
+    }
 }

@@ -26,6 +26,7 @@ public static class VoiceSettingsMapping
             DeviceId = settings.DeviceId,
             SilenceThreshold = settings.SilenceThreshold,
             WakeTone = settings.WakeTone,
+            BargeIn = settings.BargeIn,
             UtteranceGapMs = settings.UtteranceGapMs,
             WakeTimeoutMs = settings.WakeTimeoutMs,
             SentenceGapMs = settings.SentenceGapMs,
@@ -322,7 +323,8 @@ public sealed class VoiceHost : IAsyncDisposable
             _playbackGate,
             async utterance => await EnqueueAsync(utterance).ConfigureAwait(false),
             log: VoiceLog,
-            wakeTone: _sink is null ? null : PlayWakeTone);
+            wakeTone: _sink is null ? null : PlayWakeTone,
+            onBargeIn: () => _output?.StopPlayback());
 
         _input.Start();
         _inputLoop = RunInputAsync(_stop!.Token);
@@ -443,6 +445,9 @@ public sealed class VoiceHost : IAsyncDisposable
     {
         // Speaking is sending a new message, and a new message is what makes a pending withdrawal final.
         await _context.Withdrawals.CommitAsync().ConfigureAwait(false);
+
+        // Speaking again after talking over the assistant: what it says next answers this, so it is spoken.
+        _output?.ResumeAfterInterruption();
 
         await _context.Queue.EnqueueAsync(new InputItem
         {

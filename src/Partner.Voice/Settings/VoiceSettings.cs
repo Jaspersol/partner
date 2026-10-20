@@ -25,6 +25,15 @@ public sealed record VoiceInputSetting
     /// <summary>Fixed RMS gate. Must sit above the room noise floor or silence is never detected (R11).</summary>
     public double SilenceThreshold { get; init; } = 0.03;
 
+    /// <summary>
+    /// Speaking over the assistant stops it. Off by default: without echo cancellation a speaker in the room is
+    /// heard by the microphone, and the assistant would interrupt itself. Meant for headphones.
+    /// </summary>
+    public bool BargeIn { get; init; }
+
+    /// <summary>How long sound well above the silence threshold must last, while the assistant speaks, to count as interrupting.</summary>
+    public double BargeInMs { get; init; } = 600;
+
     /// <summary>G2: absolute silence that ends the utterance.</summary>
     public double UtteranceGapMs { get; init; } = 1200;
 

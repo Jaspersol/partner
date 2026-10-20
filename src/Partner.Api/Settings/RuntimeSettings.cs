@@ -322,6 +322,9 @@ public sealed record InputSettings
     /// <summary>唤醒命中时在输出设备上播放一声提示（叮）。跟输入同卡，因为它是唤醒门的附属反馈。</summary>
     public bool WakeTone { get; init; } = true;
 
+    /// <summary>Speaking over the assistant stops it. Off by default; for headphones (a speaker is heard by the mic).</summary>
+    public bool BargeIn { get; init; }
+
     /// <summary>Absolute silence that ends the utterance.</summary>
     public double UtteranceGapMs { get; init; } = 1200;
 

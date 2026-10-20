@@ -53,6 +53,7 @@ public sealed class VoiceOutputHalf : IDisposable
     // Streaming start: audio is latched until the first sentence (or a short lead) is ready, see BeginStream.
     private bool _streamHeld;
     private int _streamSynthesized;
+    private volatile bool _interrupted;
     private long _streamFirstDoneMs;
 
     /// <summary>
@@ -102,7 +103,7 @@ public sealed class VoiceOutputHalf : IDisposable
     /// <summary>Feeds assistant text and returns the sentences that became speakable.</summary>
     public IReadOnlyList<SpeechItem> OnText(string text, long sessionEventSeq)
     {
-        if (!Enabled || string.IsNullOrWhiteSpace(text))
+        if (_interrupted || !Enabled || string.IsNullOrWhiteSpace(text))
         {
             return Array.Empty<SpeechItem>();
         }
@@ -156,6 +157,36 @@ public sealed class VoiceOutputHalf : IDisposable
         _streamSynthesized = 0;
         _streamFirstDoneMs = 0;
     }
+
+    /// <summary>
+    /// Stops speaking now: playback ends, sentences still waiting to be synthesized are dropped, and the
+    /// half is ready for the next reply. The sentences already played stay in <see cref="Items"/> as played.
+    /// </summary>
+    public void StopPlayback()
+    {
+        // Set first: a synthesis already running on the output loop checks it before it hands the sink more audio.
+        _interrupted = true;
+        _sink.Stop();
+        _streamHeld = false;
+        _streamSynthesized = 0;
+
+        for (var i = 0; i < _items.Count; i++)
+        {
+            if (_items[i].Status is SpeechStatus.Queued or SpeechStatus.Synthesizing)
+            {
+                _items[i] = _items[i] with { Status = SpeechStatus.Failed, Error = "被用户打断" };
+            }
+        }
+
+        // The unfinished tail of the reply is not spoken either.
+        Segmenter.Flush();
+    }
+
+    /// <summary>
+    /// The person has spoken again, so the next reply is an answer to something new and is spoken normally. Until
+    /// then the rest of an interrupted reply is dropped as it arrives.
+    /// </summary>
+    public void ResumeAfterInterruption() => _interrupted = false;
 
     /// <summary>Releases a held stream whose first sentence has waited long enough for a second one.</summary>
     public void ReleaseStreamIfDue()
@@ -247,7 +278,7 @@ public sealed class VoiceOutputHalf : IDisposable
 
         while (true)
         {
-            var queued = _items.FirstOrDefault(i => i.Status == SpeechStatus.Queued);
+            var queued = _interrupted ? null : _items.FirstOrDefault(i => i.Status == SpeechStatus.Queued);
             if (queued is null)
             {
                 break;
@@ -264,6 +295,11 @@ public sealed class VoiceOutputHalf : IDisposable
                 var emitted = false;
                 await foreach (var chunk in _tts.SynthesizeAsync(item.Text, ct).ConfigureAwait(false))
                 {
+                    if (_interrupted)
+                    {
+                        break;
+                    }
+
                     if (chunk.Length == 0)
                     {
                         continue;

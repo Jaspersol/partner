@@ -58,6 +58,9 @@ public sealed class VoiceInputHalf : IDisposable
 
     private bool _running;
     private bool _wasGated;
+    private readonly Action? _onBargeIn;
+    private double? _loudSince;
+    private bool _bargedIn;
     private double _gateCursor;
     private bool _skippedHadSpeech;
     private bool _ambientChecked;
@@ -73,8 +76,10 @@ public sealed class VoiceInputHalf : IDisposable
         PlaybackGate gate,
         Func<VoiceUtterance, Task> onUtterance,
         Action<string>? log = null,
-        Action? wakeTone = null)
+        Action? wakeTone = null,
+        Action? onBargeIn = null)
     {
+        _onBargeIn = onBargeIn;
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _asr = asr ?? throw new ArgumentNullException(nameof(asr));
@@ -154,6 +159,10 @@ public sealed class VoiceInputHalf : IDisposable
         var now = Ring.Seconds;
         Detector.NoteNow(now);
 
+        // A transcription that finished since the last tick is taken first, so its result (and the detector's cursor)
+        // are settled before anything else in this tick looks at them.
+        await AbsorbAsrAsync(ct).ConfigureAwait(false);
+
         // 电平条每 100 ms 刷一次：每 tick 都算 0.5 s 窗是白烧 CPU。门内门外都照样刷新——
         // 播放期间的电平同样要如实上报，否则「助手说话时麦克风还活着吗」就没法回答。
         if (_levelTicks == 0)
@@ -200,6 +209,7 @@ public sealed class VoiceInputHalf : IDisposable
 
             var energy = Ring.Energy(0.05);
             _skippedHadSpeech |= energy >= _settings.SilenceThreshold;
+            NoteBargeIn(now, energy);
             return;
         }
 
@@ -210,6 +220,9 @@ public sealed class VoiceInputHalf : IDisposable
             await PollWakeAsync(ct).ConfigureAwait(false);
             return;
         }
+
+        _loudSince = null;
+        _bargedIn = false;
 
         if (_wasGated)
         {
@@ -443,6 +456,34 @@ public sealed class VoiceInputHalf : IDisposable
     private const double WakeCatchUpSpeechFraction = 0.5;
 
 
+    /// <summary>
+    /// While the assistant speaks, sustained sound well above the silence threshold means the person is talking
+    /// over it. "Well above" (twice the threshold) and "sustained" (<see cref="VoiceInputSetting.BargeInMs"/>) are
+    /// both there to keep the assistant's own voice, coming back through the room, from interrupting it.
+    /// Once per speaking turn: the host stops the playback and the gate opens by the normal path.
+    /// </summary>
+    private void NoteBargeIn(double now, double energy)
+    {
+        if (!_settings.BargeIn || _onBargeIn is null || _bargedIn || now < _toneUntil)
+        {
+            return;
+        }
+
+        if (energy < _settings.SilenceThreshold * 2)
+        {
+            _loudSince = null;
+            return;
+        }
+
+        _loudSince ??= now;
+        if ((now - _loudSince.Value) * 1000 >= _settings.BargeInMs)
+        {
+            _bargedIn = true;
+            _log("voice: the person spoke over the assistant — stopping playback");
+            _onBargeIn();
+        }
+    }
+
     public void Stop()
     {
         if (!_running)
@@ -496,14 +537,57 @@ public sealed class VoiceInputHalf : IDisposable
             return;
         }
 
+        // One request at a time, and the tick does not wait for it. The audio of a block that arrives while
+        // another is being transcribed is not lost: Busy keeps the cursor and the owed block, and the next tick
+        // asks again once the first has been absorbed.
+        if (_inFlight is not null)
+        {
+            Detector.OnSubmitted(end, decision.Pause, SubmissionOutcome.Busy);
+            return;
+        }
+
         AsrBusy = true;
         PendingBlock = true;
         _sessionAsrCalls++;
-        var watch = System.Diagnostics.Stopwatch.StartNew();
+        _inFlight = new InFlightAsr(decision, start, end, duration, System.Diagnostics.Stopwatch.StartNew(), _asr.TranscribeAsync(audio, ct));
+
+        // A fast ASR (or a scripted one) is already done: absorbing it now keeps one block, one tick.
+        await AbsorbAsrAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A transcription that has been started and whose result has not been taken yet.</summary>
+    private sealed record InFlightAsr(
+        PauseDecision Decision,
+        double Start,
+        double End,
+        double Duration,
+        System.Diagnostics.Stopwatch Watch,
+        Task<string> Text);
+
+    private InFlightAsr? _inFlight;
+
+    /// <summary>
+    /// Takes the result of the transcription in flight, if it has finished. Runs at the top of every tick, on the
+    /// tick's own thread: the detector and the utterance list are only ever touched there, which is what lets the
+    /// request itself run beside the ticks without a lock.
+    /// </summary>
+    private async Task AbsorbAsrAsync(CancellationToken ct)
+    {
+        if (_inFlight is not { } job || !job.Text.IsCompleted)
+        {
+            return;
+        }
+
+        _inFlight = null;
+        var decision = job.Decision;
+        var start = job.Start;
+        var end = job.End;
+        var duration = job.Duration;
+        var watch = job.Watch;
 
         try
         {
-            var text = await _asr.TranscribeAsync(audio, ct).ConfigureAwait(false);
+            var text = await job.Text.ConfigureAwait(false);
             watch.Stop();
 
             if (!string.IsNullOrWhiteSpace(text))
