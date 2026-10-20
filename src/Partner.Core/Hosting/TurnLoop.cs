@@ -99,7 +99,12 @@ public sealed class TurnLoop
     {
         ArgumentNullException.ThrowIfNull(item);
 
+        var turnWatch = System.Diagnostics.Stopwatch.StartNew();
         var settled = await ProcessCoreAsync(item).ConfigureAwait(false);
+        if (settled is not null)
+        {
+            Partner.Core.Diagnostics.LatencyTracker.Record("turn", turnWatch.Elapsed);
+        }
 
         // Told how the item ended, so a scheduled task can show what its last run did and not only that it was
         // delivered. Best effort: the item is already settled and this must not change that.

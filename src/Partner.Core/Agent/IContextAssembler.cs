@@ -60,6 +60,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     private readonly string _baseSystemPrompt;
     private readonly Func<string?>? _promptSource;
     private readonly IMediaStore? _media;
+    private readonly Func<int>? _reservedTokens;
 
     public SessionWindowContextAssembler(
         ISessionStore session,
@@ -68,8 +69,10 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         ITokenCounter? tokens = null,
         string? baseSystemPrompt = null,
         IMediaStore? media = null,
-        Func<string?>? promptSource = null)
+        Func<string?>? promptSource = null,
+        Func<int>? reservedTokens = null)
     {
+        _reservedTokens = reservedTokens;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(contextTokens);
 
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -139,7 +142,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         messages.AddRange(plan.Turns);
 
         // The current input is the last user message; the window above is history only.
-        var body = MessageBody(item.Payload, attachments);
+        var body = MessageBody(FrameBySource(item.Source, item.Payload), attachments);
         messages.Add(new LlmMessage(
             "user",
             volatileBlocks.Count == 0 ? body : WithBackground(volatileBlocks, body),
@@ -245,6 +248,9 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         // The system block is always sent: dropping it would remove the instructions the turn runs under.
         var systemTokens = await Cost(BasePrompt, ct).ConfigureAwait(false);
 
+        // The tool definitions are sent with every request and never appear in the log, so they come off the top too.
+        systemTokens += _reservedTokens?.Invoke() ?? 0;
+
         foreach (var prompt in injectedPrompts)
         {
             systemTokens += await Cost(prompt, ct).ConfigureAwait(false);
@@ -266,9 +272,23 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
         var budget = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput) - systemTokens - inputTokens;
 
+        // Priced once: the fit and the total below used to price the kept entries a second time, which for a counter
+        // backed by the model is a second round trip each.
+        var priced = new Dictionary<SessionViewItem, int>(ReferenceEqualityComparer.Instance);
+
+        async ValueTask<int> CostOf(SessionViewItem entry, CancellationToken token)
+        {
+            if (!priced.TryGetValue(entry, out var cost))
+            {
+                priced[entry] = cost = await Cost(CostText(entry), token).ConfigureAwait(false);
+            }
+
+            return cost;
+        }
+
         var kept = await ContextBudget.FitNewestFirstAsync(
             conversation,
-            (entry, token) => Cost(CostText(entry), token),
+            (entry, token) => CostOf(entry, token),
             Math.Max(0, budget),
             ct).ConfigureAwait(false);
 
@@ -285,7 +305,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         var turnTokens = 0;
         foreach (var entry in kept)
         {
-            turnTokens += await Cost(CostText(entry), ct).ConfigureAwait(false);
+            turnTokens += await CostOf(entry, ct).ConfigureAwait(false);
         }
 
         return new Plan(
@@ -320,6 +340,17 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
     private static string Trim(string? text) =>
         text is null ? string.Empty : text.Length <= TraceChars ? text : text[..TraceChars] + "…";
+
+    /// <summary>
+    /// Says where a message came from when that changes how it should be read: a sub-agent report is data, and a
+    /// timed task fires when the person is probably not there.
+    /// </summary>
+    internal static string FrameBySource(InputSource source, string body) => source switch
+    {
+        InputSource.Agent => AgentReportFrame.Wrap(body),
+        InputSource.Schedule => ScheduleFrame.Wrap(body),
+        _ => body,
+    };
 
     /// <summary>Whether the window carries this entry as conversation. The compactor folds by the same rule.</summary>
     internal static bool IsConversational(SessionViewItem entry) => entry.Kind.IsContent() || IsHandoffTrace(entry);
@@ -391,7 +422,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             openCalls = false;
             turns.Add(entry.Kind == SessionEventKind.Assistant
                 ? new LlmMessage("assistant", entry.Body)
-                : new LlmMessage("user", entry.Body));
+                : new LlmMessage("user", FrameBySource(entry.Source, entry.Body)));
         }
 
         return turns;

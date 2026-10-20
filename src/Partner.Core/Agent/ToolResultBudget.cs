@@ -126,6 +126,25 @@ public static class ToolResultBudget
         return folded;
     }
 
+    /// <summary>
+    /// What the tool definitions take of the window. They ride on every request beside the messages and are never
+    /// in the session log, so a budget that counts only messages claims room the schemas have already used.
+    /// </summary>
+    public static int SchemaTokens(IEnumerable<Partner.Core.Agent.Tools.ToolSpec> specs, ITokenCounter counter)
+    {
+        ArgumentNullException.ThrowIfNull(specs);
+        ArgumentNullException.ThrowIfNull(counter);
+
+        var total = 0;
+        foreach (var spec in specs)
+        {
+            total += counter.Count(spec.Name) + counter.Count(spec.Description) + counter.Count(spec.ParametersJsonSchema)
+                + ContextBudget.MessageOverheadTokens;
+        }
+
+        return total;
+    }
+
     /// <summary>The conversation's size: text, tool-call arguments, framing and a flat price per image.</summary>
     public static int Measure(IReadOnlyList<LlmMessage> conversation, ITokenCounter counter)
     {

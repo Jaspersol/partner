@@ -26,6 +26,14 @@ public sealed record HttpLlmOptions
     /// nothing. See <see cref="ReasoningEfforts"/> for why values are passed through rather than clamped.
     /// </summary>
     public string ReasoningEffort { get; init; } = ReasoningEfforts.Default;
+
+    /// <summary>
+    /// Marks the system message as cacheable (<c>cache_control: ephemeral</c> on its content part). The system
+    /// message is the stable prefix of every request, and endpoints that price or speed up by prompt caching
+    /// (Anthropic-compatible gateways, OpenRouter for Claude and Gemini) only apply it where it is marked. Off by
+    /// default: a server that does not know the field may reject the part array outright.
+    /// </summary>
+    public bool PromptCacheMarkers { get; init; }
 }
 
 /// <summary>
@@ -377,6 +385,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         var reasoning = new StringBuilder();
         var calls = new SortedDictionary<int, ToolCallBuilder>();
         var finish = "stop";
+        var promptTokens = 0;
+        var completionTokens = 0;
         var nextAnonymousIndex = 0;
 
         using var stream = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
@@ -410,6 +420,13 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             {
                 // A frame that is not a chunk we understand (a server's own extension) must not kill the turn.
                 continue;
+            }
+
+            // The usage rides on a frame of its own (empty choices) at the end of the stream, when the server sends it.
+            if (chunk?.Usage is { } usage)
+            {
+                promptTokens = usage.PromptTokens;
+                completionTokens = usage.CompletionTokens;
             }
 
             if (chunk?.Choices is not { Count: > 0 })
@@ -486,6 +503,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             text.Length == 0 ? null : text.ToString(),
             assembled,
             finish,
+            PromptTokens: promptTokens,
+            CompletionTokens: completionTokens,
             Reasoning: reasoning.Length == 0 ? null : reasoning.ToString());
     }
 
@@ -500,7 +519,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
 
     private RequestBody BuildBody(LlmRequest request) => new(
         _options.Model,
-        request.Messages.Select(ToMessage).ToList(),
+        request.Messages.Select(message => ToMessage(message, _options.PromptCacheMarkers)).ToList(),
         request.Tools.Count == 0
             ? null
             : request.Tools.Select(tool => new ToolPayload(
@@ -520,9 +539,11 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         return document.RootElement.Clone();
     }
 
-    private static OutboundMessage ToMessage(LlmMessage message) => new(
+    private static OutboundMessage ToMessage(LlmMessage message, bool cacheMarkers) => new(
         message.Role,
-        ToContent(message),
+        cacheMarkers && message.Role == "system" && !string.IsNullOrEmpty(message.Content)
+            ? new List<OutboundContentPart> { new("text", message.Content, null, new OutboundCacheControl("ephemeral")) }
+            : ToContent(message),
         message.ToolCalls is null or { Count: 0 }
             ? null
             : message.ToolCalls.Select(call => new OutboundToolCall(
@@ -587,6 +608,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             choice.Message.Content,
             calls,
             choice.FinishReason ?? "stop",
+            PromptTokens: payload.Usage?.PromptTokens ?? 0,
+            CompletionTokens: payload.Usage?.CompletionTokens ?? 0,
             Reasoning: string.IsNullOrEmpty(reasoning) ? null : reasoning);
     }
 
@@ -623,7 +646,13 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         string? ReasoningEffort,
         bool? Stream = null);
 
-    private sealed record OutboundContentPart(string Type, string? Text, OutboundImageUrl? ImageUrl);
+    private sealed record OutboundContentPart(
+        string Type,
+        string? Text,
+        OutboundImageUrl? ImageUrl,
+        OutboundCacheControl? CacheControl = null);
+
+    private sealed record OutboundCacheControl(string Type);
 
     private sealed record OutboundImageUrl(string Url);
 
@@ -648,9 +677,12 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
 
     private sealed record ModelEntry(string Id);
 
-    private sealed record ChatResponse(IReadOnlyList<ChatChoice>? Choices);
+    private sealed record ChatResponse(IReadOnlyList<ChatChoice>? Choices, ChatUsage? Usage = null);
 
-    private sealed record ChatChunk(IReadOnlyList<ChatChunkChoice>? Choices);
+    private sealed record ChatChunk(IReadOnlyList<ChatChunkChoice>? Choices, ChatUsage? Usage = null);
+
+    /// <summary>What the server says the request cost. The prompt side is what the local estimate is checked against.</summary>
+    private sealed record ChatUsage(int PromptTokens, int CompletionTokens);
 
     private sealed record ChatChunkChoice(ChatDelta? Delta, string? FinishReason);
 

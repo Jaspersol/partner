@@ -1,4 +1,5 @@
 using System.Text;
+using Partner.Core.Agent.Delegation;
 
 namespace Partner.Core.Agent;
 
@@ -79,7 +80,8 @@ public static class AgentPrompts
         text.Line("派活之后立刻告诉用户已经交给谁，不要等；结果会作为一条以“[子 agent”开头的消息回到这里，可以用 agent_job_status 查进度。");
         text.Line("收到“无法执行”时：用人话把失败原因告诉用户（引用其中的错误），不要说成已经完成，也不要把同一个目标原样再委派一遍；"
             + "只有用户补充了新信息或明确要求再试，才再次委派。");
-        text.Append("收到“已完成”时：依据其中的结论和证据回复；没有证据支撑的“成功”要说不确定。");
+        text.Line("收到“已完成”时：依据其中的结论和证据回复；没有证据支撑的“成功”要说不确定。");
+        text.Append(AgentReportFrame.Rule);
         return text.ToString();
     }
 

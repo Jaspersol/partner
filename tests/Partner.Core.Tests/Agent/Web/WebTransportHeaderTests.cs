@@ -122,4 +122,15 @@ public sealed class WebTransportHeaderTests
         Assert.Equal("zh-CN,zh;q=0.9,en;q=0.8", WebTransport.AcceptLanguageFor(new Uri("https://en.wikipedia.org/wiki/X")));
         Assert.Equal("zh-CN,zh;q=0.9,en;q=0.8", WebTransport.AcceptLanguageFor(new Uri("https://example.com/")));
     }
+
+    [Fact]
+    public void A_data_request_remembers_its_kind_so_a_redirect_hop_stays_a_data_request()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/v1");
+
+        WebTransport.ApplyHeaders(request, "en;q=0.9", WebRequestKind.Data);
+
+        Assert.True(request.Options.TryGetValue(WebTransport.KindKey, out var kind));
+        Assert.Equal(WebRequestKind.Data, kind);
+    }
 }

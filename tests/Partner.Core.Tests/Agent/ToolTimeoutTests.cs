@@ -101,4 +101,20 @@ public sealed class ToolTimeoutTests : IDisposable
 
         Assert.Equal("finished", body);
     }
+
+    [Fact]
+    public void Latencies_are_summarised_per_name()
+    {
+        Partner.Core.Diagnostics.LatencyTracker.Reset();
+        foreach (var ms in new[] { 100.0, 200, 300, 400, 1000 })
+        {
+            Partner.Core.Diagnostics.LatencyTracker.Record("probe", ms);
+        }
+
+        var probe = Assert.Single(Partner.Core.Diagnostics.LatencyTracker.Snapshot(), l => l.Name == "probe");
+        Assert.Equal(5, probe.Count);
+        Assert.Equal(300, probe.P50Ms);
+        Assert.Equal(1000, probe.P95Ms);
+        Assert.Equal(1000, probe.LastMs);
+    }
 }

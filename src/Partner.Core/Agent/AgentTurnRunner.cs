@@ -274,7 +274,10 @@ public sealed class AgentTurnRunner
 
                 // What the tool loop may grow the conversation to. The assembler only fitted the history the turn
                 // started from; from here every tool result is appended by this loop, so this loop prices them.
-                var promptBudget = ContextBudget.PromptBudget(_options.ContextWindowTokens, _options.MaxTokens);
+                var promptBudget = Math.Max(
+                    1,
+                    ContextBudget.PromptBudget(_options.ContextWindowTokens, _options.MaxTokens)
+                        - ToolResultBudget.SchemaTokens(_tools.Specs, _tokens));
                 var resultCap = ToolResultBudget.ResultCap(promptBudget);
 
                 // Where the newest step begins. Older tool results may be folded; this step's never are.
@@ -349,6 +352,15 @@ public sealed class AgentTurnRunner
                     var response = streamed is null
                         ? await _llm.CompleteAsync(request, ct).ConfigureAwait(false)
                         : await _llm.StreamWithReasoningAsync(request, streamed, reasoningDelta!, ct).ConfigureAwait(false);
+
+                    // The server's own count is the only ground truth for the estimate; fed back so the next budget is
+                    // closer. Taken before the answer is appended, because it describes what was sent.
+                    if (response.PromptTokens > 0 && _tokens is ICalibratedTokenCounter calibrated)
+                    {
+                        calibrated.Calibrate(
+                            ToolResultBudget.Measure(request.Messages, _tokens) + ToolResultBudget.SchemaTokens(_tools.Specs, _tokens),
+                            response.PromptTokens);
+                    }
 
                     // Reasoning is recorded, not just shown live. A thinking row that only existed while the
                     // model was writing it would vanish the moment it answered — and "why did it do that" is

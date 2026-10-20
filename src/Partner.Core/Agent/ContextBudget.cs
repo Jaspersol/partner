@@ -52,9 +52,11 @@ public static class ContextBudget
             }
 
             used += price;
-            kept.Insert(0, items[i]);
+            kept.Add(items[i]);
         }
 
+        // Collected newest first and turned around once: inserting at the front is a shift of everything kept so far.
+        kept.Reverse();
         return kept;
     }
 

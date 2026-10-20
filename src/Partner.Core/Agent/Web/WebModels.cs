@@ -174,9 +174,6 @@ public sealed record SearchQuery(string Text, string Kind = SearchKinds.General,
     /// </summary>
     public string CacheKey => string.Join('\u0000', Text.Trim(), Kind, Recency ?? "-", Limit.ToString());
 
-    /// <summary>The words of the query, in order, with punctuation dropped. What the decoy check counts against.</summary>
-    public IReadOnlyList<string> Words { get; } = Text
-        .Split([' ', '\t', '\n', '\r', '，', '。', '、', '？', '！', '；', '：', ',', '.', '?', '!', ';', ':', '(', ')', '（', '）', '"', '\'', '“', '”'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }
 
 /// <summary>
@@ -255,9 +252,6 @@ public sealed record RateLimit(int PerMinute, TimeSpan QueueFor)
 {
     /// <summary>No declared limit.</summary>
     public static RateLimit Unlimited { get; } = new(0, TimeSpan.Zero);
-
-    /// <summary>Never queue: ask now or not at all.</summary>
-    public static RateLimit Skip(TimeSpan queueFor) => new(0, queueFor);
 }
 
 /// <summary>What parsing a response produced, before anyone has judged whether it is any good.</summary>

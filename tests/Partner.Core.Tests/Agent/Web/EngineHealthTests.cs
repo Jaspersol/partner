@@ -206,6 +206,23 @@ public sealed class EngineHealthTests
     }
 
     [Fact]
+    public void A_batch_recorded_without_saving_writes_nothing_until_it_is_saved()
+    {
+        using var workspace = new TempWorkspace();
+        var health = NewHealth(workspace);
+        var file = Path.Combine(workspace.Root, "web", "health.json");
+
+        Assert.True(health.Record(FakeEngines.Failed(Engine(), "timeout after 8s"), companionAnswered: true, save: false));
+        Assert.True(health.Record(FakeEngines.Unparseable(Engine()), companionAnswered: true, save: false));
+        Assert.False(File.Exists(file), "recording alone should not touch the disk");
+
+        health.Save();
+
+        Assert.True(File.Exists(file));
+        Assert.Equal(2, EngineHealth.Load(workspace.Root, () => Now).Snapshot().Single(entry => entry.Id == "duckduckgo").Strikes);
+    }
+
+    [Fact]
     public void Record_SurvivesARestart()
     {
         using var workspace = new TempWorkspace();

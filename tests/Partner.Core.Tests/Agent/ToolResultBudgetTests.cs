@@ -271,4 +271,60 @@ public sealed class ToolResultBudgetTests : IDisposable
             Assert.Equal(new TurnLoopStats(1, 0, 0, 0), loop.Stats);
         }
     }
+
+    [Fact]
+    public void Tool_definitions_are_priced_into_the_window()
+    {
+        var specs = new[]
+        {
+            new ToolSpec("file_read", new string('说', 200), "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"),
+            new ToolSpec("clock", "what time is it", "{\"type\":\"object\"}"),
+        };
+
+        var tokens = ToolResultBudget.SchemaTokens(specs, _counter);
+
+        Assert.True(tokens > 200, $"the Chinese description alone is 200 tokens, got {tokens}");
+        Assert.Equal(0, ToolResultBudget.SchemaTokens([], _counter));
+    }
+
+    [Fact]
+    public void The_estimate_moves_toward_what_the_server_charged_and_stays_within_bounds()
+    {
+        var counter = new ApproximateTokenCounter();
+        var text = new string('a', 4000); // ~1000 tokens at the default scale
+
+        var before = counter.Count(text);
+        Assert.InRange(before, 990, 1010);
+
+        // The server keeps saying it cost 50% more than we thought.
+        for (var i = 0; i < 12; i++)
+        {
+            counter.Calibrate(counter.Count(text), (int)(counter.Count(text) * 1.5));
+        }
+
+        Assert.True(counter.Scale > 1.3, $"scale {counter.Scale} should have followed the server up");
+        Assert.True(counter.Count(text) > before * 1.3);
+
+        // A tiny request says nothing about the ratio, and an absurd one cannot run the scale away.
+        var steady = counter.Scale;
+        counter.Calibrate(10, 5000);
+        Assert.Equal(steady, counter.Scale);
+        for (var i = 0; i < 200; i++)
+        {
+            counter.Calibrate(1000, 100_000);
+        }
+
+        Assert.True(counter.Scale <= 4.0);
+    }
+
+    [Fact]
+    public void A_dual_arm_counter_calibrates_its_local_side()
+    {
+        var local = new ApproximateTokenCounter();
+        var dual = new DualArmTokenCounter(new ApproximateTokenCounter(), local);
+
+        dual.Calibrate(1000, 2000);
+
+        Assert.True(local.Scale > 1.0);
+    }
 }

@@ -41,6 +41,19 @@ public sealed class WebSearchTool(WebSearchService service) : ITimedTool
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            return await InvokeCoreAsync(argumentsJson, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            Partner.Core.Diagnostics.LatencyTracker.Record("search", watch.Elapsed);
+        }
+    }
+
+    private async Task<ToolResult> InvokeCoreAsync(string argumentsJson, CancellationToken ct)
+    {
         string? query;
         string? kind;
         string? recency;

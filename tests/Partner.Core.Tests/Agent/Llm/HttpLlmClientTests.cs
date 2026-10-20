@@ -732,4 +732,62 @@ public sealed class HttpLlmClientTests
             Environment.SetEnvironmentVariable(HttpLlmClient.ModelVariable, previousModel);
         }
     }
+
+    [Fact]
+    public async Task The_system_message_is_marked_cacheable_only_when_asked()
+    {
+        const string Reply = """{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}""";
+        var messages = new[] { new LlmMessage("system", "你是助手。"), new LlmMessage("user", "hi") };
+
+        var plain = new StubHandler(HttpStatusCode.OK, Reply);
+        await new HttpLlmClient(new HttpClient(plain), new HttpLlmOptions { BaseUrl = "https://example.test/v1", Model = "m" })
+            .CompleteAsync(Request(messages));
+        using (var body = JsonDocument.Parse(plain.RequestBody!))
+        {
+            // Untouched: the system message is the plain string every server understands.
+            Assert.Equal(JsonValueKind.String, body.RootElement.GetProperty("messages")[0].GetProperty("content").ValueKind);
+        }
+
+        var marked = new StubHandler(HttpStatusCode.OK, Reply);
+        await new HttpLlmClient(
+                new HttpClient(marked),
+                new HttpLlmOptions { BaseUrl = "https://example.test/v1", Model = "m", PromptCacheMarkers = true })
+            .CompleteAsync(Request(messages));
+        using var markedBody = JsonDocument.Parse(marked.RequestBody!);
+        var system = markedBody.RootElement.GetProperty("messages")[0].GetProperty("content");
+        Assert.Equal(JsonValueKind.Array, system.ValueKind);
+        Assert.Equal("你是助手。", system[0].GetProperty("text").GetString());
+        Assert.Equal("ephemeral", system[0].GetProperty("cache_control").GetProperty("type").GetString());
+
+        // Only the system message carries the marker; the user turn is still a plain string.
+        Assert.Equal(JsonValueKind.String, markedBody.RootElement.GetProperty("messages")[1].GetProperty("content").ValueKind);
+    }
+
+    [Fact]
+    public async Task The_servers_prompt_token_count_is_carried_on_the_response()
+    {
+        var buffered = new StubHandler(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1234,"completion_tokens":7}}""");
+        var response = await Build(buffered).CompleteAsync(Request(new LlmMessage("user", "hi")));
+        Assert.Equal(1234, response.PromptTokens);
+        Assert.Equal(7, response.CompletionTokens);
+
+        var streamed = new SseHandler(
+            Frame("""{"choices":[{"delta":{"content":"你好"}}]}"""),
+            Frame("""{"choices":[{"delta":{},"finish_reason":"stop"}]}"""),
+            Frame("""{"choices":[],"usage":{"prompt_tokens":4321,"completion_tokens":9}}"""),
+            "data: [DONE]");
+        var final = await Build(streamed).StreamAsync(Request(new LlmMessage("user", "hi")), _ => { });
+        Assert.Equal(4321, final.PromptTokens);
+        Assert.Equal("你好", final.Text);
+    }
+
+    [Fact]
+    public async Task A_server_that_reports_no_usage_leaves_the_count_at_zero()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}""");
+
+        Assert.Equal(0, (await Build(handler).CompleteAsync(Request(new LlmMessage("user", "hi")))).PromptTokens);
+    }
 }

@@ -11,6 +11,9 @@ namespace Partner.Core.Sessions;
 public sealed record CompactionResult(int FoldedEvents, long? SummarySeq, string Reason)
 {
     public bool Compacted => SummarySeq is not null;
+
+    /// <summary>The summary that was written, so a caller can carry what it says somewhere else (see <see cref="SummaryFacts"/>).</summary>
+    public string? SummaryText { get; init; }
 }
 
 /// <summary>
@@ -169,7 +172,10 @@ public sealed class SessionCompactor
             hidden += (int)(to - from + 1);
         }
 
-        return new CompactionResult(candidates.Count, summarySeq, $"已压缩 {candidates.Count} 条 → #{summarySeq}（隐藏 {hidden} 条）");
+        return new CompactionResult(candidates.Count, summarySeq, $"已压缩 {candidates.Count} 条 → #{summarySeq}（隐藏 {hidden} 条）")
+        {
+            SummaryText = single,
+        };
     }
 
     /// <summary>Groups sorted seqs into the ranges a retraction can express.</summary>

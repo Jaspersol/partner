@@ -63,7 +63,7 @@ public sealed class WebTransport : IDisposable
     public static readonly TimeSpan EngineTimeout = TimeSpan.FromSeconds(8);
 
     /// <summary>Where <see cref="ApplyHeaders"/> records what kind of request it dressed, so a redirect can keep it.</summary>
-    private static readonly HttpRequestOptionsKey<WebRequestKind> KindKey = new("partner.web.kind");
+    internal static readonly HttpRequestOptionsKey<WebRequestKind> KindKey = new("partner.web.kind");
 
     private const string BrowserUserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -116,6 +116,7 @@ public sealed class WebTransport : IDisposable
 
         var current = request;
         var owns = false;
+        string? previousHost = null;
 
         try
         {
@@ -145,7 +146,14 @@ public sealed class WebTransport : IDisposable
 
                 // Waited for before the request goes out, not before it is built: the gate is about what the
                 // other end sees. A cancelled wait leaves nothing open, which is why it is outside the using.
-                await _hosts.WaitAsync(uri.Host, ct).ConfigureAwait(false);
+                // A redirect that stays on the host just answered is the same navigation, not a second visitor: the gap
+                // is for separate requests. Only the first hop, or a hop to a different host, is made to wait.
+                if (!string.Equals(previousHost, uri.Host, StringComparison.OrdinalIgnoreCase))
+                {
+                    await _hosts.WaitAsync(uri.Host, ct).ConfigureAwait(false);
+                }
+
+                previousHost = uri.Host;
 
                 using var attempt = owns ? current : null;
                 owns = true;
@@ -349,6 +357,10 @@ public sealed class WebTransport : IDisposable
             request.Headers.TryAddWithoutValidation("User-Agent", IdentifiedUserAgent);
             request.Headers.TryAddWithoutValidation("Accept", accept ?? "*/*");
             request.Headers.TryAddWithoutValidation("Accept-Language", acceptLanguage);
+
+            // Recorded here as well: a redirect hop reads the kind back, and a missing one means "page", which would
+            // send a browser's headers to an interface that asked to be called by name.
+            request.Options.Set(KindKey, kind);
             return;
         }
 

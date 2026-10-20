@@ -49,7 +49,9 @@ public sealed class Merger
 
         foreach (var hit in hits)
         {
-            var group = groups.FirstOrDefault(candidate => candidate.Accepts(hit));
+            // Worked out once per hit, not once per group it is compared against.
+            var identity = UrlIdentity(hit.Url);
+            var group = groups.FirstOrDefault(candidate => candidate.Accepts(hit, identity));
             if (group is null)
             {
                 groups.Add(new Group(hit));
@@ -92,9 +94,9 @@ public sealed class Merger
             Add(hit);
         }
 
-        public bool Accepts(SearchHit hit)
+        public bool Accepts(SearchHit hit, string identity)
         {
-            if (UrlIdentity(hit.Url) == _identity)
+            if (identity == _identity)
             {
                 return true;
             }

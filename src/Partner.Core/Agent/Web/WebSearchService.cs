@@ -186,13 +186,20 @@ public sealed class WebSearchService : IDisposable
     private void RecordHealth(IReadOnlyList<EngineAttempt> attempts)
     {
         var answered = attempts.Count(attempt => attempt.Answered);
+        var changed = false;
 
         foreach (var attempt in attempts)
         {
             // The control the silent-empty rule asks for is another engine in the same batch that did find
             // something — the engine's own result cannot vouch for itself.
             var companion = (answered - (attempt.Answered ? 1 : 0)) > 0;
-            _health.Record(attempt, companion);
+            changed |= _health.Record(attempt, companion, save: false);
+        }
+
+        // One write for the whole search: seven engines failing used to be seven atomic file replacements.
+        if (changed)
+        {
+            _health.Save();
         }
     }
 

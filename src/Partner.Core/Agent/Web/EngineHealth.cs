@@ -148,7 +148,9 @@ public sealed class EngineHealth
     /// <summary>Applies one attempt to the state. Persists when anything changed, so a crash keeps the lesson.</summary>
     /// <param name="attempt">What the engine did.</param>
     /// <param name="companionAnswered">Whether another engine in the same batch found something.</param>
-    public void Record(EngineAttempt attempt, bool companionAnswered)
+    /// <param name="save">False when the caller records a whole batch and saves once at the end (see <see cref="Save"/>).</param>
+    /// <returns>Whether the state changed.</returns>
+    public bool Record(EngineAttempt attempt, bool companionAnswered, bool save = true)
     {
         ArgumentNullException.ThrowIfNull(attempt);
 
@@ -174,7 +176,7 @@ public sealed class EngineHealth
                 {
                     // No evidence: a thinned bucket, a caller cancellation, an honest empty result with nothing
                     // to compare it to. Recording these would break healthy engines for being unlucky.
-                    return;
+                    return false;
                 }
 
                 _records.TryGetValue(id, out var existing);
@@ -192,10 +194,12 @@ public sealed class EngineHealth
             }
         }
 
-        if (changed)
+        if (changed && save)
         {
             Save();
         }
+
+        return changed;
     }
 
     /// <summary>
