@@ -46,6 +46,9 @@ public sealed class CdpRegistry
             || name.Contains("opera", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Shared by every poll: a client per probe is a socket per probe, up to thirty of them per launch.</summary>
+    private static readonly System.Net.Http.HttpClient Probe = new() { Timeout = TimeSpan.FromMilliseconds(500) };
+
     /// <summary>Records the port a launched process opened.</summary>
     public void Register(int processId, int port) => _ports[processId] = port;
 
@@ -95,8 +98,7 @@ public sealed class CdpRegistry
 
             try
             {
-                using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromMilliseconds(500) };
-                using var response = await client.GetAsync($"http://127.0.0.1:{port}/json/version").ConfigureAwait(false);
+                using var response = await Probe.GetAsync($"http://127.0.0.1:{port}/json/version").ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
                     Register(processId, port);

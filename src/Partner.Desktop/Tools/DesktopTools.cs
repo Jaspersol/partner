@@ -63,7 +63,10 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         {"type":"object","properties":{
           "entityId":{"type":"string","description":"只看这一个窗口（来自上一次观察）"},
           "titleContains":{"type":"string","description":"只看标题包含这个文字的窗口"},
-          "all":{"type":"boolean","description":"读取所有窗口的控件（慢）；默认只读前台与刚操作过的窗口"}
+          "all":{"type":"boolean","description":"读取所有窗口的控件（慢）；默认只读前台与刚操作过的窗口"},
+          "maxElements":{"type":"integer","description":"每个窗口最多列出多少个控件，默认 40，上限 200；被截掉的数量在 elementsMore 里"},
+          "roles":{"type":"array","items":{"type":"string"},"description":"只列这些类型的控件，如 [\"Button\",\"Edit\"]"},
+          "nameContains":{"type":"string","description":"只列名称包含这个文字的控件"}
         },"additionalProperties":false}
         """);
 
@@ -140,15 +143,18 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                 },
                 // A window that was not looked into says so, instead of looking like a window with no controls.
                 elementsOmitted = observation.WalkedWindows is { } walked && !walked.Contains(entity.EntityId) ? true : (bool?)null,
-                elements = observation.Elements
-                    .Where(element => element.WindowId == entity.EntityId
-                        && (observation.WalkedWindows is not { } inspected || inspected.Contains(entity.EntityId)))
+                // How many matching controls the cap left out, so a short list is not mistaken for a whole one.
+                elementsMore = Matching(observation, entity.EntityId, filter).Count is var total && total > filter.Limit
+                    ? total - filter.Limit
+                    : (int?)null,
+                elements = Matching(observation, entity.EntityId, filter)
+                    .Take(filter.Limit)
                     .Select(element => new
                     {
                         elementId = element.ElementId,
                         name = element.Name,
                         role = element.Role,
-                        value = element.Value ?? null,
+                        value = Clip(element.Value),
                         // Its click point is outside the window, so it is not somewhere to click yet — it is
                         // somewhere to scroll to first.
                         offscreen = element.IsOffscreen ? true : (bool?)null,
@@ -169,6 +175,16 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                     : string.Empty)
             + BlindWindows(observation));
     }
+
+    private static List<UiElement> Matching(DesktopObservation observation, string windowId, DesktopObserveFilter filter) =>
+        observation.Elements
+            .Where(element => element.WindowId == windowId
+                && (observation.WalkedWindows is not { } inspected || inspected.Contains(windowId))
+                && filter.Keeps(element))
+            .ToList();
+
+    private static string? Clip(string? value) =>
+        value is null || value.Length <= DesktopObserveFilter.ValueChars ? value : value[..DesktopObserveFilter.ValueChars] + "…";
 
     /// <summary>
     /// A window whose UIA walk came back almost empty is, usually, a Chromium/Electron surface — the one
@@ -205,8 +221,28 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
     /// empty", which sends the model off launching programs that are already running.
     /// </para>
     /// </summary>
-    public sealed record DesktopObserveFilter(string? EntityId, string? TitleContains, bool All = false)
+    public sealed record DesktopObserveFilter(
+        string? EntityId,
+        string? TitleContains,
+        bool All = false,
+        int? MaxElements = null,
+        IReadOnlyList<string>? Roles = null,
+        string? NameContains = null)
     {
+        /// <summary>The most controls listed per window unless asked for fewer or more.</summary>
+        public const int DefaultMaxElements = 40;
+
+        /// <summary>The longest value printed for a control; a text box holding a document is not worth its length.</summary>
+        public const int ValueChars = 80;
+
+        /// <summary>Whether a control passes the role and name filters (the window filters decide the windows).</summary>
+        public bool Keeps(UiElement element) =>
+            (Roles is not { Count: > 0 } || Roles.Any(role => string.Equals(role, element.Role, StringComparison.OrdinalIgnoreCase)))
+            && (NameContains is not { Length: > 0 }
+                || (element.Name ?? string.Empty).Contains(NameContains, StringComparison.OrdinalIgnoreCase));
+
+        public int Limit => Math.Clamp(MaxElements ?? DefaultMaxElements, 1, 200);
+
         public bool IsEmpty => EntityId is not { Length: > 0 } && TitleContains is not { Length: > 0 };
 
         /// <summary>Every window's controls were asked for, with `all`.</summary>
@@ -249,7 +285,13 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
             try
             {
                 var arguments = JsonSerializer.Deserialize<ObserveArguments>(argumentsJson, Json);
-                return new DesktopObserveFilter(arguments?.EntityId, arguments?.TitleContains, arguments?.All ?? false);
+                return new DesktopObserveFilter(
+                    arguments?.EntityId,
+                    arguments?.TitleContains,
+                    arguments?.All ?? false,
+                    arguments?.MaxElements,
+                    arguments?.Roles,
+                    arguments?.NameContains);
             }
             catch (JsonException)
             {
@@ -258,7 +300,13 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         }
     }
 
-    private sealed record ObserveArguments(string? EntityId, string? TitleContains, bool? All);
+    private sealed record ObserveArguments(
+        string? EntityId,
+        string? TitleContains,
+        bool? All,
+        int? MaxElements,
+        List<string>? Roles,
+        string? NameContains);
 }
 
 /// <summary>

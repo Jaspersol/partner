@@ -501,14 +501,12 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
         {
             var listed = string.Join(
                 "；",
-                marks.Take(24).Select(mark =>
-                    $"标记 {mark.Index} = '{mark.Label}' [{mark.Role}] elementId {mark.ElementId} "
-                    + $"点击点屏幕 ({mark.ClickAt.X},{mark.ClickAt.Y})"));
+                marks.Take(24).Select(Describe));
 
             var more = marks.Count > 24 ? $"；…共 {marks.Count} 个标记" : string.Empty;
 
             lines.Add(
-                $"带标记的控件（图上的数字就是标记号）：{listed}{more}。"
+                $"带标记的控件（图上的数字就是标记号，格式 号=名称(elementId)）：{listed}{more}。"
                 + "点这些控件**优先用 elementId**（点击点由服务端算，不用给坐标）；图上没有标记的地方才用网格读坐标。");
         }
 
@@ -519,6 +517,13 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
 
         return string.Join("\n", lines);
     }
+
+    /// <summary>
+    /// One mark in the legend: its number, name and elementId, and nothing else. The click point is left out on
+    /// purpose — an action given the elementId computes it on the server, and the same coordinates repeated for
+    /// twenty-four marks are most of what the legend used to cost.
+    /// </summary>
+    private static string Describe(ScreenshotMark mark) => $"{mark.Index}={mark.Label}({mark.ElementId})";
 
     /// <summary>
     /// Scales the frame to the token budget, overlays the reference marks, and encodes one PNG.
@@ -672,8 +677,7 @@ public sealed class DesktopScreenshotTool(DesktopAutomation automation, IMediaSt
 
         if (marks.Count > 0)
         {
-            var listed = string.Join("；", marks.Take(24).Select(mark =>
-                $"标记 {mark.Index} = '{mark.Label}' [{mark.Role}] elementId {mark.ElementId} 点击点屏幕 ({mark.ClickAt.X},{mark.ClickAt.Y})"));
+            var listed = string.Join("；", marks.Take(24).Select(Describe));
             lines.Add($"带标记的控件：{listed}。这些优先用 elementId，不用坐标。");
         }
 

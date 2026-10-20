@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
@@ -272,7 +273,49 @@ public sealed class CdpDomSource
         Func<int, string?, Task<CdpPage?>>? connect = null)
     {
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        _connect = connect ?? ConnectAsync;
+        _connect = connect ?? ConnectCachedAsync;
+    }
+
+    /// <summary>How long the page list of a port is trusted. One action asks for it three or four times.</summary>
+    internal static readonly TimeSpan PageListTtl = TimeSpan.FromSeconds(1.5);
+
+    private readonly ConcurrentDictionary<(int Port, string Title), (CdpPage Page, long At)> _pageCache = new();
+
+    /// <summary>
+    /// <see cref="ConnectAsync"/> behind a short cache. Reading a page, then acting on it, then checking the
+    /// result each asked the browser for its tab list again — the same answer, three HTTP round trips per action.
+    /// Only a found page is cached: a missing one is retried at once, because "not up yet" is the case where
+    /// waiting costs the most.
+    /// </summary>
+    internal async Task<CdpPage?> ConnectCachedAsync(int port, string? preferredTitle)
+    {
+        var key = (port, preferredTitle ?? string.Empty);
+        if (_pageCache.TryGetValue(key, out var cached)
+            && Environment.TickCount64 - cached.At < (long)PageListTtl.TotalMilliseconds)
+        {
+            return cached.Page;
+        }
+
+        var page = await ConnectAsync(port, preferredTitle).ConfigureAwait(false);
+        if (page is not null)
+        {
+            _pageCache[key] = (page, Environment.TickCount64);
+        }
+        else
+        {
+            _pageCache.TryRemove(key, out _);
+        }
+
+        return page;
+    }
+
+    /// <summary>A page that stopped answering may have been closed or replaced; ask the browser again next time.</summary>
+    private void ForgetPages(int port)
+    {
+        foreach (var key in _pageCache.Keys.Where(key => key.Port == port).ToList())
+        {
+            _pageCache.TryRemove(key, out _);
+        }
     }
 
     /// <summary>
@@ -634,12 +677,19 @@ public sealed class CdpDomSource
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(EvaluateTimeout);
 
-            return await connection.EvaluateAsync(expression, timeout.Token).ConfigureAwait(false);
+            var answer = await connection.EvaluateAsync(expression, timeout.Token).ConfigureAwait(false);
+            if (answer is null)
+            {
+                ForgetPages(port);
+            }
+
+            return answer;
         }
         catch (Exception error) when (
             error is WebSocketException or OperationCanceledException or JsonException or UriFormatException
                 or InvalidOperationException or ObjectDisposedException)
         {
+            ForgetPages(port);
             return null;
         }
     }
