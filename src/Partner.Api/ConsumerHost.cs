@@ -602,50 +602,81 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             return;
         }
 
+        // Every server is started and asked for its tools at once: each one is a child process with its own
+        // handshake, and doing them one after another made startup the sum of all of them instead of the slowest.
+        // Results are consumed in settings order below, so tool registration and failure notes read as before.
+        var attempts = settings.Servers
+            .Select(server => Task.Run(() => ConnectMcpAsync(server)))
+            .ToArray();
+        Task.WaitAll(attempts);
+
         var failures = new List<string>();
 
-        foreach (var server in settings.Servers)
+        foreach (var (server, attempt) in settings.Servers.Zip(attempts, (server, task) => (server, task.Result)))
         {
-            IMcpClient client;
-            try
+            if (attempt.Client is null)
             {
-                client = new StdioMcpClient(new McpServerConfig
-                {
-                    Name = server.Name,
-                    Command = server.Command,
-                    Arguments = server.Arguments,
-                    WorkingDirectory = server.WorkingDirectory,
-                    CallTimeout = TimeSpan.FromSeconds(Math.Max(1, server.CallTimeoutSeconds)),
-                });
-
-                client.StartAsync().GetAwaiter().GetResult();
-            }
-            catch (Exception error)
-            {
-                failures.Add($"{server.Name}: {error.Message}");
+                failures.Add($"{server.Name}: {attempt.StartError}");
                 continue;
             }
 
-            _mcpClients.Add(client);
+            _mcpClients.Add(attempt.Client);
 
-            try
+            if (attempt.ListError is not null)
             {
-                foreach (var descriptor in client.ListToolsAsync().GetAwaiter().GetResult())
-                {
-                    // Namespaced so two servers can offer the same tool name without one shadowing the other,
-                    // and so a reader can tell where a tool came from.
-                    tools.Register(new NamespacedMcpTool(client, server.Name, descriptor));
-                }
+                failures.Add($"{server.Name}: tools/list 失败（{attempt.ListError}）");
+                continue;
             }
-            catch (Exception error)
+
+            foreach (var descriptor in attempt.Tools)
             {
-                failures.Add($"{server.Name}: tools/list 失败（{error.Message}）");
+                // Namespaced so two servers can offer the same tool name without one shadowing the other,
+                // and so a reader can tell where a tool came from.
+                tools.Register(new NamespacedMcpTool(attempt.Client, server.Name, descriptor));
             }
         }
 
         if (failures.Count > 0)
         {
             McpNote = string.Join("；", failures);
+        }
+    }
+
+    private sealed record McpAttempt(
+        IMcpClient? Client,
+        string? StartError,
+        IReadOnlyList<McpToolDescriptor> Tools,
+        string? ListError);
+
+    /// <summary>One server's start and tool listing, never throwing: the caller reports what went wrong.</summary>
+    private static async Task<McpAttempt> ConnectMcpAsync(McpServerSettings server)
+    {
+        IMcpClient client;
+        try
+        {
+            client = new StdioMcpClient(new McpServerConfig
+            {
+                Name = server.Name,
+                Command = server.Command,
+                Arguments = server.Arguments,
+                WorkingDirectory = server.WorkingDirectory,
+                CallTimeout = TimeSpan.FromSeconds(Math.Max(1, server.CallTimeoutSeconds)),
+            });
+
+            await client.StartAsync().ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            return new McpAttempt(null, error.Message, Array.Empty<McpToolDescriptor>(), null);
+        }
+
+        try
+        {
+            return new McpAttempt(client, null, await client.ListToolsAsync().ConfigureAwait(false), null);
+        }
+        catch (Exception error)
+        {
+            return new McpAttempt(client, null, Array.Empty<McpToolDescriptor>(), error.Message);
         }
     }
 

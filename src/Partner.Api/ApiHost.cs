@@ -35,6 +35,10 @@ public static class ApiHost
         var package = enginePackage ?? new EnginePackage(EnginePackage.ResolveAppDir(), workspace);
         var localEngines = new LocalEngineHost(package.AppDir);
 
+        // The engines are separate processes that wait on their own /health, and nothing below needs them until
+        // the voice halves are configured, so they warm up while the model loop and the scheduler are set up.
+        var enginesReady = localEngines.ReconfigureAsync(context.Settings.Load().Local);
+
         // The store ages whether or not a model is configured: the TTL and promotion rules do not need one.
         var maintenance = new MemoryMaintenanceService(context.Memory, clock);
 
@@ -55,7 +59,7 @@ public static class ApiHost
         // After the consumer is configured, so the first item a due task enqueues has somewhere to go.
         context.StartScheduler();
 
-        await localEngines.ReconfigureAsync(context.Settings.Load().Local).ConfigureAwait(false);
+        await enginesReady.ConfigureAwait(false);
 
         await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);
 

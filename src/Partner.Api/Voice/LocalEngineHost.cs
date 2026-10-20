@@ -47,8 +47,32 @@ public sealed class LocalEngineHost : IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            _tts = await ApplyAsync(_tts, settings.Tts, "TTS", _appDir).ConfigureAwait(false);
-            _kws = await ApplyAsync(_kws, settings.Kws, "KWS/ASR", _appDir).ConfigureAwait(false);
+            // Both engines converge at once: each start waits for its own /health, so one after the other cost
+            // the sum of the two. The results are stored even when one side throws, so a started process is
+            // never left untracked.
+            var ttsApply = ApplyAsync(_tts, settings.Tts, "TTS", _appDir);
+            var kwsApply = ApplyAsync(_kws, settings.Kws, "KWS/ASR", _appDir);
+            try
+            {
+                await Task.WhenAll(ttsApply, kwsApply).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (ttsApply.IsCompletedSuccessfully)
+                {
+                    _tts = ttsApply.Result;
+                }
+
+                if (kwsApply.IsCompletedSuccessfully)
+                {
+                    _kws = kwsApply.Result;
+                }
+
+                throw;
+            }
+
+            _tts = ttsApply.Result;
+            _kws = kwsApply.Result;
             if (_kws is { IsRunning: true })
             {
                 await PushKeywordsAsync(_kws).ConfigureAwait(false);

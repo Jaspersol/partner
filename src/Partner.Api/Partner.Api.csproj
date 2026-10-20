@@ -6,6 +6,9 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <RootNamespace>Partner.Api</RootNamespace>
     <AssemblyName>partner-api</AssemblyName>
+    <!-- Startup: a published (win-x64, self-contained) build ships precompiled code, so the first requests do not
+         wait on the JIT. Has no effect on plain builds and tests. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />
