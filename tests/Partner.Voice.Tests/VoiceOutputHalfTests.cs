@@ -254,4 +254,56 @@ public sealed class VoiceOutputHalfTests
         await output.PlayPendingAsync();
         Assert.Equal(new[] { "新的回答。" }, tts.Requests);
     }
+
+    [Fact]
+    public async Task The_configured_gap_is_silence_after_each_sentence()
+    {
+        var sink = new RecordingSink();
+        using var output = new VoiceOutputHalf(
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0, GapMs = 200, SampleRate = 24_000 },
+            sink,
+            new ScriptedTts(),
+            new PlaybackGate());
+
+        output.OnText("第一句话。", sessionEventSeq: 1);
+        await output.FlushTurnAsync();
+
+        // The sentence's own chunk plus 200 ms of silence: two non-empty segments, not one.
+        Assert.Equal(2, sink.EnqueuedSegments);
+    }
+
+    [Fact]
+    public void The_forced_split_length_comes_from_the_setting()
+    {
+        var sink = new RecordingSink();
+        using var output = new VoiceOutputHalf(
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false },
+            sink,
+            new ScriptedTts(),
+            new PlaybackGate(),
+            maxSplitChars: 10);
+
+        var items = output.OnText(new string('字', 25), sessionEventSeq: 1);
+
+        Assert.True(items.Count >= 2, "25 characters with no punctuation should be cut at 10");
+        Assert.All(items, item => Assert.True(item.Text.Length <= 10));
+    }
+
+    [Fact]
+    public async Task The_time_to_first_audio_is_recorded_when_the_speaker_is_let_go()
+    {
+        Partner.Core.Diagnostics.LatencyTracker.Reset();
+        long now = 1000;
+        var sink = new RecordingSink();
+        using var output = TimedHalf(sink, new ScriptedTts(), () => now);
+
+        output.BeginStream();
+        output.OnText("第一句话。第二句话。", sessionEventSeq: 1);
+        now = 1700;
+        await output.PlayPendingAsync();
+
+        var first = Assert.Single(Partner.Core.Diagnostics.LatencyTracker.Snapshot(), l => l.Name == "first_audio");
+        Assert.Equal(1, first.Count);
+        Assert.Equal(700, first.LastMs);
+    }
 }

@@ -404,7 +404,7 @@ public sealed class VoiceHost : IAsyncDisposable
         // 否则 sink 会为不同速率各开一个设备流，正在播的那段会被从头再放一遍。
         _toneSampleRate = outputSetting.SampleRate;
 
-        _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate);
+        _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate, maxSplitChars: settings.Input.MaxSplitChars);
         _outputLoop = RunOutputAsync(_stop!.Token);
         _outputState = new VoiceHalfState(true, "运行中", _sink.DeviceName, 0);
     }
@@ -489,7 +489,6 @@ public sealed class VoiceHost : IAsyncDisposable
 
                     _output!.OnText(rest, e.Seq);
                     await _output.FlushTurnAsync(ct).ConfigureAwait(false);
-                    await _output.PlayPendingAsync(ct).ConfigureAwait(false);
                     _outputState = _outputState with { Count = _output.Items.Count };
                 }
 
@@ -498,7 +497,7 @@ public sealed class VoiceHost : IAsyncDisposable
 
                 // Playback closes the gate; only the conditions being clear may reopen it.
                 _output!.TryReleaseGate(
-                    pendingBlock: false,
+                    pendingBlock: _input?.PendingBlock ?? false,
                     asrBusy: _input?.AsrBusy ?? false,
                     nowSeconds: Environment.TickCount64 / 1000.0);
 

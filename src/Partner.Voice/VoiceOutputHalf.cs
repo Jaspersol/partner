@@ -54,6 +54,9 @@ public sealed class VoiceOutputHalf : IDisposable
     private bool _streamHeld;
     private int _streamSynthesized;
     private volatile bool _interrupted;
+    private long _replyStartedMs;
+    private bool _replyOpen;
+    private bool _replyTimed;
     private long _streamFirstDoneMs;
 
     /// <summary>
@@ -69,7 +72,8 @@ public sealed class VoiceOutputHalf : IDisposable
         ITtsClient tts,
         PlaybackGate gate,
         Action<string>? log = null,
-        Func<long>? nowMs = null)
+        Func<long>? nowMs = null,
+        int maxSplitChars = 40)
     {
         _nowMs = nowMs ?? (() => Environment.TickCount64);
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -79,7 +83,7 @@ public sealed class VoiceOutputHalf : IDisposable
         _log = log ?? (_ => { });
 
         _sink.DrainMs = settings.DrainMs;
-        Segmenter = new SpeechSegmenter();
+        Segmenter = new SpeechSegmenter(Math.Max(1, maxSplitChars));
         Enabled = settings.Enabled;
     }
 
@@ -112,6 +116,13 @@ public sealed class VoiceOutputHalf : IDisposable
         if (cleaned.Length == 0)
         {
             return Array.Empty<SpeechItem>();
+        }
+
+        if (!_replyOpen)
+        {
+            _replyOpen = true;
+            _replyStartedMs = _nowMs();
+            _replyTimed = false;
         }
 
         var ready = Segmenter.Push(cleaned);
@@ -166,6 +177,7 @@ public sealed class VoiceOutputHalf : IDisposable
     {
         // Set first: a synthesis already running on the output loop checks it before it hands the sink more audio.
         _interrupted = true;
+        _replyOpen = false;
         _sink.Stop();
         _streamHeld = false;
         _streamSynthesized = 0;
@@ -203,6 +215,8 @@ public sealed class VoiceOutputHalf : IDisposable
         {
             return;
         }
+
+        NoteFirstAudio();
 
         _streamHeld = false;
         _sink.Release();
@@ -256,6 +270,9 @@ public sealed class VoiceOutputHalf : IDisposable
 
         await PlayPendingAsync(ct).ConfigureAwait(false);
 
+        NoteFirstAudio();
+        _replyOpen = false;
+
         _streamHeld = false;
         _sink.Release();
 
@@ -292,7 +309,6 @@ public sealed class VoiceOutputHalf : IDisposable
 
             try
             {
-                var emitted = false;
                 await foreach (var chunk in _tts.SynthesizeAsync(item.Text, ct).ConfigureAwait(false))
                 {
                     if (_interrupted)
@@ -305,14 +321,19 @@ public sealed class VoiceOutputHalf : IDisposable
                         continue;
                     }
 
-                    emitted = true;
                     _sink.Enqueue(chunk, _settings.SampleRate);
+                }
+
+                // The configured pause between sentences, as silence at the end of this one.
+                if (_settings.GapMs > 0)
+                {
+                    _sink.Enqueue(new float[(int)(_settings.SampleRate * _settings.GapMs / 1000.0)], _settings.SampleRate);
                 }
 
                 // A final marker is mandatory: without it the player waits for this sequence forever.
                 _sink.Enqueue(Array.Empty<float>(), _settings.SampleRate, final: true);
 
-                Replace(item with { Status = emitted ? SpeechStatus.Played : SpeechStatus.Played });
+                Replace(item with { Status = SpeechStatus.Played });
                 played++;
                 NoteSynthesized();
             }
@@ -335,6 +356,16 @@ public sealed class VoiceOutputHalf : IDisposable
         }
 
         return played;
+    }
+
+    /// <summary>First sound of a reply: from its first text reaching this half to the speaker being let go.</summary>
+    private void NoteFirstAudio()
+    {
+        if (_replyOpen && !_replyTimed)
+        {
+            _replyTimed = true;
+            Partner.Core.Diagnostics.LatencyTracker.Record("first_audio", Math.Max(0, _nowMs() - _replyStartedMs));
+        }
     }
 
     private void NoteSynthesized()
