@@ -484,8 +484,8 @@ $(($ttsParts | ForEach-Object { "        (""$base/$($_.Name)"", ""$($_.Sha256)""
 
 if ($UploadTag) {
     $files = @($packs | ForEach-Object { Join-Path $out $_.Name })
-    $existing = & gh release view $UploadTag --json tagName -q '.tagName' 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $existing) {
+    $existing = & gh release list --json tagName -q '.[].tagName' | Where-Object { $_ -eq $UploadTag }
+    if (-not $existing) {
         Write-Host "creating release $UploadTag from $Target"
         & gh release create $UploadTag --target $Target --title "Local engines $UploadTag" `
             --notes "Runtime and models for the local voice engines. Each model's licence is in the pack under NOTICE/." @files
