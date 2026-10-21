@@ -62,6 +62,13 @@ So a repacked engine set has to be synced into the constants. To do that by hand
 
 Tag `master`: `git checkout master && git pull && git tag v0.2.0 && git push github v0.2.0`.
 
+A squash merge makes the two histories diverge: the same files count as added on both sides, so the next pull request conflicts. Realign `dev` after every merge:
+
+```bash
+git fetch github
+git reset --hard github/master
+```
+
 ## The same steps locally
 
 ```bash
