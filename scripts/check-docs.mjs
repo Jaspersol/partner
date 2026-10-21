@@ -42,18 +42,11 @@ const SCAN_EXTENSIONS = new Set(['.md', '.ts', '.vue', '.css', '.cs', '.json', '
  */
 const EXEMPT = new Map([
   ['SKILL.md', 'a workspace artifact read at runtime: <workspace>/skills/<id>/SKILL.md, never a repo file'],
-  [
-    'agent-harness-architecture-proposal.md',
-    'lives outside the repo at D:/code/Clone/; ui.md §13 records the relationship',
-  ],
-  [
-    'agent-harness-desktop-game-implementation-analysis.md',
-    'lives outside the repo at D:/code/Clone/; README lists both external docs',
-  ],
-  [
-    'todo.md',
-    'deleted 2026-10-01 — the audit progress list, never under version control; ui.md §13 records what in it was still worth keeping',
-  ],
+  // Upload fixtures: file names the skill-upload tests send, not documents anyone reads.
+  ['my-skill.md', 'skill-upload fixture name in tests/Partner.Api.Tests/SkillEndpointsTests.cs'],
+  ['bad.md', 'skill-upload fixture name in SkillEndpointsTests.cs and ui/tests/views.test.ts'],
+  ['taken.md', 'skill-upload fixture name in tests/Partner.Api.Tests/SkillEndpointsTests.cs'],
+  ['more.md', 'skill-upload fixture name in ui/tests/views.test.ts'],
 ])
 
 /** Heading shapes a numbered section can take: `## 8.` / `### 5.1` — and the circled region markers. */

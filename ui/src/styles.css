@@ -1,5 +1,5 @@
 /*
- * Layout primitives and shared component styles. Tokens live in tokens.css (ui-redesign.md §2).
+ * Layout primitives and shared component styles. Tokens live in tokens.css.
  *
  * Two rules run through this file:
  *   1. Layout sizes are never absolute. Regions are sized by their content, by fractional tracks, or by
@@ -644,7 +644,7 @@ h3 {
   overflow: auto;
 }
 
-/* Long identifiers and payloads must never produce a horizontal scrollbar (ui.md §2). */
+/* Long identifiers and payloads must never produce a horizontal scrollbar. */
 .break {
   overflow-wrap: anywhere;
   text-overflow: ellipsis;

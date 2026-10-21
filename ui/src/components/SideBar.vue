@@ -71,7 +71,7 @@ function choose(index: number): void {
     <para>
     The obvious alternative was a panel that peeks open on hover. It is the wrong shape: the pointer sits on
     the track, so anything that widens the track grows *under* the cursor and the content under it reflows. So
-    the rail is a rail, and one button opens it (ui.md §12 S5).
+    the rail is a rail, and one button opens it.
     </para>
 
     <para>
