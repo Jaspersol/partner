@@ -83,6 +83,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/engines | Out-Null
           gh release download $env:ENGINE_TAG --pattern engines-manifest.json --dir dist/engines --clobber
+          if ($LASTEXITCODE -ne 0) { throw "the $env:ENGINE_TAG release has no engines-manifest.json; run scripts/pack-engines.ps1 -UploadTag $env:ENGINE_TAG" }
           node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check
 
       - name: Version from the tag
