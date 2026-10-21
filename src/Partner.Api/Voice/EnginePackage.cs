@@ -44,13 +44,21 @@ public sealed class EnginePackage
     private const int KwsPort = 45103;
 
     /// <summary>
-    /// Published archive locations. Blank until a release publishes them; <c>PARTNER_ENGINE_TTS_URL</c> /
-    /// <c>PARTNER_ENGINE_KWS_URL</c> (and the matching <c>_SHA256</c>) override per machine without a rebuild.
+    /// Published archive locations, in extraction order. An engine may need more than one archive: a GitHub
+    /// release asset has to stay under 2 GiB, and the 3 GB TTS runtime plus models do not fit in one file, so
+    /// the packer (<c>scripts/pack-engines.ps1</c>) writes several zips that each unpack into the engines root.
+    /// Blank URLs mean "not published yet"; <c>PARTNER_ENGINE_TTS_URL</c> / <c>PARTNER_ENGINE_KWS_URL</c> (and
+    /// the matching <c>_SHA256</c>) replace the whole list of that engine with one archive, for local testing.
     /// </summary>
-    private const string TtsArchiveUrl = "";
-    private const string TtsArchiveSha256 = "";
-    private const string KwsArchiveUrl = "";
-    private const string KwsArchiveSha256 = "";
+    private static readonly (string Url, string Sha256)[] TtsArchives =
+    [
+        ("", ""),
+    ];
+
+    private static readonly (string Url, string Sha256)[] KwsArchives =
+    [
+        ("", ""),
+    ];
 
     // The interpreter is looked up in order: a relocatable runtime shipped inside the archive wins over a venv,
     // whose pyvenv.cfg holds an absolute path and only works on the machine that built it.
@@ -286,11 +294,17 @@ public sealed class EnginePackage
             var staging = Path.Combine(root, ".download");
             Directory.CreateDirectory(staging);
 
-            for (var index = 0; index < sources.Count; index++)
+            // One engine can arrive as several archives, so the label counts within that engine and the staging
+            // file is named after the archive: a shared name would let part 2 resume onto part 1's leftover .part.
+            var totals = sources.GroupBy(source => source.Id).ToDictionary(group => group.Key, group => group.Count());
+            var seen = new Dictionary<string, int>();
+
+            foreach (var source in sources)
             {
-                var source = sources[index];
-                var label = $"{(source.Id == TtsId ? "朗读引擎" : "唤醒与识别引擎")}（{index + 1}/{sources.Count}）";
-                var archive = Path.Combine(staging, $"{source.Id}.zip");
+                var engine = source.Id == TtsId ? "朗读引擎" : "唤醒与识别引擎";
+                var position = seen[source.Id] = seen.GetValueOrDefault(source.Id) + 1;
+                var label = totals[source.Id] > 1 ? $"{engine}（{position}/{totals[source.Id]}）" : engine;
+                var archive = Path.Combine(staging, ArchiveName(source));
 
                 await DownloadAsync(source, archive, label, ct).ConfigureAwait(false);
 
@@ -379,6 +393,17 @@ public sealed class EnginePackage
         }
 
         File.Move(part, archive, overwrite: true);
+    }
+
+    /// <summary>
+    /// The staging file name for one archive: the asset name from the URL, so every part keeps its own
+    /// <c>.part</c> across retries. Falls back to the engine id for URLs without a usable last segment.
+    /// </summary>
+    private static string ArchiveName(EnginePackageSource source)
+    {
+        var name = Uri.TryCreate(source.Url, UriKind.Absolute, out var uri) ? Path.GetFileName(uri.AbsolutePath) : string.Empty;
+        name = string.Concat(name.Where(character => !Path.GetInvalidFileNameChars().Contains(character)));
+        return name.Length == 0 ? $"{source.Id}.zip" : $"{source.Id}-{name}";
     }
 
     private static async Task<string> Sha256Async(string path, CancellationToken ct)
@@ -484,11 +509,29 @@ public sealed class EnginePackage
 
     private static IReadOnlyList<EnginePackageSource> DefaultSources() =>
     [
-        new(TtsId,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_TTS_URL") ?? TtsArchiveUrl,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_TTS_SHA256") ?? TtsArchiveSha256),
-        new(KwsId,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_KWS_URL") ?? KwsArchiveUrl,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_KWS_SHA256") ?? KwsArchiveSha256),
+        .. Sources(TtsId, "PARTNER_ENGINE_TTS_URL", "PARTNER_ENGINE_TTS_SHA256", TtsArchives),
+        .. Sources(KwsId, "PARTNER_ENGINE_KWS_URL", "PARTNER_ENGINE_KWS_SHA256", KwsArchives),
     ];
+
+    /// <summary>
+    /// The published archives of one engine, unless the environment names a single archive to use instead —
+    /// that override is what a dev machine uses to test an unpacked build before anything is published.
+    /// </summary>
+    private static IEnumerable<EnginePackageSource> Sources(
+        string id,
+        string urlVariable,
+        string shaVariable,
+        (string Url, string Sha256)[] published)
+    {
+        if (Environment.GetEnvironmentVariable(urlVariable) is { } overrideUrl && !string.IsNullOrWhiteSpace(overrideUrl))
+        {
+            yield return new EnginePackageSource(id, overrideUrl, Environment.GetEnvironmentVariable(shaVariable));
+            yield break;
+        }
+
+        foreach (var (url, sha256) in published)
+        {
+            yield return new EnginePackageSource(id, url, sha256);
+        }
+    }
 }

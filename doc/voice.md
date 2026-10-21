@@ -42,6 +42,8 @@
 - 关掉开关 = 结束引擎进程（整棵进程树），显存和内存全部归还。
 
 下载地址可用环境变量覆盖：`PARTNER_ENGINE_TTS_URL`、`PARTNER_ENGINE_KWS_URL`（以及对应的 `_SHA256`）。
+一个引擎可以由多个压缩包组成（GitHub 单个 release 资产上限 2 GiB，TTS 装不进一个），应用按顺序下载、逐个解压到同一目录。
+发布包用 `scripts/pack-engines.ps1` 从本机 `engines/` 生成：模型不进 git，脚本负责重打可搬运的运行时、切包、算 SHA-256，并打印要填进 `EnginePackage.cs` 的地址表。
 
 开发机可以用脚本装进仓库的 `engines/`，设置页能直接检测到：
 
