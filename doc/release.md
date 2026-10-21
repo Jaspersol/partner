@@ -22,7 +22,7 @@
 
 | 方式 | 做什么 |
 |---|---|
-| push tag `v0.2.0` | 完整发布：引擎包（若开了 runner）+ 安装包 + release |
+| push tag `v0.2.0` | 编译安装包并发 release；**引擎权重包不会重打**（除非开了 self-hosted runner，见下） |
 | Actions → release → Run workflow，`tag` 留空 | 只编译，产物进 Actions artifact，不发 release |
 | 同上，填 `tag` + 勾 `publish` | 按指定 tag 发布 |
 
@@ -48,10 +48,13 @@
 
 `app` job 会：
 
-1. `gh release download engines-v1 --pattern engines-manifest.json`；
-2. `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` —— 把清单里的地址和 SHA-256 与 `EnginePackage.cs` 里的常量比对，**不一致就让构建失败**。
+1. `gh release download <引擎 tag> --pattern engines-manifest.json`（引擎 tag 默认取仓库变量 `ENGINE_TAG`，没设就是 `engines-v1`；手动触发时也可以用输入参数覆盖）；
+2. `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` 先比对，不一致只发一条 **warning**（提示你同步常量）；
+3. 再跑一次不带 `--check` 的同一脚本，**把清单里的地址和 SHA-256 写进 `EnginePackage.cs` 再编译**。
 
-所以改了引擎包必须同步常量；手动同步时去掉 `--check` 直接运行该脚本即可（它会改写 `EnginePackage.cs` 里两个数组，保持缩进和换行风格）。
+所以安装包里的 hash 永远等于引擎 release 上的实际资产，不会因为忘了手改常量而发错；差别只是「仓库里的常量有没有跟上」，这个会以 CI warning 提醒。
+
+引擎包换了 tag（`engines-v2`）时，改仓库变量 `ENGINE_TAG=engines-v2` 就行，不用改 workflow。
 
 ## 分支与保护
 
