@@ -110,4 +110,4 @@ SKIP_SHELL=1 bash scripts/ci.sh  # 跳过最慢的壳编译
 
 ## 许可
 
-待补充（仓库中暂无 LICENSE 文件）。
+Partner 的代码用 [MIT](LICENSE) 许可。语音引擎的运行环境、模型权重和音色锚点不在本仓库，按 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 里列的各自许可单独发布（Apache-2.0、FunASR MODEL_LICENSE 等），MIT 不覆盖它们。

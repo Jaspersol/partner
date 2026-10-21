@@ -44,6 +44,7 @@ The installer carries only two small server scripts. Runtimes and models are not
 Download URLs can be overridden with `PARTNER_ENGINE_TTS_URL`, `PARTNER_ENGINE_KWS_URL` (and the matching `_SHA256`).
 One engine may span several archives: a GitHub release asset may not reach 2 GiB and TTS does not fit in one, so the app fetches them in order and unpacks each into the same folder.
 `scripts/pack-engines.ps1` builds those archives from the local `engines/` (the models are not in git): it rebuilds a relocatable runtime, splits the packs, hashes them, and prints the URL table for `EnginePackage.cs`.
+Every pack carries a `NOTICE/` folder with upstream provenance, a statement of changes and the full licence texts; those licences are separate from MIT, see [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
 On a dev machine, a script installs them into the repository's `engines/`, where the settings page finds them:
 

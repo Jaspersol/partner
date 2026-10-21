@@ -110,4 +110,4 @@ See [doc/README.en.md](doc/README.en.md) for the full index, including developme
 
 ## License
 
-To be added (the repository has no LICENSE file yet).
+The code is [MIT](LICENSE) licensed. The voice engines — runtimes, model weights and voice anchors — are not in this repository; each ships under its own licence (Apache-2.0, FunASR MODEL_LICENSE, …) as listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and MIT does not cover them.
