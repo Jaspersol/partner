@@ -6,55 +6,38 @@ Back to [documentation index](./README.en.md).
 
 ## In one line
 
-Push a `v*` tag and GitHub Actions builds the installer, then publishes it together with the engine packs.
+There is one kind of tag: push `v*` to publish the installer. The voice engines are not published by this flow; the installer always downloads the already published `engines-v1` release.
 
 ## What gets published
 
 | Asset | Produced by | Lives in |
 |---|---|---|
-| `Partner_<version>_x64-setup.exe` | the `app` job in `.github/workflows/release.yml` | the app release (tag `vX.Y.Z`) |
-| `SHA256SUMS.txt`, `engines-manifest.json`, `THIRD-PARTY-NOTICES.md` | same job | same release |
-| `partner-engine-tts-a-runtime.zip`, `-b-talker`, `-c-codec`, `partner-engine-kws.zip` | `scripts/pack-engines.ps1` | the engine release (tag `engines-vN`) |
+| `Partner_<version>_x64-setup.exe` | the `app` job of `.github/workflows/release.yml` | the app release (tag `vX.Y.Z`) |
+| `SHA256SUMS.txt`, `THIRD-PARTY-NOTICES.md` | same | same |
 
-The installer does **not** contain the engines. After installing, the settings page downloads them; the URLs and SHA-256 values are pinned at build time.
+The installer does **not** contain the engines: after installing, click download under Settings → Local engines. The URLs and SHA-256 come from the constants committed in `src/Partner.Api/Voice/EnginePackage.cs`, which point at the `engines-v1` release.
 
 ## Triggers
 
-| Trigger | Result |
+| How | What happens |
 |---|---|
-| push tag `v0.2.0` | builds the installer and publishes a release; the **engine packs are not rebuilt** unless a self-hosted runner is enabled (below) |
-| Actions → release → Run workflow with an empty `tag` | build only; the installer lands in the workflow artifacts |
-| same, with `tag` and `publish` ticked | publish that tag |
+| push tag `v0.2.0` | builds the installer and publishes the release |
+| Actions → release → Run workflow, `tag` empty | build only; the output goes to the Actions artifact, no release |
+| same, with `tag` and `publish` ticked | publishes the installer under that tag |
 
-The tag decides the version: the workflow runs `scripts/set-version.mjs`, which writes `0.2.0` into `src-tauri/tauri.conf.json`, `Cargo.toml` and `ui/package.json`, so the tag and the installer version cannot drift apart.
+The version comes from the tag: the workflow runs `scripts/set-version.mjs` to write `0.2.0` into `src-tauri/tauri.conf.json`, `Cargo.toml` and `ui/package.json`, so the tag and the installer cannot drift apart.
 
-## Why the engine packs are normally packed on your machine
+## Engine packs
 
-The weights and venvs are not in git (`engines/` holds only the two server scripts), and a hosted runner has no 2.3 GB of models, so it **cannot** build the engine packs. Two options:
+The workflow neither packs nor publishes engines, so no self-hosted runner is needed. `engines-v1` is read-only: published installers pin the SHA-256 of the files under it, and changing any byte makes the download fail its final check.
 
-- **Default**: run once on a machine that has `engines/`
+Nothing regenerates those constants any more, so every build (and `node scripts/check-engine-pins.mjs` locally) compares them with the SHA-256 digests GitHub stores for the release assets — no 3.4GB download. A mistyped constant or a swapped asset fails the build instead of shipping an installer that cannot install engines on any machine.
 
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v1
-  ```
+To really change the engines, pack them by hand under a new tag on a machine that has `engines/`, then paste the URL table printed by `scripts/pack-engines.ps1` into `EnginePackage.cs`:
 
-  It rebuilds a relocatable Python runtime, splits the packs, hashes them, writes `NOTICE/`, uploads to `engines-v1` and prints the URL table for `EnginePackage.cs`.
-
-- **Automated**: register a self-hosted runner labelled `self-hosted, windows, x64` that has `gh` and `engines/tts/model`, then set the repository variable `ENGINE_RUNNER=true`. The `engines` job then packs and uploads on every tag push, and the `app` job builds afterwards. The repository variable `ENGINE_TARGET_BRANCH` (default `master`) decides which branch the engine tag is created on.
-
-Ship a new engine set under a new tag (`engines-v2`) instead of overwriting the old one: a machine that installed the old packs would fail the SHA-256 check when retrying half way.
-
-## How the installer pins the engine packs
-
-The `app` job:
-
-1. `gh release download <engine tag> --pattern engines-manifest.json` — the engine tag comes from the repository variable `ENGINE_TAG`, falling back to `engines-v1`; a manual run can override it;
-2. runs `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` and only emits a **warning** when the committed constants differ;
-3. runs the same script without `--check`, which writes the manifest's URLs and SHA-256 values into `EnginePackage.cs`, and builds from that.
-
-So the installer always downloads exactly the archives that are on the engine release; the only thing that can lag is the committed constant, and that shows up as a CI warning.
-
-When the engines move to a new tag (`engines-v2`), set the repository variable `ENGINE_TAG=engines-v2`; the workflow needs no edit.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v2
+```
 
 ## Branches and protection
 
@@ -77,8 +60,8 @@ git reset --hard github/master
 ```bash
 node scripts/check-docs.mjs
 node scripts/check-css-names.mjs
+node scripts/check-engine-pins.mjs   # needs an authenticated gh
 npm --prefix ui ci
-node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check
 node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \

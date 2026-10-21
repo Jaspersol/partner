@@ -44,7 +44,7 @@
 
 下載位址可用環境變數覆寫：`PARTNER_ENGINE_TTS_URL`、`PARTNER_ENGINE_KWS_URL`（以及對應的 `_SHA256`）。
 一個引擎可以由多個壓縮包組成（GitHub 單一 release 資產上限 2 GiB，TTS 裝不進一個），應用程式依序下載、逐個解壓到同一目錄。
-發佈包用 `scripts/pack-engines.ps1` 從本機 `engines/` 產生：模型不進 git，腳本負責重打包可搬移的執行環境、切包、算 SHA-256，並印出要填進 `EnginePackage.cs` 的位址表。
+發佈包用 `scripts/pack-engines.ps1` 從本機 `engines/` 產生：模型不進 git，腳本負責重打包可搬移的執行環境、切包、算 SHA-256，並印出要填進 `EnginePackage.cs` 的位址表。引擎 tag 是唯讀的：腳本發現同一 tag 上已有同名資產就直接失敗，換引擎就開新 tag（`engines-v2`），否則已發佈安裝包 pin 的 SHA-256 會全部失效。
 每個包裡都有 `NOTICE/`：上游來源、變更說明、完整授權條文；這些授權與 MIT 無關，見 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。
 
 開發機可以用腳本裝進儲存庫的 `engines/`，設定頁能直接偵測到：

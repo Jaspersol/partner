@@ -6,55 +6,38 @@
 
 ## 一句话
 
-打一个 `v*` tag，GitHub Actions 编译安装包、把引擎权重包和安装包一起发到 release。
+只有一种 tag：打 `v*` 发安装包。语音引擎不在这个流程里发布，安装包固定下载已发布的 `engines-v1` release。
 
 ## 发布些什么
 
 | 资产 | 谁产出 | 放在哪 |
 |---|---|---|
 | `Partner_<版本>_x64-setup.exe` | `.github/workflows/release.yml` 的 `app` job | 应用 release（tag `vX.Y.Z`） |
-| `SHA256SUMS.txt`、`engines-manifest.json`、`THIRD-PARTY-NOTICES.md` | 同上 | 同上 |
-| `partner-engine-tts-a-runtime.zip`、`-b-talker`、`-c-codec`、`partner-engine-kws.zip` | `scripts/pack-engines.ps1` | 引擎 release（tag `engines-vN`） |
+| `SHA256SUMS.txt`、`THIRD-PARTY-NOTICES.md` | 同上 | 同上 |
 
-安装包里**不含**引擎：装完在「设置 → 本地引擎」点下载，地址与 SHA-256 在编译期就固定好了。
+安装包里**不含**引擎：装完在「设置 → 本地引擎」点下载，地址与 SHA-256 来自 `src/Partner.Api/Voice/EnginePackage.cs` 里已提交的常量，指向 `engines-v1` release。
 
 ## 触发方式
 
 | 方式 | 做什么 |
 |---|---|
-| push tag `v0.2.0` | 编译安装包并发 release；**引擎权重包不会重打**（除非开了 self-hosted runner，见下） |
+| push tag `v0.2.0` | 编译安装包并发 release |
 | Actions → release → Run workflow，`tag` 留空 | 只编译，产物进 Actions artifact，不发 release |
-| 同上，填 `tag` + 勾 `publish` | 按指定 tag 发布 |
+| 同上，填 `tag` + 勾 `publish` | 按指定 tag 发安装包 |
 
 版本号由 tag 决定：workflow 用 `scripts/set-version.mjs` 把 `0.2.0` 写进 `src-tauri/tauri.conf.json`、`Cargo.toml`、`ui/package.json`，所以 tag 和安装包版本不会走偏。
 
-## 引擎包：为什么默认只在本机打
+## 引擎包
 
-权重和 venv 不进 git（`engines/` 只有两个服务脚本），GitHub 的托管 runner 上没有 2.3G 模型，**打不出引擎包**。所以：
+workflow 不打也不发引擎包，所以不需要 self-hosted runner。`engines-v1` 是只读的：已发布的安装包 pin 了它下面文件的 SHA-256，改动任何字节都会让下载在最后校验失败。
 
-- **默认**：在装有 `engines/` 的开发机上跑一次
+这些常量没人再自动生成，所以每次构建（以及本机）都会跑 `scripts/check-engine-pins.mjs` 核对：它读 release 资产在 GitHub 上记录的 SHA-256 digest（不下载 3.4GB），常量打错或资产被换都会当场失败，而不是发一个谁也装不上引擎的安装包。
 
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v1
-  ```
+真要换引擎时，在装有 `engines/` 的机器上手动打包到新 tag，再把 `scripts/pack-engines.ps1` 打印的地址表粘进 `EnginePackage.cs`：
 
-  它会重打可搬运的 Python 运行时、切包、算 SHA-256、写 `NOTICE/`、上传到 `engines-v1`，并把要粘进 `EnginePackage.cs` 的地址表打印出来。
-
-- **自动化**：注册一台 self-hosted runner，标签 `self-hosted, windows, x64`，机器上有 `gh`、`engines/tts/model`，然后设仓库变量 `ENGINE_RUNNER=true`。workflow 的 `engines` job 就会在打 tag 时先打包上传，`app` job 再接着编译；仓库变量 `ENGINE_TARGET_BRANCH`（默认 `master`）决定引擎 tag 建在哪个分支上。
-
-引擎更新开新 tag（`engines-v2`），不要覆盖旧 tag：已经装了旧包的机器半途重试会 SHA-256 不一致。
-
-## 安装包怎么锁定引擎包
-
-`app` job 会：
-
-1. `gh release download <引擎 tag> --pattern engines-manifest.json`（引擎 tag 默认取仓库变量 `ENGINE_TAG`，没设就是 `engines-v1`；手动触发时也可以用输入参数覆盖）；
-2. `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` 先比对，不一致只发一条 **warning**（提示你同步常量）；
-3. 再跑一次不带 `--check` 的同一脚本，**把清单里的地址和 SHA-256 写进 `EnginePackage.cs` 再编译**。
-
-所以安装包里的 hash 永远等于引擎 release 上的实际资产，不会因为忘了手改常量而发错；差别只是「仓库里的常量有没有跟上」，这个会以 CI warning 提醒。
-
-引擎包换了 tag（`engines-v2`）时，改仓库变量 `ENGINE_TAG=engines-v2` 就行，不用改 workflow。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v2
+```
 
 ## 分支与保护
 
@@ -79,8 +62,8 @@ workflow 做的每一步都能在本机跑：
 ```bash
 node scripts/check-docs.mjs
 node scripts/check-css-names.mjs
+node scripts/check-engine-pins.mjs   # 需要 gh 已登录
 npm --prefix ui ci
-node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check
 node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \

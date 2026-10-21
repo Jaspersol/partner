@@ -2,7 +2,7 @@
 
 Partner 应用的**代码**以 MIT 许可发布，见 [LICENSE](LICENSE)。这个许可**不覆盖**语音引擎的运行时、模型权重和音色锚点：它们不在本仓库里，单独作为 GitHub release 资产（tag `engines-v1`）分发，每个包内都有 `NOTICE/` 目录，包含完整许可文本、上游来源和改动声明。
 
-The application code is MIT licensed, see [LICENSE](LICENSE). That licence does **not** cover the voice engines: their runtimes, model weights and voice anchors are not in this repository. They ship as GitHub release assets (tag `engines-v1`), and every pack carries a `NOTICE/` folder with the full licence texts, upstream provenance and a statement of changes.
+The application code is MIT licensed, see [LICENSE](LICENSE). That licence does **not** cover the voice engines: their runtimes, model weights and voice anchors are not in this repository. They ship as GitHub release assets under the `engines-v1` tag, and every pack carries a `NOTICE/` folder with the full licence texts, upstream provenance and a statement of changes.
 
 ## 应用本体 / The app
 

@@ -37,6 +37,7 @@ npm --prefix ui run build
 
 node scripts/check-docs.mjs                               # do doc references still resolve
 node scripts/check-css-names.mjs                          # scoped class name check
+node scripts/check-engine-pins.mjs                        # do the engine URLs and hashes still match the published assets (needs gh)
 node scripts/e2e-shell.mjs                                # shell e2e; needs a desktop session, not in CI
 
 cargo build --manifest-path src-tauri/Cargo.toml          # shell only
