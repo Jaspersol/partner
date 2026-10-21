@@ -100,6 +100,12 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private LiveAssistant? _live;
     private string? _model;
 
+    /// <summary>
+    /// The skills the hook injects. One registry for the life of the host, reloaded in place, so adding or removing
+    /// a skill reaches the next turn without rebuilding the consumer (which would drop the model's warm state).
+    /// </summary>
+    private readonly InMemorySkillRegistry _skillRegistry = new();
+
     private ConsumerHost(ApiContext context, string workspace)
     {
         _context = context;
@@ -567,20 +573,26 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         // only remembers hosts, and the ledger is the same object whether or not the tools exist this run.
         hooks.Register(new Partner.Core.Agent.Web.WebHostLedgerHook(_context.Web.Ledger));
 
-        var disabled = _context.Settings.Load().Skills.Disabled.ToHashSet(StringComparer.Ordinal);
-        var loaded = new SkillLoader().Load(workspace);
-        if (loaded.Skills.Count > 0)
-        {
-            var registry = new InMemorySkillRegistry();
-
-            // A skill the person switched off is not loaded at all, rather than loaded and filtered at use:
-            // the point of switching one off is that it stops being part of the prompt, not that it becomes
-            // something to reason about excluding.
-            registry.Reload(loaded.Skills.Where(skill => !disabled.Contains(skill.SkillId)).ToList());
-            hooks.Register(new SkillInjectionHook(registry));
-        }
+        // Registered even when empty (an empty registry injects nothing): the registry is reloaded in place later.
+        ReloadSkills();
+        hooks.Register(new SkillInjectionHook(_skillRegistry));
 
         return hooks;
+    }
+
+    /// <summary>
+    /// Re-reads the workspace's skills and the deny list into the live registry. Called when a skill is added or
+    /// removed and when the deny list changes, so the next turn sees the new set.
+    /// </summary>
+    public void ReloadSkills()
+    {
+        var disabled = _context.Settings.Load().Skills.Disabled.ToHashSet(StringComparer.Ordinal);
+        var loaded = new SkillLoader().Load(_workspace);
+
+        // A skill the person switched off is not loaded at all, rather than loaded and filtered at use:
+        // the point of switching one off is that it stops being part of the prompt, not that it becomes
+        // something to reason about excluding.
+        _skillRegistry.Reload(loaded.Skills.Where(skill => !disabled.Contains(skill.SkillId)).ToList());
     }
 
     /// <summary>

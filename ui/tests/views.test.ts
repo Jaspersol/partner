@@ -202,6 +202,9 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     memory: vi.fn(async () => memory),
     memoryAll: vi.fn(async () => memory),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
+    createSkill: vi.fn(async (skill) => ({ skillId: skill.skillId, name: skill.name })),
+    uploadSkill: vi.fn(async (_file, fileName) => ({ skillId: 'uploaded', name: fileName })),
+    deleteSkill: vi.fn(async () => true),
     // Two engines, one of them in the breaker's cooldown: the settings page has to show a paused engine as
     // paused, because "搜不到" and "这家停了" look identical in the answer and are not the same thing.
     web: vi.fn(async (): Promise<WebView> => ({
@@ -1654,6 +1657,114 @@ describe('skills view', () => {
     expect(wrapper.text()).not.toContain('第一步：先读 SKILL.md')
     await wrapper.find('[data-test="skills-instructions-toggle"]').trigger('click')
     expect(wrapper.text()).toContain('第一步：先读 SKILL.md')
+  })
+
+  const ALPHA = { skillId: 'alpha', name: 'Alpha', description: '做法', enabled: true, instructions: '第一步' }
+
+  async function choose(wrapper: ReturnType<typeof mount>, file: File) {
+    const input = wrapper.find('[data-test="skills-file"]')
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await flushPromises()
+  }
+
+  it('uploads a chosen file, then lists the skill it became', async () => {
+    const listings = [[], [ALPHA]]
+    const { stub } = createStub({
+      skills: vi.fn(async () => ({ skills: listings.shift() ?? [ALPHA], warnings: [] })),
+      uploadSkill: vi.fn(async () => ({ skillId: 'alpha', name: 'Alpha' })),
+    })
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="skills-upload"]').trigger('click')
+    const file = new File(['---'], 'alpha.zip')
+    await choose(wrapper, file)
+
+    expect(stub.uploadSkill).toHaveBeenCalledWith(file, 'alpha.zip')
+    expect(wrapper.findAll('[data-test="skills-item"]')).toHaveLength(1)
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+  })
+
+  it('says why an upload was refused and lists nothing new', async () => {
+    const { stub } = createStub({
+      uploadSkill: vi.fn(async () => {
+        throw new ApiError(400, '这不是有效的技能：缺少前置元数据')
+      }),
+    })
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+
+    await choose(wrapper, new File(['x'], 'bad.md'))
+
+    expect(wrapper.text()).toContain('这不是有效的技能：缺少前置元数据')
+    expect(wrapper.text()).not.toContain('400:')
+    expect(wrapper.emitted('changed')).toBeUndefined()
+  })
+
+  it('writes a skill from the form, and keeps the form open with the reason when the server refuses', async () => {
+    const createSkill = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, "已经有一个叫 'alpha' 的技能。"))
+      .mockResolvedValueOnce({ skillId: 'alpha', name: 'Alpha' })
+    const { stub } = createStub({ createSkill })
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="skills-new"]').trigger('click')
+    await wrapper.find('[data-test="skills-new-submit"]').trigger('click')
+    expect(createSkill).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="skills-new-error"]').text()).toBe('四项都要填')
+
+    await wrapper.find('[data-test="skills-new-id"]').setValue(' alpha ')
+    await wrapper.find('[data-test="skills-new-name"]').setValue('Alpha')
+    await wrapper.find('[data-test="skills-new-description"]').setValue('做法')
+    await wrapper.find('[data-test="skills-new-instructions"]').setValue('第一步')
+    await wrapper.find('[data-test="skills-new-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="skills-new-error"]').text()).toBe("已经有一个叫 'alpha' 的技能。")
+
+    await wrapper.find('[data-test="skills-new-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(createSkill).toHaveBeenLastCalledWith({ skillId: 'alpha', name: 'Alpha', description: '做法', instructions: '第一步' })
+    expect(wrapper.find('[data-test="skills-composer"]').exists()).toBe(false)
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+  })
+
+  it('deletes only on the second press, and leaves nothing unsaved behind', async () => {
+    const listings = [[ALPHA], []]
+    const { stub } = createStub({
+      settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, skills: { disabled: ['alpha'] } })),
+      skills: vi.fn(async () => ({ skills: listings.shift() ?? [], warnings: [] })),
+    })
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="skills-delete"]').trigger('click')
+    expect(stub.deleteSkill).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="skills-delete"]').text()).toContain('确认删除')
+
+    await wrapper.find('[data-test="skills-delete"]').trigger('click')
+    await flushPromises()
+
+    expect(stub.deleteSkill).toHaveBeenCalledWith('alpha')
+    expect(wrapper.findAll('[data-test="skills-item"]')).toHaveLength(0)
+    // The server dropped the id from the deny list too; the page must not call that an unsaved change.
+    expect((wrapper.vm as unknown as { hasUnsavedChanges(): boolean }).hasUnsavedChanges()).toBe(false)
+    expect(wrapper.emitted('changed')).toHaveLength(1)
+  })
+
+  it('keeps a switch the person flipped but has not saved when a skill is added', async () => {
+    const { stub } = createStub({ skills: vi.fn(async () => ({ skills: [ALPHA], warnings: [] })) })
+    const wrapper = mount(SkillsView, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.find('[data-test="skills-toggle"]').setValue(false)
+
+    await choose(wrapper, new File(['x'], 'more.md'))
+
+    expect((wrapper.vm as unknown as { hasUnsavedChanges(): boolean }).hasUnsavedChanges()).toBe(true)
   })
 })
 

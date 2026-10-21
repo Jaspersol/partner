@@ -25,7 +25,7 @@ const part1: Record<string, string> = {
   '每 {minutes}': 'Every {minutes}',
   '{minutes}后，只一次': 'Once, in {minutes}',
   '{at}，只一次': 'Once, at {at}',
-  '创建': 'create',
+  '创建': 'Create',
   '模型请求{verb}定时任务': 'The model asks to {verb} a scheduled task',
   '模型请求执行动作': 'The model asks to perform an action',
   '来自 {origin}': 'From {origin}',

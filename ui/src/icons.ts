@@ -29,6 +29,7 @@ export type IconName =
   | 'pencil'
   | 'search'
   | 'download'
+  | 'upload'
   | 'swap'
   | 'database'
   | 'flag'
@@ -108,6 +109,8 @@ export const ICONS: Record<IconName, readonly string[]> = {
   search: ['M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14z', 'M16.4 16.4L21 21'],
 
   download: ['M12 3v11', 'M8 10l4 4 4-4', 'M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3'],
+
+  upload: ['M12 15V4', 'M8 8l4-4 4 4', 'M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3'],
 
   swap: ['M4 8h13', 'M14 5l3 3-3 3', 'M20 16H7', 'M10 13l-3 3 3 3'],
 

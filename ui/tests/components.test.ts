@@ -935,6 +935,9 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
     })),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
+    createSkill: vi.fn(async (skill) => ({ skillId: skill.skillId, name: skill.name })),
+    uploadSkill: vi.fn(async (_file, fileName) => ({ skillId: 'uploaded', name: fileName })),
+    deleteSkill: vi.fn(async () => true),
     web: vi.fn(async (): Promise<WebView> => ({
       enabled: true,
       proxy: null,

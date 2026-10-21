@@ -33,6 +33,7 @@ public static class ViewEndpoints
         AgentEndpoints.Map(app);
         ScheduleEndpoints.Map(app);
         MapSkills(app, ctx, workspace);
+        SkillEndpoints.Map(app, ctx, workspace);
         MapProjections(app);
         MapDiscovery(app);
     }
@@ -870,9 +871,9 @@ public static class ViewEndpoints
     /// <summary>
     /// What skills the workspace holds, and which are switched off.
     /// <para>
-    /// Read-only on purpose: a skill is a <c>SKILL.md</c> in the workspace, and writing one is a job for
-    /// whatever produced it. The judgement that belongs here is whether a skill is used, which is why the
-    /// disable list is in settings and the content is not.
+    /// A skill is a <c>SKILL.md</c> in the workspace. Reading is here; adding and removing one is in
+    /// <see cref="SkillEndpoints"/>. Whether a skill is used is a separate judgement, which is why the disable
+    /// list is in settings and the content is not.
     /// </para>
     /// </summary>
     private static void MapSkills(WebApplication app, ApiContext ctx, string workspace)
@@ -933,6 +934,12 @@ public static class ViewEndpoints
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
+            }
+
+            // The deny list is read when skills are loaded, so a change has to be loaded again to reach the next turn.
+            if (!before.Skills.Equals(stored.Skills))
+            {
+                consumer.ReloadSkills();
             }
 
             // Local engines own the child processes behind the voice HTTP clients: a command/port/switch edit

@@ -184,6 +184,14 @@ export interface SkillView {
   instructions: string
 }
 
+/** What a person types to write a skill by hand. The server turns it into a SKILL.md. */
+export interface NewSkill {
+  skillId: string
+  name: string
+  description: string
+  instructions: string
+}
+
 export interface SkillListView {
   skills: SkillView[]
   /** Why a directory was skipped. Shown rather than swallowed: a skill that did not load is otherwise invisible. */
@@ -917,6 +925,12 @@ export interface PartnerApiSurface {
   createMemory(input: { body: string; tier?: string; scope?: string }): Promise<string>
   /** What skills the workspace holds, plus the scan warnings for the ones that were skipped. */
   skills(): Promise<SkillListView>
+  /** Writes a new skill. Rejects with the reason (a bad id, a clash with an existing one). */
+  createSkill(skill: NewSkill): Promise<{ skillId: string; name: string }>
+  /** Adds a skill from a `.md` (one SKILL.md) or a `.zip` (a skill folder). Rejects with the reason. */
+  uploadSkill(file: Blob, fileName: string): Promise<{ skillId: string; name: string }>
+  /** Removes a skill folder. False when it was already gone. */
+  deleteSkill(skillId: string): Promise<boolean>
   consumer(): Promise<ConsumerState>
   voice(): Promise<VoiceState>
   devices(): Promise<DeviceList>
@@ -1080,6 +1094,36 @@ export class PartnerApi implements PartnerApiSurface {
     }
 
     return (await response.json()) as { path: string; fileName: string; bytes: number }
+  }
+
+  createSkill(skill: NewSkill): Promise<{ skillId: string; name: string }> {
+    return this.request('POST', '/api/skills', skill)
+  }
+
+  async uploadSkill(file: Blob, fileName: string): Promise<{ skillId: string; name: string }> {
+    const response = await this.fetchImpl(`${this.base}/api/skills/upload`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/octet-stream',
+        [FILE_NAME_HEADER]: encodeURIComponent(fileName),
+      },
+      body: file,
+    })
+
+    await this.assertOk(response)
+    return (await response.json()) as { skillId: string; name: string }
+  }
+
+  async deleteSkill(skillId: string): Promise<boolean> {
+    const response = await this.send('DELETE', `/api/skills/${encodeURIComponent(skillId)}`)
+
+    if (response.status === 404) {
+      return false
+    }
+
+    await this.assertOk(response)
+    return true
   }
 
   async uploadMedia(file: Blob, contentType?: string, fileName?: string): Promise<UploadedMedia> {

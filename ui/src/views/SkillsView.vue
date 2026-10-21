@@ -1,20 +1,23 @@
 <script setup lang="ts">
 import { t } from '../i18n'
-import { computed, onMounted, ref } from 'vue'
-import type { PartnerApiSurface, RuntimeSettings, SkillView } from '../api'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { ApiError, type NewSkill, type PartnerApiSurface, type RuntimeSettings, type SkillView } from '../api'
+import Dialog from '../components/Dialog.vue'
 import Drawer from '../components/Drawer.vue'
 import HintTip from '../components/HintTip.vue'
 import Icon from '../components/Icon.vue'
 import MarkdownBody from '../components/MarkdownBody.vue'
 import SaveBar from '../components/SaveBar.vue'
+import { showToast } from '../toast'
 
 /**
  * The skills the workspace holds, and which of them are in use.
  *
  * <para>
- * Read-only about content, editable about use — the same split the storage chose. A <c>SKILL.md</c> belongs to
- * whoever wrote it; whether this installation wants it injected into every prompt is a decision made here, and
- * it lives in settings so replacing a skill file does not silently switch it back on.
+ * A skill can be added here (written by hand, or uploaded as a SKILL.md or a zip) and removed, but not edited: its
+ * text belongs to whoever wrote it, so changing it means uploading a new one. Whether this installation wants it
+ * injected into every prompt is a separate decision made here, and it lives in settings so replacing a skill file
+ * does not silently switch it back on.
  * </para>
  */
 const props = defineProps<{ api: PartnerApiSurface }>()
@@ -29,6 +32,16 @@ const notice = ref('')
 /** The skill whose full instructions are open in the drawer. */
 const reading = ref<SkillView | null>(null)
 const filter = ref('')
+
+/** The hidden file input behind 「上传技能」; the visible button only opens it. */
+const fileInput = ref<HTMLInputElement | null>(null)
+const busy = ref(false)
+/** The skill whose delete is armed: the first press arms, the second deletes. */
+const armed = ref<string | null>(null)
+
+const composing = ref(false)
+const draft = reactive<NewSkill>({ skillId: '', name: '', description: '', instructions: '' })
+const formError = ref('')
 
 /** The deny list as last stored; "changed" is a comparison, not a flag. */
 const stored = ref<string | null>(null)
@@ -84,6 +97,104 @@ async function refresh() {
   }
 }
 
+/** The server's reason without the status prefix the client puts in front of it. */
+function reasonOf(failure: unknown): string {
+  return failure instanceof ApiError ? failure.message.replace(/^\d+:\s*/, '') : String(failure)
+}
+
+/**
+ * Re-reads the skills and their warnings only. Not `refresh`: that also resets the switches to what is stored, and
+ * adding a skill must not throw away a toggle the person has made but not saved yet.
+ */
+async function reloadList() {
+  const loaded = await props.api.skills()
+  skills.value = loaded.skills
+  warnings.value = loaded.warnings
+}
+
+/** The server drops a deleted skill from the deny list; this keeps the page's copy of it in step. */
+function forget(skillId: string) {
+  disabled.value = disabled.value.filter((id) => id !== skillId)
+  if (stored.value !== null) {
+    stored.value = key((JSON.parse(stored.value) as string[]).filter((id) => id !== skillId))
+  }
+  if (baseline.value) {
+    baseline.value = { ...baseline.value, skills: { disabled: baseline.value.skills.disabled.filter((id) => id !== skillId) } }
+  }
+}
+
+function pickFile() {
+  fileInput.value?.click()
+}
+
+async function onFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Cleared so choosing the same file again (after fixing it) still fires `change`.
+  input.value = ''
+  if (!file) return
+
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const added = await props.api.uploadSkill(file, file.name)
+    await reloadList()
+    showToast(t('已添加技能 {name}', { name: added.name }))
+    emit('changed')
+  } catch (failure) {
+    error.value = reasonOf(failure)
+  } finally {
+    busy.value = false
+  }
+}
+
+function openComposer() {
+  Object.assign(draft, { skillId: '', name: '', description: '', instructions: '' })
+  formError.value = ''
+  composing.value = true
+}
+
+async function create() {
+  if (draft.skillId.trim() === '' || draft.name.trim() === '' || draft.description.trim() === '' || draft.instructions.trim() === '') {
+    formError.value = t('四项都要填')
+    return
+  }
+
+  busy.value = true
+  formError.value = ''
+  try {
+    const added = await props.api.createSkill({ ...draft, skillId: draft.skillId.trim() })
+    composing.value = false
+    await reloadList()
+    showToast(t('已添加技能 {name}', { name: added.name }))
+    emit('changed')
+  } catch (failure) {
+    formError.value = reasonOf(failure)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function remove(skill: SkillView) {
+  if (armed.value !== skill.skillId) {
+    armed.value = skill.skillId
+    return
+  }
+
+  armed.value = null
+  error.value = ''
+  try {
+    await props.api.deleteSkill(skill.skillId)
+    forget(skill.skillId)
+    await reloadList()
+    showToast(t('已删除'))
+    emit('changed')
+  } catch (failure) {
+    error.value = reasonOf(failure)
+  }
+}
+
 async function save() {
   if (!baseline.value) {
     error.value = t('先读取设置')
@@ -133,6 +244,16 @@ defineExpose({ refresh, hasUnsavedChanges })
             <Icon name="search" :size="14" class="search-glyph" />
             <input v-model="filter" :placeholder="t('搜索技能')" :aria-label="t('搜索技能')" data-test="skills-filter" />
           </label>
+          <div class="actions">
+            <input ref="fileInput" type="file" accept=".md,.zip" hidden data-test="skills-file" @change="onFile" />
+            <button class="ghost" :disabled="busy" data-test="skills-upload" @click="pickFile">
+              <Icon name="upload" :size="14" /> {{ t('上传技能') }}
+            </button>
+            <HintTip>{{ t('选一个 SKILL.md，或把技能文件夹压缩成 .zip（SKILL.md 放在根目录）再上传。') }}</HintTip>
+            <button class="primary" :disabled="busy" data-test="skills-new" @click="openComposer">
+              <Icon name="plus" :size="14" :stroke-width="2.2" /> {{ t('创建技能') }}
+            </button>
+          </div>
         </div>
 
         <!-- Shown rather than swallowed: a skill that did not load is invisible otherwise, and "it just is not
@@ -148,7 +269,7 @@ defineExpose({ refresh, hasUnsavedChanges })
         </details>
 
         <p v-if="skills.length === 0" class="empty" data-test="skills-empty">
-          {{ t('还没有技能。把技能放在') }} <code>&lt;workspace&gt;/skills/&lt;id&gt;/SKILL.md</code>{{ t('。') }}
+          {{ t('还没有技能。上传或创建一个，或把技能放在') }} <code>&lt;workspace&gt;/skills/&lt;id&gt;/SKILL.md</code>{{ t('。') }}
         </p>
 
         <div class="grid">
@@ -162,9 +283,20 @@ defineExpose({ refresh, hasUnsavedChanges })
             <p class="desc break">{{ skill.description }}</p>
 
             <div class="skill-foot">
-              <button class="ghost read" data-test="skills-instructions-toggle" @click="reading = skill">
-                <Icon name="file" :size="14" /> {{ t('查看说明') }}
-              </button>
+              <div class="foot-actions">
+                <button class="ghost read" data-test="skills-instructions-toggle" @click="reading = skill">
+                  <Icon name="file" :size="14" /> {{ t('查看说明') }}
+                </button>
+                <button
+                  class="ghost read danger"
+                  :class="{ 'is-armed': armed === skill.skillId }"
+                  data-test="skills-delete"
+                  @click="remove(skill)"
+                  @blur="armed = null"
+                >
+                  <Icon name="trash" :size="14" /> {{ armed === skill.skillId ? t('确认删除') : t('删除') }}
+                </button>
+              </div>
               <input
                 type="checkbox"
                 class="g-switch"
@@ -183,6 +315,32 @@ defineExpose({ refresh, hasUnsavedChanges })
     <Drawer :open="reading !== null" :title="reading?.name ?? ''" wide @close="reading = null">
       <MarkdownBody v-if="reading" :body="reading.instructions" />
     </Drawer>
+
+    <Dialog :open="composing" :title="t('创建技能')" @close="composing = false">
+      <div class="composer-body" data-test="skills-composer">
+        <label class="field">
+          <span class="field-name">{{ t('技能 ID') }} <HintTip>{{ t('文件夹名，只能用小写字母、数字、点、下划线和连字符。助手用它来加载这个技能。') }}</HintTip></span>
+          <input v-model="draft.skillId" placeholder="code-review" spellcheck="false" data-test="skills-new-id" />
+        </label>
+        <label class="field">
+          <span class="field-name">{{ t('名称') }}</span>
+          <input v-model="draft.name" :placeholder="t('例如：代码评审')" data-test="skills-new-name" />
+        </label>
+        <label class="field">
+          <span class="field-name">{{ t('描述') }} <HintTip>{{ t('一句话说明什么时候该用它。助手靠这句话决定要不要加载。') }}</HintTip></span>
+          <input v-model="draft.description" :placeholder="t('例如：审查一次代码改动，指出风险')" data-test="skills-new-description" />
+        </label>
+        <label class="field">
+          <span class="field-name">{{ t('说明') }}</span>
+          <textarea v-model="draft.instructions" rows="8" :placeholder="t('助手加载这个技能后要照着做的步骤。')" data-test="skills-new-instructions" />
+        </label>
+        <p v-if="formError" class="error" role="alert" data-test="skills-new-error">{{ formError }}</p>
+      </div>
+      <template #footer>
+        <button class="ghost" data-test="skills-new-cancel" @click="composing = false">{{ t('取消') }}</button>
+        <button class="primary" :disabled="busy" data-test="skills-new-submit" @click="create">{{ t('创建') }}</button>
+      </template>
+    </Dialog>
 
     <SaveBar
       prefix="skills"
@@ -208,6 +366,29 @@ defineExpose({ refresh, hasUnsavedChanges })
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.composer-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.field-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .summary-line {
@@ -338,5 +519,22 @@ defineExpose({ refresh, hasUnsavedChanges })
   padding-inline: var(--space-2);
   color: var(--text-2);
   font-size: var(--fs-meta);
+}
+
+.foot-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* A quiet delete: red only once armed or hovered, so a grid of skills is not a grid of red buttons. */
+.read.danger {
+  color: var(--text-3);
+}
+
+.read.danger:hover:not(:disabled),
+.read.danger.is-armed {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
 }
 </style>
