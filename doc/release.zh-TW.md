@@ -62,6 +62,13 @@
 
 發佈 tag 打在 `master` 上：`git checkout master && git pull && git tag v0.2.0 && git push github v0.2.0`。
 
+squash 合併會讓兩邊歷史分叉：同一批檔案在 `master` 和 `dev` 上都算「新增」，下一個 PR 會變成 add/add 衝突。合併完把 `dev` 對齊一次：
+
+```bash
+git fetch github
+git reset --hard github/master
+```
+
 ## 本機等價指令
 
 workflow 做的每一步都能在本機跑：
