@@ -37,11 +37,15 @@ The installer carries only two small server scripts. Runtimes and models are not
 
 - If you only need recognition, download only KWS + ASR. No GPU required.
 - Downloads resume; SHA-256 is verified when available; when the server reports a length it is checked, and a truncated file does not count as success.
+- A dropped connection is retried three times from the bytes already on disk, and 60 seconds without data counts as dropped, so the download button does not have to be pressed again.
 - "Check" on the settings page looks at the files on disk and lists what is missing. You can also point it at an existing engine directory.
 - Default paths are stored relative to the app directory, so moving or reinstalling the app needs no settings change.
 - Switching an engine off ends its process (the whole tree) and returns all VRAM and RAM.
 
 Download URLs can be overridden with `PARTNER_ENGINE_TTS_URL`, `PARTNER_ENGINE_KWS_URL` (and the matching `_SHA256`).
+One engine may span several archives: a GitHub release asset may not reach 2 GiB and TTS does not fit in one, so the app fetches them in order and unpacks each into the same folder.
+`scripts/pack-engines.ps1` builds those archives from the local `engines/` (the models are not in git): it rebuilds a relocatable runtime, splits the packs, hashes them, and prints the URL table for `EnginePackage.cs`.
+Every pack carries a `NOTICE/` folder with upstream provenance, a statement of changes and the full licence texts; those licences are separate from MIT, see [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
 On a dev machine, a script installs them into the repository's `engines/`, where the settings page finds them:
 

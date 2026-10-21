@@ -26,7 +26,8 @@
     "resources": {
       "../src/Partner.Api/bin/Release/net8.0/win-x64/publish": "api/",
       "../engines/tts/tts-server.py": "engines/tts/",
-      "../engines/kws-asr/asr-server.py": "engines/kws-asr/"
+      "../engines/kws-asr/asr-server.py": "engines/kws-asr/",
+      "../THIRD-PARTY-NOTICES.md": "notices/THIRD-PARTY-NOTICES.md"
     },
     "windows": {
       "nsis": {

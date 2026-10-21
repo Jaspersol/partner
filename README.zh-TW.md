@@ -110,4 +110,4 @@ SKIP_SHELL=1 bash scripts/ci.sh  # 跳過最慢的殼編譯
 
 ## 授權
 
-待補充（儲存庫中暫無 LICENSE 檔案）。
+Partner 的程式碼以 [MIT](LICENSE) 授權。語音引擎的執行環境、模型權重與音色錨點不在本儲存庫，依 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 所列各自的授權單獨發佈（Apache-2.0、FunASR MODEL_LICENSE 等），MIT 不涵蓋它們。

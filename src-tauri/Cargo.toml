@@ -3,6 +3,7 @@ name = "partner-shell"
 version = "0.1.0"
 description = "Desktop shell for the Partner runtime: hosts the Vue UI and owns the API sidecar."
 edition = "2021"
+license = "MIT"
 rust-version = "1.77"
 
 [build-dependencies]
