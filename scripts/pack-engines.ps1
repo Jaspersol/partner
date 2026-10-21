@@ -11,11 +11,21 @@
 # pyvenv.cfg and only runs on the machine that built it. The pack ships a relocatable embeddable CPython at
 # <engine>/python/ instead - the path EnginePackage already prefers - so a fresh machine can start the engine.
 #
+# Runs on PowerShell 7 (what the release workflow uses) and on Windows PowerShell 5.1. Prefer pwsh: 5.1 turns
+# anything a native command writes to stderr into a terminating error under $ErrorActionPreference = 'Stop'.
+#
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -DryRun          # sizes only, no writes
 #   powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1                 # write dist/engines/*.zip
-#   powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v1
+#   powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v2
 #   powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -SkipRuntime    # reuse the staged runtime
+#   powershell -ExecutionPolicy Bypass -File scripts/pack-engines.ps1 -UploadTag engines-v1 -ForceUpload
+#
+# Engine tags are immutable. Uploading to a tag that already carries these assets fails on purpose: every
+# installer that is already published pins the SHA-256 of the files under its tag, so replacing them turns
+# that user's download into a checksum failure after gigabytes. Ship new packs under a new tag (engines-v2);
+# the app build pins the newest published engine tag on its own. -ForceUpload exists only for a tag whose
+# assets were never handed to a user (a first, broken publish).
 #
 # Output (dist/engines/):
 #   partner-engine-tts-a-runtime.zip   interpreter + server script + bundled internal runtime
@@ -29,6 +39,7 @@ param(
     [switch]$SkipRuntime,
     [switch]$DryRun,
     [string]$UploadTag,
+    [switch]$ForceUpload,
     [string]$Target = 'dev'
 )
 
@@ -98,7 +109,10 @@ function Build-Runtime([string]$name, [string]$sitePackages) {
     if (-not (Test-Path $zip)) {
         $url = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
         Write-Host "download $url"
-        & curl.exe -L --fail --retry 3 -o $zip $url
+        # -sS: no progress meter, but keep the error message. Under Windows PowerShell 5.1 anything a native
+        # command writes to stderr is a NativeCommandError, and this script runs with $ErrorActionPreference
+        # = 'Stop' - a progress meter would abort the download loop.
+        & curl.exe -L -sS --fail --retry 3 -o $zip $url
         if ($LASTEXITCODE -ne 0) { Fail "could not download the embeddable CPython: $url" }
     }
 
@@ -470,12 +484,21 @@ $manifest = [pscustomobject]@{
     assets = @($packs | ForEach-Object { [pscustomobject]@{ name = $_.Name; bytes = $_.Bytes; sha256 = $_.Sha256 } })
 }
 $manifestPath = Join-Path $out 'engines-manifest.json'
-$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding utf8NoBOM
+# Explicit UTF-8 without a BOM, in a way both PowerShell 7 and Windows PowerShell 5.1 understand: the release
+# workflow used to call this script through 5.1, whose Set-Content has no `utf8NoBOM` and failed here, before
+# anything had been uploaded.
+[System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
 Write-Host "`nmanifest: $manifestPath"
+
+if (-not $UploadTag) {
+    Write-Warning "no -UploadTag: the URLs printed below and the manifest assume tag '$tag'. Only paste them into EnginePackage.cs for packs that were actually uploaded under that tag."
+}
 
 $ttsParts = @($packs | Where-Object { $_.Name -like 'partner-engine-tts-*' })
 $kwsPart = @($packs | Where-Object { $_.Name -eq 'partner-engine-kws.zip' })[0]
-$base = "https://github.com/Jaspersol/partner/releases/download/$tag"
+# Same repository the manifest applier uses, so a fork's printed table points at the fork.
+$repository = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'Jaspersol/partner' }
+$base = "https://github.com/$repository/releases/download/$tag"
 
 Write-Host @"
 
@@ -495,15 +518,61 @@ $(($ttsParts | ForEach-Object { "        (""$base/$($_.Name)"", ""$($_.Sha256)""
 if ($UploadTag) {
     $files = @($packs | ForEach-Object { Join-Path $out $_.Name })
     $files += $manifestPath
-    $existing = & gh release list --json tagName -q '.[].tagName' | Where-Object { $_ -eq $UploadTag }
-    if (-not $existing) {
+
+    # `gh release list` only returns the 30 newest releases, so an older tag read as missing and `create`
+    # then failed with "release already exists". Ask for the tag itself. Under Windows PowerShell 5.1 a
+    # native command's stderr becomes a NativeCommandError and this script runs with $ErrorActionPreference
+    # = 'Stop', so reading a tag that does not exist yet would abort here instead of taking the "create the
+    # release" branch: relax the preference for exactly this call.
+    $published = $null
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $json = & gh release view $UploadTag --json assets 2>$null
+    $ErrorActionPreference = $previous
+    if ($LASTEXITCODE -eq 0 -and $json) { $published = $json | ConvertFrom-Json }
+
+    if (-not $published) {
         Write-Host "creating release $UploadTag from $Target"
         & gh release create $UploadTag --target $Target --title "Local engines $UploadTag" `
             --notes "Runtime and models for the local voice engines. Each model's licence is in the pack under NOTICE/." @files
         if ($LASTEXITCODE -ne 0) { Fail 'gh release create failed' }
     } else {
+        # An engine tag is read-only once its assets are out in the world: a published installer pins their
+        # SHA-256, so new bytes under the same name break that install for good (the client deletes the
+        # download and reports a checksum failure). A new pack means a new tag.
+        #
+        # The manifest is uploaded last, so a release without one has never been pinned by an installer: that is
+        # a publish that stopped half way and may be completed (assets replaced), which is why a partial tag is
+        # not stuck behind -ForceUpload.
+        $onRelease = @($published.assets | ForEach-Object { $_.name })
+        $complete = $onRelease -contains 'engines-manifest.json'
+        $clashing = @($files | ForEach-Object { Split-Path $_ -Leaf } | Where-Object { $onRelease -contains $_ })
+        if ($clashing.Count -gt 0 -and $complete -and -not $ForceUpload) {
+            Fail @"
+$UploadTag already carries: $($clashing -join ', ')
+Engine tags are immutable. An installer that is already published pins the SHA-256 of these files, so
+re-uploading different bytes makes every download of it fail at the end of a multi-gigabyte transfer.
+Ship the new packs under a new tag instead:
+
+    scripts/pack-engines.ps1 -UploadTag engines-v2
+
+The next app release pins the newest published engine release automatically, so nothing else has to
+change. Pass -ForceUpload only for a tag whose assets were never handed to a user.
+
+If you just published this tag by hand, nothing is wrong: this run is the tag push arriving afterwards and
+finding the assets already uploaded.
+"@
+        }
+        if (-not $complete -and $onRelease.Count -gt 0) {
+            Write-Warning "$UploadTag has assets but no engines-manifest.json: an earlier publish stopped half way. Completing it now; nothing has pinned those files yet."
+        }
+
         Write-Host "release $UploadTag exists, uploading assets"
-        & gh release upload $UploadTag @files --clobber
+        if ($ForceUpload -or -not $complete) {
+            & gh release upload $UploadTag @files --clobber
+        } else {
+            & gh release upload $UploadTag @files
+        }
         if ($LASTEXITCODE -ne 0) { Fail 'gh release upload failed' }
     }
 }
