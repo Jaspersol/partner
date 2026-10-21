@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
+import { t } from '../i18n'
 
 /**
  * The one save control for every page that edits a document (settings, prompts, MCP, skills).
@@ -39,7 +40,6 @@ const props = withDefaults(
     error: '',
     errors: () => [],
     blockedReason: '',
-    saveLabel: '保存',
     canDiscard: false,
   },
 )
@@ -98,7 +98,7 @@ const visible = () =>
     @keydown.escape="confirming = false"
   >
     <div class="savebar-main">
-      <span v-if="dirty" class="savebar-note" :data-test="`${prefix}-dirty`">有未保存的修改</span>
+      <span v-if="dirty" class="savebar-note" :data-test="`${prefix}-dirty`">{{ t('savebar.dirty') }}</span>
       <span
         v-if="statusShown"
         class="savebar-note is-ok"
@@ -116,9 +116,9 @@ const visible = () =>
             :data-test="`${prefix}-discard`"
             @click="onDiscard"
           >
-            {{ confirming ? '确认放弃' : '放弃' }}
+            {{ confirming ? t('savebar.confirmDiscard') : t('savebar.discard') }}
           </button>
-          <button v-if="confirming" class="ghost" @click="confirming = false">取消</button>
+          <button v-if="confirming" class="ghost" @click="confirming = false">{{ t('savebar.cancel') }}</button>
         </template>
         <button
           class="primary"
@@ -127,7 +127,7 @@ const visible = () =>
           :data-test="`${prefix}-save`"
           @click="emit('save')"
         >
-          {{ saveLabel }}
+          {{ saveLabel ?? t('savebar.save') }}
         </button>
       </template>
     </div>

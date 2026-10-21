@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, ref } from 'vue'
 import { gearName, normalizeGear as normalize } from '../gears'
 import Icon from './Icon.vue'
@@ -96,9 +97,9 @@ function add(): void {
 <template>
   <div class="gear-table" data-test="reasoning-table">
     <div class="gear-head" aria-hidden="true">
-      <span>默认</span>
-      <span>显示文字</span>
-      <span>实际传值</span>
+      <span>{{ t('默认') }}</span>
+      <span>{{ t('显示文字') }}</span>
+      <span>{{ t('实际传值') }}</span>
       <span />
     </div>
 
@@ -116,7 +117,7 @@ function add(): void {
           class="gear-radio"
           :name="`gear-default-${uid}`"
           :checked="gear === current"
-          :aria-label="`设为默认：${shown(gear)}`"
+          :aria-label="t('设为默认：{shown}', { shown: shown(gear) })"
           data-test="reasoning-default"
           @change="emit('update:modelValue', gear)"
         />
@@ -124,19 +125,19 @@ function add(): void {
           class="gear-name"
           type="text"
           :value="shown(gear)"
-          :aria-label="`${gear} 的显示文字`"
+          :aria-label="t('{gear} 的显示文字', { gear: gear })"
           data-test="reasoning-label"
           @change="setLabel(gear, ($event.target as HTMLInputElement).value)"
         />
         <code class="gear-value">{{ gear }}</code>
         <span class="gear-actions">
-          <button class="ghost" type="button" :disabled="at === 0" :aria-label="`${shown(gear)} 上移`" data-test="reasoning-up" @click="move(at, -1)">
+          <button class="ghost" type="button" :disabled="at === 0" :aria-label="t('{shown} 上移', { shown: shown(gear) })" data-test="reasoning-up" @click="move(at, -1)">
             <Icon name="chevron-up" :size="14" />
           </button>
-          <button class="ghost" type="button" :disabled="at === rows.length - 1" :aria-label="`${shown(gear)} 下移`" data-test="reasoning-down" @click="move(at, 1)">
+          <button class="ghost" type="button" :disabled="at === rows.length - 1" :aria-label="t('{shown} 下移', { shown: shown(gear) })" data-test="reasoning-down" @click="move(at, 1)">
             <Icon name="chevron-down" :size="14" />
           </button>
-          <button class="ghost" type="button" :aria-label="`删除 ${gear}`" data-test="reasoning-remove" @click="remove(gear)">
+          <button class="ghost" type="button" :aria-label="t('删除 {gear}', { gear: gear })" data-test="reasoning-remove" @click="remove(gear)">
             <Icon name="x" :size="14" />
           </button>
         </span>
@@ -147,20 +148,20 @@ function add(): void {
       <input
         v-model="draftLabel"
         type="text"
-        placeholder="显示文字，如 极速"
-        aria-label="新增档位的显示文字"
+        :placeholder="t('显示文字，如 极速')"
+        :aria-label="t('新增档位的显示文字')"
         data-test="reasoning-add-label"
         @keydown.enter.prevent="add"
       />
       <input
         v-model="draftValue"
         type="text"
-        placeholder="实际传值，如 turbo"
-        aria-label="新增档位的传值"
+        :placeholder="t('实际传值，如 turbo')"
+        :aria-label="t('新增档位的传值')"
         data-test="reasoning-add-input"
         @keydown.enter.prevent="add"
       />
-      <button class="ghost" type="button" data-test="reasoning-add" @click="add">添加</button>
+      <button class="ghost" type="button" data-test="reasoning-add" @click="add">{{ t('添加') }}</button>
     </div>
   </div>
 </template>

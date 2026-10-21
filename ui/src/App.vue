@@ -14,6 +14,7 @@ import {
   type AgentJobView,
 } from './api'
 import { resolveConnection } from './config'
+import { t } from './i18n'
 import { useRailOnlyMode } from './narrow'
 import { applyReducedTransparency, applyTheme, nextTheme, readReducedTransparency, readTheme, type Theme } from './theme'
 import SideBar, { type NavItem } from './components/SideBar.vue'
@@ -36,21 +37,21 @@ import { version } from '../package.json'
  * never caches a view's contents.
  */
 
-const NAV: NavItem[] = [
-  { key: 'session', label: '会话', icon: 'chat' },
+const NAV = computed<NavItem[]>(() => [
+  { key: 'session', label: t('nav.session'), testId: '会话', icon: 'chat' },
   // Right under the conversation: a timed task's output lands there.
-  { key: 'schedules', label: '定时', icon: 'clock' },
-  { key: 'memory', label: '记忆', icon: 'memory' },
+  { key: 'schedules', label: t('nav.schedules'), testId: '定时', icon: 'clock' },
+  { key: 'memory', label: t('nav.memory'), testId: '记忆', icon: 'memory' },
 
   // Two capability pages of their own rather than cards inside settings: both are lists a person reads and
   // changes, and need the room a settings card does not give.
-  { key: 'mcp', label: 'MCP', icon: 'mcp' },
-  { key: 'skills', label: '技能', icon: 'skill' },
+  { key: 'mcp', label: 'MCP', testId: 'MCP', icon: 'mcp' },
+  { key: 'skills', label: t('nav.skills'), testId: '技能', icon: 'skill' },
 
   // What the agents are told, and who they may hand work to.
-  { key: 'prompts', label: 'agent', icon: 'prompt' },
-  { key: 'settings', label: '设置', icon: 'settings' },
-]
+  { key: 'prompts', label: 'agent', testId: 'agent', icon: 'prompt' },
+  { key: 'settings', label: t('nav.settings'), testId: '设置', icon: 'settings' },
+])
 
 /** How often the badge re-reads the queue: blocked work should not need a click to appear. */
 const QUEUE_POLL_MS = 5000
@@ -142,7 +143,7 @@ const activeView = ref<ActiveView | null>(null)
  */
 function select(key: string) {
   const leaving = activeView.value?.hasUnsavedChanges?.() === true
-  if (leaving && !window.confirm('当前页面有未保存的修改，切换后将丢失。继续？')) {
+  if (leaving && !window.confirm(t('app.unsavedLeave'))) {
     return
   }
 
@@ -151,7 +152,7 @@ function select(key: string) {
 }
 
 const connected = computed(() => api.value !== null)
-const viewLabel = computed(() => NAV.find((item) => item.key === active.value)?.label ?? '')
+const viewLabel = computed(() => NAV.value.find((item) => item.key === active.value)?.label ?? '')
 
 let poller: ReturnType<typeof setInterval> | undefined
 let approvalPoller: ReturnType<typeof setInterval> | undefined
@@ -187,7 +188,7 @@ async function refreshSummary() {
     // still running is worse than one showing something slightly old. Pressing interrupt on a stale read is
     // harmless — `cancel` answers 404 and the composer reports 「已完成，无法取消」.
     if (failure instanceof ApiError && failure.status === 401) {
-      connectionError.value = 'token 失效（401）——请重启壳以获取新令牌'
+      connectionError.value = t('app.tokenInvalid')
     }
 
     stale.value = summary.value !== null
@@ -338,7 +339,7 @@ function onShortcut(event: KeyboardEvent) {
   }
 
   const index = VIEW_KEYS.indexOf(event.key as (typeof VIEW_KEYS)[number])
-  const item = index >= 0 ? NAV[index] : undefined
+  const item = index >= 0 ? NAV.value[index] : undefined
   if (item === undefined) return
 
   event.preventDefault()
@@ -392,13 +393,13 @@ onMounted(async () => {
 
   // The window can appear before the API is listening. Show a connecting state, then hand the client to the
   // views only once it answers — a 401 is terminal, a still-down port retries until the deadline.
-  connectionError.value = '连接中…'
+  connectionError.value = t('app.connecting')
   const up = await waitForApi(client)
   if (up !== 'ok') {
     connectionError.value =
       up === 'unauthorized'
-        ? 'token 失效（401）——请重启壳以获取新令牌'
-        : '无法连接到本地服务——请确认 Partner API 已启动'
+        ? t('app.tokenInvalid')
+        : t('app.cannotConnect')
     return
   }
 

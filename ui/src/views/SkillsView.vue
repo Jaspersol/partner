@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
 import type { PartnerApiSurface, RuntimeSettings, SkillView } from '../api'
 import Drawer from '../components/Drawer.vue'
@@ -85,7 +86,7 @@ async function refresh() {
 
 async function save() {
   if (!baseline.value) {
-    error.value = '先读取设置'
+    error.value = t('先读取设置')
     return
   }
 
@@ -97,7 +98,7 @@ async function save() {
     baseline.value = saved.settings
     disabled.value = [...saved.settings.skills.disabled]
     stored.value = key(disabled.value)
-    notice.value = '已保存，助手已重新加载'
+    notice.value = t('已保存，助手已重新加载')
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -121,16 +122,16 @@ defineExpose({ refresh, hasUnsavedChanges })
         <div class="head">
           <p class="summary-line">
             <span data-test="skills-summary">
-              {{ enabledCount }} / {{ skills.length }} 启用
-              <template v-if="warnings.length > 0"> · {{ warnings.length }} 条警告</template>
+              {{ t('{enabledCount} / {length} 启用', { enabledCount: enabledCount, length: skills.length }) }}
+              <template v-if="warnings.length > 0"> {{ t('· {length} 条警告', { length: warnings.length }) }}</template>
             </span>
-            <button class="ghost refresh" aria-label="刷新" title="刷新" data-test="skills-refresh" @click="refresh">
+            <button class="ghost refresh" :aria-label="t('刷新')" :title="t('刷新')" data-test="skills-refresh" @click="refresh">
               <Icon name="refresh" :size="14" />
             </button>
           </p>
           <label v-if="skills.length >= SEARCH_FROM" class="search-field">
             <Icon name="search" :size="14" class="search-glyph" />
-            <input v-model="filter" placeholder="搜索技能" aria-label="搜索技能" data-test="skills-filter" />
+            <input v-model="filter" :placeholder="t('搜索技能')" :aria-label="t('搜索技能')" data-test="skills-filter" />
           </label>
         </div>
 
@@ -138,8 +139,8 @@ defineExpose({ refresh, hasUnsavedChanges })
              there" is the worst way to find out you wrote the front matter wrong. One line until it is asked for. -->
         <details v-if="warnings.length > 0" class="warnings" data-test="skills-warnings">
           <summary>
-            有 {{ warnings.length }} 个技能没能加载
-            <HintTip>通常是技能文件开头的格式写错了。展开可以看到具体是哪一个。</HintTip>
+            {{ t('有 {length} 个技能没能加载', { length: warnings.length }) }}
+            <HintTip>{{ t('通常是技能文件开头的格式写错了。展开可以看到具体是哪一个。') }}</HintTip>
           </summary>
           <ul>
             <li v-for="(warning, index) in warnings" :key="index" class="break">{{ warning }}</li>
@@ -147,7 +148,7 @@ defineExpose({ refresh, hasUnsavedChanges })
         </details>
 
         <p v-if="skills.length === 0" class="empty" data-test="skills-empty">
-          还没有技能。把技能放在 <code>&lt;workspace&gt;/skills/&lt;id&gt;/SKILL.md</code>。
+          {{ t('还没有技能。把技能放在') }} <code>&lt;workspace&gt;/skills/&lt;id&gt;/SKILL.md</code>{{ t('。') }}
         </p>
 
         <div class="grid">
@@ -155,20 +156,20 @@ defineExpose({ refresh, hasUnsavedChanges })
             <div class="skill-head">
               <span class="disc" :class="`hue-${hue(skill)}`" aria-hidden="true">{{ monogram(skill) }}</span>
               <span class="name">{{ skill.name }}</span>
-              <HintTip align="end"><span class="id">ID：<code>{{ skill.skillId }}</code>。关闭后助手不会再使用这个技能。</span></HintTip>
+              <HintTip align="end"><span class="id">{{ t('ID：') }}<code>{{ skill.skillId }}</code>{{ t('。关闭后助手不会再使用这个技能。') }}</span></HintTip>
             </div>
 
             <p class="desc break">{{ skill.description }}</p>
 
             <div class="skill-foot">
               <button class="ghost read" data-test="skills-instructions-toggle" @click="reading = skill">
-                <Icon name="file" :size="14" /> 查看说明
+                <Icon name="file" :size="14" /> {{ t('查看说明') }}
               </button>
               <input
                 type="checkbox"
                 class="g-switch"
                 role="switch"
-                :aria-label="`启用 ${skill.name}`"
+                :aria-label="t('启用 {name}', { name: skill.name })"
                 :checked="isOn(skill.skillId)"
                 data-test="skills-toggle"
                 @change="toggle(skill.skillId)"

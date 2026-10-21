@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { locale, t } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   ApiError,
@@ -51,26 +52,26 @@ const formError = ref('')
 /** The task whose delete is armed: the first click arms, the second deletes. */
 const armed = ref<string | null>(null)
 
-const KINDS = [
-  { value: 'cron', label: '按时刻', title: '例如每天 9 点、每周一 8 点' },
-  { value: 'interval', label: '每隔一段时间', title: '例如每 30 分钟' },
-  { value: 'once', label: '只一次', title: '到点执行一次就结束' },
-] as const
+const KINDS = computed(() => [
+  { value: 'cron', label: t('按时刻'), title: t('例如每天 9 点、每周一 8 点') },
+  { value: 'interval', label: t('每隔一段时间'), title: t('例如每 30 分钟') },
+  { value: 'once', label: t('只一次'), title: t('到点执行一次就结束') },
+])
 
-const CATCH_UPS = [
-  { value: 'once', label: '补一次', title: '错过之后，下次打开时补跑最近错过的那一次' },
-  { value: 'skip', label: '不补', title: '错过就算了，只记一笔' },
-  { value: 'all', label: '全补', title: '每个错过的都补上（最多最近 5 个）' },
-] as const
+const CATCH_UPS = computed(() => [
+  { value: 'once', label: t('补一次'), title: t('错过之后，下次打开时补跑最近错过的那一次') },
+  { value: 'skip', label: t('不补'), title: t('错过就算了，只记一笔') },
+  { value: 'all', label: t('全补'), title: t('每个错过的都补上（最多最近 5 个）') },
+])
 
 const UNIT_MINUTES = { minutes: 1, hours: 60, days: 1440 } as const
 
-const CRON_EXAMPLES = [
-  { text: '每天 9:00', value: '0 9 * * *' },
-  { text: '工作日 18:30', value: '30 18 * * 1-5' },
-  { text: '每小时整点', value: '0 * * * *' },
-  { text: '每周一 8:00', value: '0 8 * * 1' },
-]
+const CRON_EXAMPLES = computed(() => [
+  { text: t('每天 9:00'), value: '0 9 * * *' },
+  { text: t('工作日 18:30'), value: '30 18 * * 1-5' },
+  { text: t('每小时整点'), value: '0 * * * *' },
+  { text: t('每周一 8:00'), value: '0 8 * * 1' },
+])
 
 const activeCount = computed(() => tasks.value.filter((task) => task.status !== 'inactive').length)
 
@@ -84,28 +85,28 @@ function format(iso: string | null): string {
   const date = new Date(iso)
   return Number.isNaN(date.getTime())
     ? iso
-    : date.toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleString(locale.value, { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 /** The rule in words. Cron stays as the expression: translating it would be a second source of truth. */
 function rule(task: ScheduleTaskView): string {
   if (task.kind === 'interval' && task.intervalMinutes !== null) {
     const minutes = task.intervalMinutes
-    if (minutes % 1440 === 0) return `每 ${minutes / 1440} 天`
-    if (minutes % 60 === 0) return `每 ${minutes / 60} 小时`
-    return `每 ${minutes} 分钟`
+    if (minutes % 1440 === 0) return t('每 {v} 天', { v: minutes / 1440 })
+    if (minutes % 60 === 0) return t('每 {v} 小时', { v: minutes / 60 })
+    return t('每 {minutes} 分钟', { minutes: minutes })
   }
-  if (task.kind === 'once') return `只一次 · ${format(task.at)}`
+  if (task.kind === 'once') return t('只一次 · {format}', { format: format(task.at) })
   if (task.kind === 'cron' && task.cron !== null) return `cron ${task.cron}`
   return task.describe
 }
 
 function stateOf(task: ScheduleTaskView): { text: string; tone: 'on' | 'off' | 'bad' } {
-  if (task.status === 'failed') return { text: '投递失败，会重试', tone: 'bad' }
+  if (task.status === 'failed') return { text: t('投递失败，会重试'), tone: 'bad' }
   if (task.status === 'inactive') {
-    return { text: task.kind === 'once' && task.lastAt !== null ? '已执行' : '已暂停', tone: 'off' }
+    return { text: task.kind === 'once' && task.lastAt !== null ? t('已执行') : t('已暂停'), tone: 'off' }
   }
-  return { text: '运行中', tone: 'on' }
+  return { text: t('运行中'), tone: 'on' }
 }
 
 function canToggle(task: ScheduleTaskView): boolean {
@@ -123,7 +124,7 @@ function noticeRuns(list: ScheduleTaskView[]) {
     const before = seenRun.get(task.id) ?? null
     seenRun.set(task.id, task.lastRunAt)
     if (known && task.lastRunAt !== null && task.lastRunAt !== before && task.lastRunOk === false) {
-      showToast(`定时任务没做成：${task.payload.slice(0, 24)}${task.lastRunError ? '（' + task.lastRunError + '）' : ''}`, 'error')
+      showToast(t('定时任务没做成：{task}', { task: task.payload.slice(0, 24) + (task.lastRunError ? `（${task.lastRunError}）` : '') }), 'error')
     }
   }
 }
@@ -143,22 +144,22 @@ async function refresh() {
 
 function buildInput(): ScheduleInput | string {
   const text = payload.value.trim()
-  if (text === '') return '请填写到点要发给助手的内容'
+  if (text === '') return t('请填写到点要发给助手的内容')
 
   if (kind.value === 'cron') {
-    return cron.value.trim() === '' ? '请填写时刻规则，或点一个常用的' : { kind: 'cron', cron: cron.value.trim(), payload: text, catchUp: catchUp.value }
+    return cron.value.trim() === '' ? t('请填写时刻规则，或点一个常用的') : { kind: 'cron', cron: cron.value.trim(), payload: text, catchUp: catchUp.value }
   }
 
   if (kind.value === 'interval') {
     const minutes = Math.round(Number(intervalValue.value) * UNIT_MINUTES[intervalUnit.value])
     return Number.isFinite(minutes) && minutes >= 1
       ? { kind: 'interval', intervalMinutes: minutes, payload: text, catchUp: catchUp.value }
-      : '间隔至少 1 分钟'
+      : t('间隔至少 1 分钟')
   }
 
   const when = new Date(at.value)
   return at.value === '' || Number.isNaN(when.getTime())
-    ? '请选择执行的日期和时间'
+    ? t('请选择执行的日期和时间')
     : { kind: 'once', at: when.toISOString(), payload: text, catchUp: catchUp.value }
 }
 
@@ -239,23 +240,23 @@ defineExpose({ refresh })
         <section class="compose g-glass" data-test="schedule-form">
           <header class="compose-head">
             <span class="compose-title">
-              新建定时任务
-              <HintTip>到点后，下面这段话会作为一条消息发给助手，和你自己打字发送一样，排在已有的消息后面。</HintTip>
+              {{ t('新建定时任务') }}
+              <HintTip>{{ t('到点后，下面这段话会作为一条消息发给助手，和你自己打字发送一样，排在已有的消息后面。') }}</HintTip>
             </span>
           </header>
 
-          <SettingRow label="什么时候">
-            <Segmented v-model="kind" :options="KINDS" label="触发方式" />
+          <SettingRow :label="t('什么时候')">
+            <Segmented v-model="kind" :options="KINDS" :label="t('触发方式')" />
           </SettingRow>
 
           <template v-if="kind === 'cron'">
-            <SettingRow label="时刻规则" stack>
+            <SettingRow :label="t('时刻规则')" stack>
               <template #hint>
-                五段：分 时 日 月 星期，例如 <code>0 9 * * *</code> 是每天 9 点。按这台电脑的本地时间计算。
+                {{ t('五段：分 时 日 月 星期，例如') }} <code>0 9 * * *</code> {{ t('是每天 9 点。按这台电脑的本地时间计算。') }}
               </template>
               <input v-model="cron" placeholder="0 9 * * *" data-test="schedule-cron" spellcheck="false" />
             </SettingRow>
-            <div class="examples" role="group" aria-label="常用时刻">
+            <div class="examples" role="group" :aria-label="t('常用时刻')">
               <button
                 v-for="example in CRON_EXAMPLES"
                 :key="example.value"
@@ -269,37 +270,37 @@ defineExpose({ refresh })
             </div>
           </template>
 
-          <SettingRow v-else-if="kind === 'interval'" label="每隔" hint="从创建的那一刻算起，按这个间隔一直重复。">
+          <SettingRow v-else-if="kind === 'interval'" :label="t('每隔')" :hint="t('从创建的那一刻算起，按这个间隔一直重复。')">
             <span class="interval">
               <input
                 v-model.number="intervalValue"
                 type="number"
                 min="1"
                 data-test="schedule-interval"
-                aria-label="间隔数值"
+                :aria-label="t('间隔数值')"
               />
-              <select v-model="intervalUnit" data-test="schedule-unit" aria-label="间隔单位">
-                <option value="minutes">分钟</option>
-                <option value="hours">小时</option>
-                <option value="days">天</option>
+              <select v-model="intervalUnit" data-test="schedule-unit" :aria-label="t('间隔单位')">
+                <option value="minutes">{{ t('分钟') }}</option>
+                <option value="hours">{{ t('小时') }}</option>
+                <option value="days">{{ t('天') }}</option>
               </select>
             </span>
           </SettingRow>
 
-          <SettingRow v-else label="执行时间" hint="按这台电脑的本地时间。过去的日期和时间不能选。">
+          <SettingRow v-else :label="t('执行时间')" :hint="t('按这台电脑的本地时间。过去的日期和时间不能选。')">
             <DateTimePicker v-model="at" data-test="schedule-at" />
           </SettingRow>
 
-          <SettingRow label="错过了怎么办" hint="程序没在运行、电脑睡着了，到点没发出去的任务，之后怎么处理。">
-            <Segmented v-model="catchUp" :options="CATCH_UPS" label="错过后" data-test="schedule-catchup" />
+          <SettingRow :label="t('错过了怎么办')" :hint="t('程序没在运行、电脑睡着了，到点没发出去的任务，之后怎么处理。')">
+            <Segmented v-model="catchUp" :options="CATCH_UPS" :label="t('错过后')" data-test="schedule-catchup" />
           </SettingRow>
 
-          <SettingRow label="发给助手的内容" stack>
+          <SettingRow :label="t('发给助手的内容')" stack>
             <textarea
               v-model="payload"
               rows="3"
               maxlength="2000"
-              placeholder="例如：总结一下昨天的待办，告诉我今天先做什么"
+              :placeholder="t('例如：总结一下昨天的待办，告诉我今天先做什么')"
               data-test="schedule-payload"
             />
           </SettingRow>
@@ -307,14 +308,14 @@ defineExpose({ refresh })
           <footer class="compose-foot">
             <p v-if="formError" class="field-error" role="alert" data-test="schedule-form-error">{{ formError }}</p>
             <button class="primary" :disabled="adding" data-test="schedule-add" @click="add">
-              <Icon name="plus" :size="14" /> 添加
+              <Icon name="plus" :size="14" /> {{ t('添加') }}
             </button>
           </footer>
         </section>
 
         <p class="summary-line">
-          <span data-test="schedule-summary">{{ tasks.length }} 个任务 · {{ activeCount }} 个在运行</span>
-          <button class="ghost refresh" aria-label="刷新" title="刷新" data-test="schedule-refresh" @click="refresh">
+          <span data-test="schedule-summary">{{ t('{length} 个任务 · {activeCount} 个在运行', { length: tasks.length, activeCount: activeCount }) }}</span>
+          <button class="ghost refresh" :aria-label="t('刷新')" :title="t('刷新')" data-test="schedule-refresh" @click="refresh">
             <Icon name="refresh" :size="14" />
           </button>
         </p>
@@ -322,9 +323,9 @@ defineExpose({ refresh })
         <p v-if="error" class="field-error list-error" role="alert" data-test="schedule-error">{{ error }}</p>
 
         <div class="tasks">
-          <p v-if="!loaded" class="pending" data-test="schedule-pending">读取中…</p>
+          <p v-if="!loaded" class="pending" data-test="schedule-pending">{{ t('读取中…') }}</p>
           <p v-else-if="tasks.length === 0" class="empty" data-test="schedule-empty">
-            还没有定时任务。在上面添加一个，到点助手会自己收到这条消息。
+            {{ t('还没有定时任务。在上面添加一个，到点助手会自己收到这条消息。') }}
           </p>
 
           <section
@@ -342,24 +343,24 @@ defineExpose({ refresh })
                 <span class="state" :class="`is-${stateOf(task).tone}`" data-test="schedule-state">{{ stateOf(task).text }}</span>
               </p>
               <p class="task-meta times">
-                <span v-if="task.nextAt !== null" data-test="schedule-next">下次 {{ format(task.nextAt) }}</span>
-                <span v-if="task.lastAt !== null" data-test="schedule-last">上次 {{ format(task.lastAt) }}</span>
+                <span v-if="task.nextAt !== null" data-test="schedule-next">{{ t('下次 {format}', { format: format(task.nextAt) }) }}</span>
+                <span v-if="task.lastAt !== null" data-test="schedule-last">{{ t('上次 {format}', { format: format(task.lastAt) }) }}</span>
               </p>
               <p v-if="task.lastError" class="field-error break" data-test="schedule-task-error">{{ task.lastError }}</p>
               <p v-if="task.lastRunOk === false" class="field-error break" data-test="schedule-run-error">
-                上次执行失败（{{ format(task.lastRunAt) }}）：{{ task.lastRunError }}
+                {{ t('上次执行失败（{format}）：{lastRunError}', { format: format(task.lastRunAt), lastRunError: task.lastRunError }) }}
               </p>
               <p v-else-if="task.lastRunOk === true" class="task-meta times" data-test="schedule-run-ok">
-                上次执行完成 {{ format(task.lastRunAt) }}
+                {{ t('上次执行完成 {format}', { format: format(task.lastRunAt) }) }}
               </p>
               <p v-if="task.missed > 0" class="task-meta times" data-test="schedule-missed">
-                错过了 {{ task.missed }} 次（{{ format(task.lastMissedAt) }}）
+                {{ t('错过了 {missed} 次（{format}）', { missed: task.missed, format: format(task.lastMissedAt) }) }}
               </p>
             </div>
 
             <div class="task-actions">
               <button v-if="canToggle(task)" class="ghost" data-test="schedule-toggle" @click="toggle(task)">
-                {{ task.status === 'inactive' ? '恢复' : '暂停' }}
+                {{ task.status === 'inactive' ? t('恢复') : t('暂停') }}
               </button>
               <button
                 class="ghost danger"
@@ -368,7 +369,7 @@ defineExpose({ refresh })
                 @click="remove(task)"
                 @blur="armed = null"
               >
-                <Icon name="trash" :size="14" /> {{ armed === task.id ? '确认删除' : '删除' }}
+                <Icon name="trash" :size="14" /> {{ armed === task.id ? t('确认删除') : t('删除') }}
               </button>
             </div>
           </section>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { ref, useId } from 'vue'
 import Icon from './Icon.vue'
 
@@ -79,7 +80,7 @@ function place(): void {
       class="hint-dot"
       role="img"
       tabindex="0"
-      aria-label="补充说明"
+      :aria-label="t('补充说明')"
       :aria-describedby="id"
       @click.stop.prevent
     >

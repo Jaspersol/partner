@@ -859,7 +859,7 @@ cargo build --manifest-path src-tauri/Cargo.toml                  # 只编译壳
 | §6「发送后事件流顶部出现新行」 | 已实现 | **消费者宿主已在**（`Api/ConsumerHost.cs` 跑 `TurnLoop`，`TakeAsync` 不再只被 smoke 调用）。投递仍是「先入队」：回合完成才在会话里出现新行 |
 | §5.6 设置第四组「记忆」 | 未实现 | `VoiceSettings` 里没有记忆相关字段（`injectionTokenLimit` 只在设计文档里，未进 API） |
 | §4 侧栏「用量 / 配额」 | 未实现 | **前提已变**：`GET /api/session` 已返回上下文占用（`usedTokens`/`budgetTokens`/`fraction`），会话视图工具条就在显示。缺的是「账单配额」，且它自然的落点是顶栏/状态栏，不是旧规格设想的位置 |
-| §3 顶栏「语言」下拉 | 未实现 | 全应用只有中文文案，没有 i18n 层 |
+| §3 顶栏「语言」下拉 | 已改为设置 → 通用 | 简体中文 / 繁體中文 / English，`ui/src/i18n`；中文原文即键，缺译回退原文，`tests/i18n.test.ts` 校验每条文案都有译文。服务端返回的提示仍是中文 |
 | §8 三条令牌规则 | **已取代** | 见上文「旧版令牌规则已被取代」；新系统在 `ui.md` §8，落地进度在 `ui.md` §12 |
 | §5.4 队列视图 | 不再单独成视图 | 队列清单折进输入区状态条（`Composer.vue` 的「队列清单」）；只列 `Queued`/`Running` 与 `ui.md` §5.4 一致 |
 

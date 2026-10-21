@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, tr } from '../i18n'
 import { computed } from 'vue'
 import { toolAppearance } from '../toolAppearance'
 import Icon from './Icon.vue'
@@ -20,9 +21,9 @@ const props = defineProps<{
 }>()
 
 const STATUS_LABEL: Record<string, string> = {
-  running: '进行中',
-  ok: '完成',
-  failed: '失败',
+  running: tr('进行中'),
+  ok: tr('完成'),
+  failed: tr('失败'),
 }
 
 const appearance = computed(() => toolAppearance(props.name))
@@ -31,7 +32,7 @@ const appearance = computed(() => toolAppearance(props.name))
 const argsSummary = computed(() => {
   const compact = props.args.replace(/\s+/g, ' ').trim()
   if (compact === '' || compact === '{}') {
-    return '（无参数）'
+    return t('（无参数）')
   }
 
   return compact.length > 70 ? compact.slice(0, 70) + '…' : compact
@@ -61,16 +62,16 @@ const argsPretty = computed(() => {
       </span>
       <span class="name" :title="appearance.label">{{ name }}</span>
       <span class="args">{{ argsSummary }}</span>
-      <span class="status" :class="status">{{ STATUS_LABEL[status] }}</span>
+      <span class="status" :class="status">{{ t(STATUS_LABEL[status] ?? '') }}</span>
     </summary>
 
     <div class="section">
-      <span class="tool-section-label">参数</span>
+      <span class="tool-section-label">{{ t('参数') }}</span>
       <pre>{{ argsPretty }}</pre>
     </div>
 
     <div v-if="result !== null" class="section">
-      <span class="tool-section-label">结果</span>
+      <span class="tool-section-label">{{ t('结果') }}</span>
       <MarkdownBody :body="result" />
     </div>
   </details>

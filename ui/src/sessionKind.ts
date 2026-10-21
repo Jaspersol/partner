@@ -1,3 +1,4 @@
+import { t, tr } from './i18n'
 /**
  * What a session event's `kind` says to a reader.
  *
@@ -21,14 +22,14 @@
  * </para>
  */
 const KIND_LABEL: Record<string, string> = {
-  User: '用户',
-  Assistant: '助手',
-  System: '系统',
-  Tool: '工具',
-  Schedule: '调度',
-  Summary: '摘要',
-  Edit: '编辑',
-  Retract: '撤回',
+  User: tr('用户'),
+  Assistant: tr('助手'),
+  System: tr('系统'),
+  Tool: tr('工具'),
+  Schedule: tr('调度'),
+  Summary: tr('摘要'),
+  Edit: tr('编辑'),
+  Retract: tr('撤回'),
 }
 
 /**
@@ -40,15 +41,16 @@ const KIND_LABEL: Record<string, string> = {
  * </para>
  */
 const SOURCE_LABEL: Record<string, string> = {
-  Voice: '语音',
-  Text: '文本',
-  Schedule: '调度',
+  Voice: tr('语音'),
+  Text: tr('文本'),
+  Schedule: tr('调度'),
   Agent: '',
 }
 
 /** The source's word, or the source itself when it is not one this list knows. */
 export function sourceLabel(source: string): string {
-  return SOURCE_LABEL[source] ?? source
+  const label = SOURCE_LABEL[source]
+  return label === undefined ? source : t(label)
 }
 
 /**
@@ -67,7 +69,8 @@ export function sourceHasChip(source: string): boolean {
  * @param kind the wire value, exactly as the log carries it
  */
 export function sessionKindLabel(kind: string): string {
-  return KIND_LABEL[kind] ?? kind
+  const label = KIND_LABEL[kind]
+  return label === undefined ? kind : t(label)
 }
 
 /**

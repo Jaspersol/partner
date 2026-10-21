@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
 import type { McpSettings, McpServerSettings, PartnerApiSurface, RuntimeSettings } from '../api'
 import HintTip from '../components/HintTip.vue'
@@ -122,7 +123,7 @@ async function refresh() {
 
 async function save() {
   if (!baseline.value) {
-    error.value = '先读取设置'
+    error.value = t('先读取设置')
     return
   }
 
@@ -132,7 +133,7 @@ async function save() {
   if (incomplete >= 0) {
     attempted.value = true
     open.value = open.value.map((value, at) => (at === incomplete ? true : value))
-    error.value = '每个服务都要有名称和启动命令'
+    error.value = t('每个服务都要有名称和启动命令')
     return
   }
 
@@ -141,7 +142,7 @@ async function save() {
   try {
     const saved = await props.api.saveSettings({ ...baseline.value, mcp: form.value })
     adopt(saved.settings)
-    notice.value = '已保存，助手已重新加载'
+    notice.value = t('已保存，助手已重新加载')
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -170,34 +171,34 @@ defineExpose({ refresh, hasUnsavedChanges })
         <label class="master g-glass">
           <span class="master-text">
             <span class="master-title">
-              启用 MCP
-              <HintTip>开启后，助手启动时会运行下面配置的程序，并使用它们提供的工具。默认关闭。</HintTip>
+              {{ t('启用 MCP') }}
+              <HintTip>{{ t('开启后，助手启动时会运行下面配置的程序，并使用它们提供的工具。默认关闭。') }}</HintTip>
             </span>
-            <span class="master-sub">让助手使用其他程序提供的工具</span>
+            <span class="master-sub">{{ t('让助手使用其他程序提供的工具') }}</span>
           </span>
           <input v-model="form.enabled" type="checkbox" class="g-switch" role="switch" data-test="mcp-enabled" />
         </label>
 
         <p class="summary-line">
-          <span data-test="mcp-summary">{{ form.servers.length }} 个服务 · {{ form.enabled ? '已启用' : '未启用' }}</span>
-          <button class="ghost refresh" aria-label="刷新" title="刷新" data-test="mcp-refresh" @click="refresh">
+          <span data-test="mcp-summary">{{ t('{count} 个服务 · {state}', { count: form.servers.length, state: form.enabled ? t('已启用') : t('未启用') }) }}</span>
+          <button class="ghost refresh" :aria-label="t('刷新')" :title="t('刷新')" data-test="mcp-refresh" @click="refresh">
             <Icon name="refresh" :size="14" />
           </button>
         </p>
 
         <div class="servers" :class="{ 'is-off': !form.enabled }">
-          <p v-if="form.servers.length === 0" class="empty" data-test="mcp-empty">还没有服务。添加一个，助手才有东西可用。</p>
+          <p v-if="form.servers.length === 0" class="empty" data-test="mcp-empty">{{ t('还没有服务。添加一个，助手才有东西可用。') }}</p>
 
           <section v-for="(server, index) in form.servers" :key="index" class="server g-glass" data-test="mcp-server">
             <header class="server-head">
               <button class="server-toggle" :aria-expanded="open[index] === true" @click="toggleOpen(index)">
                 <Icon name="chevron-down" :size="14" class="chevron" :class="{ 'is-open': open[index] === true }" />
-                <span class="server-name">{{ server.name || '（未命名）' }}</span>
+                <span class="server-name">{{ server.name || t('（未命名）') }}</span>
                 <span class="server-command break">{{ commandLine(server) }}</span>
               </button>
               <label class="direct">
-                免审批
-                <HintTip align="end">开启后，这个服务的工具直接执行，不再逐次询问你。关闭则每次都要批准。</HintTip>
+                {{ t('免审批') }}
+                <HintTip align="end">{{ t('开启后，这个服务的工具直接执行，不再逐次询问你。关闭则每次都要批准。') }}</HintTip>
                 <input
                   type="checkbox"
                   class="g-switch"
@@ -207,13 +208,13 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @change="toggleDirect(server)"
                 />
               </label>
-              <button class="ghost danger" aria-label="移除这个服务" data-test="mcp-server-remove" @click="removeServer(index)">
-                <Icon name="trash" :size="14" /> 移除
+              <button class="ghost danger" :aria-label="t('移除这个服务')" data-test="mcp-server-remove" @click="removeServer(index)">
+                <Icon name="trash" :size="14" /> {{ t('移除') }}
               </button>
             </header>
 
             <div v-show="open[index] === true" class="server-body">
-              <SettingRow label="名称" hint="给这个服务起个名字，如 files。">
+              <SettingRow :label="t('名称')" :hint="t('给这个服务起个名字，如 files。')">
                 <input
                   :value="server.name"
                   data-test="mcp-server-name"
@@ -222,11 +223,11 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @input="updateServer(index, { name: ($event.target as HTMLInputElement).value })"
                 />
               </SettingRow>
-              <p v-if="missing(server, 'name')" class="field-error">请填写名称</p>
+              <p v-if="missing(server, 'name')" class="field-error">{{ t('请填写名称') }}</p>
 
-              <SettingRow label="启动命令">
+              <SettingRow :label="t('启动命令')">
                 <template #hint>
-                  要运行的程序。只写名字时，只会在系统 PATH 里查找；用了别名或自定义路径的请写完整路径。
+                  {{ t('要运行的程序。只写名字时，只会在系统 PATH 里查找；用了别名或自定义路径的请写完整路径。') }}
                 </template>
                 <input
                   :value="server.command"
@@ -236,9 +237,9 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @input="updateServer(index, { command: ($event.target as HTMLInputElement).value })"
                 />
               </SettingRow>
-              <p v-if="missing(server, 'command')" class="field-error">请填写启动命令</p>
+              <p v-if="missing(server, 'command')" class="field-error">{{ t('请填写启动命令') }}</p>
 
-              <SettingRow label="启动参数" hint="每行一个参数，不要把整条命令写在一行里。" stack>
+              <SettingRow :label="t('启动参数')" :hint="t('每行一个参数，不要把整条命令写在一行里。')" stack>
                 <textarea
                   :value="server.arguments.join('\n')"
                   data-test="mcp-server-args"
@@ -247,7 +248,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 />
               </SettingRow>
 
-              <SettingRow label="运行目录" hint="程序启动时所在的文件夹，可以留空。">
+              <SettingRow :label="t('运行目录')" :hint="t('程序启动时所在的文件夹，可以留空。')">
                 <input
                   :value="server.workingDirectory ?? ''"
                   data-test="mcp-server-cwd"
@@ -255,7 +256,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 />
               </SettingRow>
 
-              <SettingRow label="最长等待" unit="秒" hint="一次工具调用超过这个时间还没结果就放弃。默认 30 秒。">
+              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('一次工具调用超过这个时间还没结果就放弃。默认 30 秒。')">
                 <input
                   :value="server.callTimeoutSeconds"
                   type="number"
@@ -268,7 +269,7 @@ defineExpose({ refresh, hasUnsavedChanges })
           </section>
 
           <button class="ghost add" data-test="mcp-server-add" @click="addServer">
-            <Icon name="plus" :size="14" /> 添加服务
+            <Icon name="plus" :size="14" /> {{ t('添加服务') }}
           </button>
         </div>
       </div>

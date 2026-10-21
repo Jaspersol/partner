@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, tr } from '../i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from './Icon.vue'
 
@@ -17,7 +18,7 @@ defineOptions({ inheritAttrs: false })
 const props = defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
-const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
+const WEEKDAYS = [tr('一'), tr('二'), tr('三'), tr('四'), tr('五'), tr('六'), tr('日')]
 const DEFAULT_HOUR = 9
 const MINUTE_STEP = 5
 
@@ -121,7 +122,7 @@ const cells = computed<(number | null)[]>(() => {
   return [...Array.from({ length: lead }, () => null), ...Array.from({ length: count }, (_, at) => at + 1)]
 })
 
-const monthLabel = computed(() => `${viewYear.value}年${viewMonth.value + 1}月`)
+const monthLabel = computed(() => t('{value}年{v}月', { value: viewYear.value, v: viewMonth.value + 1 }))
 
 const atCurrentMonth = computed(
   () => viewYear.value === now.value.getFullYear() && viewMonth.value === now.value.getMonth(),
@@ -199,9 +200,9 @@ const presets = computed<Preset[]>(() => {
   const monday = new Date(base.getFullYear(), base.getMonth(), base.getDate() + toMonday, DEFAULT_HOUR, 0)
 
   return [
-    { key: 'hour', label: '1 小时后', at: inAnHour },
-    { key: 'tomorrow', label: `明天 ${DEFAULT_HOUR}:00`, at: tomorrow },
-    { key: 'monday', label: `下周一 ${DEFAULT_HOUR}:00`, at: monday },
+    { key: 'hour', label: t('1 小时后'), at: inAnHour },
+    { key: 'tomorrow', label: t('明天 {DEFAULT_HOUR}:00', { DEFAULT_HOUR: DEFAULT_HOUR }), at: tomorrow },
+    { key: 'monday', label: t('下周一 {DEFAULT_HOUR}:00', { DEFAULT_HOUR: DEFAULT_HOUR }), at: monday },
   ]
 })
 
@@ -219,9 +220,9 @@ function usePreset(preset: Preset) {
 
 const label = computed(() => {
   const stamp = selected.value
-  if (stamp === null) return '选择日期和时间'
+  if (stamp === null) return t('选择日期和时间')
   const weekday = WEEKDAYS[(new Date(stamp.year, stamp.month, stamp.date).getDay() + 6) % 7]
-  return `${stamp.year}年${stamp.month + 1}月${stamp.date}日 周${weekday} ${pad(stamp.hour)}:${pad(stamp.minute)}`
+  return t('{year}年{v}月{date}日 周{weekday} {pad}:{pad2}', { year: stamp.year, v: stamp.month + 1, date: stamp.date, weekday: t(weekday ?? ''), pad: pad(stamp.hour), pad2: pad(stamp.minute) })
 })
 
 function toggle() {
@@ -290,8 +291,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
       <Icon name="chevron-down" :size="14" />
     </button>
 
-    <div v-if="open" ref="panel" class="dtp-panel g-float" role="dialog" aria-label="选择日期和时间" data-test="datetime-panel">
-      <div class="dtp-presets" role="group" aria-label="快捷选择">
+    <div v-if="open" ref="panel" class="dtp-panel g-float" role="dialog" :aria-label="t('选择日期和时间')" data-test="datetime-panel">
+      <div class="dtp-presets" role="group" :aria-label="t('快捷选择')">
         <button
           v-for="preset in presets"
           :key="preset.key"
@@ -305,12 +306,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
       </div>
 
       <div class="dtp-body">
-        <div class="dtp-month" role="group" aria-label="日期">
+        <div class="dtp-month" role="group" :aria-label="t('日期')">
           <div class="dtp-month-head">
             <button
               type="button"
               class="ghost dtp-step"
-              aria-label="上个月"
+              :aria-label="t('上个月')"
               :disabled="atCurrentMonth"
               data-test="datetime-prev"
               @click="shiftMonth(-1)"
@@ -318,13 +319,13 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
               <Icon name="chevron-down" :size="14" class="turn-left" />
             </button>
             <span class="dtp-month-name" data-test="datetime-month">{{ monthLabel }}</span>
-            <button type="button" class="ghost dtp-step" aria-label="下个月" data-test="datetime-next" @click="shiftMonth(1)">
+            <button type="button" class="ghost dtp-step" :aria-label="t('下个月')" data-test="datetime-next" @click="shiftMonth(1)">
               <Icon name="chevron-down" :size="14" class="turn-right" />
             </button>
           </div>
 
           <div class="dtp-grid">
-            <span v-for="name in WEEKDAYS" :key="name" class="dtp-weekday" aria-hidden="true">{{ name }}</span>
+            <span v-for="name in WEEKDAYS" :key="name" class="dtp-weekday" aria-hidden="true">{{ t(name) }}</span>
             <template v-for="(cell, at) in cells" :key="at">
               <span v-if="cell === null" class="dtp-blank" aria-hidden="true" />
               <button
@@ -336,7 +337,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
                 :tabindex="focusable(cell) ? 0 : -1"
                 :aria-pressed="isSelectedDay(cell) ? 'true' : 'false'"
                 :aria-current="isToday(viewYear, viewMonth, cell) ? 'date' : undefined"
-                :aria-label="`${viewMonth + 1}月${cell}日`"
+                :aria-label="t('{v}月{cell}日', { v: viewMonth + 1, cell: cell })"
                 :data-day="dayKey(viewYear, viewMonth, cell)"
                 :data-test="`datetime-day-${dayKey(viewYear, viewMonth, cell)}`"
                 @click="pickDay(viewYear, viewMonth, cell)"
@@ -349,14 +350,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
         </div>
 
         <div class="dtp-time">
-          <ul class="dtp-col" aria-label="时" data-test="datetime-hours">
+          <ul class="dtp-col" :aria-label="t('时')" data-test="datetime-hours">
             <li v-for="hour in hours" :key="hour">
               <button
                 type="button"
                 class="dtp-option"
                 :disabled="hourDisabled(hour)"
                 :aria-pressed="selected?.hour === hour ? 'true' : 'false'"
-                :aria-label="`${hour} 时`"
+                :aria-label="t('{hour} 时', { hour: hour })"
                 :data-test="`datetime-hour-${hour}`"
                 @click="pickHour(hour)"
               >
@@ -364,14 +365,14 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
               </button>
             </li>
           </ul>
-          <ul class="dtp-col" aria-label="分" data-test="datetime-minutes">
+          <ul class="dtp-col" :aria-label="t('分')" data-test="datetime-minutes">
             <li v-for="minute in minutes" :key="minute">
               <button
                 type="button"
                 class="dtp-option"
                 :disabled="minuteDisabled(minute)"
                 :aria-pressed="selected?.minute === minute ? 'true' : 'false'"
-                :aria-label="`${minute} 分`"
+                :aria-label="t('{minute} 分', { minute: minute })"
                 :data-test="`datetime-minute-${minute}`"
                 @click="pickMinute(minute)"
               >
@@ -383,9 +384,9 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
       </div>
 
       <div class="dtp-foot">
-        <span class="dtp-picked" data-test="datetime-picked">{{ selected === null ? '还没选' : label }}</span>
+        <span class="dtp-picked" data-test="datetime-picked">{{ selected === null ? t('还没选') : label }}</span>
         <button type="button" class="primary dtp-done" :disabled="selected === null" data-test="datetime-done" @click="close()">
-          确定
+          {{ t('确定') }}
         </button>
       </div>
     </div>

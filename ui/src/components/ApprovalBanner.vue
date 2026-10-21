@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed } from 'vue'
 import type { DesktopState, PendingApproval } from '../api'
 import HintTip from './HintTip.vue'
@@ -22,7 +23,7 @@ const target = computed(() => {
   }
 
   const entity = props.desktop?.entities.find((candidate) => candidate.entityId === id)
-  return entity ? `『${entity.title}』${entity.foreground ? '（当前前台）' : ''}` : `#${id}`
+  return entity ? t('『{title}』{state}', { title: entity.title, state: entity.foreground ? t('（当前前台）') : '' }) : `#${id}`
 })
 
 const schedule = computed(() => {
@@ -39,27 +40,27 @@ const schedule = computed(() => {
   }
 
   if (name === 'schedule_delete') {
-    return { verb: '删除', rule: '', message: '', id: String(args.id ?? '') }
+    return { verb: 'delete' as const, rule: '', message: '', id: String(args.id ?? '') }
   }
 
   const minutes = (value: unknown) => {
     const count = Number(value)
-    if (!Number.isFinite(count) || count < 1) return '？'
-    if (count % 1440 === 0) return `${count / 1440} 天`
-    if (count % 60 === 0) return `${count / 60} 小时`
-    return `${count} 分钟`
+    if (!Number.isFinite(count) || count < 1) return t('？')
+    if (count % 1440 === 0) return t('{v} 天', { v: count / 1440 })
+    if (count % 60 === 0) return t('{v} 小时', { v: count / 60 })
+    return t('{count} 分钟', { count: count })
   }
 
   const rule =
     args.kind === 'cron'
-      ? `按时刻 ${String(args.cron ?? '？')}`
+      ? t('按时刻 {cron}', { cron: String(args.cron ?? '？') })
       : args.kind === 'interval'
-        ? `每 ${minutes(args.intervalMinutes)}`
+        ? t('每 {minutes}', { minutes: minutes(args.intervalMinutes) })
         : args.delayMinutes !== undefined
-          ? `${minutes(args.delayMinutes)}后，只一次`
-          : `${String(args.at ?? '？')}，只一次`
+          ? t('{minutes}后，只一次', { minutes: minutes(args.delayMinutes) })
+          : t('{at}，只一次', { at: String(args.at ?? '？') })
 
-  return { verb: '创建', rule, message: String(args.message ?? ''), id: '' }
+  return { verb: 'create' as const, rule, message: String(args.message ?? ''), id: '' }
 })
 
 const kind = computed(() =>
@@ -75,30 +76,30 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
     <div class="approval-body">
       <div class="approval-head">
         <Icon name="shield" :size="16" class="approval-icon" />
-        <span class="title">{{ schedule ? `模型请求${schedule.verb}定时任务` : '模型请求执行动作' }}</span>
-        <span v-if="current.origin" class="origin" data-test="approval-origin">来自 {{ current.origin }}</span>
+        <span class="title">{{ schedule ? (schedule.verb === 'create' ? t('模型请求创建定时任务') : t('模型请求删除定时任务')) : t('模型请求执行动作') }}</span>
+        <span v-if="current.origin" class="origin" data-test="approval-origin">{{ t('来自 {origin}', { origin: current.origin }) }}</span>
       </div>
       <div class="approval-what">
         <strong data-test="approval-tool">{{ current.toolName }}</strong>
         <span v-if="kind" class="kind">{{ kind }}</span>
-        <span v-if="target" class="target" data-test="approval-target">目标 {{ target }}</span>
+        <span v-if="target" class="target" data-test="approval-target">{{ t('目标 {target}', { target: target }) }}</span>
       </div>
-      <p v-if="schedule?.verb === '创建'" class="schedule-what break" data-test="approval-schedule">
+      <p v-if="schedule?.verb === 'create'" class="schedule-what break" data-test="approval-schedule">
         <span class="schedule-rule">{{ schedule.rule }}</span>
-        到点会把这句话当作你发的消息交给助手：<q>{{ schedule.message }}</q>
+        {{ t('到点会把这句话当作你发的消息交给助手：') }}<q>{{ schedule.message }}</q>
       </p>
-      <p v-else-if="schedule" class="schedule-what break" data-test="approval-schedule">任务 {{ schedule.id }}，删除后不可恢复。</p>
+      <p v-else-if="schedule" class="schedule-what break" data-test="approval-schedule">{{ t('任务 {id}，删除后不可恢复。', { id: schedule.id }) }}</p>
       <code v-else class="break args">{{ current.arguments }}</code>
     </div>
     <div class="approval-actions">
       <HintTip v-if="schedule" align="end" data-test="approval-hint">
-        无人应答即拒绝。定时任务到点后，助手会照这句话去做，可以随时在「定时」页删除。
+        {{ t('无人应答即拒绝。定时任务到点后，助手会照这句话去做，可以随时在「定时」页删除。') }}
       </HintTip>
       <HintTip v-else align="end" data-test="approval-hint">
-        无人应答即拒绝。允许后，助手可以在这个窗口上继续操作 {{ grantSteps }} 步；危险类的动作仍然逐次询问。
+        {{ t('无人应答即拒绝。允许后，助手可以在这个窗口上继续操作 {grantSteps} 步；危险类的动作仍然逐次询问。', { grantSteps: grantSteps }) }}
       </HintTip>
-      <button class="ghost" data-test="approval-deny" @click="emit('answer', current.approvalId, false)">拒绝</button>
-      <button class="primary" data-test="approval-allow" @click="emit('answer', current.approvalId, true)">允许</button>
+      <button class="ghost" data-test="approval-deny" @click="emit('answer', current.approvalId, false)">{{ t('拒绝') }}</button>
+      <button class="primary" data-test="approval-allow" @click="emit('answer', current.approvalId, true)">{{ t('允许') }}</button>
     </div>
   </div>
 </template>

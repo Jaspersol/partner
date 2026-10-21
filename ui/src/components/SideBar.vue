@@ -2,11 +2,14 @@
 import { nextTick, ref } from 'vue'
 import type { IconName } from '../icons'
 import { isActivationKey, rovingTarget } from '../rovingFocus'
+import { t } from '../i18n'
 import Icon from './Icon.vue'
 
 export interface NavItem {
   key: string
   label: string
+  /** Stable hook for tests and automation; the label changes with the language. */
+  testId?: string
   /** A name from the icon set, not a character: an unknown name is a type error, and an unknown character
    *  is a blank square that reaches a reader. */
   icon: IconName
@@ -75,7 +78,7 @@ function choose(index: number): void {
     Navigation and nothing else: an action a reader cannot act on is a false promise on a rail.
     </para>
   -->
-  <nav class="sidebar g-float" :class="{ 'is-collapsed': collapsed }" data-test="sidebar" aria-label="主导航">
+  <nav class="sidebar g-float" :class="{ 'is-collapsed': collapsed }" data-test="sidebar" :aria-label="t('nav.main')">
     <!-- The one place the sidebar is opened and closed (Ctrl+B does the same). -->
     <div class="brand">
       <button
@@ -83,8 +86,8 @@ function choose(index: number): void {
         class="ghost brand-toggle"
         type="button"
         data-test="sidebar-toggle"
-        :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
-        :title="`${collapsed ? '展开侧栏' : '收起侧栏'}（Ctrl+B）`"
+        :aria-label="collapsed ? t('nav.expand') : t('nav.collapse')"
+        :title="t('{t}（Ctrl+B）', { t: collapsed ? t('nav.expand') : t('nav.collapse') })"
         @click="emit('update:collapsed', !collapsed)"
       >
         <Icon name="panel-left" :size="18" />
@@ -92,12 +95,12 @@ function choose(index: number): void {
       <span class="brand-name" aria-hidden="true">Partner</span>
     </div>
 
-    <ul ref="listElement" class="nav" role="list" aria-label="视图导航">
+    <ul ref="listElement" class="nav" role="list" :aria-label="t('nav.views')">
       <li
         v-for="(item, index) in items"
         :key="item.key"
         :class="{ active: item.key === active }"
-        :data-test="`tab-${item.label}`"
+        :data-test="`tab-${item.testId ?? item.label}`"
         :data-row="index"
         :title="item.label"
         :tabindex="index === focusIndex ? 0 : -1"

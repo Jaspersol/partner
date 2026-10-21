@@ -13,6 +13,7 @@
  */
 
 import type { IconName } from './icons'
+import { t, tr } from './i18n'
 
 export type ToolFamily =
   | 'shell'
@@ -34,80 +35,80 @@ interface ToolAppearance {
 
 /** Prefix → appearance. Order matters: the first match wins, so specific names come before families. */
 const RULES: readonly (readonly [string, ToolAppearance])[] = [
-  ['desktop_screenshot', { icon: 'file', family: 'read', label: '截图' }],
-  ['desktop_observe', { icon: 'file', family: 'read', label: '观察' }],
-  ['desktop_clipboard', { icon: 'file', family: 'read', label: '剪贴板' }],
-  ['desktop_act', { icon: 'crosshair', family: 'control', label: '桌面动作' }],
-  ['desktop_launch', { icon: 'terminal', family: 'shell', label: '启动' }],
-  ['desktop_exec', { icon: 'terminal', family: 'shell', label: '执行' }],
+  ['desktop_screenshot', { icon: 'file', family: 'read', label: tr('截图') }],
+  ['desktop_observe', { icon: 'file', family: 'read', label: tr('观察') }],
+  ['desktop_clipboard', { icon: 'file', family: 'read', label: tr('剪贴板') }],
+  ['desktop_act', { icon: 'crosshair', family: 'control', label: tr('桌面动作') }],
+  ['desktop_launch', { icon: 'terminal', family: 'shell', label: tr('启动') }],
+  ['desktop_exec', { icon: 'terminal', family: 'shell', label: tr('执行') }],
 
-  ['memory_recall', { icon: 'database', family: 'record', label: '记忆检索' }],
-  ['memory_write', { icon: 'database', family: 'record', label: '记忆写入' }],
-  ['memory', { icon: 'database', family: 'record', label: '记忆' }],
-  ['recall', { icon: 'database', family: 'record', label: '检索' }],
+  ['memory_recall', { icon: 'database', family: 'record', label: tr('记忆检索') }],
+  ['memory_write', { icon: 'database', family: 'record', label: tr('记忆写入') }],
+  ['memory', { icon: 'database', family: 'record', label: tr('记忆') }],
+  ['recall', { icon: 'database', family: 'record', label: tr('检索') }],
 
-  ['skill', { icon: 'swap', family: 'agent', label: '技能' }],
+  ['skill', { icon: 'swap', family: 'agent', label: tr('技能') }],
   ['mcp', { icon: 'swap', family: 'agent', label: 'MCP' }],
   // Delegation tools, before the generic `agent` prefix so the specific verbs win.
-  ['agent_delegate', { icon: 'swap', family: 'agent', label: '委派' }],
-  ['agent_job_status', { icon: 'swap', family: 'agent', label: '任务进度' }],
-  ['agent_job_cancel', { icon: 'swap', family: 'agent', label: '取消任务' }],
+  ['agent_delegate', { icon: 'swap', family: 'agent', label: tr('委派') }],
+  ['agent_job_status', { icon: 'swap', family: 'agent', label: tr('任务进度') }],
+  ['agent_job_cancel', { icon: 'swap', family: 'agent', label: tr('取消任务') }],
   ['agent', { icon: 'swap', family: 'agent', label: 'Agent' }],
-  ['task_report', { icon: 'swap', family: 'agent', label: '汇报' }],
-  ['task', { icon: 'swap', family: 'agent', label: '子任务' }],
+  ['task_report', { icon: 'swap', family: 'agent', label: tr('汇报') }],
+  ['task', { icon: 'swap', family: 'agent', label: tr('子任务') }],
 
   // File-read tools, before the generic read/list rules so they get their own word.
-  ['file_list', { icon: 'file', family: 'read', label: '列目录' }],
-  ['file_read', { icon: 'file', family: 'read', label: '读文件' }],
+  ['file_list', { icon: 'file', family: 'read', label: tr('列目录') }],
+  ['file_read', { icon: 'file', family: 'read', label: tr('读文件') }],
 
   // The assistant's own timed-task tools, before the generic prefix.
-  ['schedule_create', { icon: 'clock', family: 'schedule', label: '创建定时' }],
-  ['schedule_list', { icon: 'clock', family: 'schedule', label: '定时列表' }],
-  ['schedule_delete', { icon: 'clock', family: 'schedule', label: '删除定时' }],
-  ['schedule', { icon: 'flag', family: 'schedule', label: '调度' }],
-  ['cron', { icon: 'flag', family: 'schedule', label: '调度' }],
+  ['schedule_create', { icon: 'clock', family: 'schedule', label: tr('创建定时') }],
+  ['schedule_list', { icon: 'clock', family: 'schedule', label: tr('定时列表') }],
+  ['schedule_delete', { icon: 'clock', family: 'schedule', label: tr('删除定时') }],
+  ['schedule', { icon: 'flag', family: 'schedule', label: tr('调度') }],
+  ['cron', { icon: 'flag', family: 'schedule', label: tr('调度') }],
 
-  ['search', { icon: 'search', family: 'search', label: '搜索' }],
-  ['glob', { icon: 'search', family: 'search', label: '查找文件' }],
-  ['grep', { icon: 'search', family: 'search', label: '搜索' }],
-  ['find', { icon: 'search', family: 'search', label: '查找' }],
+  ['search', { icon: 'search', family: 'search', label: tr('搜索') }],
+  ['glob', { icon: 'search', family: 'search', label: tr('查找文件') }],
+  ['grep', { icon: 'search', family: 'search', label: tr('搜索') }],
+  ['find', { icon: 'search', family: 'search', label: tr('查找') }],
 
   // The two web tools, before the generic `web` and `fetch` rules so they do not both read as 抓取.
-  ['web_search', { icon: 'search', family: 'web', label: '联网搜索' }],
-  ['web_fetch', { icon: 'download', family: 'web', label: '读网页' }],
+  ['web_search', { icon: 'search', family: 'web', label: tr('联网搜索') }],
+  ['web_fetch', { icon: 'download', family: 'web', label: tr('读网页') }],
 
-  ['fetch', { icon: 'download', family: 'web', label: '抓取' }],
-  ['web', { icon: 'download', family: 'web', label: '网页' }],
-  ['http', { icon: 'download', family: 'web', label: '网络请求' }],
-  ['browse', { icon: 'download', family: 'web', label: '浏览' }],
+  ['fetch', { icon: 'download', family: 'web', label: tr('抓取') }],
+  ['web', { icon: 'download', family: 'web', label: tr('网页') }],
+  ['http', { icon: 'download', family: 'web', label: tr('网络请求') }],
+  ['browse', { icon: 'download', family: 'web', label: tr('浏览') }],
 
-  ['read', { icon: 'file', family: 'read', label: '读取' }],
-  ['list', { icon: 'file', family: 'read', label: '列出' }],
-  ['view', { icon: 'file', family: 'read', label: '查看' }],
+  ['read', { icon: 'file', family: 'read', label: tr('读取') }],
+  ['list', { icon: 'file', family: 'read', label: tr('列出') }],
+  ['view', { icon: 'file', family: 'read', label: tr('查看') }],
 
-  ['write', { icon: 'pencil', family: 'write', label: '写入' }],
-  ['edit', { icon: 'pencil', family: 'write', label: '编辑' }],
-  ['patch', { icon: 'pencil', family: 'write', label: '修改' }],
-  ['append', { icon: 'pencil', family: 'write', label: '追加' }],
+  ['write', { icon: 'pencil', family: 'write', label: tr('写入') }],
+  ['edit', { icon: 'pencil', family: 'write', label: tr('编辑') }],
+  ['patch', { icon: 'pencil', family: 'write', label: tr('修改') }],
+  ['append', { icon: 'pencil', family: 'write', label: tr('追加') }],
 
-  ['bash', { icon: 'terminal', family: 'shell', label: '命令' }],
-  ['shell', { icon: 'terminal', family: 'shell', label: '命令' }],
-  ['exec', { icon: 'terminal', family: 'shell', label: '执行' }],
-  ['run', { icon: 'terminal', family: 'shell', label: '运行' }],
-  ['process', { icon: 'terminal', family: 'shell', label: '进程' }],
+  ['bash', { icon: 'terminal', family: 'shell', label: tr('命令') }],
+  ['shell', { icon: 'terminal', family: 'shell', label: tr('命令') }],
+  ['exec', { icon: 'terminal', family: 'shell', label: tr('执行') }],
+  ['run', { icon: 'terminal', family: 'shell', label: tr('运行') }],
+  ['process', { icon: 'terminal', family: 'shell', label: tr('进程') }],
 ]
 
 /** An unrecognised tool gets the neutral one — visible, just not categorised. */
-const FALLBACK: ToolAppearance = { icon: 'diamond', family: 'control', label: '工具' }
+const FALLBACK: ToolAppearance = { icon: 'diamond', family: 'control', label: tr('工具') }
 
 export function toolAppearance(name: string): ToolAppearance {
   const lower = name.toLowerCase()
 
   for (const [prefix, appearance] of RULES) {
     if (lower.startsWith(prefix)) {
-      return appearance
+      return { ...appearance, label: t(appearance.label) }
     }
   }
 
-  return FALLBACK
+  return { ...FALLBACK, label: t(FALLBACK.label) }
 }

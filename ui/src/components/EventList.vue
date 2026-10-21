@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import type { SessionItem } from '../api'
 import { clampIndex, isActivationKey, normalizeKey, rovingTarget } from '../rovingFocus'
@@ -148,12 +149,12 @@ const allRows = computed<Row[]>(() => {
 function foldLabel(group: Row[]): string {
   const count = (test: (row: Row) => boolean) => group.filter(test).length
   const parts = [
-    ['思考', count((row) => row.kind === 'thinking')],
-    ['召回', count((row) => row.kind === 'recall')],
-    ['工具调用', count((row) => row.kind === 'tool')],
-    ['中间输出', count((row) => row.kind === 'event')],
+    [t('思考'), count((row) => row.kind === 'thinking')],
+    [t('召回'), count((row) => row.kind === 'recall')],
+    [t('工具调用'), count((row) => row.kind === 'tool')],
+    [t('中间输出'), count((row) => row.kind === 'event')],
   ] as const
-  const said = parts.filter(([, n]) => n > 0).map(([name, n]) => (name === '思考' || name === '召回' ? name : `${name} ${n}`))
+  const said = parts.filter(([, n]) => n > 0).map(([name, n]) => (name === t('思考') || name === t('召回') ? name : `${name} ${n}`))
   return said.join(' · ')
 }
 
@@ -275,10 +276,10 @@ const layout = computed(() =>
 
 /** The row's role as a word: who is speaking. */
 function roleWord(row: Row): string {
-  if (row.kind === 'tool') return '工具'
-  if (row.kind === 'thinking') return '思考'
-  if (row.kind === 'recall') return '记忆召回'
-  if (row.kind === 'fold') return '过程'
+  if (row.kind === 'tool') return t('工具')
+  if (row.kind === 'thinking') return t('思考')
+  if (row.kind === 'recall') return t('记忆召回')
+  if (row.kind === 'fold') return t('过程')
   return sessionKindLabel(row.item.kind)
 }
 
@@ -327,9 +328,9 @@ async function copy(row: Row): Promise<void> {
   if (row.kind !== 'event') return
   try {
     await navigator.clipboard.writeText(row.item.body)
-    showToast('已复制')
+    showToast(t('已复制'))
   } catch {
-    showToast('复制失败', 'error')
+    showToast(t('复制失败'), 'error')
   }
 }
 
@@ -490,7 +491,7 @@ function rowSeq(index: number): number | null {
     ref="listElement"
     class="event-list"
     role="list"
-    aria-label="会话事件"
+    :aria-label="t('会话事件')"
     data-test="session-list"
   >
     <li
@@ -544,7 +545,7 @@ function rowSeq(index: number): number | null {
           @click="toggleFold(row.key)"
         >
           <Icon name="chevron-down" :size="14" class="fold-chevron" />
-          <span class="fold-title">{{ row.open ? '收起过程' : '已完成' }}</span>
+          <span class="fold-title">{{ row.open ? t('收起过程') : t('已完成') }}</span>
           <span class="fold-label">{{ row.label }}</span>
         </button>
 
@@ -575,30 +576,30 @@ function rowSeq(index: number): number | null {
               <span class="sr-only">{{ sourceLabel(row.item.source) }}</span>
             </span>
             <time class="at" :datetime="row.item.at">{{ row.item.at.slice(11, 16) }}</time>
-            <span class="seq" title="事件序号">#{{ row.item.seq }}</span>
+            <span class="seq" :title="t('事件序号')">#{{ row.item.seq }}</span>
 
             <span v-if="row.item.streaming !== true" class="row-actions" data-test="session-row-actions">
-              <button class="ghost row-action" data-test="session-row-copy" title="复制" @click.stop="copy(row)">
-                <Icon name="copy" :size="14" /><span class="sr-only">复制</span>
+              <button class="ghost row-action" data-test="session-row-copy" :title="t('复制')" @click.stop="copy(row)">
+                <Icon name="copy" :size="14" /><span class="sr-only">{{ t('复制') }}</span>
               </button>
               <button
                 v-if="restorable(row.item)"
                 class="ghost row-action"
                 data-test="session-row-restore"
-                title="把这条放回输入框"
+                :title="t('把这条放回输入框')"
                 @click.stop="emit('restore', row.item.seq)"
               >
-                <Icon name="pencil" :size="14" /><span class="sr-only">复用</span>
+                <Icon name="pencil" :size="14" /><span class="sr-only">{{ t('复用') }}</span>
               </button>
               <button
                 v-if="deletable(row.item)"
                 class="ghost row-action"
                 :class="{ 'is-danger': armed?.seq === row.item.seq }"
                 data-test="session-row-delete-inline"
-                title="删除最新一次对话，不能恢复"
+                :title="t('删除最新一次对话，不能恢复')"
                 @click.stop="act(row)"
               >
-                <Icon v-if="armed?.seq !== row.item.seq" name="trash" :size="14" /><span :class="{ 'sr-only': armed?.seq !== row.item.seq }">{{ armed?.seq === row.item.seq ? '确认删除' : '删除' }}</span>
+                <Icon v-if="armed?.seq !== row.item.seq" name="trash" :size="14" /><span :class="{ 'sr-only': armed?.seq !== row.item.seq }">{{ armed?.seq === row.item.seq ? t('确认删除') : t('删除') }}</span>
               </button>
               <!-- Armed: the way out sits next to the button that armed it. Without it, the only way back from a
                    mis-press would be Escape. -->
@@ -606,18 +607,18 @@ function rowSeq(index: number): number | null {
                 v-if="armed?.seq === row.item.seq"
                 class="ghost row-action is-quiet"
                 data-test="session-row-cancel"
-                title="取消删除"
+                :title="t('取消删除')"
                 @click.stop="cancelArm"
               >
-                取消
+                {{ t('取消') }}
               </button>
               <button
                 class="ghost row-action"
                 data-test="session-row-withdraw-inline"
-                title="撤回到这里：隐藏这条和之后的对话，发送新消息前可以取消"
+                :title="t('撤回到这里：隐藏这条和之后的对话，发送新消息前可以取消')"
                 @click.stop="withdraw(row)"
               >
-                <Icon name="undo" :size="14" /><span class="sr-only">撤回</span>
+                <Icon name="undo" :size="14" /><span class="sr-only">{{ t('撤回') }}</span>
               </button>
             </span>
           </div>

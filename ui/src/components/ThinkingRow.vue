@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed } from 'vue'
 import { useSharedTick } from '../clock'
 import Icon from './Icon.vue'
@@ -54,7 +55,7 @@ const elapsed = computed(() => {
   }
 
   const seconds = Math.max(0, Math.floor((now.value - startedAt.value) / 1000))
-  return `已思考 ${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+  return t('已思考 {padStart}:{padStart2}', { padStart: String(Math.floor(seconds / 60)).padStart(2, '0'), padStart2: String(seconds % 60).padStart(2, '0') })
 })
 
 /** What the row says when it is collapsed. */
@@ -83,7 +84,7 @@ const summary = computed(() => {
       <span class="mark">
         <Icon name="sparkle" :size="14" />
       </span>
-      <span class="thinking-label">思考</span>
+      <span class="thinking-label">{{ t('思考') }}</span>
       <span v-if="running === true" class="summary-line" data-test="session-thinking-live">{{ summary }}</span>
       <span v-else class="summary-line muted">{{ summary }}</span>
       <span v-if="elapsed" class="elapsed" data-test="session-thinking-elapsed">{{ elapsed }}</span>

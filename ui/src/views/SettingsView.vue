@@ -8,6 +8,7 @@ import Segmented from '../components/Segmented.vue'
 import SettingRow from '../components/SettingRow.vue'
 import TestButton from '../components/TestButton.vue'
 import { INPUT_MODES } from '../api'
+import { LOCALES, LOCALE_NAMES, locale, setLocale, t, type Locale, type MessageKey, tr } from '../i18n'
 import { normalizeGear } from '../gears'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
 import { getAutostart, getTrayEnabled, hasShellPrefs, setAutostart, setTrayEnabled } from '../shellPrefs'
@@ -262,8 +263,8 @@ const wakeGateOn = computed(() => form.local.kws.enabled === true && (form.local
 const modelConfigured = computed(() => (form.model.baseUrl ?? '') !== '' && (form.model.model ?? '') !== '')
 const keyHint = computed(() =>
   apiKeySet.value
-    ? '已设置。留空表示不改，输入新内容会替换原来的。保存后不会再显示出来。'
-    : '还没设置。本地模型一般不需要。保存后不会再显示出来。',
+    ? t('已设置。留空表示不改，输入新内容会替换原来的。保存后不会再显示出来。')
+    : t('还没设置。本地模型一般不需要。保存后不会再显示出来。'),
 )
 
 /** A stored value that no longer enumerates must still be selectable, or the setting would silently change. */
@@ -423,7 +424,7 @@ const engineManualOpen = ref(false)
 const engineManualRoot = ref('')
 let enginePackageTimer: ReturnType<typeof setInterval> | null = null
 
-const ENGINE_NAMES = { tts: '朗读引擎', kws: '唤醒与识别引擎' } as const
+const ENGINE_NAMES = { tts: tr('朗读引擎'), kws: tr('唤醒与识别引擎') } as const
 
 const downloadRunning = computed(() => {
   const phase = enginePackage.value?.download.phase
@@ -450,11 +451,11 @@ function formatBytes(bytes: number): string {
 const downloadText = computed(() => {
   const download = enginePackage.value?.download
   if (!download) return ''
-  if (download.phase === 'extracting') return `${download.detail ?? ''} 解压中…`
+  if (download.phase === 'extracting') return t('{v} 解压中…', { v: download.detail ?? '' })
   if (download.phase !== 'downloading') return ''
   const total = download.bytesTotal
-  const sizes = total ? `${formatBytes(download.bytesDone)} / ${formatBytes(total)}（${Math.floor((download.bytesDone / total) * 100)}%）` : formatBytes(download.bytesDone)
-  return `${download.detail ?? '下载中'} ${sizes}`
+  const sizes = total ? t('{formatBytes} / {formatBytes2}（{v}%）', { formatBytes: formatBytes(download.bytesDone), formatBytes2: formatBytes(total), v: Math.floor((download.bytesDone / total) * 100) }) : formatBytes(download.bytesDone)
+  return `${download.detail ?? t('下载中')} ${sizes}`
 })
 
 /**
@@ -497,9 +498,9 @@ async function pollEnginePackage() {
     if (wasRunning && !downloadRunning.value) {
       const download = enginePackage.value.download
       enginePackageNote.value =
-        download.phase === 'done' ? '下载完成，已填入默认设置，保存后生效。'
-          : download.phase === 'failed' ? `下载失败：${download.error ?? '未知原因'}`
-            : '已取消，再点下载会从断点继续。'
+        download.phase === 'done' ? t('下载完成，已填入默认设置，保存后生效。')
+          : download.phase === 'failed' ? t('下载失败：{error}', { error: download.error ?? t('未知原因') })
+            : t('已取消，再点下载会从断点继续。')
       if (download.phase === 'done') fillEngineDefaults()
     }
   } catch {
@@ -521,12 +522,12 @@ async function detectEngines() {
 
     const status = enginePackage.value
     if (status.tts.installed || status.kws.installed) {
-      enginePackageNote.value = `已检测到：${[status.tts.installed ? '朗读引擎' : '', status.kws.installed ? '唤醒与识别引擎' : ''].filter(Boolean).join('、')}。`
+      enginePackageNote.value = t('已检测到：{engines}。', { engines: [status.tts.installed ? t('朗读引擎') : '', status.kws.installed ? t('唤醒与识别引擎') : ''].filter(Boolean).join(t('、')) })
     } else {
-      enginePackageNote.value = `没有在 ${status.root} 找到引擎。可以下载，或手动指定已有的位置。`
+      enginePackageNote.value = t('没有在 {root} 找到引擎。可以下载，或手动指定已有的位置。', { root: status.root })
     }
   } catch (failure) {
-    enginePackageNote.value = `检测失败：${describeFailure(failure)}`
+    enginePackageNote.value = t('检测失败：{describeFailure}', { describeFailure: describeFailure(failure) })
   }
 }
 
@@ -556,8 +557,8 @@ async function applyEngineRoot() {
     fillEngineDefaults(true)
     engineManualOpen.value = false
     enginePackageNote.value = enginePackage.value.customRoot
-      ? `已指向 ${enginePackage.value.root}，默认设置已填入，保存后生效。`
-      : '已回到应用目录下的默认位置。'
+      ? t('已指向 {root}，默认设置已填入，保存后生效。', { root: enginePackage.value.root })
+      : t('已回到应用目录下的默认位置。')
   } catch (failure) {
     enginePackageNote.value = describeFailure(failure)
   }
@@ -596,18 +597,19 @@ function toggleEngine(id: string) {
 
 /** Human labels for content types an engine indexes; unknown values are shown verbatim. */
 const KIND_LABELS: Record<string, string> = {
-  general: '网页',
-  news: '新闻',
-  academic: '论文',
-  code: '代码',
-  encyclopedia: '百科',
-  weather: '天气',
-  qa: '问答',
-  none: '不限',
+  general: tr('网页'),
+  news: tr('新闻'),
+  academic: tr('论文'),
+  code: tr('代码'),
+  encyclopedia: tr('百科'),
+  weather: tr('天气'),
+  qa: tr('问答'),
+  none: tr('不限'),
 }
 
 function kindLabel(kind: string): string {
-  return KIND_LABELS[kind] ?? kind
+  const label = KIND_LABELS[kind]
+  return label === undefined ? kind : t(label)
 }
 
 /**
@@ -616,16 +618,16 @@ function kindLabel(kind: string): string {
  */
 function engineState(engine: WebEngineView): string {
   if (form.web.disabledEngines.includes(engine.id)) {
-    return '已关闭'
+    return t('已关闭')
   }
   if (engine.cooling) {
-    const until = engine.until === null ? '' : `，${new Date(engine.until).toLocaleTimeString()} 后再试`
-    return `连续失败 ${engine.strikes} 次，暂停中${until}`
+    const until = engine.until === null ? '' : t('，{toLocaleTimeString} 后再试', { toLocaleTimeString: new Date(engine.until).toLocaleTimeString(locale.value) })
+    return t('连续失败 {strikes} 次，暂停中{until}', { strikes: engine.strikes, until: until })
   }
   if (engine.strikes > 0 && engine.lastReason !== null) {
-    return `上次失败：${engine.lastReason}`
+    return t('上次失败：{lastReason}', { lastReason: engine.lastReason })
   }
-  return '正常'
+  return t('正常')
 }
 
 function engineStateClass(engine: WebEngineView): string {
@@ -730,10 +732,10 @@ async function persist() {
     // The disabled list is stored now, so the engine rows have to be re-read to show it as it was saved.
     await refreshWeb()
 
-    const at = new Date().toLocaleTimeString()
+    const at = new Date().toLocaleTimeString(locale.value)
     status.value = saved.compaction
-      ? `已保存 · ${at} · ${saved.compaction.reason}`
-      : `已保存 · ${at}`
+      ? t('已保存 · {at} · {reason}', { at: at, reason: saved.compaction.reason })
+      : t('已保存 · {at}', { at: at })
 
     // The composer's picker is fed from the shell, so it has to hear about the save — otherwise the gears
     // just edited here would not be the ones offered in the session view.
@@ -768,20 +770,20 @@ const desktopAgentOff = computed(
  */
 interface Section {
   key: string
-  label: string
+  label: MessageKey
   icon: IconName
 }
 
 const SECTIONS: Section[] = [
-  { key: 'general', label: '通用', icon: 'settings' },
-  { key: 'model', label: '对话模型', icon: 'sparkle' },
-  { key: 'input', label: '语音输入', icon: 'mic' },
-  { key: 'output', label: '语音输出', icon: 'speaker' },
-  { key: 'desktop', label: '电脑操控', icon: 'crosshair' },
-  { key: 'files', label: '文件访问', icon: 'folder' },
-  { key: 'web', label: '联网搜索', icon: 'search' },
-  { key: 'engines', label: '本地引擎', icon: 'terminal' },
-  { key: 'appearance', label: '外观', icon: 'contrast' },
+  { key: 'general', label: 'settings.section.general', icon: 'settings' },
+  { key: 'model', label: 'settings.section.model', icon: 'sparkle' },
+  { key: 'input', label: 'settings.section.input', icon: 'mic' },
+  { key: 'output', label: 'settings.section.output', icon: 'speaker' },
+  { key: 'desktop', label: 'settings.section.desktop', icon: 'crosshair' },
+  { key: 'files', label: 'settings.section.files', icon: 'folder' },
+  { key: 'web', label: 'settings.section.web', icon: 'search' },
+  { key: 'engines', label: 'settings.section.engines', icon: 'terminal' },
+  { key: 'appearance', label: 'settings.section.appearance', icon: 'contrast' },
 ]
 
 const SECTION_KEY = 'partner.settings.section'
@@ -845,7 +847,7 @@ async function onAutostart(value: boolean): Promise<void> {
     autostart.value = value
   } catch (error) {
     autostart.value = !value
-    shellPrefError.value = `开机自启设置失败：${error instanceof Error ? error.message : String(error)}`
+    shellPrefError.value = t('settings.general.autostartFailed', { error: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -856,7 +858,7 @@ async function onTrayEnabled(value: boolean): Promise<void> {
     trayEnabled.value = value
   } catch (error) {
     trayEnabled.value = !value
-    shellPrefError.value = `托盘设置失败：${error instanceof Error ? error.message : String(error)}`
+    shellPrefError.value = t('settings.general.trayFailed', { error: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -878,11 +880,13 @@ function onReducedTransparency(value: boolean): void {
   applyReducedTransparency(value)
 }
 
-const THEME_OPTIONS: { value: Theme; label: string }[] = [
+const THEME_OPTIONS = computed<{ value: Theme; label: string }[]>(() => [
   { value: 'auto', label: themeLabel('auto') },
   { value: 'light', label: themeLabel('light') },
   { value: 'dark', label: themeLabel('dark') },
-]
+])
+
+const LOCALE_OPTIONS = LOCALES.map((value) => ({ value, label: LOCALE_NAMES[value] }))
 
 /**
  * A test result is a statement about a configuration. `testedWith` remembers which one, so editing the block
@@ -924,7 +928,7 @@ defineExpose({ refresh, hasUnsavedChanges })
   <div class="view">
     <div class="scroll settings-scroll">
       <div class="settings">
-        <nav class="settings-nav" aria-label="设置分类">
+        <nav class="settings-nav" :aria-label="t('设置分类')">
           <button
             v-for="item in SECTIONS"
             :key="item.key"
@@ -935,16 +939,27 @@ defineExpose({ refresh, hasUnsavedChanges })
             @click="choose(item.key)"
           >
             <Icon :name="item.icon" :size="16" />
-            <span>{{ item.label }}</span>
-            <span v-if="running[item.key]" class="live-dot" title="运行中" />
+            <span>{{ t(item.label) }}</span>
+            <span v-if="running[item.key]" class="live-dot" :title="t('settings.running')" />
           </button>
         </nav>
 
         <div class="settings-body">
           <section v-show="section === 'general'" class="panel" data-test="settings-section-general">
-            <header class="panel-head"><h2>通用</h2></header>
+            <header class="panel-head"><h2>{{ t('settings.section.general') }}</h2></header>
+            <div class="g-card">
+              <SettingRow :label="t('settings.general.language')" :hint="t('settings.general.languageHint')">
+                <Segmented
+                  :model-value="locale"
+                  :options="LOCALE_OPTIONS"
+                  :label="t('settings.general.language')"
+                  data-test="settings-language"
+                  @update:model-value="setLocale($event as Locale)"
+                />
+              </SettingRow>
+            </div>
             <div v-if="shellPrefs" class="g-card">
-              <SettingRow label="开机自启" hint="登录 Windows 后自动启动 Partner。">
+              <SettingRow :label="t('settings.general.autostart')" :hint="t('settings.general.autostartHint')">
                 <input
                   type="checkbox"
                   class="g-switch"
@@ -954,7 +969,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @change="onAutostart(($event.target as HTMLInputElement).checked)"
                 />
               </SettingRow>
-              <SettingRow label="启用托盘" hint="开启后，关闭窗口会最小化到系统托盘；右键托盘图标可重新打开或彻底退出。关闭则点关闭就直接退出。">
+              <SettingRow :label="t('settings.general.tray')" :hint="t('settings.general.trayHint')">
                 <input
                   type="checkbox"
                   class="g-switch"
@@ -966,29 +981,29 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
               <p v-if="shellPrefError" class="warn-line" role="alert" data-test="settings-shell-error">{{ shellPrefError }}</p>
             </div>
-            <p v-else class="callout" data-test="settings-general-unavailable">这些选项只在桌面版中可用。</p>
+            <p v-else class="callout" data-test="settings-general-unavailable">{{ t('settings.general.desktopOnly') }}</p>
           </section>
 
           <section v-show="section === 'model'" class="panel" data-test="settings-section-model">
             <header class="panel-head">
-              <h2>对话模型</h2>
+              <h2>{{ t('对话模型') }}</h2>
               <span
                 class="g-chip"
                 :class="consumer?.running ? 'is-ok' : modelConfigured ? 'is-accent' : 'is-warn'"
                 data-test="model-effect"
               >
-                <template v-if="consumer?.running">运行中 · {{ consumer.model ?? '模型' }}</template>
-                <template v-else-if="modelConfigured">已填好，保存后生效</template>
-                <template v-else>未配置，助手暂时不会执行任务</template>
+                <template v-if="consumer?.running">{{ t('运行中 · {model}', { model: consumer.model ?? t('模型') }) }}</template>
+                <template v-else-if="modelConfigured">{{ t('已填好，保存后生效') }}</template>
+                <template v-else>{{ t('未配置，助手暂时不会执行任务') }}</template>
               </span>
             </header>
 
             <div class="g-card">
               <div class="g-card-head">
-                <h3>连接</h3>
+                <h3>{{ t('连接') }}</h3>
                 <TestButton
                   kind="model"
-                  label="测试连接"
+                  :label="t('测试连接')"
                   :testing="voiceTesting.model === true"
                   :result="voiceTest.model"
                   :stale="testStale('model')"
@@ -998,17 +1013,17 @@ defineExpose({ refresh, hasUnsavedChanges })
                 />
               </div>
 
-              <SettingRow label="接口地址">
+              <SettingRow :label="t('接口地址')">
                 <template #hint>
-                  模型服务的网址，一般以 /v1 结尾，比如 Ollama 是 <code>http://127.0.0.1:11434/v1</code>。留空则读环境变量
-                  <code>PARTNER_LLM_BASE_URL</code>。
+                  {{ t('模型服务的网址，一般以 /v1 结尾，比如 Ollama 是') }} <code>http://127.0.0.1:11434/v1</code>{{ t('。留空则读环境变量') }}
+                  <code>PARTNER_LLM_BASE_URL</code>{{ t('。') }}
                 </template>
                 <input type="text" v-model="form.model.baseUrl" placeholder="http://127.0.0.1:11434/v1" data-test="model-base-url" />
               </SettingRow>
 
-              <SettingRow label="模型">
+              <SettingRow :label="t('模型')">
                 <template #hint>
-                  点右边的刷新图标，可以从服务里读出可选的模型；读不到就手动填。留空则读环境变量 <code>PARTNER_LLM_MODEL</code>。
+                  {{ t('点右边的刷新图标，可以从服务里读出可选的模型；读不到就手动填。留空则读环境变量') }} <code>PARTNER_LLM_MODEL</code>{{ t('。') }}
                 </template>
                 <select v-if="models.length > 0" v-model="form.model.model" data-test="model-name">
                   <option v-for="name in withStored(models, form.model.model)" :key="name" :value="name">{{ name }}</option>
@@ -1019,15 +1034,15 @@ defineExpose({ refresh, hasUnsavedChanges })
                   type="button"
                   :disabled="probing"
                   :aria-busy="probing || undefined"
-                  title="从服务读取可选模型"
+                  :title="t('从服务读取可选模型')"
                   data-test="model-probe"
                   @click.prevent="probeModels"
                 >
-                  <Icon name="refresh" :size="16" /><span class="sr-only">{{ probing ? '拉取中…' : '拉取模型列表' }}</span>
+                  <Icon name="refresh" :size="16" /><span class="sr-only">{{ probing ? t('拉取中…') : t('拉取模型列表') }}</span>
                 </button>
               </SettingRow>
               <p v-if="models.length > 0 || modelProbeError" class="row-note">
-                <span v-if="models.length > 0" data-test="model-count">{{ models.length }} 个可选</span>
+                <span v-if="models.length > 0" data-test="model-count">{{ t('{length} 个可选', { length: models.length }) }}</span>
                 <span v-if="modelProbeError" class="error break" data-test="model-probe-error">{{ modelProbeError }}</span>
               </p>
 
@@ -1036,30 +1051,30 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <input
                   type="password"
                   v-model="apiKeyDraft"
-                  :placeholder="apiKeySet ? '（已设置）' : '（未设置）'"
+                  :placeholder="apiKeySet ? t('（已设置）') : t('（未设置）')"
                   autocomplete="off"
                   data-test="model-api-key"
                   @input="apiKeyEdited = true"
                 />
-                <span class="g-chip" :class="apiKeySet ? 'is-ok' : ''" data-test="model-api-key-state">{{ apiKeySet ? '已设置' : '未设置' }}</span>
-                <button class="ghost" type="button" data-test="model-api-key-clear" @click.prevent="clearKey">清除</button>
+                <span class="g-chip" :class="apiKeySet ? 'is-ok' : ''" data-test="model-api-key-state">{{ apiKeySet ? t('已设置') : t('未设置') }}</span>
+                <button class="ghost" type="button" data-test="model-api-key-clear" @click.prevent="clearKey">{{ t('清除') }}</button>
               </SettingRow>
 
-              <SettingRow label="最长等待" unit="秒" hint="模型超过这个时间还没答完，就放弃这次请求。">
+              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('模型超过这个时间还没答完，就放弃这次请求。')">
                 <input type="number" v-model.number="form.model.timeoutSeconds" />
               </SettingRow>
-              <SettingRow label="记忆长度" unit="token">
-                <template #hint>模型一次最多能「看」多少内容，约 1 个汉字算 1 token。改小并保存后，较早的对话会立刻被压缩。</template>
+              <SettingRow :label="t('记忆长度')" unit="token">
+                <template #hint>{{ t('模型一次最多能「看」多少内容，约 1 个汉字算 1 token。改小并保存后，较早的对话会立刻被压缩。') }}</template>
                 <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
               </SettingRow>
-              <SettingRow label="单次回复上限" unit="token" hint="一次回复最多写多长，必须小于「记忆长度」。">
+              <SettingRow :label="t('单次回复上限')" unit="token" :hint="t('一次回复最多写多长，必须小于「记忆长度」。')">
                 <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
               </SettingRow>
             </div>
 
             <div class="g-card">
-              <div class="g-card-head"><h3>思考</h3></div>
-              <SettingRow label="思考强度" stack hint="回答前想多久。左边是界面上显示的字，右边是真正发给模型的词，你可以增减。选中的「默认」用于新消息，会话里可以临时改。传值为 off 表示不向模型发这个参数。">
+              <div class="g-card-head"><h3>{{ t('思考') }}</h3></div>
+              <SettingRow :label="t('思考强度')" stack :hint="t('回答前想多久。左边是界面上显示的字，右边是真正发给模型的词，你可以增减。选中的「默认」用于新消息，会话里可以临时改。传值为 off 表示不向模型发这个参数。')">
                 <GearTable
                   v-model="form.model.reasoningEffort"
                   v-model:gears="form.model.reasoningGears"
@@ -1067,9 +1082,9 @@ defineExpose({ refresh, hasUnsavedChanges })
                   data-test="model-reasoning-gears"
                 />
               </SettingRow>
-              <SettingRow label="能看图片">
+              <SettingRow :label="t('能看图片')">
                 <template #hint>
-                  开启后，遇到读不出文字的软件（游戏、画布等），助手会直接截图给模型看。纯文字模型请保持关闭，否则请求会失败。
+                  {{ t('开启后，遇到读不出文字的软件（游戏、画布等），助手会直接截图给模型看。纯文字模型请保持关闭，否则请求会失败。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.model.supportsImages" data-test="model-supports-images" />
               </SettingRow>
@@ -1079,32 +1094,32 @@ defineExpose({ refresh, hasUnsavedChanges })
 
           <section v-show="section === 'input'" class="panel" data-test="settings-section-input">
             <header class="panel-head">
-              <h2>语音输入</h2>
+              <h2>{{ t('语音输入') }}</h2>
               <span v-if="wakeGateOn" class="g-chip is-accent" data-test="wake-mode">
-                唤醒模式
-                <HintTip align="end">平时只听不转写；叫到唤醒词后的一段话才会转写，说完自动回到待命。</HintTip>
+                {{ t('唤醒模式') }}
+                <HintTip align="end">{{ t('平时只听不转写；叫到唤醒词后的一段话才会转写，说完自动回到待命。') }}</HintTip>
               </span>
             </header>
 
             <div class="g-card">
-              <div class="g-card-head"><h3>麦克风</h3></div>
-              <SettingRow label="开启语音输入" hint="关闭后会立刻释放麦克风，其他软件可以使用。">
+              <div class="g-card-head"><h3>{{ t('麦克风') }}</h3></div>
+              <SettingRow :label="t('开启语音输入')" :hint="t('关闭后会立刻释放麦克风，其他软件可以使用。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.input.enabled" data-test="input-enabled" />
               </SettingRow>
-              <SettingRow label="麦克风" hint="选你正在用的那个，名称支持模糊匹配。列表为空时可以手动输入。">
+              <SettingRow :label="t('麦克风')" :hint="t('选你正在用的那个，名称支持模糊匹配。列表为空时可以手动输入。')">
                 <select v-if="inputOptions.length > 0" v-model="form.input.deviceId" data-test="input-device">
-                  <option :value="null">（默认设备）</option>
+                  <option :value="null">{{ t('（默认设备）') }}</option>
                   <option v-for="name in inputOptions" :key="name" :value="name">{{ name }}</option>
                 </select>
-                <input v-else type="text" v-model="form.input.deviceId" placeholder="（默认设备）" data-test="input-device" />
+                <input v-else type="text" v-model="form.input.deviceId" :placeholder="t('（默认设备）')" data-test="input-device" />
               </SettingRow>
 
               <p class="status-line" data-test="input-effect">
                 <template v-if="voice?.input?.running">
-                  运行中 · {{ voice.input.device }} · 已识别 {{ voice.input.count }} 段<template v-if="wakeGateOn"> · {{ voice.input.awake ? '已唤醒' : '等唤醒词' }}</template>
+                  {{ t('运行中 · {device} · 已识别 {count} 段', { device: voice.input.device, count: voice.input.count }) }}<template v-if="wakeGateOn"> · {{ voice.input.awake ? t('已唤醒') : t('等唤醒词') }}</template>
                 </template>
-                <template v-else-if="voice?.input">未运行 · {{ voice.input.reason }}</template>
-                <template v-else>保存后可以看到运行状态</template>
+                <template v-else-if="voice?.input">{{ t('未运行 · {reason}', { reason: voice.input.reason }) }}</template>
+                <template v-else>{{ t('保存后可以看到运行状态') }}</template>
               </p>
 
               <!--
@@ -1117,48 +1132,47 @@ defineExpose({ refresh, hasUnsavedChanges })
                   <div class="level-mark" :style="{ left: thresholdPercent }"></div>
                 </div>
                 <span class="level-readout">
-                  音量 {{ (voice.input.rms ?? 0).toFixed(4) }}
+                  {{ t('音量 {toFixed}', { toFixed: (voice.input.rms ?? 0).toFixed(4) }) }}
                   <HintTip align="end">
-                    竖线是「安静音量线」{{ form.input.silenceThreshold }}：音量够不到它，就当作你没在说话。
-                    <template v-if="voice.input.thresholdMisconfigured">环境底噪约 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}。</template>
+                    {{ t('竖线是「安静音量线」{silenceThreshold}：音量够不到它，就当作你没在说话。', { silenceThreshold: form.input.silenceThreshold }) }}
+                    <template v-if="voice.input.thresholdMisconfigured">{{ t('环境底噪约 {toFixed}。', { toFixed: (voice.input.ambientRms ?? 0).toFixed(4) }) }}</template>
                   </HintTip>
                 </span>
               </div>
               <p v-if="voice?.input?.thresholdMisconfigured" class="warn-line" data-test="input-threshold-warning">
-                安静音量线 {{ form.input.silenceThreshold }} 不高于环境底噪 {{ (voice.input.ambientRms ?? 0).toFixed(4) }}：
-                一直判断不出你说完了，一段话不会结束，也就不会有转写。
+                {{ t('安静音量线 {silenceThreshold} 不高于环境底噪 {toFixed}： 一直判断不出你说完了，一段话不会结束，也就不会有转写。', { silenceThreshold: form.input.silenceThreshold, toFixed: (voice.input.ambientRms ?? 0).toFixed(4) }) }}
               </p>
             </div>
 
             <div class="g-card">
-              <div class="g-card-head"><h3>唤醒</h3></div>
-              <SettingRow label="唤醒词" :disabled="!form.local.kws.enabled">
+              <div class="g-card-head"><h3>{{ t('唤醒') }}</h3></div>
+              <SettingRow :label="t('唤醒词')" :disabled="!form.local.kws.enabled">
                 <template #hint>
-                  用逗号分隔多个，例如「你好军哥，蛋哥蛋哥」。留空则保留引擎里现有的词。需要先开启「本地引擎」里的唤醒与识别引擎。
+                  {{ t('用逗号分隔多个，例如「你好军哥，蛋哥蛋哥」。留空则保留引擎里现有的词。需要先开启「本地引擎」里的唤醒与识别引擎。') }}
                 </template>
                 <input
                   type="text"
                   :value="keywordDrafts.kws"
-                  placeholder="你好军哥，蛋哥蛋哥"
+                  :placeholder="t('你好军哥，蛋哥蛋哥')"
                   data-test="local-kws-keywords"
                   @input="onEngineKeywordsInput('kws', $event)"
                 />
               </SettingRow>
-              <SettingRow label="唤醒时叮一声" hint="听到唤醒词时响一下。需要同时开启语音输出。" data-test="wake-tone">
+              <SettingRow :label="t('唤醒时叮一声')" :hint="t('听到唤醒词时响一下。需要同时开启语音输出。')" data-test="wake-tone">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.input.wakeTone" />
               </SettingRow>
 
-              <SettingRow label="说话时打断助手" hint="助手正在说话时，你开口说一段话（持续约半秒）就让它停下。没有回声消除，外放时助手自己的声音会被麦克风听见而打断自己，建议只在戴耳机时打开。">
+              <SettingRow :label="t('说话时打断助手')" :hint="t('助手正在说话时，你开口说一段话（持续约半秒）就让它停下。没有回声消除，外放时助手自己的声音会被麦克风听见而打断自己，建议只在戴耳机时打开。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.input.bargeIn" data-test="barge-in" />
               </SettingRow>
             </div>
 
             <div class="g-card">
               <div class="g-card-head">
-                <h3>识别服务</h3>
+                <h3>{{ t('识别服务') }}</h3>
                 <TestButton
                   kind="asr"
-                  label="测试"
+                  :label="t('测试')"
                   :testing="voiceTesting.asr === true"
                   :result="voiceTest.asr"
                   :stale="testStale('asr')"
@@ -1167,102 +1181,102 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @test="testConnection('asr')"
                 />
               </div>
-              <SettingRow label="接口类型" hint="按你的识别服务支持的方式选，不确定就看它的文档。">
+              <SettingRow :label="t('接口类型')" :hint="t('按你的识别服务支持的方式选，不确定就看它的文档。')">
                 <select v-model="form.asr.protocol" data-test="asr-protocol">
-                  <option value="sensevoice">本地</option>
-                  <option value="openai">通用标准接口 · audio/transcriptions</option>
-                  <option v-if="form.asr.protocol === 'chat-audio'" value="chat-audio">对话接口 · chat/completions（旧）</option>
+                  <option value="sensevoice">{{ t('本地') }}</option>
+                  <option value="openai">{{ t('通用标准接口 · audio/transcriptions') }}</option>
+                  <option v-if="form.asr.protocol === 'chat-audio'" value="chat-audio">{{ t('对话接口 · chat/completions（旧）') }}</option>
                 </select>
               </SettingRow>
-              <SettingRow label="服务地址" hint="识别服务（ASR）的网址。留空则不会把语音转成文字。">
+              <SettingRow :label="t('服务地址')" :hint="t('识别服务（ASR）的网址。留空则不会把语音转成文字。')">
                 <input type="text" v-model="form.asr.baseUrl" placeholder="http://127.0.0.1:45101" data-test="asr-base-url" />
               </SettingRow>
-              <SettingRow label="模型" hint="识别服务里的模型名。">
+              <SettingRow :label="t('模型')" :hint="t('识别服务里的模型名。')">
                 <input type="text" v-model="form.asr.model" data-test="asr-model" />
               </SettingRow>
             </div>
 
             <div class="g-card">
-              <div class="g-card-head"><h3>断句</h3></div>
-              <SettingRow label="多小声算安静" hint="音量低于这个值，就当作你没在说话。环境吵就调大，老是收不到你说话就调小。默认 0.003。">
+              <div class="g-card-head"><h3>{{ t('断句') }}</h3></div>
+              <SettingRow :label="t('多小声算安静')" :hint="t('音量低于这个值，就当作你没在说话。环境吵就调大，老是收不到你说话就调小。默认 0.003。')">
                 <input type="number" step="0.001" min="0" v-model.number="form.input.silenceThreshold" />
               </SettingRow>
-              <SettingRow label="停顿多久算说完" unit="毫秒" hint="你停顿超过这个时间，就当这句话说完了。默认 1200，即 1.2 秒。">
+              <SettingRow :label="t('停顿多久算说完')" :unit="t('毫秒')" :hint="t('你停顿超过这个时间，就当这句话说完了。默认 1200，即 1.2 秒。')">
                 <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
               </SettingRow>
             </div>
 
             <button class="ghost more" :aria-expanded="advanced.input === true" data-test="settings-more-input" @click="toggleAdvanced('input')">
               <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.input === true }" />
-              更多选项
+              {{ t('更多选项') }}
             </button>
             <div v-show="advanced.input === true" class="g-card">
-              <div class="g-card-head"><h3>断句</h3></div>
-              <SettingRow label="唤醒后等你开口" unit="毫秒" hint="叫醒助手后，最多等你多久开口；一开口就改按「停顿多久算说完」判断。默认 5000，即 5 秒。" data-test="wake-timeout">
+              <div class="g-card-head"><h3>{{ t('断句') }}</h3></div>
+              <SettingRow :label="t('唤醒后等你开口')" :unit="t('毫秒')" :hint="t('叫醒助手后，最多等你多久开口；一开口就改按「停顿多久算说完」判断。默认 5000，即 5 秒。')" data-test="wake-timeout">
                 <input type="number" v-model.number="form.input.wakeTimeoutMs" />
               </SettingRow>
-              <SettingRow label="边说边识别" hint="开启后一句一句识别，反应更快；关闭则等整段说完再识别。">
+              <SettingRow :label="t('边说边识别')" :hint="t('开启后一句一句识别，反应更快；关闭则等整段说完再识别。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.input.asrStream" data-test="input-asr-stream" />
               </SettingRow>
-              <SettingRow label="句内停顿" unit="毫秒" hint="只在「边说边识别」开启时有用：停顿超过这个时间，就先识别前面那一句。默认 450。">
+              <SettingRow :label="t('句内停顿')" :unit="t('毫秒')" :hint="t('只在「边说边识别」开启时有用：停顿超过这个时间，就先识别前面那一句。默认 450。')">
                 <input type="number" v-model.number="form.input.sentenceGapMs" />
               </SettingRow>
-              <SettingRow label="单次识别最长" unit="秒" hint="一次最多把多长的录音送去识别。默认 8 秒。">
+              <SettingRow :label="t('单次识别最长')" :unit="t('秒')" :hint="t('一次最多把多长的录音送去识别。默认 8 秒。')">
                 <input type="number" v-model.number="form.input.windowSeconds" />
               </SettingRow>
-              <SettingRow label="无标点时多少字断开" unit="字" hint="识别结果没有标点时，超过这个字数就强行断句。默认 40。">
+              <SettingRow :label="t('无标点时多少字断开')" :unit="t('字')" :hint="t('识别结果没有标点时，超过这个字数就强行断句。默认 40。')">
                 <input type="number" v-model.number="form.input.maxSplitChars" />
               </SettingRow>
-              <div class="g-card-head"><h3>识别服务</h3></div>
-              <SettingRow label="语言" hint="告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。">
+              <div class="g-card-head"><h3>{{ t('识别服务') }}</h3></div>
+              <SettingRow :label="t('语言')" :hint="t('告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。')">
                 <input type="text" v-model="form.asr.language" placeholder="Chinese" />
               </SettingRow>
-              <SettingRow label="连接等待" unit="毫秒" hint="连不上服务时，等多久放弃。">
+              <SettingRow :label="t('连接等待')" :unit="t('毫秒')" :hint="t('连不上服务时，等多久放弃。')">
                 <input type="number" v-model.number="form.asr.connectTimeoutMs" />
               </SettingRow>
-              <SettingRow label="单次等待" unit="毫秒" hint="设得比较短：卡住的那一段会整段重试，等太久会让录音堆积丢失。">
+              <SettingRow :label="t('单次等待')" :unit="t('毫秒')" :hint="t('设得比较短：卡住的那一段会整段重试，等太久会让录音堆积丢失。')">
                 <input type="number" v-model.number="form.asr.readTimeoutMs" />
               </SettingRow>
-              <SettingRow label="采样率" unit="Hz" hint="录音的音质参数，一般不用改。默认 16000。">
+              <SettingRow :label="t('采样率')" unit="Hz" :hint="t('录音的音质参数，一般不用改。默认 16000。')">
                 <input type="number" v-model.number="form.asr.sampleRate" />
               </SettingRow>
             </div>
           </section>
 
           <section v-show="section === 'output'" class="panel" data-test="settings-section-output">
-            <header class="panel-head"><h2>语音输出</h2></header>
+            <header class="panel-head"><h2>{{ t('语音输出') }}</h2></header>
 
             <div class="g-card">
-              <div class="g-card-head"><h3>朗读</h3></div>
-              <SettingRow label="开启朗读" hint="助手的回复会念出来。">
+              <div class="g-card-head"><h3>{{ t('朗读') }}</h3></div>
+              <SettingRow :label="t('开启朗读')" :hint="t('助手的回复会念出来。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.output.enabled" data-test="output-enabled" />
               </SettingRow>
-              <SettingRow label="扬声器" hint="选声音从哪里出来。">
+              <SettingRow :label="t('扬声器')" :hint="t('选声音从哪里出来。')">
                 <select v-if="outputOptions.length > 0" v-model="form.output.deviceId" data-test="output-device">
-                  <option :value="null">（默认设备）</option>
+                  <option :value="null">{{ t('（默认设备）') }}</option>
                   <option v-for="name in outputOptions" :key="name" :value="name">{{ name }}</option>
                 </select>
-                <input v-else type="text" v-model="form.output.deviceId" placeholder="（默认设备）" data-test="output-device" />
+                <input v-else type="text" v-model="form.output.deviceId" :placeholder="t('（默认设备）')" data-test="output-device" />
               </SettingRow>
-              <SettingRow label="语速" hint="1 是正常，0.8 慢一点，1.2 快一点。">
+              <SettingRow :label="t('语速')" :hint="t('1 是正常，0.8 慢一点，1.2 快一点。')">
                 <input type="number" step="0.05" v-model.number="form.output.speed" />
               </SettingRow>
-              <SettingRow label="朗读时不听麦克风" hint="避免助手把自己的声音当成你在说话。建议保持开启。">
+              <SettingRow :label="t('朗读时不听麦克风')" :hint="t('避免助手把自己的声音当成你在说话。建议保持开启。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.output.muteDuringTts" data-test="output-mute-during-tts" />
               </SettingRow>
               <p class="status-line" data-test="output-effect">
-                <template v-if="voice?.output.running">运行中 · {{ voice.output.device }} · 已朗读 {{ voice.output.count }} 句</template>
-                <template v-else-if="voice">未运行 · {{ voice.output.reason }}</template>
-                <template v-else>保存后可以看到运行状态</template>
+                <template v-if="voice?.output.running">{{ t('运行中 · {device} · 已朗读 {count} 句', { device: voice.output.device, count: voice.output.count }) }}</template>
+                <template v-else-if="voice">{{ t('未运行 · {reason}', { reason: voice.output.reason }) }}</template>
+                <template v-else>{{ t('保存后可以看到运行状态') }}</template>
               </p>
             </div>
 
             <div class="g-card">
               <div class="g-card-head">
-                <h3>朗读服务</h3>
+                <h3>{{ t('朗读服务') }}</h3>
                 <TestButton
                   kind="tts"
-                  label="测试"
+                  :label="t('测试')"
                   :testing="voiceTesting.tts === true"
                   :result="voiceTest.tts"
                   :stale="testStale('tts')"
@@ -1271,49 +1285,49 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @test="testConnection('tts')"
                 />
               </div>
-              <SettingRow label="接口类型" hint="选和你的朗读服务一致的那种。">
+              <SettingRow :label="t('接口类型')" :hint="t('选和你的朗读服务一致的那种。')">
                 <select v-model="form.tts.protocol" data-test="tts-protocol">
-                  <option value="local">本地</option>
-                  <option value="openai">通用标准接口 · audio/speech</option>
-                  <option v-if="form.tts.protocol === 'native'" value="native">本地服务 · 流式（旧）</option>
+                  <option value="local">{{ t('本地') }}</option>
+                  <option value="openai">{{ t('通用标准接口 · audio/speech') }}</option>
+                  <option v-if="form.tts.protocol === 'native'" value="native">{{ t('本地服务 · 流式（旧）') }}</option>
                 </select>
               </SettingRow>
-              <SettingRow label="服务地址" hint="朗读服务（TTS）的网址。留空则助手的回复不会被念出来。">
+              <SettingRow :label="t('服务地址')" :hint="t('朗读服务（TTS）的网址。留空则助手的回复不会被念出来。')">
                 <input type="text" v-model="form.tts.baseUrl" placeholder="http://127.0.0.1:45102" data-test="tts-base-url" />
               </SettingRow>
               <template v-if="form.tts.protocol === 'native'">
-                <SettingRow label="语言" hint="本地服务用的语言代码，例如 zh。">
+                <SettingRow :label="t('语言')" :hint="t('本地服务用的语言代码，例如 zh。')">
                   <input type="text" v-model="form.tts.lang" />
                 </SettingRow>
-                <SettingRow label="克隆音色的参考音频" hint="填本地音频文件的路径，朗读时会模仿这个声音。只在启动时读取一次。">
-                  <input type="text" v-model="form.tts.speakerRefPath" placeholder="（不使用克隆）" />
+                <SettingRow :label="t('克隆音色的参考音频')" :hint="t('填本地音频文件的路径，朗读时会模仿这个声音。只在启动时读取一次。')">
+                  <input type="text" v-model="form.tts.speakerRefPath" :placeholder="t('（不使用克隆）')" />
                 </SettingRow>
               </template>
               <template v-else-if="form.tts.protocol === 'local'">
-                <SettingRow label="音色" hint="留空用引擎启动时的默认音色。也可以填 engines/tts/output/elaborate 里的音色名，例如 晓晓、心悦。">
-                  <input type="text" v-model="form.tts.voice" placeholder="（引擎默认）" data-test="tts-local-voice" />
+                <SettingRow :label="t('音色')" :hint="t('留空用引擎启动时的默认音色。也可以填 engines/tts/output/elaborate 里的音色名，例如 晓晓、心悦。')">
+                  <input type="text" v-model="form.tts.voice" :placeholder="t('（引擎默认）')" data-test="tts-local-voice" />
                 </SettingRow>
-                <SettingRow label="克隆音色" hint="选一段清晰的人声录音（.wav，几秒到十几秒），朗读时会模仿它的声音。选了之后，上面的音色名不再生效。">
+                <SettingRow :label="t('克隆音色')" :hint="t('选一段清晰的人声录音（.wav，几秒到十几秒），朗读时会模仿它的声音。选了之后，上面的音色名不再生效。')">
                   <div class="clone-pick">
-                    <span class="clone-name" data-test="tts-clone-name">{{ cloneName || '未选择' }}</span>
+                    <span class="clone-name" data-test="tts-clone-name">{{ cloneName || t('未选择') }}</span>
                     <input ref="cloneInput" type="file" accept=".wav,audio/wav,audio/x-wav" hidden data-test="tts-clone-file" @change="onCloneFile" />
-                    <button class="ghost" type="button" data-test="tts-clone-pick" :disabled="cloneBusy" @click="cloneInput?.click()">选择音频文件</button>
-                    <button v-if="form.tts.speakerRefPath" class="ghost" type="button" data-test="tts-clone-clear" @click="form.tts.speakerRefPath = null">清除</button>
+                    <button class="ghost" type="button" data-test="tts-clone-pick" :disabled="cloneBusy" @click="cloneInput?.click()">{{ t('选择音频文件') }}</button>
+                    <button v-if="form.tts.speakerRefPath" class="ghost" type="button" data-test="tts-clone-clear" @click="form.tts.speakerRefPath = null">{{ t('清除') }}</button>
                   </div>
                   <p v-if="cloneError" class="pkg-note" role="alert" data-test="tts-clone-error">{{ cloneError }}</p>
                 </SettingRow>
-                <SettingRow label="参考文本" hint="参考录音里实际说的话，逐字填写。填了克隆更像；留空按零样本克隆，只取音色。填错会乱读。">
-                  <input type="text" v-model="form.tts.speakerRefText" placeholder="（留空 = 零样本克隆）" data-test="tts-clone-ref-text" />
+                <SettingRow :label="t('参考文本')" :hint="t('参考录音里实际说的话，逐字填写。填了克隆更像；留空按零样本克隆，只取音色。填错会乱读。')">
+                  <input type="text" v-model="form.tts.speakerRefText" :placeholder="t('（留空 = 零样本克隆）')" data-test="tts-clone-ref-text" />
                 </SettingRow>
               </template>
               <template v-else-if="form.tts.protocol === 'openai'">
-                <SettingRow label="模型" hint="例如 tts-1。">
+                <SettingRow :label="t('模型')" :hint="t('例如 tts-1。')">
                   <input type="text" v-model="form.tts.model" placeholder="tts-1" />
                 </SettingRow>
-                <SettingRow label="音色" hint="服务提供的音色名，例如 alloy。">
+                <SettingRow :label="t('音色')" :hint="t('服务提供的音色名，例如 alloy。')">
                   <input type="text" v-model="form.tts.voice" placeholder="alloy" />
                 </SettingRow>
-                <SettingRow label="语速" hint="这个接口自己的语速参数。">
+                <SettingRow :label="t('语速')" :hint="t('这个接口自己的语速参数。')">
                   <input type="number" step="0.05" v-model.number="form.tts.speed" />
                 </SettingRow>
               </template>
@@ -1322,81 +1336,81 @@ defineExpose({ refresh, hasUnsavedChanges })
 
             <button class="ghost more" :aria-expanded="advanced.output === true" data-test="settings-more-output" @click="toggleAdvanced('output')">
               <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.output === true }" />
-              更多选项
+              {{ t('更多选项') }}
             </button>
             <div v-show="advanced.output === true" class="g-card">
-              <SettingRow label="句间停顿" unit="毫秒" hint="两段话之间加入的停顿。用克隆音色时固定为 0。">
+              <SettingRow :label="t('句间停顿')" :unit="t('毫秒')" :hint="t('两段话之间加入的停顿。用克隆音色时固定为 0。')">
                 <input type="number" v-model.number="form.output.gapMs" />
               </SettingRow>
-              <SettingRow label="念完后再静音" unit="毫秒" hint="朗读结束后继续不听麦克风的时间，避免尾音被听进去。默认 400。">
+              <SettingRow :label="t('念完后再静音')" :unit="t('毫秒')" :hint="t('朗读结束后继续不听麦克风的时间，避免尾音被听进去。默认 400。')">
                 <input type="number" v-model.number="form.output.drainMs" />
               </SettingRow>
-              <SettingRow label="播放采样率" unit="Hz" hint="必须和朗读服务输出的一致，否则声音会变快或变慢。">
+              <SettingRow :label="t('播放采样率')" unit="Hz" :hint="t('必须和朗读服务输出的一致，否则声音会变快或变慢。')">
                 <input type="number" v-model.number="form.output.sampleRate" />
               </SettingRow>
-              <SettingRow label="服务返回采样率" unit="Hz" hint="必须和服务实际返回的一致，否则播放速度会不对。">
+              <SettingRow :label="t('服务返回采样率')" unit="Hz" :hint="t('必须和服务实际返回的一致，否则播放速度会不对。')">
                 <input type="number" v-model.number="form.tts.sampleRate" />
               </SettingRow>
-              <SettingRow label="最长等待" unit="秒" hint="超过这个时间还没合成完，就放弃这一句。">
+              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('超过这个时间还没合成完，就放弃这一句。')">
                 <input type="number" v-model.number="form.tts.timeoutSeconds" />
               </SettingRow>
-              <SettingRow label="分段大小" unit="毫秒" hint="边合成边播放时每一小段的长度，一般不用改。">
+              <SettingRow :label="t('分段大小')" :unit="t('毫秒')" :hint="t('边合成边播放时每一小段的长度，一般不用改。')">
                 <input type="number" v-model.number="form.tts.chunkMs" />
               </SettingRow>
             </div>
           </section>
 
           <section v-show="section === 'desktop'" class="panel" data-test="settings-section-desktop">
-            <header class="panel-head"><h2>电脑操控</h2></header>
+            <header class="panel-head"><h2>{{ t('电脑操控') }}</h2></header>
 
             <!-- The one sentence on this page that is not behind an ⓘ. A hover is a good place for a footnote and a
                  bad place for the fact that this capability acts on your computer. -->
             <p class="callout" data-test="desktop-callout">
-              开启后，助手可以观察你的窗口，并申请控制鼠标键盘。每一步都需要你批准。
+              {{ t('开启后，助手可以观察你的窗口，并申请控制鼠标键盘。每一步都需要你批准。') }}
             </p>
 
             <div class="g-card">
-              <SettingRow label="允许助手操作电脑">
+              <SettingRow :label="t('允许助手操作电脑')">
                 <template #hint>
-                  默认关闭。开启后助手能看你的窗口，并申请点击、按键；每个动作都要你点「允许」，没人回应就当拒绝。关闭时助手根本拿不到这些工具。
+                  {{ t('默认关闭。开启后助手能看你的窗口，并申请点击、按键；每个动作都要你点「允许」，没人回应就当拒绝。关闭时助手根本拿不到这些工具。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.desktop.enabled" data-test="desktop-enabled" />
               </SettingRow>
               <p v-if="desktopAgentOff" class="warn-line" data-test="desktop-agent-warning">
-                还需要启用「桌面操控」子 agent，助手才能使用这个能力。
-                <button class="ghost" data-test="desktop-agent-fix" @click="emit('navigate', 'prompts')">去启用</button>
+                {{ t('还需要启用「桌面操控」子 agent，助手才能使用这个能力。') }}
+                <button class="ghost" data-test="desktop-agent-fix" @click="emit('navigate', 'prompts')">{{ t('去启用') }}</button>
               </p>
-              <SettingRow label="只允许操作这些窗口">
+              <SettingRow :label="t('只允许操作这些窗口')">
                 <template #hint>
-                  填窗口标题里的关键词，用逗号分隔，不分大小写；留空表示不限制。真正拦住动作的是你的批准，这里只是缩小范围。
+                  {{ t('填窗口标题里的关键词，用逗号分隔，不分大小写；留空表示不限制。真正拦住动作的是你的批准，这里只是缩小范围。') }}
                 </template>
                 <input
                   type="text"
-                  :value="form.desktop.allowedWindowTitles.join('、')"
-                  placeholder="记事本、计算器"
+                  :value="form.desktop.allowedWindowTitles.join(t('、'))"
+                  :placeholder="t('记事本、计算器')"
                   data-test="desktop-allowed-titles"
                   @input="onTitlesInput"
                 />
               </SettingRow>
-              <SettingRow label="操作时占用屏幕吗">
+              <SettingRow :label="t('操作时占用屏幕吗')">
                 <template #hint>
-                  <span data-test="desktop-input-mode-hint">{{ INPUT_MODES.find((mode) => mode.value === form.desktop.inputMode)?.hint }}</span>
-                  点击和打字默认要把窗口带到前台、移动你的鼠标。选「尽量后台」后，由助手启动的浏览器和 Electron 程序可以在后台完成，其余照旧；选「只在后台」则做不到的动作直接拒绝。
+                  <span data-test="desktop-input-mode-hint">{{ t(INPUT_MODES.find((mode) => mode.value === form.desktop.inputMode)?.hint ?? '') }}</span>
+                  {{ t('点击和打字默认要把窗口带到前台、移动你的鼠标。选「尽量后台」后，由助手启动的浏览器和 Electron 程序可以在后台完成，其余照旧；选「只在后台」则做不到的动作直接拒绝。') }}
                 </template>
                 <select v-model="form.desktop.inputMode" data-test="desktop-input-mode">
-                  <option v-for="mode in INPUT_MODES" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+                  <option v-for="mode in INPUT_MODES" :key="mode.value" :value="mode.value">{{ t(mode.label) }}</option>
                 </select>
               </SettingRow>
             </div>
 
             <button class="ghost more" :aria-expanded="advanced.desktop === true" data-test="settings-more-desktop" @click="toggleAdvanced('desktop')">
               <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.desktop === true }" />
-              更多选项
+              {{ t('更多选项') }}
             </button>
             <div v-show="advanced.desktop === true" class="g-card">
-              <SettingRow label="看屏幕后可操作多久" unit="毫秒">
+              <SettingRow :label="t('看屏幕后可操作多久')" :unit="t('毫秒')">
                 <template #hint>
-                  助手看过一次屏幕后，这段时间内可以照着看到的内容去点、去输入；超时要重新看一遍。默认 15000，即 15 秒。
+                  {{ t('助手看过一次屏幕后，这段时间内可以照着看到的内容去点、去输入；超时要重新看一遍。默认 15000，即 15 秒。') }}
                 </template>
                 <input type="number" min="1000" v-model.number="form.desktop.leaseTtlMs" data-test="desktop-lease-ttl" />
               </SettingRow>
@@ -1404,46 +1418,46 @@ defineExpose({ refresh, hasUnsavedChanges })
           </section>
 
           <section v-show="section === 'files'" class="panel" data-test="settings-section-files">
-            <header class="panel-head"><h2>文件访问</h2></header>
+            <header class="panel-head"><h2>{{ t('文件访问') }}</h2></header>
 
             <div class="g-card">
-              <SettingRow label="允许助手读取文件">
+              <SettingRow :label="t('允许助手读取文件')">
                 <template #hint>
-                  <span data-test="files-whitelist-hint">只读，默认关闭。助手只能读下面列出的文件夹和里面的所有内容，其他位置它看不到。</span>
+                  <span data-test="files-whitelist-hint">{{ t('只读，默认关闭。助手只能读下面列出的文件夹和里面的所有内容，其他位置它看不到。') }}</span>
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.files.enabled" data-test="files-enabled" />
               </SettingRow>
 
               <div class="folders" data-test="files-roots">
                 <div class="folders-head">
-                  <h3>可读取的文件夹</h3>
-                  <HintTip align="end">填完整路径，一行一个。</HintTip>
+                  <h3>{{ t('可读取的文件夹') }}</h3>
+                  <HintTip align="end">{{ t('填完整路径，一行一个。') }}</HintTip>
                 </div>
                 <p v-if="form.files.roots.length === 0" class="muted" data-test="files-roots-empty">
-                  还没有文件夹。开启后至少添加一个，否则无法保存。
+                  {{ t('还没有文件夹。开启后至少添加一个，否则无法保存。') }}
                 </p>
                 <div v-for="(root, index) in form.files.roots" :key="index" class="folder-row">
                   <Icon name="folder" :size="16" class="folder-icon" />
                   <input
                     type="text"
                     :value="root"
-                    :aria-label="`第 ${index + 1} 个可读取的文件夹`"
-                    placeholder="D:/资料"
+                    :aria-label="t('第 {v} 个可读取的文件夹', { v: index + 1 })"
+                    :placeholder="t('D:/资料')"
                     data-test="files-root"
                     @input="form.files.roots[index] = ($event.target as HTMLInputElement).value"
                   />
                   <button
                     class="ghost icon-only"
-                    :aria-label="`移除第 ${index + 1} 个文件夹`"
-                    title="移除"
+                    :aria-label="t('移除第 {v} 个文件夹', { v: index + 1 })"
+                    :title="t('移除')"
                     data-test="files-root-remove"
                     @click="form.files.roots = form.files.roots.filter((_, at) => at !== index)"
                   >
-                    <Icon name="x" :size="14" /><span class="sr-only">移除</span>
+                    <Icon name="x" :size="14" /><span class="sr-only">{{ t('移除') }}</span>
                   </button>
                 </div>
                 <button class="ghost add" data-test="files-root-add" @click="form.files.roots = [...form.files.roots, '']">
-                  <Icon name="plus" :size="14" /> 添加文件夹
+                  <Icon name="plus" :size="14" /> {{ t('添加文件夹') }}
                 </button>
               </div>
             </div>
@@ -1451,9 +1465,9 @@ defineExpose({ refresh, hasUnsavedChanges })
 
           <section v-show="section === 'web'" class="panel" data-test="settings-section-web">
             <header class="panel-head">
-              <h2>联网搜索</h2>
+              <h2>{{ t('联网搜索') }}</h2>
               <span class="g-chip" :class="form.web.enabled ? 'is-ok' : ''" data-test="web-effect">
-                {{ form.web.enabled ? '已开启' : '已关闭' }}
+                {{ form.web.enabled ? t('已开启') : t('已关闭') }}
               </span>
             </header>
 
@@ -1461,27 +1475,25 @@ defineExpose({ refresh, hasUnsavedChanges })
                  this machine. That goes in a sentence rather than behind an ⓘ, for the same reason the
                  desktop callout is not behind one. -->
             <p class="callout" data-test="web-callout">
-              默认开启。开启后，助手要把某句话拿去搜的时候，那句话会发给第三方搜索引擎，因此会离开这台电脑。
-              搜索结果的地址会先做一次安全检查，指向本机、内网或云服务商元数据地址的一律拒绝；从网上读回来的
-              内容只当资料，写在里面的任何指令都不会被执行。
+              {{ t('默认开启。开启后，助手要把某句话拿去搜的时候，那句话会发给第三方搜索引擎，因此会离开这台电脑。 搜索结果的地址会先做一次安全检查，指向本机、内网或云服务商元数据地址的一律拒绝；从网上读回来的 内容只当资料，写在里面的任何指令都不会被执行。') }}
             </p>
 
             <div class="g-card">
-              <SettingRow label="允许助手联网搜索">
+              <SettingRow :label="t('允许助手联网搜索')">
                 <template #hint>
-                  关闭后助手完全拿不到联网工具，连打开已知网页也一起停用。查不到就说查不到，不会绕过去。
+                  {{ t('关闭后助手完全拿不到联网工具，连打开已知网页也一起停用。查不到就说查不到，不会绕过去。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.web.enabled" data-test="web-enabled" />
               </SettingRow>
-              <SettingRow label="每次查询最多等多久" unit="秒">
+              <SettingRow :label="t('每次查询最多等多久')" :unit="t('秒')">
                 <template #hint>
-                  从第一个引擎返回结果开始计时，到点就用手上已有的结果作答，不再等慢的那几家。可填 3–60 秒。
+                  {{ t('从第一个引擎返回结果开始计时，到点就用手上已有的结果作答，不再等慢的那几家。可填 3–60 秒。') }}
                 </template>
                 <input type="number" min="3" max="60" v-model.number="form.web.timeBudgetSeconds" data-test="web-budget" />
               </SettingRow>
-              <SettingRow label="答案里最多列几条" unit="条">
+              <SettingRow :label="t('答案里最多列几条')" :unit="t('条')">
                 <template #hint>
-                  列出来的是一组线索，不是答案。助手要据此下结论，还得逐条打开原文核对。可填 1–20。
+                  {{ t('列出来的是一组线索，不是答案。助手要据此下结论，还得逐条打开原文核对。可填 1–20。') }}
                 </template>
                 <input type="number" min="1" max="20" v-model.number="form.web.maxResults" data-test="web-max-results" />
               </SettingRow>
@@ -1490,21 +1502,21 @@ defineExpose({ refresh, hasUnsavedChanges })
             <div class="g-card">
               <div class="g-card-head">
                 <h3>
-                  搜索引擎
+                  {{ t('搜索引擎') }}
                   <HintTip>
-                    某一家连续失败会被自动停用一段时间，其间由其余引擎顶上；这里关掉的引擎则是长期不再使用。
+                    {{ t('某一家连续失败会被自动停用一段时间，其间由其余引擎顶上；这里关掉的引擎则是长期不再使用。') }}
                   </HintTip>
                 </h3>
-                <button class="ghost icon-only" title="刷新状态" aria-label="刷新引擎状态" data-test="web-refresh" @click="refreshWeb()">
-                  <Icon name="refresh" :size="14" /><span class="sr-only">刷新状态</span>
+                <button class="ghost icon-only" :title="t('刷新状态')" :aria-label="t('刷新引擎状态')" data-test="web-refresh" @click="refreshWeb()">
+                  <Icon name="refresh" :size="14" /><span class="sr-only">{{ t('刷新状态') }}</span>
                 </button>
               </div>
 
               <p v-if="webView === null" class="muted" data-test="web-engines-unknown">
-                读不到引擎状态。开关照常保存，状态等后端可用后再刷新。
+                {{ t('读不到引擎状态。开关照常保存，状态等后端可用后再刷新。') }}
               </p>
               <p v-else-if="webView.engines.length === 0" class="muted" data-test="web-engines-empty">
-                这一版没有内置任何搜索引擎。
+                {{ t('这一版没有内置任何搜索引擎。') }}
               </p>
               <div
                 v-for="engine in webView?.engines ?? []"
@@ -1514,15 +1526,15 @@ defineExpose({ refresh, hasUnsavedChanges })
               >
                 <span class="engine-name" :title="engine.name">
                   {{ engine.name }}
-                  <span v-if="engine.singleSite" class="engine-tag" title="只索引自己这一个站点">单一站点</span>
+                  <span v-if="engine.singleSite" class="engine-tag" :title="t('只索引自己这一个站点')">{{ t('单一站点') }}</span>
                 </span>
-                <span class="engine-kinds">{{ engine.kinds.map(kindLabel).join('、') }}</span>
+                <span class="engine-kinds">{{ engine.kinds.map(kindLabel).join(t('、')) }}</span>
                 <span class="engine-state" :class="engineStateClass(engine)" data-test="web-engine-state">{{ engineState(engine) }}</span>
                 <input
                   type="checkbox"
                   class="g-switch"
                   role="switch"
-                  :aria-label="`使用 ${engine.name}`"
+                  :aria-label="t('使用 {name}', { name: engine.name })"
                   :checked="!form.web.disabledEngines.includes(engine.id)"
                   :data-test="`web-engine-${engine.id}-enabled`"
                   @change="toggleEngine(engine.id)"
@@ -1537,64 +1549,62 @@ defineExpose({ refresh, hasUnsavedChanges })
               @click="toggleAdvanced('web')"
             >
               <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.web === true }" />
-              更多选项
+              {{ t('更多选项') }}
             </button>
             <div v-show="advanced.web === true" class="g-card">
-              <SettingRow label="代理">
+              <SettingRow :label="t('代理')">
                 <template #hint>
-                  形如 <code>http://127.0.0.1:7890</code>；留空表示直连。只支持 http 和 https 代理。
+                  {{ t('形如') }} <code>http://127.0.0.1:7890</code>{{ t('；留空表示直连。只支持 http 和 https 代理。') }}
                 </template>
                 <input
                   type="text"
                   :value="form.web.proxy ?? ''"
-                  placeholder="留空 = 直连"
+                  :placeholder="t('留空 = 直连')"
                   data-test="web-proxy"
                   @input="form.web.proxy = ($event.target as HTMLInputElement).value"
                 />
               </SettingRow>
-              <p class="row-note" data-test="web-health-path">熔断状态文件：{{ webView?.healthPath ?? '—' }}</p>
+              <p class="row-note" data-test="web-health-path">{{ t('熔断状态文件：{v}', { v: webView?.healthPath ?? '—' }) }}</p>
             </div>
           </section>
 
           <section v-show="section === 'engines'" class="panel" data-test="settings-section-engines">
             <header class="panel-head">
-              <h2>本地引擎</h2>
-              <span class="g-chip">进阶</span>
+              <h2>{{ t('本地引擎') }}</h2>
+              <span class="g-chip">{{ t('进阶') }}</span>
               <HintTip align="end">
-                由 Partner 帮你启动和关闭的本地语音程序。关闭会真正结束进程、释放显存和内存；只是不再请求，并不会释放。
-                识别和朗读服务的地址仍在各自页面填，指向这里设置的端口。
+                {{ t('由 Partner 帮你启动和关闭的本地语音程序。关闭会真正结束进程、释放显存和内存；只是不再请求，并不会释放。 识别和朗读服务的地址仍在各自页面填，指向这里设置的端口。') }}
               </HintTip>
             </header>
 
             <div v-if="enginePackage" class="g-card" data-test="engine-package">
               <div class="g-card-head">
                 <h3>
-                  引擎包
+                  {{ t('引擎包') }}
                   <HintTip>
-                    引擎的运行环境和模型（约 3GB）不在安装包里，放在应用目录下的 engines 文件夹。
-                    下载完成后会自动填好下面的设置；已经有一份的话，用「手动指定」指到它所在的文件夹。
+                    {{ t('引擎的运行环境和模型（约 3GB）不在安装包里，放在应用目录下的 engines 文件夹。 下载完成后会自动填好下面的设置；已经有一份的话，用「手动指定」指到它所在的文件夹。') }}
                   </HintTip>
                 </h3>
-                <button class="ghost" type="button" data-test="engine-detect" :disabled="downloadRunning" @click="detectEngines">检测</button>
+                <button class="ghost" type="button" data-test="engine-detect" :disabled="downloadRunning" @click="detectEngines">{{ t('检测') }}</button>
               </div>
 
-              <SettingRow v-for="engine in (['tts', 'kws'] as const)" :key="engine" :label="ENGINE_NAMES[engine]">
+              <SettingRow v-for="engine in (['tts', 'kws'] as const)" :key="engine" :label="t(ENGINE_NAMES[engine])">
                 <template #hint>
                   <span v-if="!enginePackage[engine].installed" :data-test="`engine-missing-${engine}`">
-                    缺少：{{ enginePackage[engine].missing.slice(0, 3).join('、') }}{{ enginePackage[engine].missing.length > 3 ? ` 等 ${enginePackage[engine].missing.length} 项` : '' }}
+                    {{ t('缺少：{items}', { items: enginePackage[engine].missing.slice(0, 3).join(t('、')) }) }}{{ enginePackage[engine].missing.length > 3 ? t(' 等 {count} 项', { count: enginePackage[engine].missing.length }) : '' }}
                   </span>
                 </template>
                 <span class="g-chip" :class="enginePackage[engine].installed ? 'is-ok' : ''" :data-test="`engine-state-${engine}`">
-                  {{ enginePackage[engine].installed ? '已就绪' : '未安装' }}
+                  {{ enginePackage[engine].installed ? t('已就绪') : t('未安装') }}
                 </span>
               </SettingRow>
 
-              <SettingRow label="位置" :hint="enginePackage.customRoot ? '手动指定的位置。' : '应用目录下的默认位置。'">
+              <SettingRow :label="t('位置')" :hint="enginePackage.customRoot ? t('手动指定的位置。') : t('应用目录下的默认位置。')">
                 <code class="pkg-root" data-test="engine-root">{{ enginePackage.root }}</code>
               </SettingRow>
 
               <template v-if="!allEnginesInstalled || enginePackage.customRoot">
-                <SettingRow v-if="!allEnginesInstalled" label="下载" hint="下载缺少的引擎和模型到上面的位置，支持断点续传。">
+                <SettingRow v-if="!allEnginesInstalled" :label="t('下载')" :hint="t('下载缺少的引擎和模型到上面的位置，支持断点续传。')">
                   <div class="pkg-actions">
                     <button
                       v-if="!downloadRunning"
@@ -1602,15 +1612,15 @@ defineExpose({ refresh, hasUnsavedChanges })
                       type="button"
                       data-test="engine-download"
                       @click="startEngineDownload"
-                    >下载引擎和模型</button>
+                    >{{ t('下载引擎和模型') }}</button>
                     <template v-else>
                       <span class="pkg-progress" role="status" data-test="engine-progress">{{ downloadText }}</span>
-                      <button class="ghost" type="button" data-test="engine-cancel" @click="cancelEngineDownload">取消</button>
+                      <button class="ghost" type="button" data-test="engine-cancel" @click="cancelEngineDownload">{{ t('取消') }}</button>
                     </template>
                   </div>
                 </SettingRow>
 
-                <SettingRow label="手动指定" hint="引擎和模型已经在别处时，填它们所在的文件夹（里面是 tts 和 kws-asr）。留空确认则回到默认位置。">
+                <SettingRow :label="t('手动指定')" :hint="t('引擎和模型已经在别处时，填它们所在的文件夹（里面是 tts 和 kws-asr）。留空确认则回到默认位置。')">
                   <div class="pkg-actions">
                     <button
                       v-if="!engineManualOpen"
@@ -1619,11 +1629,11 @@ defineExpose({ refresh, hasUnsavedChanges })
                       data-test="engine-manual"
                       :disabled="downloadRunning"
                       @click="engineManualOpen = true; engineManualRoot = enginePackage.customRoot ? enginePackage.root : ''"
-                    >手动指定…</button>
+                    >{{ t('手动指定…') }}</button>
                     <template v-else>
-                      <input type="text" v-model="engineManualRoot" placeholder="例如 D:\engines" data-test="engine-manual-root" @keydown.enter.prevent="applyEngineRoot" />
-                      <button class="primary" type="button" data-test="engine-manual-apply" @click="applyEngineRoot">确定</button>
-                      <button class="ghost" type="button" @click="engineManualOpen = false">取消</button>
+                      <input type="text" v-model="engineManualRoot" :placeholder="t('例如 D:\\engines')" data-test="engine-manual-root" @keydown.enter.prevent="applyEngineRoot" />
+                      <button class="primary" type="button" data-test="engine-manual-apply" @click="applyEngineRoot">{{ t('确定') }}</button>
+                      <button class="ghost" type="button" @click="engineManualOpen = false">{{ t('取消') }}</button>
                     </template>
                   </div>
                 </SettingRow>
@@ -1636,18 +1646,18 @@ defineExpose({ refresh, hasUnsavedChanges })
             <div v-if="showEngine(engine)" class="g-card" :data-test="`local-engine-${engine}`">
               <div class="g-card-head">
                 <h3>
-                  {{ engine === 'tts' ? '朗读引擎' : '唤醒与识别引擎' }}
-                  <HintTip>{{ engine === 'tts' ? '例如 qwentts.cpp server。' : '例如 sherpa-onnx。开启后语音输入进入「唤醒模式」。' }}</HintTip>
+                  {{ engine === 'tts' ? t('朗读引擎') : t('唤醒与识别引擎') }}
+                  <HintTip>{{ engine === 'tts' ? t('例如 qwentts.cpp server。') : t('例如 sherpa-onnx。开启后语音输入进入「唤醒模式」。') }}</HintTip>
                 </h3>
               </div>
-              <SettingRow label="由 Partner 启动" hint="开启后，启动时自动运行这个程序，关闭时自动结束。">
+              <SettingRow :label="t('由 Partner 启动')" :hint="t('开启后，启动时自动运行这个程序，关闭时自动结束。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.local[engine].enabled" :data-test="`local-${engine}-enabled`" />
               </SettingRow>
-              <SettingRow label="程序路径" hint="要启动的程序的完整路径。">
+              <SettingRow :label="t('程序路径')" :hint="t('要启动的程序的完整路径。')">
                 <input type="text" v-model="form.local[engine].command" :data-test="`local-${engine}-command`" />
               </SettingRow>
-              <SettingRow label="启动参数">
-                <template #hint>用空格分隔；端口用 <code>{port}</code> 代替。</template>
+              <SettingRow :label="t('启动参数')">
+                <template #hint>{{ t('用空格分隔；端口用') }} <code>{port}</code> {{ t('代替。') }}</template>
                 <input
                   type="text"
                   :value="form.local[engine].arguments.join(' ')"
@@ -1655,13 +1665,13 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @input="onEngineArgumentsInput(engine, $event)"
                 />
               </SettingRow>
-              <SettingRow label="运行目录" hint="程序启动时所在的文件夹。留空则不指定。">
+              <SettingRow :label="t('运行目录')" :hint="t('程序启动时所在的文件夹。留空则不指定。')">
                 <input type="text" v-model="form.local[engine].workingDirectory" />
               </SettingRow>
-              <SettingRow label="端口" hint="本地服务监听的端口。">
+              <SettingRow :label="t('端口')" :hint="t('本地服务监听的端口。')">
                 <input type="number" v-model.number="form.local[engine].port" :data-test="`local-${engine}-port`" />
               </SettingRow>
-              <SettingRow label="启动等待" unit="秒" hint="启动后最多等多久，还没准备好就算失败。">
+              <SettingRow :label="t('启动等待')" :unit="t('秒')" :hint="t('启动后最多等多久，还没准备好就算失败。')">
                 <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
               </SettingRow>
             </div>
@@ -1669,18 +1679,18 @@ defineExpose({ refresh, hasUnsavedChanges })
           </section>
 
           <section v-show="section === 'appearance'" class="panel" data-test="settings-section-appearance">
-            <header class="panel-head"><h2>外观</h2></header>
+            <header class="panel-head"><h2>{{ t('settings.section.appearance') }}</h2></header>
             <div class="g-card">
-              <SettingRow label="主题" hint="顶栏的主题按钮也可以切换。">
+              <SettingRow :label="t('settings.appearance.theme')" :hint="t('settings.appearance.themeHint')">
                 <Segmented
                   :model-value="theme ?? 'auto'"
                   :options="THEME_OPTIONS"
-                  label="主题"
+                  :label="t('settings.appearance.theme')"
                   data-test="settings-theme"
                   @update:model-value="emit('set-theme', $event as Theme)"
                 />
               </SettingRow>
-              <SettingRow label="减弱透明效果" hint="去掉毛玻璃的模糊，界面更清晰、占用更低。系统开启「减少透明」时会自动生效。">
+              <SettingRow :label="t('settings.appearance.reduce')" :hint="t('settings.appearance.reduceHint')">
                 <input
                   type="checkbox"
                   class="g-switch"

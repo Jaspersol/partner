@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed } from 'vue'
 import Icon from './Icon.vue'
 import MarkdownBody from './MarkdownBody.vue'
@@ -44,12 +45,12 @@ const summary = computed(() => {
 <template>
   <details class="recall" data-test="session-recall">
     <summary>
-      <span class="icon" title="记忆召回">
+      <span class="icon" :title="t('记忆召回')">
         <Icon name="database" :size="14" />
       </span>
       <span class="name">recall</span>
       <span class="summary-line">{{ summary }}</span>
-      <span v-if="count > 0" class="count">{{ count }} 条</span>
+      <span v-if="count > 0" class="count">{{ t('{count} 条', { count: count }) }}</span>
     </summary>
 
     <div class="recall-body">

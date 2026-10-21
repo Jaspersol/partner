@@ -1,0 +1,73 @@
+import extra from './zh-TW-extra'
+
+const zhTW: Record<string, string> = {
+  ...extra,
+  'nav.session': '會話',
+  'nav.schedules': '排程',
+  'nav.memory': '記憶',
+  'nav.skills': '技能',
+  'nav.settings': '設定',
+  'nav.main': '主導覽',
+  'nav.views': '檢視導覽',
+  'nav.expand': '展開側欄',
+  'nav.collapse': '收合側欄',
+
+  'app.unsavedLeave': '目前頁面有未儲存的變更，切換後將會遺失。要繼續嗎？',
+  'app.connecting': '連線中…',
+  'app.tokenInvalid': 'token 已失效（401）——請重新啟動外殼以取得新的權杖',
+  'app.cannotConnect': '無法連線到本機服務——請確認 Partner API 已啟動',
+
+  'topbar.disconnected': '未連線',
+  'topbar.queueBlocked': '佇列阻塞：失敗 {count} 項',
+  'topbar.running': '正在執行 {id}',
+  'topbar.queuePending': '佇列待處理 {count} 項',
+  'topbar.queueEmpty': '佇列為空',
+  'topbar.failed': '失敗 {count}',
+  'topbar.theme': '主題：{name}',
+  'topbar.minimize': '最小化',
+  'topbar.maximize': '最大化或還原',
+  'topbar.close': '關閉',
+
+  'status.disconnected': '連線已中斷：{error}',
+  'status.subJob': '子任務進行中 · {agent} · 第 {round}/{max} 輪',
+  'status.stop': '停止',
+  'status.stale': '讀取失敗 · 以下是上次讀到的內容',
+
+  'savebar.save': '儲存',
+  'savebar.dirty': '有未儲存的變更',
+  'savebar.confirmDiscard': '確認捨棄',
+  'savebar.discard': '捨棄',
+  'savebar.cancel': '取消',
+
+  'drawer.close': '關閉',
+
+  'theme.auto': '跟隨系統',
+  'theme.light': '淺色',
+  'theme.dark': '深色',
+
+  'settings.section.general': '一般',
+  'settings.section.model': '對話模型',
+  'settings.section.input': '語音輸入',
+  'settings.section.output': '語音輸出',
+  'settings.section.desktop': '電腦操控',
+  'settings.section.files': '檔案存取',
+  'settings.section.web': '聯網搜尋',
+  'settings.section.engines': '本機引擎',
+  'settings.section.appearance': '外觀',
+  'settings.running': '執行中',
+  'settings.general.language': '語言',
+  'settings.general.languageHint': '介面顯示的語言，立即生效。',
+  'settings.general.autostart': '開機自動啟動',
+  'settings.general.autostartHint': '登入 Windows 後自動啟動 Partner。',
+  'settings.general.tray': '啟用系統匣',
+  'settings.general.trayHint': '開啟後，關閉視窗會最小化到系統匣；在系統匣圖示上按右鍵可重新開啟或完全結束。關閉則按下關閉就直接結束。',
+  'settings.general.desktopOnly': '這些選項僅在桌面版中提供。',
+  'settings.general.autostartFailed': '開機自動啟動設定失敗：{error}',
+  'settings.general.trayFailed': '系統匣設定失敗：{error}',
+  'settings.appearance.theme': '主題',
+  'settings.appearance.themeHint': '頂列的主題按鈕也可以切換。',
+  'settings.appearance.reduce': '減弱透明效果',
+  'settings.appearance.reduceHint': '移除毛玻璃的模糊，介面更清晰、資源佔用更低。系統開啟「減少透明」時會自動生效。',
+}
+
+export default zhTW

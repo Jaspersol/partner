@@ -1,3 +1,4 @@
+import { t } from './i18n'
 /**
  * Where the API lives and which token to present.
  *
@@ -44,8 +45,8 @@ export function resolveConnection(): ConnectionResult {
     return {
       ok: false,
       reason:
-        '未找到访问令牌。壳启动时会注入；在浏览器里调试请先执行 ' +
-        `localStorage.setItem('${TOKEN_KEY}', '<token>')。`,
+        t('未找到访问令牌。壳启动时会注入；在浏览器里调试请先执行 ') +
+        t('localStorage.setItem(\'{TOKEN_KEY}\', \'<token>\')。', { TOKEN_KEY: TOKEN_KEY }),
     }
   }
 

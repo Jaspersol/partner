@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { t } from '../i18n'
 import type { AgentJobView, ConsumerState } from '../api'
 
 const props = defineProps<{
@@ -26,7 +27,7 @@ const emit = defineEmits<{ 'cancel-job': [jobId: string] }>()
  * the top bar already covers the other status worth speaking about.
  * </para>
  */
-const announcement = computed(() => (props.connected ? '' : `连接已断开：${props.connectionError}`))
+const announcement = computed(() => (props.connected ? '' : t('status.disconnected', { error: props.connectionError })))
 </script>
 
 <template>
@@ -41,11 +42,11 @@ const announcement = computed(() => (props.connected ? '' : `连接已断开：$
     <span class="sr-only" role="status" aria-live="polite" data-test="status-announcer">{{ announcement }}</span>
 
     <span v-if="job" class="job" data-test="status-job">
-      子任务进行中 · {{ job.agentName }} · 第 {{ job.round }}/{{ job.maxRounds }} 轮
-      <button class="ghost" data-test="status-job-cancel" @click="emit('cancel-job', job.id)">停止</button>
+      {{ t('status.subJob', { agent: job.agentName, round: job.round, max: job.maxRounds }) }}
+      <button class="ghost" data-test="status-job-cancel" @click="emit('cancel-job', job.id)">{{ t('status.stop') }}</button>
     </span>
 
-    <span v-if="stale" class="stale" data-test="status-stale">读取失败 · 以下是上次读到的</span>
+    <span v-if="stale" class="stale" data-test="status-stale">{{ t('status.stale') }}</span>
   </footer>
 </template>
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { nextTick, ref, watch } from 'vue'
 import { clampIndex, isActivationKey, rovingTarget } from '../rovingFocus'
 import { scopeLabel, tierShort, type MemoryRow } from '../memoryRow'
@@ -49,7 +50,7 @@ function choose(row: MemoryRow, index: number): void {
     was last used. Everything else a row used to carry (the id, who edited it, the raw validity string) is behind the ⓘ
     on the card: it is for the person debugging a conflict, not for the person reading what is remembered.
   -->
-  <ul ref="listElement" class="memory-list" role="list" aria-label="记忆条目" data-test="memory-list">
+  <ul ref="listElement" class="memory-list" role="list" :aria-label="t('记忆条目')" data-test="memory-list">
     <li
       v-for="(row, index) in rows"
       :key="row.recordId"

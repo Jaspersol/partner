@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
+import { t } from '../i18n'
 import Icon from './Icon.vue'
 
 /**
@@ -49,7 +50,7 @@ watch(
       >
         <header class="drawer-head">
           <h2>{{ title }}</h2>
-          <button class="ghost drawer-close" data-test="drawer-close" aria-label="关闭" @click="emit('close')">
+          <button class="ghost drawer-close" data-test="drawer-close" :aria-label="t('drawer.close')" @click="emit('close')">
             <Icon name="x" :size="16" />
           </button>
         </header>

@@ -3,6 +3,8 @@
  * decision to the OS via the token selectors in styles.css.
  */
 
+import { t } from './i18n'
+
 export type Theme = 'auto' | 'light' | 'dark'
 
 const THEME_KEY = 'partner.theme'
@@ -36,7 +38,7 @@ export function nextTheme(theme: Theme): Theme {
 }
 
 export function themeLabel(theme: Theme): string {
-  return theme === 'auto' ? '跟随系统' : theme === 'light' ? '浅色' : '深色'
+  return t(`theme.${theme}`)
 }
 
 /**

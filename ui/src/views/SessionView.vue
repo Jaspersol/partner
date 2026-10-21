@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, tr } from '../i18n'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { TOPBAR_TOOLS } from '../topbarTools'
 import type {
@@ -95,7 +96,7 @@ const contextLabel = computed(() => {
   }
 
   const percent = Math.round(usage.fraction * 100)
-  return `上下文 ${format(usage.usedTokens)} / ${format(usage.budgetTokens)}（${percent}%）`
+  return t('上下文 {format} / {format2}（{percent}%）', { format: format(usage.usedTokens), format2: format(usage.budgetTokens), percent: percent })
 })
 
 const contextHint = computed(() => {
@@ -104,8 +105,8 @@ const contextHint = computed(() => {
     return ''
   }
 
-  const folded = usage.foldedItems > 0 ? ` · 已折叠 ${usage.foldedItems} 条` : ''
-  return `窗口 ${usage.contextTokens} token（预留输出 ${usage.maxTokens}）· 保留 ${usage.keptItems} 条${folded}`
+  const folded = usage.foldedItems > 0 ? t(' · 已折叠 {foldedItems} 条', { foldedItems: usage.foldedItems }) : ''
+  return t('窗口 {contextTokens} token（预留输出 {maxTokens}）· 保留 {keptItems} 条{folded}', { contextTokens: usage.contextTokens, maxTokens: usage.maxTokens, keptItems: usage.keptItems, folded: folded })
 })
 
 function format(tokens: number): string {
@@ -569,7 +570,7 @@ function closeSearch() {
 const searchOpen = computed(() => searching.value || query.value !== '' || sourceFilter.value !== 'all')
 
 const sourceOptions = computed(() =>
-  sources.value.map((option) => ({ value: option, label: option === 'all' ? '全部' : sourceLabel(option) })),
+  sources.value.map((option) => ({ value: option, label: option === 'all' ? t('全部') : sourceLabel(option) })),
 )
 
 /** What the composer's ring and its tooltip say. Absent until the API has said it. */
@@ -579,7 +580,7 @@ const contextRing = computed(() => {
 })
 
 /** Three things to say to an empty conversation. They only fill the box; sending is still the reader's call. */
-const STARTERS = ['介绍一下你能做什么', '帮我记住：我喜欢简洁的回答', '明天早上九点提醒我开会']
+const STARTERS = [tr('介绍一下你能做什么'), tr('帮我记住：我喜欢简洁的回答'), tr('明天早上九点提醒我开会')]
 
 function starter(text: string) {
   composer.value?.restore(text)
@@ -615,14 +616,14 @@ defineExpose({ refresh, focusSearch })
           exactly where they were — under the newest message — and is both the report and the remedy.
         -->
         <div v-if="withdrawn !== null" class="withdrawn" data-test="session-withdrawn">
-          <span>已撤回一部分对话</span>
+          <span>{{ t('已撤回一部分对话') }}</span>
           <button
             class="ghost"
             data-test="session-withdrawn-cancel"
-            title="把撤回隐藏的对话放回来。发送新消息后就无法恢复了。"
+            :title="t('把撤回隐藏的对话放回来。发送新消息后就无法恢复了。')"
             @click="cancelWithdrawal"
           >
-            取消撤回
+            {{ t('取消撤回') }}
           </button>
         </div>
 
@@ -635,13 +636,13 @@ defineExpose({ refresh, focusSearch })
         <!-- An empty conversation gets an invitation, not a blank page. Only once the first read has come back:
              before that, "empty" would be a confident wrong answer. -->
         <div v-else-if="(view?.items.length ?? 0) === 0" class="empty-state" data-test="session-empty">
-          <p class="empty-title">说点什么吧</p>
+          <p class="empty-title">{{ t('说点什么吧') }}</p>
           <div class="starters">
-            <button v-for="text in STARTERS" :key="text" class="starter" @click="starter(text)">{{ text }}</button>
+            <button v-for="text in STARTERS" :key="text" class="starter" @click="starter(text)">{{ t(text) }}</button>
           </div>
         </div>
 
-        <p v-else-if="visible.length === 0" class="empty" data-test="session-no-match">没有匹配的对话</p>
+        <p v-else-if="visible.length === 0" class="empty" data-test="session-no-match">{{ t('没有匹配的对话') }}</p>
       </div>
     </div>
 
@@ -652,8 +653,8 @@ defineExpose({ refresh, focusSearch })
       <button
         v-if="!searchOpen"
         class="ghost search-open"
-        aria-label="搜索对话"
-        title="搜索对话（Ctrl+K）"
+        :aria-label="t('搜索对话')"
+        :title="t('搜索对话（Ctrl+K）')"
         data-test="session-search-open"
         @click="focusSearch"
       >
@@ -665,9 +666,9 @@ defineExpose({ refresh, focusSearch })
           <input
             ref="searchInput"
             v-model="query"
-            placeholder="搜索对话"
+            :placeholder="t('搜索对话')"
             title="Ctrl+K"
-            aria-label="搜索对话"
+            :aria-label="t('搜索对话')"
             data-test="session-query"
           />
         </label>
@@ -675,10 +676,10 @@ defineExpose({ refresh, focusSearch })
           v-if="sources.length > 2"
           v-model="sourceFilter"
           :options="sourceOptions"
-          label="来源"
+          :label="t('来源')"
           data-test="session-source-filter"
         />
-        <button class="ghost" aria-label="关闭搜索" data-test="session-search-close" @click="closeSearch">
+        <button class="ghost" :aria-label="t('关闭搜索')" data-test="session-search-close" @click="closeSearch">
           <Icon name="x" :size="14" />
         </button>
       </div>

@@ -6,6 +6,7 @@
  * kinds.
  */
 import { ref } from 'vue'
+import { t, tr } from './i18n'
 
 /** Names the reader typed in settings (value → text). Reactive, so a saved rename shows up without a reload. */
 const custom = ref<Record<string, string>>({})
@@ -15,16 +16,17 @@ export function setGearLabels(labels: Record<string, string> | undefined | null)
 }
 
 const NAMES: Record<string, string> = {
-  off: '关闭',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: '最大',
+  off: tr('关闭'),
+  low: tr('低'),
+  medium: tr('中'),
+  high: tr('高'),
+  xhigh: tr('极高'),
+  max: tr('最大'),
 }
 
 export function gearName(gear: string): string {
-  return custom.value[gear] ?? NAMES[gear] ?? gear
+  const name = NAMES[gear]
+  return custom.value[gear] ?? (name === undefined ? gear : t(name))
 }
 
 /** Trimmed and lower case, so `HIGH` and `high ` are one gear (mirrors `ReasoningEfforts.Normalize`). */

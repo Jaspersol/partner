@@ -1,3 +1,4 @@
+import { t, tr } from './i18n'
 /**
  * The wire contract with Partner.Api, mirroring UiClient.cs one-for-one. These types *are* the interface:
  * the API returns anonymous JSON objects, so the field names below are pinned by tests on both sides.
@@ -630,16 +631,16 @@ export interface DesktopSettings {
 
 /** The input modes, in the order the UI offers them. */
 export const INPUT_MODES = [
-  { value: 'foreground', label: '可以占用屏幕', hint: '需要时把窗口带到前台、移动鼠标（默认）' },
-  { value: 'auto', label: '尽量后台', hint: '能在后台完成就不打扰你，做不到再占用屏幕' },
-  { value: 'background', label: '只在后台', hint: '绝不占用屏幕；做不到的动作会被拒绝并说明原因' },
+  { value: 'foreground', label: tr('可以占用屏幕'), hint: tr('需要时把窗口带到前台、移动鼠标（默认）') },
+  { value: 'auto', label: tr('尽量后台'), hint: tr('能在后台完成就不打扰你，做不到再占用屏幕') },
+  { value: 'background', label: tr('只在后台'), hint: tr('绝不占用屏幕；做不到的动作会被拒绝并说明原因') },
 ] as const
 
 /** The three approval gears, in the order the UI offers them. */
 export const APPROVAL_GEARS = [
-  { value: 'none', label: '不审批', hint: '模型直接动手，不留问' },
-  { value: 'dangerous', label: '危险指令审批', hint: '执行命令 / 启动程序 / 写剪贴板 / 删除定时任务要批准' },
-  { value: 'all', label: '全部审批', hint: '每个动作都要批准（看屏幕不算）：点击、创建定时任务、打开没见过的网址' },
+  { value: 'none', label: tr('不审批'), hint: tr('模型直接动手，不留问') },
+  { value: 'dangerous', label: tr('危险指令审批'), hint: tr('执行命令 / 启动程序 / 写剪贴板 / 删除定时任务要批准') },
+  { value: 'all', label: tr('全部审批'), hint: tr('每个动作都要批准（看屏幕不算）：点击、创建定时任务、打开没见过的网址') },
 ] as const
 
 export interface DesktopState {
@@ -1075,7 +1076,7 @@ export class PartnerApi implements PartnerApiSurface {
       } catch {
         // Not JSON: the raw text is the best there is.
       }
-      throw new ApiError(response.status, message || `上传失败（${response.status}）`)
+      throw new ApiError(response.status, message || t('上传失败（{status}）', { status: response.status }))
     }
 
     return (await response.json()) as { path: string; fileName: string; bytes: number }
@@ -1096,7 +1097,7 @@ export class PartnerApi implements PartnerApiSurface {
 
     if (!response.ok) {
       const detail = await response.text().catch(() => '')
-      throw new ApiError(response.status, detail || `上传失败（${response.status}）`)
+      throw new ApiError(response.status, detail || t('上传失败（{status}）', { status: response.status }))
     }
 
     return (await response.json()) as UploadedMedia
@@ -1112,7 +1113,7 @@ export class PartnerApi implements PartnerApiSurface {
     })
 
     if (!response.ok) {
-      throw new ApiError(response.status, `读取附图失败（${response.status}）`)
+      throw new ApiError(response.status, t('读取附图失败（{status}）', { status: response.status }))
     }
 
     return response.blob()

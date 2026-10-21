@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, tr } from '../i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { SessionDay } from '../api'
 import Icon from './Icon.vue'
@@ -20,7 +21,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'update:modelValue': [day: string] }>()
 
-const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六']
+const WEEKDAY = [tr('日'), tr('一'), tr('二'), tr('三'), tr('四'), tr('五'), tr('六')]
 
 interface Parts {
   year: number
@@ -35,7 +36,7 @@ function parts(day: string): Parts {
 
 function weekday(day: string): string {
   const { year, month, date } = parts(day)
-  return WEEKDAY[new Date(year, month - 1, date).getDay()] ?? ''
+  return t(WEEKDAY[new Date(year, month - 1, date).getDay()] ?? '')
 }
 
 function localKey(offsetDays: number): string {
@@ -47,14 +48,14 @@ function localKey(offsetDays: number): string {
 
 /** Today / yesterday only when the day really is one. */
 function near(day: string): string {
-  return day === localKey(0) ? '今天' : day === localKey(-1) ? '昨天' : ''
+  return day === localKey(0) ? t('今天') : day === localKey(-1) ? t('昨天') : ''
 }
 
 const current = computed(() => {
-  if (props.modelValue === '') return '选择日期'
+  if (props.modelValue === '') return t('选择日期')
   const { year, month, date } = parts(props.modelValue)
   const tail = near(props.modelValue)
-  return `${year}年${month}月${date}日 周${weekday(props.modelValue)}${tail === '' ? '' : ` · ${tail}`}`
+  return t('{year}年{month}月{date}日 周{weekday}', { year, month, date, weekday: weekday(props.modelValue) }) + (tail === '' ? '' : ` · ${tail}`)
 })
 
 /** Every day on offer, newest first. */
@@ -142,7 +143,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
       class="day-trigger"
       aria-haspopup="dialog"
       :aria-expanded="open ? 'true' : 'false'"
-      aria-label="选择日期"
+      :aria-label="t('选择日期')"
       data-test="session-day"
       @click="toggle"
     >
@@ -150,8 +151,8 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
       <Icon name="chevron-down" :size="14" />
     </button>
 
-    <div v-if="open" class="day-panel g-float" role="dialog" aria-label="选择日期" data-test="session-day-panel">
-      <ul class="day-col" role="listbox" aria-label="年" data-test="session-day-years">
+    <div v-if="open" class="day-panel g-float" role="dialog" :aria-label="t('选择日期')" data-test="session-day-panel">
+      <ul class="day-col" role="listbox" :aria-label="t('年')" data-test="session-day-years">
         <li v-for="year in years" :key="year" role="presentation">
           <button
             type="button"
@@ -161,12 +162,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
             :data-test="`session-day-year-${year}`"
             @click="pickYear(year)"
           >
-            {{ year }}年
+            {{ t('{year}年', { year: year }) }}
           </button>
         </li>
       </ul>
 
-      <ul class="day-col" role="listbox" aria-label="月" data-test="session-day-months">
+      <ul class="day-col" role="listbox" :aria-label="t('月')" data-test="session-day-months">
         <li v-for="month in months" :key="month" role="presentation">
           <button
             type="button"
@@ -176,12 +177,12 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
             :data-test="`session-day-month-${month}`"
             @click="pickMonth(month)"
           >
-            {{ month }}月
+            {{ t('{month}月', { month: month }) }}
           </button>
         </li>
       </ul>
 
-      <ul class="day-col" role="listbox" aria-label="日" data-test="session-day-dates">
+      <ul class="day-col" role="listbox" :aria-label="t('日')" data-test="session-day-dates">
         <li v-for="day in dates" :key="day" role="presentation">
           <button
             type="button"
@@ -192,7 +193,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutside))
             :data-test="`session-day-date-${day}`"
             @click="pickDay(day)"
           >
-            <span>{{ parts(day).date }}日 周{{ weekday(day) }}</span>
+            <span>{{ t('{date}日 周{weekday}', { date: parts(day).date, weekday: weekday(day) }) }}</span>
             <span v-if="near(day) !== ''" class="day-near">{{ near(day) }}</span>
           </button>
         </li>

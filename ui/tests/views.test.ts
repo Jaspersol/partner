@@ -2795,3 +2795,60 @@ describe('prompts view', () => {
     expect(wrapper.find('[data-test="prompts-problems"]').text()).toContain('暂不可用')
   })
 })
+
+describe('interface language', () => {
+  it('switches from the general settings and re-labels the page at once', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const options = wrapper.findAll('[data-test="settings-language"] button').map((node) => node.text())
+    expect(options).toEqual(['简体中文', '繁體中文', 'English'])
+
+    try {
+      await wrapper.findAll('[data-test="settings-language"] button')[2]?.trigger('click')
+      expect(wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())).toEqual([
+        'General',
+        'Chat model',
+        'Voice input',
+        'Voice output',
+        'Computer control',
+        'File access',
+        'Web search',
+        'Local engines',
+        'Appearance',
+      ])
+
+      await wrapper.findAll('[data-test="settings-language"] button')[1]?.trigger('click')
+      expect(wrapper.findAll('.settings-nav .nav-item')[0]?.text()).toBe('一般')
+    } finally {
+      await wrapper.findAll('[data-test="settings-language"] button')[0]?.trigger('click')
+    }
+    expect(wrapper.findAll('.settings-nav .nav-item')[0]?.text()).toBe('通用')
+  })
+
+  it('leaves no Chinese on the pages when the language is English', async () => {
+    const { setLocale } = await import('../src/i18n')
+    setLocale('en')
+    try {
+      for (const [name, component] of [
+        ['settings', SettingsViewComponent],
+        ['mcp', McpView],
+        ['skills', SkillsView],
+        ['prompts', PromptsView],
+        ['memory', MemoryView],
+        ['session', SessionView],
+      ] as const) {
+        const { stub } = createStub()
+        const wrapper = mount(component, { props: { api: stub } })
+        await flushPromises()
+        // Language names, and words the server or a fixture supplies, are not interface text.
+        const text = wrapper.text().replace(/简体中文|繁體中文|未启用|桌面操控|读文件的|读取文件/g, '')
+        expect(text.match(/[一-鿿]+/g) ?? [], name).toEqual([])
+        wrapper.unmount()
+      }
+    } finally {
+      setLocale('zh-CN')
+    }
+  })
+})

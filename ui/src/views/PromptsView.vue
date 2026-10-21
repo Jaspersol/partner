@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { locale, t } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
 import Dialog from '../components/Dialog.vue'
 import HintTip from '../components/HintTip.vue'
@@ -298,7 +299,7 @@ async function save() {
     const saved = await props.api.saveAgents(payload())
     view.value = saved.agents
     restore(saved.agents)
-    notice.value = `已保存 · ${new Date().toLocaleTimeString()}`
+    notice.value = t('已保存 · {toLocaleTimeString}', { toLocaleTimeString: new Date().toLocaleTimeString(locale.value) })
     emit('changed')
   } catch (failure) {
     if (failure instanceof ApiError) {
@@ -378,7 +379,7 @@ const freeScenarios = computed(() => {
 const canAdd = computed(() => freeScenarios.value.length > 0)
 
 /** Why the add button is disabled, in the one case where it is. */
-const addBlockedReason = computed(() => (canAdd.value ? '' : '两个场景都已有子 agent'))
+const addBlockedReason = computed(() => (canAdd.value ? '' : t('两个场景都已有子 agent')))
 
 function openAdd() {
   addError.value = ''
@@ -394,11 +395,11 @@ function openAdd() {
 function commitAdd() {
   const scenario = freeScenarios.value.find((item) => item.key === newScenario.value)
   if (scenario === undefined) {
-    addError.value = '先选一个场景'
+    addError.value = t('先选一个场景')
     return
   }
   if (newName.value.trim() === '') {
-    addError.value = '子 agent 需要一个名字'
+    addError.value = t('子 agent 需要一个名字')
     return
   }
 
@@ -471,13 +472,13 @@ const capabilityOff = computed(() => {
     return ''
   }
   if (current.scenario === 'desktop' && !view.value.desktopEnabled) {
-    return '对应能力没有开启：桌面操控'
+    return t('对应能力没有开启：桌面操控')
   }
   if (current.scenario === 'file-read' && !view.value.files.enabled) {
-    return '对应能力没有开启：读文件'
+    return t('对应能力没有开启：读文件')
   }
   if (current.scenario === 'web-search' && !view.value.webEnabled) {
-    return '对应能力没有开启：联网搜索'
+    return t('对应能力没有开启：联网搜索')
   }
   return ''
 })
@@ -517,7 +518,7 @@ defineExpose({ refresh, hasUnsavedChanges })
     <div class="scroll prompts-scroll">
       <div v-if="view === null" class="g-page">
         <p v-if="error" class="error" data-test="error">{{ error }}</p>
-        <p v-else class="pending">正在读取指令…</p>
+        <p v-else class="pending">{{ t('正在读取指令…') }}</p>
       </div>
 
       <div v-else class="g-page is-wide">
@@ -530,7 +531,7 @@ defineExpose({ refresh, hasUnsavedChanges })
         </ul>
 
         <div class="split">
-          <section class="list-column" aria-label="Agent 列表">
+          <section class="list-column" :aria-label="t('Agent 列表')">
             <ul class="agents g-glass" role="list">
               <li
                 :class="{ active: mainSelected }"
@@ -541,7 +542,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 @keydown.space.prevent="pick('main')"
               >
                 <Icon name="prompt" :size="16" />
-                <span class="agent-name">主 Agent</span>
+                <span class="agent-name">{{ t('主 Agent') }}</span>
               </li>
 
               <li
@@ -559,17 +560,17 @@ defineExpose({ refresh, hasUnsavedChanges })
                   class="g-switch is-small"
                   role="switch"
                   :checked="agent.enabled"
-                  :aria-label="`启用「${agent.name || '（未命名）'}」`"
+                  :aria-label="t('启用「{name}」', { name: agent.name || t('（未命名）') })"
                   data-test="prompts-agent-enabled"
                   @click.stop
                   @change="agent.enabled = ($event.target as HTMLInputElement).checked"
                 />
-                <span class="agent-name">{{ agent.name || '（未命名）' }}</span>
-                <span v-if="isBuiltin(agent)" class="g-chip" data-test="prompts-agent-builtin">内置</span>
+                <span class="agent-name">{{ agent.name || t('（未命名）') }}</span>
+                <span v-if="isBuiltin(agent)" class="g-chip" data-test="prompts-agent-builtin">{{ t('内置') }}</span>
                 <span class="scenario">{{ nameOf(agent.scenario) }}</span>
                 <span v-if="!availableOf(agent)" class="g-chip is-warn" data-test="prompts-agent-unavailable">
-                  暂不可用
-                  <HintTip align="end">要么对应的能力没开，要么没有启用的子 agent 负责它。</HintTip>
+                  {{ t('暂不可用') }}
+                  <HintTip align="end">{{ t('要么对应的能力没开，要么没有启用的子 agent 负责它。') }}</HintTip>
                 </span>
               </li>
             </ul>
@@ -581,39 +582,38 @@ defineExpose({ refresh, hasUnsavedChanges })
               data-test="prompts-add"
               @click="openAdd"
             >
-              <Icon name="plus" :size="14" /> 新增子 agent
+              <Icon name="plus" :size="14" /> {{ t('新增子 agent') }}
             </button>
           </section>
 
-          <section class="detail g-glass" aria-label="Agent 详情">
+          <section class="detail g-glass" :aria-label="t('Agent 详情')">
             <!-- Main agent: a prompt, a default, and the generated delegation block underneath. -->
             <template v-if="mainSelected">
               <header class="detail-head">
-                <h2>主 Agent</h2>
-                <span v-if="main.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-main-modified">已修改</span>
+                <h2>{{ t('主 Agent') }}</h2>
+                <span v-if="main.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-main-modified">{{ t('已修改') }}</span>
                 <HintTip>
-                  主 Agent 负责和你对话，并决定要不要把活交给子 agent。「实际发送的指令」里有它读得到的任务清单，
-                  那部分由服务端生成，不能改。
+                  {{ t('主 Agent 负责和你对话，并决定要不要把活交给子 agent。「实际发送的指令」里有它读得到的任务清单， 那部分由服务端生成，不能改。') }}
                 </HintTip>
               </header>
 
               <div class="block">
-                <h3>指令 <HintTip>告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。</HintTip></h3>
+                <h3>{{ t('指令') }} <HintTip>{{ t('告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。') }}</HintTip></h3>
                 <textarea
                   :value="main.prompt"
                   rows="12"
                   :placeholder="view.main.defaultPrompt"
-                  aria-label="主 Agent 的指令"
+                  :aria-label="t('主 Agent 的指令')"
                   data-test="prompts-main-textarea"
                   @input="main.prompt = ($event.target as HTMLTextAreaElement).value"
                 />
                 <div class="meter-row">
                   <button class="ghost" :disabled="main.prompt.trim() === ''" data-test="prompts-main-reset" @click="resetMain">
-                    恢复默认
+                    {{ t('恢复默认') }}
                   </button>
                   <span class="spacer" />
                   <span class="meter" :class="{ error: mainTokens > limit, 'is-near': mainTokens > limit * 0.85 }" data-test="prompts-main-tokens">
-                    约 {{ mainTokens }} token / 上限 {{ limit }}
+                    {{ t('约 {mainTokens} token / 上限 {limit}', { mainTokens: mainTokens, limit: limit }) }}
                   </span>
                 </div>
                 <div class="bar" aria-hidden="true">
@@ -627,7 +627,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 data-test="prompts-main-preview-toggle"
                 @click="previewOpen = previewOpen === 'main' ? null : 'main'"
               >
-                {{ previewOpen === 'main' ? '收起' : '查看' }}实际发送的指令
+                {{ previewOpen === 'main' ? t('收起实际发送的指令') : t('查看实际发送的指令') }}
               </button>
               <pre v-if="previewOpen === 'main'" class="effective" data-test="prompts-main-preview">{{ view.main.effectivePrompt }}</pre>
             </template>
@@ -639,46 +639,46 @@ defineExpose({ refresh, hasUnsavedChanges })
                   v-model="selectedSub.name"
                   type="text"
                   class="name-input"
-                  aria-label="子 agent 名字"
+                  :aria-label="t('子 agent 名字')"
                   data-test="prompts-agent-name"
                 />
-                <span v-if="isBuiltin(selectedSub)" class="g-chip" data-test="prompts-agent-builtin">内置</span>
+                <span v-if="isBuiltin(selectedSub)" class="g-chip" data-test="prompts-agent-builtin">{{ t('内置') }}</span>
                 <span class="spacer" />
-                <input v-model="selectedSub.enabled" type="checkbox" class="g-switch" role="switch" aria-label="启用" data-test="prompts-agent-toggle" />
+                <input v-model="selectedSub.enabled" type="checkbox" class="g-switch" role="switch" :aria-label="t('启用')" data-test="prompts-agent-toggle" />
               </header>
 
               <div class="block">
                 <div class="scenario-row">
-                  <span class="label">负责的任务 <HintTip>{{ whenOf(selectedSub.scenario) || '这个子 agent 在什么情况下被叫来干活。同一类任务只能有一个子 agent。' }}</HintTip></span>
+                  <span class="label">{{ t('负责的任务') }} <HintTip>{{ whenOf(selectedSub.scenario) || t('这个子 agent 在什么情况下被叫来干活。同一类任务只能有一个子 agent。') }}</HintTip></span>
                   <span class="g-chip is-accent" data-test="prompts-agent-scenario">{{ nameOf(selectedSub.scenario) }}</span>
                 </div>
                 <p v-if="capabilityOff" class="warn-line" data-test="prompts-agent-capability">
                   {{ capabilityOff }}
                   <button class="ghost" data-test="prompts-agent-goto-settings" @click="emit('navigate', 'settings')">
-                    去设置页开启
+                    {{ t('去设置页开启') }}
                   </button>
                 </p>
               </div>
 
               <div class="block">
-                <h3>指令
-                  <span v-if="selectedSub.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-agent-modified">已修改</span>
-                  <HintTip>告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。</HintTip>
+                <h3>{{ t('指令') }}
+                  <span v-if="selectedSub.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-agent-modified">{{ t('已修改') }}</span>
+                  <HintTip>{{ t('告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。') }}</HintTip>
                 </h3>
                 <textarea
                   v-model="selectedSub.prompt"
                   rows="10"
                   :placeholder="selectedSubView?.defaultPrompt ?? ''"
-                  aria-label="子 agent 的指令"
+                  :aria-label="t('子 agent 的指令')"
                   data-test="prompts-agent-textarea"
                 />
                 <div class="meter-row">
                   <button class="ghost" :disabled="selectedSub.prompt.trim() === ''" data-test="prompts-agent-reset" @click="resetSubPrompt">
-                    恢复默认
+                    {{ t('恢复默认') }}
                   </button>
                   <span class="spacer" />
                   <span class="meter" :class="{ error: selectedSubTokens > limit, 'is-near': selectedSubTokens > limit * 0.85 }" data-test="prompts-agent-tokens">
-                    约 {{ selectedSubTokens }} token / 上限 {{ limit }}
+                    {{ t('约 {selectedSubTokens} token / 上限 {limit}', { selectedSubTokens: selectedSubTokens, limit: limit }) }}
                   </span>
                 </div>
                 <div class="bar" aria-hidden="true">
@@ -690,7 +690,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                   data-test="prompts-agent-preview-toggle"
                   @click="previewOpen = previewOpen === selectedSub.key ? null : selectedSub.key"
                 >
-                  {{ previewOpen === selectedSub.key ? '收起' : '查看' }}实际发送的指令
+                  {{ previewOpen === selectedSub.key ? t('收起实际发送的指令') : t('查看实际发送的指令') }}
                 </button>
                 <pre
                   v-if="previewOpen === selectedSub.key"
@@ -700,66 +700,66 @@ defineExpose({ refresh, hasUnsavedChanges })
               </div>
 
               <div class="block rows">
-                <h3>模型</h3>
-                <SettingRow label="使用哪个模型" hint="默认用和主 Agent 同一个模型。">
+                <h3>{{ t('模型') }}</h3>
+                <SettingRow :label="t('使用哪个模型')" :hint="t('默认用和主 Agent 同一个模型。')">
                   <Segmented
                     :model-value="selectedSub.model === null ? 'main' : 'custom'"
                     :options="[
-                      { value: 'main', label: '跟随主 Agent' },
-                      { value: 'custom', label: '单独设置' },
+                      { value: 'main', label: t('跟随主 Agent') },
+                      { value: 'custom', label: t('单独设置') },
                     ]"
-                    label="模型来源"
+                    :label="t('模型来源')"
                     data-test="prompts-agent-model-mode"
                     @update:model-value="setCustomModel($event === 'custom')"
                   />
                 </SettingRow>
 
                 <template v-if="selectedSub.model">
-                  <SettingRow label="接口地址" hint="模型服务的网址，一般以 /v1 结尾。">
+                  <SettingRow :label="t('接口地址')" :hint="t('模型服务的网址，一般以 /v1 结尾。')">
                     <input v-model="selectedSub.model.baseUrl" type="text" data-test="prompts-agent-base-url" />
                   </SettingRow>
-                  <SettingRow label="模型">
+                  <SettingRow :label="t('模型')">
                     <input v-model="selectedSub.model.model" type="text" data-test="prompts-agent-model" />
                   </SettingRow>
-                  <SettingRow label="API Key" hint="保存后不会再显示出来。留空表示不改；本地模型一般不需要。">
+                  <SettingRow label="API Key" :hint="t('保存后不会再显示出来。留空表示不改；本地模型一般不需要。')">
                     <input
                       type="password"
                       :value="selectedSub.apiKeyEdited ? selectedSub.model.apiKey ?? '' : ''"
-                      :placeholder="keySetFor(selectedSub) ? '（已设置，留空保持不变）' : '（未设置）'"
+                      :placeholder="keySetFor(selectedSub) ? t('（已设置，留空保持不变）') : t('（未设置）')"
                       autocomplete="off"
                       data-test="prompts-agent-api-key"
                       @input="editKey(selectedSub, ($event.target as HTMLInputElement).value)"
                     />
                     <span class="g-chip" :class="keySetFor(selectedSub) ? 'is-ok' : ''" data-test="prompts-agent-api-key-state">
-                      {{ keySetFor(selectedSub) ? '已设置' : '未设置' }}
+                      {{ keySetFor(selectedSub) ? t('已设置') : t('未设置') }}
                     </span>
                   </SettingRow>
-                  <SettingRow label="思考强度" hint="回答前想多久。越高通常越准，但越慢、越费。">
+                  <SettingRow :label="t('思考强度')" :hint="t('回答前想多久。越高通常越准，但越慢、越费。')">
                     <Segmented
                       v-model="selectedSub.model.reasoningEffort"
                       :options="gearChoices(selectedSub.model.reasoningEffort)"
-                      label="思考强度"
+                      :label="t('思考强度')"
                       data-test="prompts-agent-reasoning"
                     />
                   </SettingRow>
-                  <SettingRow label="能看图片" hint="纯文字模型请保持关闭，否则请求会失败。">
+                  <SettingRow :label="t('能看图片')" :hint="t('纯文字模型请保持关闭，否则请求会失败。')">
                     <input v-model="selectedSub.model.supportsImages" type="checkbox" class="g-switch" role="switch" data-test="prompts-agent-images" />
                   </SettingRow>
-                  <SettingRow label="最长等待" unit="秒" hint="模型超过这个时间还没答完，就放弃这次请求。">
+                  <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('模型超过这个时间还没答完，就放弃这次请求。')">
                     <input v-model.number="selectedSub.model.timeoutSeconds" type="number" min="1" />
                   </SettingRow>
-                  <SettingRow label="记忆长度" unit="token" hint="模型一次最多能「看」多少内容，约 1 个汉字算 1 token。">
+                  <SettingRow :label="t('记忆长度')" unit="token" :hint="t('模型一次最多能「看」多少内容，约 1 个汉字算 1 token。')">
                     <input v-model.number="selectedSub.model.contextTokens" type="number" min="1" />
                   </SettingRow>
-                  <SettingRow label="单次回复上限" unit="token" hint="一次回复最多写多长，必须小于「记忆长度」。">
+                  <SettingRow :label="t('单次回复上限')" unit="token" :hint="t('一次回复最多写多长，必须小于「记忆长度」。')">
                     <input v-model.number="selectedSub.model.maxTokens" type="number" min="1" />
                   </SettingRow>
                 </template>
               </div>
 
               <div class="block rows">
-                <SettingRow label="最多尝试几次" unit="次">
-                  <template #hint>一个任务最多试几轮（1–{{ maxRounds }}），默认 {{ defaultMaxRounds }}。全都失败时，会把原因告诉主 Agent。</template>
+                <SettingRow :label="t('最多尝试几次')" :unit="t('次')">
+                  <template #hint>{{ t('一个任务最多试几轮（1–{maxRounds}），默认 {defaultMaxRounds}。全都失败时，会把原因告诉主 Agent。', { maxRounds: maxRounds, defaultMaxRounds: defaultMaxRounds }) }}</template>
                   <input
                     v-model.number="selectedSub.maxRounds"
                     type="number"
@@ -777,7 +777,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                   data-test="prompts-agent-delete"
                   @click="removeSelected"
                 >
-                  <Icon name="trash" :size="14" /> {{ confirmingRemove ? '确认删除' : '删除这个子 agent' }}
+                  <Icon name="trash" :size="14" /> {{ confirmingRemove ? t('确认删除') : t('删除这个子 agent') }}
                 </button>
               </div>
             </template>
@@ -786,14 +786,14 @@ defineExpose({ refresh, hasUnsavedChanges })
       </div>
     </div>
 
-    <Dialog :open="adding" title="新增子 agent" @close="adding = false">
+    <Dialog :open="adding" :title="t('新增子 agent')" @close="adding = false">
       <div v-if="view" data-test="prompts-add-form" class="add-form">
         <label class="add-field">
-          <span>名字</span>
-          <input v-model="newName" type="text" placeholder="例如：读资料的" data-test="prompts-add-name" />
+          <span>{{ t('名字') }}</span>
+          <input v-model="newName" type="text" :placeholder="t('例如：读资料的')" data-test="prompts-add-name" />
         </label>
         <label class="add-field">
-          <span>负责的任务 <HintTip>同一类任务只能有一个子 agent。</HintTip></span>
+          <span>{{ t('负责的任务') }} <HintTip>{{ t('同一类任务只能有一个子 agent。') }}</HintTip></span>
           <select v-model="newScenario" data-test="prompts-add-scenario">
             <option
               v-for="scenario in view.scenarios"
@@ -803,8 +803,8 @@ defineExpose({ refresh, hasUnsavedChanges })
             >
               {{ scenario.name }}{{ scenario.ownerId !== null
                 ? scenario.key === 'desktop'
-                  ? ' · 已被内置的桌面操控占用'
-                  : ' · 已被占用'
+                  ? t(' · 已被内置的桌面操控占用')
+                  : t(' · 已被占用')
                 : '' }}
             </option>
           </select>
@@ -812,8 +812,8 @@ defineExpose({ refresh, hasUnsavedChanges })
         <p v-if="addError" class="error" data-test="prompts-add-error">{{ addError }}</p>
       </div>
       <template #footer>
-        <button class="ghost" data-test="prompts-add-cancel" @click="adding = false">取消</button>
-        <button class="primary" data-test="prompts-add-commit" @click="commitAdd">添加</button>
+        <button class="ghost" data-test="prompts-add-cancel" @click="adding = false">{{ t('取消') }}</button>
+        <button class="primary" data-test="prompts-add-commit" @click="commitAdd">{{ t('添加') }}</button>
       </template>
     </Dialog>
 
@@ -823,7 +823,7 @@ defineExpose({ refresh, hasUnsavedChanges })
       :status="notice"
       :error="error"
       :errors="errors"
-      :blocked-reason="overLimit ? '指令太长了，先缩短再保存' : ''"
+      :blocked-reason="overLimit ? t('指令太长了，先缩短再保存') : ''"
       can-discard
       @save="save"
       @discard="discard"

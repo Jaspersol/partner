@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, ref } from 'vue'
 import type { VoiceTestResult } from '../api'
 
@@ -35,10 +36,10 @@ const open = ref(false)
 const chip = computed(() => {
   const result = props.result
   if (!result) return null
-  if (props.stale) return { tone: 'is-stale', text: '改动后未重测' }
+  if (props.stale) return { tone: 'is-stale', text: t('改动后未重测') }
   return result.ok
-    ? { tone: 'is-ok', text: `✓ 通过 · ${result.latencyMs} ms` }
-    : { tone: 'is-error', text: '✗ 失败' }
+    ? { tone: 'is-ok', text: t('✓ 通过 · {latencyMs} ms', { latencyMs: result.latencyMs }) }
+    : { tone: 'is-error', text: t('✗ 失败') }
 })
 </script>
 
@@ -63,12 +64,12 @@ const chip = computed(() => {
       :data-test="`test-${kind}`"
       @click="emit('test')"
     >
-      {{ testing ? '测试中…' : (label ?? '测试') }}
+      {{ testing ? t('测试中…') : (label ?? t('测试')) }}
     </button>
     <p v-if="chip && open && result" class="detail break" :class="{ 'is-error': !result.ok }">
-      {{ result.detail }}（{{ result.latencyMs }}ms）
+      {{ t('{detail}（{latencyMs}ms）', { detail: result.detail, latencyMs: result.latencyMs }) }}
     </p>
-    <p v-if="unsaved" class="detail">测试用的是已保存的设置，先保存再测。</p>
+    <p v-if="unsaved" class="detail">{{ t('测试用的是已保存的设置，先保存再测。') }}</p>
   </div>
 </template>
 

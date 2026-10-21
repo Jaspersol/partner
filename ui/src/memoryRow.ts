@@ -1,4 +1,5 @@
 import type { MemoryItem, RecallHit } from './api'
+import { t, tr } from './i18n'
 
 /**
  * A memory row as the list and the inspector show it. Both views of a memory (the stored record and a recall
@@ -24,39 +25,42 @@ export interface MemoryRow {
 export const MEMORY_TIERS = ['Working', 'Episodic', 'Semantic', 'Procedural'] as const
 
 const TIER_LABEL: Record<string, string> = {
-  Working: '刚记下 · 还没印证',
-  Episodic: '经历 · 反复出现过的事',
-  Semantic: '事实 · 可以当事实用',
-  Procedural: '做法 · 该怎么做某件事',
+  Working: tr('刚记下 · 还没印证'),
+  Episodic: tr('经历 · 反复出现过的事'),
+  Semantic: tr('事实 · 可以当事实用'),
+  Procedural: tr('做法 · 该怎么做某件事'),
 }
 
 /** The short name a chip carries: four words a person can tell apart at a glance. */
 const TIER_SHORT: Record<string, string> = {
-  Working: '刚记下',
-  Episodic: '经历',
-  Semantic: '事实',
-  Procedural: '做法',
+  Working: tr('刚记下'),
+  Episodic: tr('经历'),
+  Semantic: tr('事实'),
+  Procedural: tr('做法'),
 }
 
 /** One sentence per tier, for the ⓘ beside the picker. */
 const TIER_HINT: Record<string, string> = {
-  Working: '刚听到的，还没被印证过。',
-  Episodic: '反复出现过的事。',
-  Semantic: '可以当事实用的内容。',
-  Procedural: '做某件事的步骤和习惯。',
+  Working: tr('刚听到的，还没被印证过。'),
+  Episodic: tr('反复出现过的事。'),
+  Semantic: tr('可以当事实用的内容。'),
+  Procedural: tr('做某件事的步骤和习惯。'),
 }
 
 /** What a row's tier means, in the words a person deciding between them would use. */
 export function tierLabel(tier: string): string {
-  return TIER_LABEL[tier] ?? tier
+  const label = TIER_LABEL[tier]
+  return label === undefined ? tier : t(label)
 }
 
 export function tierShort(tier: string): string {
-  return TIER_SHORT[tier] ?? tier
+  const label = TIER_SHORT[tier]
+  return label === undefined ? tier : t(label)
 }
 
 export function tierHint(tier: string): string {
-  return TIER_HINT[tier] ?? ''
+  const label = TIER_HINT[tier]
+  return label === undefined ? '' : t(label)
 }
 
 /**
@@ -68,32 +72,33 @@ export function tierHint(tier: string): string {
 export const MEMORY_SCOPES = ['Recall', 'Retain'] as const
 
 const SCOPE_LABEL: Record<string, string> = {
-  Recall: '普通',
-  Retain: '固定',
+  Recall: tr('普通'),
+  Retain: tr('固定'),
 }
 
 /** What a row's retention means, in one word. The full promise is spelled out next to the checkbox. */
 export function scopeLabel(scope: string): string {
-  return SCOPE_LABEL[scope] ?? scope
+  const label = SCOPE_LABEL[scope]
+  return label === undefined ? scope : t(label)
 }
 
 function ago(iso: string | null | undefined, now: number): string {
   if (iso === null || iso === undefined || iso === '') {
-    return '从未被召回'
+    return t('从未被召回')
   }
 
   const at = Date.parse(iso)
   if (Number.isNaN(at)) {
-    return '时间未知'
+    return t('时间未知')
   }
 
   const minutes = Math.max(0, Math.floor((now - at) / 60_000))
   if (minutes < 60) {
-    return `${Math.max(1, minutes)} 分钟前用过`
+    return t('{max} 分钟前用过', { max: Math.max(1, minutes) })
   }
 
   const days = Math.floor(minutes / 1440)
-  return days < 1 ? `${Math.floor(minutes / 60)} 小时前用过` : `${days} 天前用过`
+  return days < 1 ? t('{floor} 小时前用过', { floor: Math.floor(minutes / 60) }) : t('{days} 天前用过', { days: days })
 }
 
 export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow {
@@ -106,14 +111,14 @@ export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow
     body: item.body,
     // Whether this still counts, how long ago it was used, and what replaced it.
     validity: retired
-      ? `已失效 → ${item.supersededBy ?? '(无后继)'} · ${ago(item.lastRecalledAt, now)}`
-      : `有效 · ${ago(item.lastRecalledAt, now)} · 编辑者 ${item.editedBy ?? '原始'}`,
+      ? t('已失效 → {successor} · {ago}', { successor: item.supersededBy ?? t('(无后继)'), ago: ago(item.lastRecalledAt, now) })
+      : t('有效 · {ago} · 编辑者 {editor}', { ago: ago(item.lastRecalledAt, now), editor: item.editedBy ?? t('原始') }),
     supersededBy: item.supersededBy,
     editedBy: item.editedBy,
     createdAt: item.createdAt,
     lastRecalledAt: item.lastRecalledAt ?? null,
     retired,
-    brief: retired ? `已被 ${item.supersededBy ?? '新记录'} 取代` : ago(item.lastRecalledAt, now),
+    brief: retired ? t('已被 {successor} 取代', { successor: item.supersededBy ?? t('新记录') }) : ago(item.lastRecalledAt, now),
   }
 }
 
@@ -128,12 +133,12 @@ export function memoryRowFromHit(hit: RecallHit): MemoryRow {
     body: hit.body,
     // A hit's why-it-surfaced line replaces the age line: recalling it is what just happened, so there is no
     // "last used" to report.
-    validity: `命中 ${hit.total.toFixed(3)} · ${hit.reasons.join(', ')}`,
+    validity: t('命中 {toFixed} · {join}', { toFixed: hit.total.toFixed(3), join: hit.reasons.join(', ') }),
     supersededBy: null,
     editedBy: null,
     createdAt: hit.createdAt,
     lastRecalledAt: null,
     retired: false,
-    brief: '检索命中',
+    brief: t('检索命中'),
   }
 }

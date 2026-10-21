@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed } from 'vue'
 import type { AgentJobView } from '../api'
 
@@ -28,7 +29,7 @@ function fraction(job: AgentJobView): number {
 </script>
 
 <template>
-  <TransitionGroup v-if="running.length > 0" tag="ul" name="sa" class="sa-cards" aria-label="子 agent 进度" data-test="subagent-cards">
+  <TransitionGroup v-if="running.length > 0" tag="ul" name="sa" class="sa-cards" :aria-label="t('子 agent 进度')" data-test="subagent-cards">
     <li
       v-for="job in running"
       :key="job.id"

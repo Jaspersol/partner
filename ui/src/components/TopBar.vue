@@ -5,6 +5,7 @@ import { hasWindowChrome, windowCommand } from '../windowChrome'
 import Icon from './Icon.vue'
 import type { IconName } from '../icons'
 import type { QueueSummary } from '../api'
+import { t } from '../i18n'
 import { themeLabel, type Theme } from '../theme'
 
 /** The theme button's three faces. Named here rather than picked at the call site so the mapping is one list. */
@@ -48,18 +49,18 @@ onMounted(() => {
 const announcement = computed(() => {
   const summary = props.summary
   if (summary === null) {
-    return props.connected ? '' : '未连接'
+    return props.connected ? '' : t('topbar.disconnected')
   }
 
   if (summary.failed > 0) {
-    return `队列阻塞：失败 ${summary.failed} 项`
+    return t('topbar.queueBlocked', { count: summary.failed })
   }
 
   if (summary.runningItemId !== null && summary.runningItemId !== '') {
-    return `正在执行 ${summary.runningItemId}`
+    return t('topbar.running', { id: summary.runningItemId })
   }
 
-  return summary.pending > 0 ? `队列待处理 ${summary.pending} 项` : '队列为空'
+  return summary.pending > 0 ? t('topbar.queuePending', { count: summary.pending }) : t('topbar.queueEmpty')
 })
 </script>
 
@@ -90,14 +91,14 @@ const announcement = computed(() => {
         the composer's own list, and a standing 「队列 1 · 执行中 in-…」 is an internal id nobody can act on. A
         failure is the exception: it blocks everything behind it, and the eye is not always on the composer.
       -->
-      <span v-if="summary && summary.failed > 0" class="badge badge-error" data-test="blocked">失败 {{ summary.failed }}</span>
-      <span v-if="!connected" class="badge badge-error" data-test="topbar-disconnected">未连接</span>
+      <span v-if="summary && summary.failed > 0" class="badge badge-error" data-test="blocked">{{ t('topbar.failed', { count: summary.failed }) }}</span>
+      <span v-if="!connected" class="badge badge-error" data-test="topbar-disconnected">{{ t('topbar.disconnected') }}</span>
 
       <button
         class="ghost icon-btn"
         data-test="theme-toggle"
-        :aria-label="`主题：${themeLabel(theme)}`"
-        :title="`主题：${themeLabel(theme)}`"
+        :aria-label="t('topbar.theme', { name: themeLabel(theme) })"
+        :title="t('topbar.theme', { name: themeLabel(theme) })"
         @click="emit('cycle-theme')"
       >
         <Icon :name="THEME_ICON[theme]" :size="16" />
@@ -106,13 +107,13 @@ const announcement = computed(() => {
       <!-- The native title bar is off (src-tauri), so the three window buttons are rendered here. They only
            exist inside the desktop shell: in a plain browser the browser has its own. -->
       <div v-if="hasWindowChrome()" class="row window-buttons" data-test="window-buttons">
-        <button class="ghost icon-btn" aria-label="最小化" title="最小化" data-test="window-minimize" @click="windowCommand('minimize')">
+        <button class="ghost icon-btn" :aria-label="t('topbar.minimize')" :title="t('topbar.minimize')" data-test="window-minimize" @click="windowCommand('minimize')">
           <Icon name="minus" :size="16" />
         </button>
-        <button class="ghost icon-btn" aria-label="最大化或还原" title="最大化或还原" data-test="window-maximize" @click="windowCommand('toggle_maximize')">
+        <button class="ghost icon-btn" :aria-label="t('topbar.maximize')" :title="t('topbar.maximize')" data-test="window-maximize" @click="windowCommand('toggle_maximize')">
           <Icon name="square" :size="14" />
         </button>
-        <button class="ghost icon-btn is-close" aria-label="关闭" title="关闭" data-test="window-close" @click="windowCommand('close')">
+        <button class="ghost icon-btn is-close" :aria-label="t('topbar.close')" :title="t('topbar.close')" data-test="window-close" @click="windowCommand('close')">
           <Icon name="x" :size="16" />
         </button>
       </div>

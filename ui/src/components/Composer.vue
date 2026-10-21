@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { APPROVAL_GEARS } from '../api'
 import type { AgentJobView, ConsumerState, PartnerApiSurface, QueueItem, QueueSummary, SubmitResult, UploadedMedia } from '../api'
@@ -109,7 +110,7 @@ const modelName = computed(() => props.consumer?.model ?? '')
 
 const consumerNote = computed(() => {
   const state = props.consumer
-  return state && !state.running ? `未执行 · ${state.reason}` : ''
+  return state && !state.running ? t('未执行 · {reason}', { reason: state.reason }) : ''
 })
 
 /**
@@ -138,13 +139,15 @@ watch(picker, (open) => {
 
 const gearChoices = computed(() => gearOptions.value.map((value) => ({ value, label: gearName(value) })))
 
-const approvalOptions = APPROVAL_GEARS.map((option) => ({
-  value: option.value,
-  label: ({ none: '不审批', dangerous: '危险指令', all: '全部' } as Record<string, string>)[option.value] ?? option.label,
-  title: option.hint,
-}))
-const approvalLabel = computed(() => approvalOptions.find((option) => option.value === props.approval)?.label ?? props.approval ?? '')
-const approvalHint = computed(() => APPROVAL_GEARS.find((option) => option.value === props.approval)?.hint ?? '')
+const approvalOptions = computed(() =>
+  APPROVAL_GEARS.map((option) => ({
+    value: option.value,
+    label: ({ none: t('不审批'), dangerous: t('危险指令'), all: t('全部') } as Record<string, string>)[option.value] ?? t(option.label),
+    title: t(option.hint),
+  })),
+)
+const approvalLabel = computed(() => approvalOptions.value.find((option) => option.value === props.approval)?.label ?? props.approval ?? '')
+const approvalHint = computed(() => t(APPROVAL_GEARS.find((option) => option.value === props.approval)?.hint ?? ''))
 
 /** The ring: circumference 2πr with r=8 in a 20-unit box. */
 const RING = 2 * Math.PI * 8
@@ -175,10 +178,10 @@ const action = computed<{ kind: 'send' | 'queue' | 'interrupt'; label: string }>
   if (runningId.value === null) {
     // Delegated work is not a queue item, so a typed message is not waiting behind anything: it is simply sent.
     return props.delegating === true && !hasContent.value
-      ? { kind: 'interrupt', label: '中断子任务' }
-      : { kind: 'send', label: '发送' }
+      ? { kind: 'interrupt', label: t('中断子任务') }
+      : { kind: 'send', label: t('发送') }
   }
-  return hasContent.value ? { kind: 'queue', label: '加入队列' } : { kind: 'interrupt', label: '中断运行' }
+  return hasContent.value ? { kind: 'queue', label: t('加入队列') } : { kind: 'interrupt', label: t('中断运行') }
 })
 
 /**
@@ -204,7 +207,7 @@ async function interrupt() {
   try {
     const canceled = await props.api.cancel(itemId)
     if (!canceled) {
-      emit('failed', `'${itemId}' 已完成，无法取消`)
+      emit('failed', t('\'{itemId}\' 已完成，无法取消', { itemId: itemId }))
       return
     }
     emit('cancel', itemId)
@@ -226,7 +229,7 @@ async function interruptJobs() {
   try {
     const results = await Promise.all(ids.map((id) => props.api.cancelAgentJob(id)))
     if (!results.some(Boolean)) {
-      emit('failed', '子任务已完成，无法取消')
+      emit('failed', t('子任务已完成，无法取消'))
       return
     }
     emit('cancel', ids[0] as string)
@@ -398,15 +401,15 @@ defineExpose({ focus, restore })
           data-test="composer-attachment"
           :title="attachment.media.fileName"
         >
-          <img v-if="attachment.preview" :src="attachment.preview" alt="附图预览" />
+          <img v-if="attachment.preview" :src="attachment.preview" :alt="t('附图预览')" />
           <span v-else class="file-glyph"><Icon name="file" :size="14" /></span>
           <span class="file-name">{{ attachment.media.fileName }}</span>
           <span class="meta">{{ Math.round(attachment.media.bytes / 1024) }} KB</span>
           <button
             class="ghost"
             data-test="composer-detach"
-            title="移除附件"
-            aria-label="移除附件"
+            :title="t('移除附件')"
+            :aria-label="t('移除附件')"
             @click="detach(attachment.media.mediaId)"
           >
             <Icon name="x" :size="12" />
@@ -429,7 +432,7 @@ defineExpose({ focus, restore })
           class="ghost queue-toggle"
           data-test="composer-queue-toggle"
           :aria-expanded="queueShown"
-          :aria-label="queueShown ? '收起队列' : '展开队列'"
+          :aria-label="queueShown ? t('收起队列') : t('展开队列')"
           @click="queueCollapsed = !queueCollapsed"
         >
           <Icon :name="queueShown ? 'chevron-up' : 'chevron-down'" :size="14" />
@@ -442,17 +445,17 @@ defineExpose({ focus, restore })
           v-model="draft"
           rows="2"
           data-test="composer-input"
-          aria-label="输入消息"
-          placeholder="输入消息…"
+          :aria-label="t('输入消息')"
+          :placeholder="t('输入消息…')"
           @keydown.enter.exact="onEnter"
         />
-        <HintTip align="end" class="input-hint">Enter 发送，Shift+Enter 换行。输入 <code>/status</code> 查看排队情况。</HintTip>
+        <HintTip align="end" class="input-hint">{{ t('Enter 发送，Shift+Enter 换行。输入') }} <code>/status</code> {{ t('查看排队情况。') }}</HintTip>
       </div>
 
       <div class="composer-tools">
-        <label class="attach" :class="{ busy: uploading }" :aria-busy="uploading || undefined" data-test="composer-attach" title="添加附件">
+        <label class="attach" :class="{ busy: uploading }" :aria-busy="uploading || undefined" data-test="composer-attach" :title="t('添加附件')">
           <Icon name="paperclip" :size="16" />
-          <span :class="{ 'sr-only': !uploading }">{{ uploading ? '上传中…' : '添加附件' }}</span>
+          <span :class="{ 'sr-only': !uploading }">{{ uploading ? t('上传中…') : t('添加附件') }}</span>
           <input type="file" multiple data-test="composer-attach-input" @change="onPicked" />
         </label>
 
@@ -465,18 +468,18 @@ defineExpose({ focus, restore })
             class="pill"
             type="button"
             :aria-expanded="picker === 'approval'"
-            aria-label="审批挡位"
+            :aria-label="t('审批挡位')"
             :data-value="approval"
             data-test="composer-approval"
             @click="togglePicker('approval')"
           >
-            <Icon name="shield" :size="14" /> 审批 · {{ approvalLabel }}
+            <Icon name="shield" :size="14" /> {{ t('审批 · {approvalLabel}', { approvalLabel: approvalLabel }) }}
           </button>
           <div v-if="picker === 'approval'" class="picker-pop g-float" data-test="composer-approval-pop">
             <Segmented
               :model-value="approval"
               :options="approvalOptions"
-              label="审批挡位"
+              :label="t('审批挡位')"
               @update:model-value="emit('approval', $event)"
             />
             <p class="picker-hint">{{ approvalHint }}</p>
@@ -486,28 +489,28 @@ defineExpose({ focus, restore })
         <span class="spacer" />
 
         <!-- The model that answers, read off the consumer, beside the gear and the ring. -->
-        <span v-if="modelName" class="model" :title="`当前模型：${modelName}`" data-test="composer-model">{{ modelName }}</span>
+        <span v-if="modelName" class="model" :title="t('当前模型：{modelName}', { modelName: modelName })" data-test="composer-model">{{ modelName }}</span>
 
         <span v-if="gearOptions.length > 0" class="pill-wrap">
           <button
             class="pill"
             type="button"
             :aria-expanded="picker === 'gear'"
-            aria-label="思考强度"
+            :aria-label="t('思考强度')"
             :data-value="gear"
             data-test="composer-gear"
             @click="togglePicker('gear')"
           >
-            <Icon name="sparkle" :size="14" /> 思考 · {{ gearName(gear) }}
+            <Icon name="sparkle" :size="14" /> {{ t('思考 · {gearName}', { gearName: gearName(gear) }) }}
           </button>
           <div v-if="picker === 'gear'" class="picker-pop is-end g-float" data-test="composer-gear-pop">
             <Segmented
               :model-value="gear"
               :options="gearChoices"
-              label="思考强度"
+              :label="t('思考强度')"
               @update:model-value="gear = $event"
             />
-            <p class="picker-hint">越高想得越仔细，回答也越慢。</p>
+            <p class="picker-hint">{{ t('越高想得越仔细，回答也越慢。') }}</p>
           </div>
         </span>
 
@@ -538,10 +541,10 @@ defineExpose({ focus, restore })
           data-test="composer-interrupt"
           :disabled="busy"
           :aria-busy="busy || undefined"
-          :title="runningId === null ? '中断正在运行的子任务' : `中断正在运行的 ${runningId}`"
+          :title="runningId === null ? t('中断正在运行的子任务') : t('中断正在运行的 {runningId}', { runningId: runningId })"
           @click="interrupt"
         >
-          <Icon name="square" :size="14" /><span class="sr-only">{{ busy ? '中断中…' : action.label }}</span>
+          <Icon name="square" :size="14" /><span class="sr-only">{{ busy ? t('中断中…') : action.label }}</span>
         </button>
         <button
           v-else
