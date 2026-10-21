@@ -227,6 +227,8 @@ function Add-Notice(
     Add-Tree $list (Join-Path $root 'third-party') 'NOTICE/LICENSES'
 
     $table = Get-LicenseRows $licenseRoots
+    $short = ($pack -replace '^partner-engine-', '') -replace '\.zip$', ''
+
     $tablePath = Join-Path $out ".notice/$pack-THIRD-PARTY-LICENSES.txt"
     @(
         "Third-party packages bundled in $pack",
@@ -235,11 +237,11 @@ function Add-Notice(
         'The licence texts of the upstream projects are in NOTICE/LICENSES/.',
         ''
     ) + $table | Set-Content -Path $tablePath -Encoding utf8
-    $list.Add((New-Entry $tablePath 'NOTICE/THIRD-PARTY-LICENSES.txt'))
+    $list.Add((New-Entry $tablePath "NOTICE/THIRD-PARTY-LICENSES-$short.txt"))
 
     $cardPath = Join-Path $out ".notice/$pack-MODEL_CARD.md"
     $card | Set-Content -Path $cardPath -Encoding utf8
-    $list.Add((New-Entry $cardPath 'NOTICE/MODEL_CARD.md'))
+    $list.Add((New-Entry $cardPath "NOTICE/MODEL_CARD-$short.md"))
 }
 
 # --- tts ---------------------------------------------------------------------------------------------------
@@ -428,6 +430,7 @@ if ($DryRun) {
 
 # The union of the packs has to cover everything the engines need, not just what Inspect checks.
 $seen = @{}
+$owner = @{}
 foreach ($pack in $packs) {
     $archive = [System.IO.Compression.ZipFile]::OpenRead((Join-Path $out $pack.Name))
     try {
@@ -436,14 +439,21 @@ foreach ($pack in $packs) {
         $archive.Dispose()
     }
 
-    foreach ($required in @('NOTICE/LICENSE-partner.txt', 'NOTICE/MODEL_CARD.md', 'NOTICE/THIRD-PARTY-LICENSES.txt')) {
+    $short = ($pack.Name -replace '^partner-engine-', '') -replace '\.zip$', ''
+    foreach ($required in @('NOTICE/LICENSE-partner.txt', "NOTICE/MODEL_CARD-$short.md", "NOTICE/THIRD-PARTY-LICENSES-$short.txt")) {
         if ($names -notcontains $required) { Fail "$($pack.Name) has no $required" }
     }
     if (-not ($names | Where-Object { $_ -like 'NOTICE/LICENSES/*' })) {
         Fail "$($pack.Name) has no licence texts under NOTICE/LICENSES/"
     }
 
-    foreach ($name in $names) { $seen[$name] = $true }
+    foreach ($name in $names) {
+        if ($name -like 'NOTICE/*' -and $name -ne 'NOTICE/LICENSE-partner.txt' -and $name -notlike 'NOTICE/LICENSES/*') {
+            if ($owner.ContainsKey($name)) { Fail "$name is in both $($owner[$name]) and $($pack.Name); the packs unpack into one folder" }
+            $owner[$name] = $pack.Name
+        }
+        $seen[$name] = $true
+    }
 }
 
 $missing = @($expectedFiles | Where-Object { -not $seen.ContainsKey($_) })

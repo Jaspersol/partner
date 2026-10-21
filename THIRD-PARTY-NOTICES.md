@@ -42,16 +42,16 @@ The application code is MIT licensed, see [LICENSE](LICENSE). That licence does 
 | CPython 3.13 embeddable | PSF-2.0 | 加入已安装的 wheel 与 `._pth` |
 | PyInstaller（`internal/` 的打包器） | GPL-2.0 **+ Bootloader Exception** | 例外条款允许用任意许可分发打包产物，见 `third-party/PyInstaller-COPYING.txt` |
 
-`third-party/` 保存这些许可的原文，打包脚本把整目录复制进每个包的 `NOTICE/LICENSES/`。第三方 wheel 的许可清单由打包脚本从各包 `*.dist-info/METADATA` 生成，写入 `NOTICE/THIRD-PARTY-LICENSES.txt`。
+`third-party/` 保存这些许可的原文，打包脚本把整目录复制进每个包的 `NOTICE/LICENSES/`。第三方 wheel 的许可清单由打包脚本从各包 `*.dist-info/METADATA` 生成，写入 `NOTICE/THIRD-PARTY-LICENSES-<包名>.txt`。四个包都会解压进同一个 `engines/` 目录，所以每包的 `MODEL_CARD` 与清单带包名后缀，脚本会检查 `NOTICE/` 下没有重名文件。
 
 ## 义务与落实 / Obligations and where they are met
 
 | 条款 | 要求 | 落实 |
 |---|---|---|
 | Apache-2.0 §4(a) | 随分发提供许可副本 | `NOTICE/LICENSES/Apache-2.0.txt`（每个含 Apache 代码的包） |
-| Apache-2.0 §4(b) | 修改过的文件要标注 | `NOTICE/MODEL_CARD.md` 的 "Modifications" 段 |
+| Apache-2.0 §4(b) | 修改过的文件要标注 | `NOTICE/MODEL_CARD-<包名>.md` 的 "Modifications" 段（每包一份，不会互相覆盖） |
 | Apache-2.0 §4(d) | 若上游带 NOTICE，需保留 | 上游 Qwen3-TTS / sherpa-onnx 不带独立 NOTICE 文件，已在 MODEL_CARD 记来源 |
-| FunASR MODEL_LICENSE §2.2 | 署名 + 保留模型名 | `NOTICE/MODEL_CARD.md` 保留 "SenseVoice"、"SenseVoiceSmall" 名称与 Alibaba Group / FunAudioLLM 署名，并附许可全文 |
+| FunASR MODEL_LICENSE §2.2 | 署名 + 保留模型名 | `NOTICE/MODEL_CARD-kws.md` 保留 "SenseVoice"、"SenseVoiceSmall" 名称与 Alibaba Group / FunAudioLLM 署名，并附许可全文 |
 | MIT（Silero VAD、Qwen3-TTS-GGUF、本项目脚本） | 版权声明 + 许可文本 | `NOTICE/LICENSES/` |
 | PSF-2.0 | Python 许可随运行时 | `NOTICE/LICENSES/PSF-Python-3.13.txt` |
 | PyInstaller GPL-2.0 + Exception | 分发打包产物时保留其许可与例外说明 | `NOTICE/LICENSES/PyInstaller-COPYING.txt` |

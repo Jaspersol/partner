@@ -52,14 +52,14 @@ public sealed class EnginePackage
     /// </summary>
     private static readonly (string Url, string Sha256)[] TtsArchives =
     [
-        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-a-runtime.zip", "1b099000b5bcb1a6c3658f712c87e0e0a72688f9c1626382f68d763df18eb92d"),
-        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-b-talker.zip", "56d5f87c7d93a04bbed6d4cffcfbd20e941b16557fa80a75324183a940e08f3c"),
-        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-c-codec.zip", "8641f3ac31a74bae5844f20a9800b529b5e56bcdb519f7c9ac0c76c3ca98496e"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-a-runtime.zip", "df1eb138025b03a922e72791b4d0a8696c5e713c1c3b80cd367ef5bfddd94fd2"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-b-talker.zip", "d459f96e0252f2bf8d556ed04cbce08e009dae0be853d9010aa538587484eb58"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-c-codec.zip", "16bcf458853dc9588b1bbfb6a8c2513eea1807766f198cba2c78a534028983b5"),
     ];
 
     private static readonly (string Url, string Sha256)[] KwsArchives =
     [
-        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-kws.zip", "d3ea329e2edb4f954ed14776f36cef508c7b3f7c80de3a7f4e59734d5e8078f8"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-kws.zip", "c5826cf80f8af8f5e23bb94b1bdb7415669d067ebdc29392d90454a2b9f5f647"),
     ];
 
     // The interpreter is looked up in order: a relocatable runtime shipped inside the archive wins over a venv,
