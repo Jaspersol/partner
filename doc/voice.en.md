@@ -37,6 +37,7 @@ The installer carries only two small server scripts. Runtimes and models are not
 
 - If you only need recognition, download only KWS + ASR. No GPU required.
 - Downloads resume; SHA-256 is verified when available; when the server reports a length it is checked, and a truncated file does not count as success.
+- A dropped connection is retried three times from the bytes already on disk, and 60 seconds without data counts as dropped, so the download button does not have to be pressed again.
 - "Check" on the settings page looks at the files on disk and lists what is missing. You can also point it at an existing engine directory.
 - Default paths are stored relative to the app directory, so moving or reinstalling the app needs no settings change.
 - Switching an engine off ends its process (the whole tree) and returns all VRAM and RAM.
