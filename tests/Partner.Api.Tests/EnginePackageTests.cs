@@ -227,6 +227,83 @@ public sealed class EnginePackageTests : IDisposable
     }
 
     [Fact]
+    public async Task One_engine_can_arrive_as_several_archives_and_each_is_unpacked_into_the_engines_root()
+    {
+        var runtime = Zip(["tts/python/python.exe", "tts/tts-server.py"]);
+        var talker = Zip(["tts/model/qwen3_tts_talker.q5_k.gguf", "tts/model/qwen3_tts_predictor.q8_0.gguf"]);
+        var rest = Zip(["tts/model/qwen3_tts_decoder.fp16.onnx", "tts/model/tokenizer.json"]);
+
+        var package = new EnginePackage(
+            AppDir,
+            Workspace,
+            [
+                new(EnginePackage.TtsId, "http://engines.test/tts-a-runtime.zip", Sha(runtime)),
+                new(EnginePackage.TtsId, "http://engines.test/tts-b-talker.zip", Sha(talker)),
+                new(EnginePackage.TtsId, "http://engines.test/tts-c-model.zip", Sha(rest)),
+            ],
+            new ArchiveSetHandler(new Dictionary<string, byte[]>
+            {
+                ["tts-a-runtime.zip"] = runtime,
+                ["tts-b-talker.zip"] = talker,
+                ["tts-c-model.zip"] = rest,
+            }));
+
+        Assert.True(package.TryStartDownload(out var error), error);
+        var state = await WaitForAsync(package);
+
+        Assert.Equal("done", state.Phase);
+        var status = package.Status();
+        Assert.True(status.Tts.Installed, string.Join(",", status.Tts.Missing));
+        Assert.False(status.Kws.Installed);
+        Assert.False(Directory.Exists(Path.Combine(AppDir, "engines", ".download")), "the staging folder should be cleaned up");
+    }
+
+    [Fact]
+    public async Task A_dropped_connection_resumes_from_the_bytes_already_on_disk()
+    {
+        var runtime = Zip(["tts/python/python.exe", "tts/tts-server.py"]);
+        var handler = new DroppingHandler(runtime);
+
+        var package = new EnginePackage(
+            AppDir,
+            Workspace,
+            [new(EnginePackage.TtsId, "http://engines.test/tts-a-runtime.zip", Sha(runtime))],
+            handler);
+
+        Assert.True(package.TryStartDownload(out var error), error);
+        var state = await WaitForAsync(package);
+
+        Assert.Equal("done", state.Phase);
+        Assert.Equal(2, handler.Requests);
+        Assert.True(handler.ResumedFrom > 0, "the second request should have asked for the rest of the file");
+        Assert.True(File.Exists(Path.Combine(AppDir, "engines", "tts", "python", "python.exe")));
+    }
+
+    [Fact]
+    public async Task A_failed_part_keeps_the_parts_before_it_and_a_retry_starts_over_cleanly()
+    {
+        var runtime = Zip(["tts/python/python.exe"]);
+        var missing = Zip(["tts/tts-server.py"]);
+
+        var package = new EnginePackage(
+            AppDir,
+            Workspace,
+            [
+                new(EnginePackage.TtsId, "http://engines.test/tts-a-runtime.zip", Sha(runtime)),
+                new(EnginePackage.TtsId, "http://engines.test/tts-b-missing.zip", Sha(missing)),
+            ],
+            new ArchiveSetHandler(new Dictionary<string, byte[]> { ["tts-a-runtime.zip"] = runtime }));
+
+        Assert.True(package.TryStartDownload(out var error), error);
+        var state = await WaitForAsync(package);
+
+        Assert.Equal("failed", state.Phase);
+        // The part that did arrive stays unpacked; the readiness check is what reports the engine as incomplete.
+        Assert.True(File.Exists(Path.Combine(AppDir, "engines", "tts", "python", "python.exe")));
+        Assert.False(package.Status().Tts.Installed);
+    }
+
+    [Fact]
     public void A_missing_packaged_interpreter_falls_back_to_the_venv_that_is_there()
     {
         var app = Path.GetFullPath(AppDir);
@@ -302,6 +379,45 @@ public sealed class EnginePackageTests : IDisposable
             }
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(archive) });
+        }
+    }
+
+    private sealed class DroppingHandler(byte[] archive) : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+
+        public long ResumedFrom { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests++;
+            var from = request.Headers.Range?.Ranges.FirstOrDefault()?.From;
+            if (from is { } start)
+            {
+                ResumedFrom = start;
+                var rest = new HttpResponseMessage(HttpStatusCode.PartialContent) { Content = new ByteArrayContent(archive[(int)start..]) };
+                rest.Content.Headers.ContentLength = archive.Length - start;
+                return Task.FromResult(rest);
+            }
+
+            var truncated = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new MemoryStream(archive, 0, archive.Length / 2)),
+            };
+            truncated.Content.Headers.ContentLength = archive.Length;
+            return Task.FromResult(truncated);
+        }
+    }
+
+    /// <summary>Serves a different archive per file name, and 404s anything not in the set.</summary>
+    private sealed class ArchiveSetHandler(Dictionary<string, byte[]> archives) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var name = Path.GetFileName(request.RequestUri!.AbsolutePath);
+            return Task.FromResult(archives.TryGetValue(name, out var archive)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(archive) }
+                : new HttpResponseMessage(HttpStatusCode.NotFound));
         }
     }
 }

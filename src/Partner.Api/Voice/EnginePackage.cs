@@ -44,13 +44,23 @@ public sealed class EnginePackage
     private const int KwsPort = 45103;
 
     /// <summary>
-    /// Published archive locations. Blank until a release publishes them; <c>PARTNER_ENGINE_TTS_URL</c> /
-    /// <c>PARTNER_ENGINE_KWS_URL</c> (and the matching <c>_SHA256</c>) override per machine without a rebuild.
+    /// Published archive locations, in extraction order. An engine may need more than one archive: a GitHub
+    /// release asset has to stay under 2 GiB, and the 3 GB TTS runtime plus models do not fit in one file, so
+    /// the packer (<c>scripts/pack-engines.ps1</c>) writes several zips that each unpack into the engines root.
+    /// Blank URLs mean "not published yet"; <c>PARTNER_ENGINE_TTS_URL</c> / <c>PARTNER_ENGINE_KWS_URL</c> (and
+    /// the matching <c>_SHA256</c>) replace the whole list of that engine with one archive, for local testing.
     /// </summary>
-    private const string TtsArchiveUrl = "";
-    private const string TtsArchiveSha256 = "";
-    private const string KwsArchiveUrl = "";
-    private const string KwsArchiveSha256 = "";
+    private static readonly (string Url, string Sha256)[] TtsArchives =
+    [
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-a-runtime.zip", "df1eb138025b03a922e72791b4d0a8696c5e713c1c3b80cd367ef5bfddd94fd2"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-b-talker.zip", "d459f96e0252f2bf8d556ed04cbce08e009dae0be853d9010aa538587484eb58"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-c-codec.zip", "16bcf458853dc9588b1bbfb6a8c2513eea1807766f198cba2c78a534028983b5"),
+    ];
+
+    private static readonly (string Url, string Sha256)[] KwsArchives =
+    [
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-kws.zip", "c5826cf80f8af8f5e23bb94b1bdb7415669d067ebdc29392d90454a2b9f5f647"),
+    ];
 
     // The interpreter is looked up in order: a relocatable runtime shipped inside the archive wins over a venv,
     // whose pyvenv.cfg holds an absolute path and only works on the machine that built it.
@@ -286,11 +296,17 @@ public sealed class EnginePackage
             var staging = Path.Combine(root, ".download");
             Directory.CreateDirectory(staging);
 
-            for (var index = 0; index < sources.Count; index++)
+            // One engine can arrive as several archives, so the label counts within that engine and the staging
+            // file is named after the archive: a shared name would let part 2 resume onto part 1's leftover .part.
+            var totals = sources.GroupBy(source => source.Id).ToDictionary(group => group.Key, group => group.Count());
+            var seen = new Dictionary<string, int>();
+
+            foreach (var source in sources)
             {
-                var source = sources[index];
-                var label = $"{(source.Id == TtsId ? "朗读引擎" : "唤醒与识别引擎")}（{index + 1}/{sources.Count}）";
-                var archive = Path.Combine(staging, $"{source.Id}.zip");
+                var engine = source.Id == TtsId ? "朗读引擎" : "唤醒与识别引擎";
+                var position = seen[source.Id] = seen.GetValueOrDefault(source.Id) + 1;
+                var label = totals[source.Id] > 1 ? $"{engine}（{position}/{totals[source.Id]}）" : engine;
+                var archive = Path.Combine(staging, ArchiveName(source));
 
                 await DownloadAsync(source, archive, label, ct).ConfigureAwait(false);
 
@@ -313,9 +329,53 @@ public sealed class EnginePackage
         }
     }
 
+    private const int DownloadAttempts = 3;
+
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(60);
+
     private async Task DownloadAsync(EnginePackageSource source, string archive, string label, CancellationToken ct)
     {
         var part = archive + ".part";
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await DownloadOnceAsync(source, part, label, ct).ConfigureAwait(false);
+                break;
+            }
+            catch (Exception error) when (attempt < DownloadAttempts && IsTransient(error, ct))
+            {
+                SetState(new EngineDownloadState("downloading", $"{label} 连接中断，正在续传（第 {attempt + 1} 次）", 0, null, null));
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(source.Sha256))
+        {
+            SetState(new EngineDownloadState("downloading", $"{label} 校验中", 0, null, null));
+            var actual = await Sha256Async(part, ct).ConfigureAwait(false);
+            if (!string.Equals(actual, source.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(part);
+                throw new InvalidDataException("下载的文件校验失败（SHA-256 不一致），已删除，请重试");
+            }
+        }
+
+        File.Move(part, archive, overwrite: true);
+    }
+
+    private static bool IsTransient(Exception error, CancellationToken ct) =>
+        !ct.IsCancellationRequested
+        && error switch
+        {
+            IOException => true,
+            HttpRequestException http => http.StatusCode is null,
+            _ => false,
+        };
+
+    private async Task DownloadOnceAsync(EnginePackageSource source, string part, string label, CancellationToken ct)
+    {
         var have = File.Exists(part) ? new FileInfo(part).Length : 0L;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, source.Url);
@@ -331,8 +391,7 @@ public sealed class EnginePackage
         {
             // The part file is longer than (or unrelated to) the remote file; start over.
             File.Delete(part);
-            await DownloadAsync(source, archive, label, ct).ConfigureAwait(false);
-            return;
+            throw new IOException("断点与服务器上的文件对不上，已从头开始");
         }
 
         response.EnsureSuccessStatusCode();
@@ -347,9 +406,14 @@ public sealed class EnginePackage
         {
             var buffer = new byte[256 * 1024];
             var lastReport = Environment.TickCount64;
-            int read;
-            while ((read = await body.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+            while (true)
             {
+                var read = await ReadWithStallGuardAsync(body, buffer, label, ct).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    break;
+                }
+
                 await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
                 done += read;
 
@@ -364,21 +428,33 @@ public sealed class EnginePackage
         // A truncated body must not look like success: the server's length is the check when it gave one.
         if (total is { } expected && done != expected)
         {
-            throw new IOException($"下载不完整：收到 {done} 字节，应为 {expected}。再点一次下载会从断点继续");
+            throw new IOException($"下载不完整：收到 {done} 字节，应为 {expected}，正在续传");
         }
+    }
 
-        if (!string.IsNullOrWhiteSpace(source.Sha256))
+    private static async Task<int> ReadWithStallGuardAsync(Stream body, byte[] buffer, string label, CancellationToken ct)
+    {
+        using var stalled = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        stalled.CancelAfter(StallTimeout);
+        try
         {
-            SetState(new EngineDownloadState("downloading", $"{label} 校验中", done, total, null));
-            var actual = await Sha256Async(part, ct).ConfigureAwait(false);
-            if (!string.Equals(actual, source.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                File.Delete(part);
-                throw new InvalidDataException("下载的文件校验失败（SHA-256 不一致），已删除，请重试");
-            }
+            return await body.ReadAsync(buffer, stalled.Token).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new IOException($"{label} {StallTimeout.TotalSeconds:F0} 秒没有收到数据，正在重试");
+        }
+    }
 
-        File.Move(part, archive, overwrite: true);
+    /// <summary>
+    /// The staging file name for one archive: the asset name from the URL, so every part keeps its own
+    /// <c>.part</c> across retries. Falls back to the engine id for URLs without a usable last segment.
+    /// </summary>
+    private static string ArchiveName(EnginePackageSource source)
+    {
+        var name = Uri.TryCreate(source.Url, UriKind.Absolute, out var uri) ? Path.GetFileName(uri.AbsolutePath) : string.Empty;
+        name = string.Concat(name.Where(character => !Path.GetInvalidFileNameChars().Contains(character)));
+        return name.Length == 0 ? $"{source.Id}.zip" : $"{source.Id}-{name}";
     }
 
     private static async Task<string> Sha256Async(string path, CancellationToken ct)
@@ -484,11 +560,29 @@ public sealed class EnginePackage
 
     private static IReadOnlyList<EnginePackageSource> DefaultSources() =>
     [
-        new(TtsId,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_TTS_URL") ?? TtsArchiveUrl,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_TTS_SHA256") ?? TtsArchiveSha256),
-        new(KwsId,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_KWS_URL") ?? KwsArchiveUrl,
-            Environment.GetEnvironmentVariable("PARTNER_ENGINE_KWS_SHA256") ?? KwsArchiveSha256),
+        .. Sources(TtsId, "PARTNER_ENGINE_TTS_URL", "PARTNER_ENGINE_TTS_SHA256", TtsArchives),
+        .. Sources(KwsId, "PARTNER_ENGINE_KWS_URL", "PARTNER_ENGINE_KWS_SHA256", KwsArchives),
     ];
+
+    /// <summary>
+    /// The published archives of one engine, unless the environment names a single archive to use instead —
+    /// that override is what a dev machine uses to test an unpacked build before anything is published.
+    /// </summary>
+    private static IEnumerable<EnginePackageSource> Sources(
+        string id,
+        string urlVariable,
+        string shaVariable,
+        (string Url, string Sha256)[] published)
+    {
+        if (Environment.GetEnvironmentVariable(urlVariable) is { } overrideUrl && !string.IsNullOrWhiteSpace(overrideUrl))
+        {
+            yield return new EnginePackageSource(id, overrideUrl, Environment.GetEnvironmentVariable(shaVariable));
+            yield break;
+        }
+
+        foreach (var (url, sha256) in published)
+        {
+            yield return new EnginePackageSource(id, url, sha256);
+        }
+    }
 }
