@@ -22,7 +22,7 @@ The installer does **not** contain the engines. After installing, the settings p
 
 | Trigger | Result |
 |---|---|
-| push tag `v0.2.0` | full release: engine packs (when a runner is configured) + installer + release |
+| push tag `v0.2.0` | builds the installer and publishes a release; the **engine packs are not rebuilt** unless a self-hosted runner is enabled (below) |
 | Actions → release → Run workflow with an empty `tag` | build only; the installer lands in the workflow artifacts |
 | same, with `tag` and `publish` ticked | publish that tag |
 
@@ -48,10 +48,13 @@ Ship a new engine set under a new tag (`engines-v2`) instead of overwriting the 
 
 The `app` job:
 
-1. `gh release download engines-v1 --pattern engines-manifest.json`;
-2. `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` — compares the URLs and SHA-256 values in the manifest with the constants in `EnginePackage.cs` and **fails the build when they differ**.
+1. `gh release download <engine tag> --pattern engines-manifest.json` — the engine tag comes from the repository variable `ENGINE_TAG`, falling back to `engines-v1`; a manual run can override it;
+2. runs `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` and only emits a **warning** when the committed constants differ;
+3. runs the same script without `--check`, which writes the manifest's URLs and SHA-256 values into `EnginePackage.cs`, and builds from that.
 
-So a repacked engine set has to be synced into the constants. To do that by hand, run the same script without `--check`: it rewrites the two arrays in `EnginePackage.cs` and keeps the existing indentation and line endings.
+So the installer always downloads exactly the archives that are on the engine release; the only thing that can lag is the committed constant, and that shows up as a CI warning.
+
+When the engines move to a new tag (`engines-v2`), set the repository variable `ENGINE_TAG=engines-v2`; the workflow needs no edit.
 
 ## Branches and protection
 

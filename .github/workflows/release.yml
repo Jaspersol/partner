@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  ENGINE_TAG: ${{ inputs.engine_tag || 'engines-v1' }}
+  ENGINE_TAG: ${{ inputs.engine_tag || vars.ENGINE_TAG || 'engines-v1' }}
   ENGINE_TARGET: ${{ vars.ENGINE_TARGET_BRANCH || 'master' }}
 
 jobs:
@@ -85,6 +85,11 @@ jobs:
           gh release download $env:ENGINE_TAG --pattern engines-manifest.json --dir dist/engines --clobber
           if ($LASTEXITCODE -ne 0) { throw "the $env:ENGINE_TAG release has no engines-manifest.json; run scripts/pack-engines.ps1 -UploadTag $env:ENGINE_TAG" }
           node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning title=Engine hashes drifted::EnginePackage.cs does not match $env:ENGINE_TAG. The installer is built from the release manifest anyway; regenerate the constants and commit them so a local build pins the same archives."
+          }
+          node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json
+          if ($LASTEXITCODE -ne 0) { throw 'cannot pin the engine manifest' }
 
       - name: Version from the tag
         if: startsWith(github.ref, 'refs/tags/')

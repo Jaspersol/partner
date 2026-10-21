@@ -22,7 +22,7 @@
 
 | 方式 | 做什麼 |
 |---|---|
-| push tag `v0.2.0` | 完整發佈：引擎包（若開了 runner）+ 安裝包 + release |
+| push tag `v0.2.0` | 編譯安裝包並發 release；**引擎權重包不會重打**（除非開了 self-hosted runner，見下） |
 | Actions → release → Run workflow，`tag` 留空 | 只編譯，產物進 Actions artifact，不發 release |
 | 同上，填 `tag` + 勾 `publish` | 按指定 tag 發佈 |
 
@@ -48,10 +48,13 @@
 
 `app` job 會：
 
-1. `gh release download engines-v1 --pattern engines-manifest.json`；
-2. `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` —— 把清單裡的位址和 SHA-256 與 `EnginePackage.cs` 裡的常數比對，**不一致就讓建置失敗**。
+1. `gh release download <引擎 tag> --pattern engines-manifest.json`（引擎 tag 預設取倉庫變數 `ENGINE_TAG`，沒設就是 `engines-v1`；手動觸發時也可用輸入參數覆蓋）；
+2. `node scripts/apply-engines-manifest.mjs dist/engines/engines-manifest.json --check` 先比對，不一致只發一條 **warning**（提示你同步常數）；
+3. 再跑一次不帶 `--check` 的同一腳本，**把清單裡的位址和 SHA-256 寫進 `EnginePackage.cs` 再編譯**。
 
-所以改了引擎包必須同步常數；手動同步時去掉 `--check` 直接跑該腳本即可（它會改寫 `EnginePackage.cs` 裡兩個陣列，保持縮排與換行風格）。
+所以安裝包裡的 hash 永遠等於引擎 release 上的實際資產，不會因為忘了手改常數而發錯；差別只是「倉庫裡的常數有沒有跟上」，這個會以 CI warning 提醒。
+
+引擎包換了 tag（`engines-v2`）時，改倉庫變數 `ENGINE_TAG=engines-v2` 就行，不用改 workflow。
 
 ## 分支與保護
 
