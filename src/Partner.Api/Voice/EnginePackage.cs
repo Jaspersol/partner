@@ -52,12 +52,14 @@ public sealed class EnginePackage
     /// </summary>
     private static readonly (string Url, string Sha256)[] TtsArchives =
     [
-        ("", ""),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-a-runtime.zip", "1b099000b5bcb1a6c3658f712c87e0e0a72688f9c1626382f68d763df18eb92d"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-b-talker.zip", "56d5f87c7d93a04bbed6d4cffcfbd20e941b16557fa80a75324183a940e08f3c"),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-tts-c-codec.zip", "8641f3ac31a74bae5844f20a9800b529b5e56bcdb519f7c9ac0c76c3ca98496e"),
     ];
 
     private static readonly (string Url, string Sha256)[] KwsArchives =
     [
-        ("", ""),
+        ("https://github.com/Jaspersol/partner/releases/download/engines-v1/partner-engine-kws.zip", "d3ea329e2edb4f954ed14776f36cef508c7b3f7c80de3a7f4e59734d5e8078f8"),
     ];
 
     // The interpreter is looked up in order: a relocatable runtime shipped inside the archive wins over a venv,
@@ -327,9 +329,53 @@ public sealed class EnginePackage
         }
     }
 
+    private const int DownloadAttempts = 3;
+
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(60);
+
     private async Task DownloadAsync(EnginePackageSource source, string archive, string label, CancellationToken ct)
     {
         var part = archive + ".part";
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await DownloadOnceAsync(source, part, label, ct).ConfigureAwait(false);
+                break;
+            }
+            catch (Exception error) when (attempt < DownloadAttempts && IsTransient(error, ct))
+            {
+                SetState(new EngineDownloadState("downloading", $"{label} 连接中断，正在续传（第 {attempt + 1} 次）", 0, null, null));
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(source.Sha256))
+        {
+            SetState(new EngineDownloadState("downloading", $"{label} 校验中", 0, null, null));
+            var actual = await Sha256Async(part, ct).ConfigureAwait(false);
+            if (!string.Equals(actual, source.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(part);
+                throw new InvalidDataException("下载的文件校验失败（SHA-256 不一致），已删除，请重试");
+            }
+        }
+
+        File.Move(part, archive, overwrite: true);
+    }
+
+    private static bool IsTransient(Exception error, CancellationToken ct) =>
+        !ct.IsCancellationRequested
+        && error switch
+        {
+            IOException => true,
+            HttpRequestException http => http.StatusCode is null,
+            _ => false,
+        };
+
+    private async Task DownloadOnceAsync(EnginePackageSource source, string part, string label, CancellationToken ct)
+    {
         var have = File.Exists(part) ? new FileInfo(part).Length : 0L;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, source.Url);
@@ -345,8 +391,7 @@ public sealed class EnginePackage
         {
             // The part file is longer than (or unrelated to) the remote file; start over.
             File.Delete(part);
-            await DownloadAsync(source, archive, label, ct).ConfigureAwait(false);
-            return;
+            throw new IOException("断点与服务器上的文件对不上，已从头开始");
         }
 
         response.EnsureSuccessStatusCode();
@@ -361,9 +406,14 @@ public sealed class EnginePackage
         {
             var buffer = new byte[256 * 1024];
             var lastReport = Environment.TickCount64;
-            int read;
-            while ((read = await body.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+            while (true)
             {
+                var read = await ReadWithStallGuardAsync(body, buffer, label, ct).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    break;
+                }
+
                 await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
                 done += read;
 
@@ -378,21 +428,22 @@ public sealed class EnginePackage
         // A truncated body must not look like success: the server's length is the check when it gave one.
         if (total is { } expected && done != expected)
         {
-            throw new IOException($"下载不完整：收到 {done} 字节，应为 {expected}。再点一次下载会从断点继续");
+            throw new IOException($"下载不完整：收到 {done} 字节，应为 {expected}，正在续传");
         }
+    }
 
-        if (!string.IsNullOrWhiteSpace(source.Sha256))
+    private static async Task<int> ReadWithStallGuardAsync(Stream body, byte[] buffer, string label, CancellationToken ct)
+    {
+        using var stalled = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        stalled.CancelAfter(StallTimeout);
+        try
         {
-            SetState(new EngineDownloadState("downloading", $"{label} 校验中", done, total, null));
-            var actual = await Sha256Async(part, ct).ConfigureAwait(false);
-            if (!string.Equals(actual, source.Sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                File.Delete(part);
-                throw new InvalidDataException("下载的文件校验失败（SHA-256 不一致），已删除，请重试");
-            }
+            return await body.ReadAsync(buffer, stalled.Token).ConfigureAwait(false);
         }
-
-        File.Move(part, archive, overwrite: true);
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new IOException($"{label} {StallTimeout.TotalSeconds:F0} 秒没有收到数据，正在重试");
+        }
     }
 
     /// <summary>
