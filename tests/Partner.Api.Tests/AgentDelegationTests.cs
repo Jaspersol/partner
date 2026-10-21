@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Partner.Api.Settings;
+using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
 using Partner.Core.Sessions;
@@ -430,7 +431,7 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
 
         await SendAsync("第一句");
         await WaitForAssistantAsync("一");
-        Assert.Equal("You are a single-user local assistant.", _llm.Main.Requests[0].Messages[0].Content);
+        Assert.Equal(AgentPrompts.MainDefault, _llm.Main.Requests[0].Messages[0].Content);
 
         // The reply is in the log a moment before the loop counts the turn as handled; wait for the count, or the
         // "nothing restarted" comparison below races it.

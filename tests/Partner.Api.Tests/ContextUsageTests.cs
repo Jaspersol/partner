@@ -73,17 +73,17 @@ public sealed partial class ViewEndpointsTests
             });
         }
 
-        // A window far too small for twelve 100-token entries.
+        // A window far too small for twelve 100-token entries once the system prompt has taken its share.
         var put = await _http.PutAsJsonAsync("/api/settings", new
         {
-            model = new { contextTokens = 512, maxTokens = 64 },
+            model = new { contextTokens = 900, maxTokens = 64 },
         });
         put.EnsureSuccessStatusCode();
 
         var context = await ContextAsync();
 
         Assert.True(context.GetProperty("foldedItems").GetInt32() > 0, "nothing was reported as folded");
-        Assert.True(context.GetProperty("keptItems").GetInt32() < 12, "everything was kept in a 512-token window");
+        Assert.True(context.GetProperty("keptItems").GetInt32() < 12, "everything was kept in a 900-token window");
 
         Assert.True(context.GetProperty("usedTokens").GetInt32() <= context.GetProperty("budgetTokens").GetInt32());
     }

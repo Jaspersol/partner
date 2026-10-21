@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Partner.Core.Agent;
 
 namespace Partner.Api.Tests;
 
@@ -258,7 +259,7 @@ public sealed class AgentsEndpointTests : ApiFixture
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/agents");
         Assert.Equal(JsonValueKind.Null, view.GetProperty("main").GetProperty("prompt").ValueKind);
         Assert.Equal(JsonValueKind.Null, view.GetProperty("subAgents")[0].GetProperty("prompt").ValueKind);
-        Assert.Equal("You are a single-user local assistant.", view.GetProperty("main").GetProperty("effectivePrompt").GetString());
+        Assert.Equal(AgentPrompts.MainDefault, view.GetProperty("main").GetProperty("effectivePrompt").GetString());
     }
 
     [Fact]

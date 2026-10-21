@@ -15,6 +15,9 @@ namespace Partner.Core.Tests.Agent;
 /// </summary>
 public sealed class ContextAssemblerTests : IDisposable
 {
+    /// <summary>The window tests below are sized in a handful of tokens; the real default prompt would swallow them.</summary>
+    private const string TinyPrompt = "You are a single-user local assistant.";
+
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "partner-context-tests", Guid.NewGuid().ToString("n"));
 
     /// <summary>Kept so the fixture can close the sink: on Windows a leaked handle makes the cleanup throw.</summary>
@@ -280,7 +283,7 @@ public sealed class ContextAssemblerTests : IDisposable
 
         // Budget: 40 − 8 reserve = 32, minus the system block (~14) and the input (~5) leaves ~13 — room for
         // two short turns, so the two oldest fall out even though the count is small.
-        var messages = await new SessionWindowContextAssembler(store, contextTokens: 40, reserveForOutput: 8)
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 40, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
             .AssembleInitialAsync(Input("five"), Array.Empty<string>());
 
         var bodies = messages.Select(m => m.Content).ToList();
@@ -299,7 +302,7 @@ public sealed class ContextAssemblerTests : IDisposable
 
         // 400 characters is ~100 tokens: a 70-token window holds the short turn but not the long one, and the
         // suffix rule means the long one takes the short one with it.
-        var messages = await new SessionWindowContextAssembler(store, contextTokens: 70, reserveForOutput: 8)
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 70, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
             .AssembleInitialAsync(Input("next"), Array.Empty<string>());
 
         var bodies = messages.Select(m => m.Content).ToList();
@@ -313,7 +316,7 @@ public sealed class ContextAssemblerTests : IDisposable
 
         // Far too small for the history — but dropping the instructions or the question would be worse than
         // sending an over-long prompt, and a turn that answers nothing is not a turn.
-        var messages = await new SessionWindowContextAssembler(store, contextTokens: 32, reserveForOutput: 8)
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 32, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
             .AssembleInitialAsync(Input("the question"), new[] { "Be concise." });
 
         Assert.Equal("system", messages[0].Role);
@@ -341,7 +344,7 @@ public sealed class ContextAssemblerTests : IDisposable
                 Body = "and now?",
             });
 
-            var messages = await new SessionWindowContextAssembler(store, contextTokens: 64, reserveForOutput: 8)
+            var messages = await new SessionWindowContextAssembler(store, contextTokens: 64, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
                 .AssembleInitialAsync(Input("next"), Array.Empty<string>());
 
             // The summary rides in the system block, so the turn budget is spent on turns.
@@ -524,9 +527,9 @@ public sealed class ContextAssemblerTests : IDisposable
         await using var store = await SessionAsync(
             Enumerable.Range(0, 10).Select(i => (SessionEventKind.User, $"message number {i} padded out a little")).ToArray());
 
-        var plain = await new SessionWindowContextAssembler(store, contextTokens: 200, reserveForOutput: 20).MeasureAsync();
+        var plain = await new SessionWindowContextAssembler(store, contextTokens: 200, reserveForOutput: 20, baseSystemPrompt: TinyPrompt).MeasureAsync();
         var withTools = await new SessionWindowContextAssembler(
-            store, contextTokens: 200, reserveForOutput: 20, reservedTokens: () => 80).MeasureAsync();
+            store, contextTokens: 200, reserveForOutput: 20, reservedTokens: () => 80, baseSystemPrompt: TinyPrompt).MeasureAsync();
 
         Assert.True(withTools.FoldedItems > plain.FoldedItems, "the reserved tokens should push older entries out");
         Assert.True(withTools.SystemTokens >= plain.SystemTokens + 80);
