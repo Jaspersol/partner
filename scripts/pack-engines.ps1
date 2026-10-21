@@ -470,7 +470,7 @@ $manifest = [pscustomobject]@{
     assets = @($packs | ForEach-Object { [pscustomobject]@{ name = $_.Name; bytes = $_.Bytes; sha256 = $_.Sha256 } })
 }
 $manifestPath = Join-Path $out 'engines-manifest.json'
-$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding utf8
+$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding utf8NoBOM
 Write-Host "`nmanifest: $manifestPath"
 
 $ttsParts = @($packs | Where-Object { $_.Name -like 'partner-engine-tts-*' })
