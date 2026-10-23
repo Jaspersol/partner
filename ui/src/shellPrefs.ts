@@ -36,3 +36,16 @@ export async function getTrayEnabled(): Promise<boolean> {
 export async function setTrayEnabled(enabled: boolean): Promise<void> {
   await internals()?.invoke('set_tray_enabled', { enabled })
 }
+
+/**
+ * Hands a verified installer to the shell, which starts it and quits: the installer replaces the files this
+ * process is running from, so it cannot stay alive. The path is the one the API's download state reported.
+ */
+export async function installUpdate(installerPath: string): Promise<void> {
+  const tauri = internals()
+  if (tauri === null) {
+    throw new Error('not in the desktop shell')
+  }
+
+  await tauri.invoke('install_update', { path: installerPath })
+}

@@ -620,6 +620,30 @@ export interface SettingsView {
 }
 
 /**
+ * The newest published release. `error` is set when the check could not be made — an answer the page shows
+ * beside the version instead of a rejected promise, because "GitHub is unreachable" is not a broken form.
+ */
+export interface UpdateCheck {
+  current: string
+  latest: string | null
+  available: boolean
+  installerName: string | null
+  sizeBytes: number | null
+  error: string | null
+}
+
+/** One installer download. `path` is set only when `phase` is `ready`; the shell then runs that file. */
+export type UpdatePhase = 'idle' | 'downloading' | 'verifying' | 'ready' | 'failed' | 'cancelled'
+
+export interface UpdateDownload {
+  phase: UpdatePhase
+  bytesDone: number
+  bytesTotal: number | null
+  path: string | null
+  error: string | null
+}
+
+/**
  * The desktop capability (M9). Off by default: it is the only irreversible capability here, and enabling it
  * lets the model *ask* to act — every action still waits for approval.
  */
@@ -967,6 +991,12 @@ export interface PartnerApiSurface {
   cancelEnginePackage(): Promise<EnginePackageStatus>
   /** Points at a folder that already holds the engines; null returns to <app>/engines. Rejects with the reason. */
   setEngineRoot(root: string | null): Promise<EnginePackageStatus>
+  /** Compares the installed version with the newest release. Failures arrive in `error`, not as a rejection. */
+  checkUpdate(current: string): Promise<UpdateCheck>
+  /** Starts downloading the installer found by the last check; poll `updateDownload` for progress. */
+  downloadUpdate(): Promise<UpdateDownload>
+  updateDownload(): Promise<UpdateDownload>
+  cancelUpdate(): Promise<UpdateDownload>
   approvals(): Promise<ApprovalQueue>
   answerApproval(approvalId: string, approved: boolean): Promise<void>
   desktop(): Promise<DesktopState>
@@ -1353,6 +1383,22 @@ export class PartnerApi implements PartnerApiSurface {
 
   setEngineRoot(root: string | null): Promise<EnginePackageStatus> {
     return this.request('PUT', '/api/local-engines/package/root', { root })
+  }
+
+  checkUpdate(current: string): Promise<UpdateCheck> {
+    return this.request('GET', `/api/update/check?current=${encodeURIComponent(current)}`)
+  }
+
+  downloadUpdate(): Promise<UpdateDownload> {
+    return this.request('POST', '/api/update/download')
+  }
+
+  updateDownload(): Promise<UpdateDownload> {
+    return this.request('GET', '/api/update/download')
+  }
+
+  cancelUpdate(): Promise<UpdateDownload> {
+    return this.request('POST', '/api/update/download/cancel')
   }
 
   /**

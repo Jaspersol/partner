@@ -17,6 +17,12 @@
 
 安裝包裡**不含**引擎：裝完在「設定 → 本地引擎」點下載，位址與 SHA-256 來自 `src/Partner.Api/Voice/EnginePackage.cs` 裡已提交的常數，指向 `engines-v1` release。
 
+## 應用內更新
+
+「設定 → 一般」顯示的版本號來自 `ui/package.json`（workflow 已按 tag 寫入），「檢查更新」讀取 GitHub 的 `releases/latest`（倉庫常數在 `src/Partner.Api/Updates/UpdateService.cs`）。所以每個應用 release 必須保留兩個資產：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校驗檔時應用不會提供這次更新。
+
+下載完成後先核對 SHA-256，再啟動安裝程式並結束應用。更新走的是普通 NSIS 安裝程式，不會繞過它靜默替換檔案。fork 需要把 `UpdateService.Repository` 改成自己的倉庫。
+
 ## 觸發方式
 
 | 方式 | 做什麼 |

@@ -2,7 +2,7 @@
 
 **简体中文** | [繁體中文](./README.zh-TW.md) | [English](./README.en.md)
 
-返回 [项目首页](../README.md)。
+返回 [项目首页](../README.zh-CN.md)。
 
 ## 入门
 

@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings, WebView } from '../src/api'
+import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings, UpdateCheck, UpdateDownload, WebView } from '../src/api'
 import ApprovalBanner from '../src/components/ApprovalBanner.vue'
 import Composer from '../src/components/Composer.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
@@ -906,6 +906,17 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     downloadEnginePackage: vi.fn(),
     cancelEnginePackage: vi.fn(),
     setEngineRoot: vi.fn(),
+    checkUpdate: vi.fn(async (current: string): Promise<UpdateCheck> => ({
+      current,
+      latest: current,
+      available: false,
+      installerName: null,
+      sizeBytes: null,
+      error: null,
+    })),
+    downloadUpdate: vi.fn(async (): Promise<UpdateDownload> => ({ phase: 'idle', bytesDone: 0, bytesTotal: null, path: null, error: null })),
+    updateDownload: vi.fn(async (): Promise<UpdateDownload> => ({ phase: 'idle', bytesDone: 0, bytesTotal: null, path: null, error: null })),
+    cancelUpdate: vi.fn(async (): Promise<UpdateDownload> => ({ phase: 'cancelled', bytesDone: 0, bytesTotal: null, path: null, error: null })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
     consumer: vi.fn(async () => ({ running: true, reason: '已注入模型', model: 'stub', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], })),
     devices: vi.fn(async () => ({ inputs: ['synthetic-mic'], outputs: ['synthetic-speaker'] })),

@@ -8,10 +8,18 @@ import Segmented from '../components/Segmented.vue'
 import SettingRow from '../components/SettingRow.vue'
 import TestButton from '../components/TestButton.vue'
 import { INPUT_MODES } from '../api'
+import { version as appVersion } from '../../package.json'
 import { LOCALES, LOCALE_NAMES, locale, setLocale, t, type Locale, type MessageKey, tr } from '../i18n'
 import { normalizeGear } from '../gears'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
-import { getAutostart, getTrayEnabled, hasShellPrefs, setAutostart, setTrayEnabled } from '../shellPrefs'
+import {
+  getAutostart,
+  getTrayEnabled,
+  hasShellPrefs,
+  installUpdate as launchInstaller,
+  setAutostart,
+  setTrayEnabled,
+} from '../shellPrefs'
 import type { IconName } from '../icons'
 import type {
   ConsumerState,
@@ -19,6 +27,8 @@ import type {
   EnginePackageStatus,
   PartnerApiSurface,
   RuntimeSettings,
+  UpdateCheck,
+  UpdateDownload,
   VoiceState,
   VoiceTestResult,
   WebEngineView,
@@ -587,6 +597,7 @@ onUnmounted(() => {
     clearInterval(enginePackageTimer)
     enginePackageTimer = null
   }
+  stopUpdatePoll()
 })
 
 /** Toggles an engine. Stores which ones are off, so a newly added engine defaults to on. */
@@ -872,6 +883,125 @@ async function loadShellPrefs(): Promise<void> {
   }
 }
 
+// ---- Updates -------------------------------------------------------------------------------------------------
+// The version comes from package.json, which the release workflow rewrites from the tag before the UI is built.
+// It is therefore the same number the installer carries and the one GitHub is asked to compare against.
+const updateChecking = ref(false)
+const updateResult = ref<UpdateCheck | null>(null)
+const updateError = ref('')
+const updateState = ref<UpdateDownload | null>(null)
+let updatePoll: number | null = null
+let updatePollBusy = false
+let updateLaunching = false
+
+function stopUpdatePoll(): void {
+  if (updatePoll !== null) {
+    window.clearInterval(updatePoll)
+    updatePoll = null
+  }
+}
+
+function failureText(failure: unknown): string {
+  return failure instanceof Error ? failure.message : String(failure)
+}
+
+async function checkForUpdate(): Promise<void> {
+  updateChecking.value = true
+  updateError.value = ''
+  updateResult.value = null
+  updateState.value = null
+  updateLaunching = false
+  stopUpdatePoll()
+  try {
+    const result = await props.api.checkUpdate(appVersion)
+    updateResult.value = result
+    // The check reports a failed lookup in the payload: the version row stays usable either way.
+    if (result.error !== null) {
+      updateError.value = result.error
+    }
+  } catch (failure) {
+    updateError.value = failureText(failure)
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+/** Applies one download state. `ready` is also where the shell is handed the verified file. */
+function applyUpdateState(state: UpdateDownload): void {
+  updateState.value = state
+  if (state.error !== null && state.error !== '') {
+    updateError.value = state.error
+  }
+
+  if (state.phase === 'ready' && state.path !== null) {
+    stopUpdatePoll()
+    if (!updateLaunching) {
+      updateLaunching = true
+      void launchInstaller(state.path).catch((failure: unknown) => {
+        updateLaunching = false
+        updateError.value = failureText(failure)
+      })
+    }
+    return
+  }
+
+  if (state.phase === 'failed' || state.phase === 'cancelled') {
+    stopUpdatePoll()
+  }
+}
+
+async function pollUpdate(): Promise<void> {
+  if (updatePollBusy) return
+  updatePollBusy = true
+  try {
+    applyUpdateState(await props.api.updateDownload())
+  } catch (failure) {
+    updateError.value = failureText(failure)
+    stopUpdatePoll()
+  } finally {
+    updatePollBusy = false
+  }
+}
+
+async function beginUpdate(): Promise<void> {
+  updateError.value = ''
+  updateLaunching = false
+  try {
+    applyUpdateState(await props.api.downloadUpdate())
+    if (updateState.value?.phase === 'downloading' || updateState.value?.phase === 'verifying') {
+      stopUpdatePoll()
+      updatePoll = window.setInterval(() => void pollUpdate(), 600)
+    }
+  } catch (failure) {
+    updateError.value = failureText(failure)
+  }
+}
+
+async function cancelUpdateDownload(): Promise<void> {
+  try {
+    applyUpdateState(await props.api.cancelUpdate())
+  } catch (failure) {
+    updateError.value = failureText(failure)
+  }
+}
+
+const updatePercent = computed<number | null>(() => {
+  const state = updateState.value
+  if (state === null || state.bytesTotal === null || state.bytesTotal <= 0) return null
+  return Math.min(100, Math.floor((state.bytesDone / state.bytesTotal) * 100))
+})
+
+const updateDownloading = computed(
+  () => updateState.value?.phase === 'downloading' || updateState.value?.phase === 'verifying',
+)
+
+const updateVerifying = computed(() => updateState.value?.phase === 'verifying')
+
+function sizeLabel(bytes: number): string {
+  const megabytes = bytes / (1024 * 1024)
+  return megabytes >= 10 ? `${Math.round(megabytes)} MB` : `${megabytes.toFixed(1)} MB`
+}
+
 // Reduced transparency and theme are frontend-only and never saved with the settings.
 const reducedTransparency = ref(readReducedTransparency())
 
@@ -982,6 +1112,59 @@ defineExpose({ refresh, hasUnsavedChanges })
               <p v-if="shellPrefError" class="warn-line" role="alert" data-test="settings-shell-error">{{ shellPrefError }}</p>
             </div>
             <p v-else class="callout" data-test="settings-general-unavailable">{{ t('settings.general.desktopOnly') }}</p>
+
+            <div class="g-card" data-test="settings-update">
+              <SettingRow :label="t('settings.general.version')" :hint="t('settings.general.versionHint')">
+                <span class="version-chip" data-test="settings-version">v{{ appVersion }}</span>
+                <button
+                  v-if="shellPrefs"
+                  class="ghost"
+                  type="button"
+                  data-test="settings-check-update"
+                  :disabled="updateChecking || updateDownloading"
+                  @click="checkForUpdate"
+                >
+                  {{ updateChecking ? t('settings.general.checking') : t('settings.general.checkUpdate') }}
+                </button>
+              </SettingRow>
+
+              <p v-if="updateError" class="warn-line" role="alert" data-test="settings-update-error">{{ updateError }}</p>
+              <p v-else-if="updateResult && !updateResult.available" class="hint-line" data-test="settings-update-latest">
+                {{ t('settings.general.upToDate', { version: `v${updateResult.latest ?? updateResult.current}` }) }}
+              </p>
+
+              <template v-else-if="updateResult?.available">
+                <p class="update-line" data-test="settings-update-available">
+                  {{ t('settings.general.updateAvailable', { version: `v${updateResult.latest}` }) }}
+                </p>
+
+                <div v-if="updateDownloading" class="update-actions" data-test="settings-update-progress">
+                  <span class="update-size">
+                    {{ updateVerifying ? t('settings.general.updateVerifying') : t('settings.general.updateDownloading') }}
+                  </span>
+                  <span v-if="updatePercent !== null" class="g-chip">{{ updatePercent }}%</span>
+                  <span v-else-if="(updateState?.bytesDone ?? 0) > 0" class="g-chip">{{ sizeLabel(updateState?.bytesDone ?? 0) }}</span>
+                  <button class="ghost" type="button" data-test="settings-update-cancel" @click="cancelUpdateDownload">
+                    {{ t('取消') }}
+                  </button>
+                </div>
+
+                <p v-else-if="updateState?.phase === 'ready'" class="hint-line" data-test="settings-update-starting">
+                  {{ t('settings.general.updateStarting') }}
+                </p>
+
+                <div v-else class="update-actions">
+                  <span v-if="updateResult.sizeBytes !== null" class="update-size">{{ sizeLabel(updateResult.sizeBytes) }}</span>
+                  <button class="primary" type="button" data-test="settings-update-install" @click="beginUpdate">
+                    {{ t('settings.general.downloadAndInstall') }}
+                  </button>
+                </div>
+              </template>
+
+              <p v-if="!shellPrefs" class="hint-line" data-test="settings-update-desktop-only">
+                {{ t('settings.general.updateDesktopOnly') }}
+              </p>
+            </div>
           </section>
 
           <section v-show="section === 'model'" class="panel" data-test="settings-section-model">
@@ -1853,6 +2036,38 @@ defineExpose({ refresh, hasUnsavedChanges })
 
 .warn-line button {
   min-block-size: 1.75rem;
+  font-size: var(--fs-meta);
+}
+
+.version-chip {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.update-line {
+  margin: 0;
+  padding-block: var(--space-2);
+  font-size: var(--fs-ui);
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.update-size {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.hint-line {
+  margin: 0;
+  padding-block: var(--space-2);
+  color: var(--text-3);
   font-size: var(--fs-meta);
 }
 

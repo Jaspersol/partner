@@ -17,6 +17,12 @@ There is one kind of tag: push `v*` to publish the installer. The voice engines 
 
 The installer does **not** contain the engines: after installing, click download under Settings → Local engines. The URLs and SHA-256 come from the constants committed in `src/Partner.Api/Voice/EnginePackage.cs`, which point at the `engines-v1` release.
 
+## In-app updates
+
+Settings → General shows the version from `ui/package.json` (the workflow writes it from the tag), and Check for updates reads GitHub's `releases/latest` (the repository constant lives in `src/Partner.Api/Updates/UpdateService.cs`). Every app release therefore has to keep two assets: `Partner_<version>_x64-setup.exe` and the `SHA256SUMS.txt` that lists it. Without the checksum file the app refuses to offer that update.
+
+The download is checked against that SHA-256 before the installer is started and the app exits. Updating goes through the ordinary NSIS installer; nothing silently replaces files behind it. A fork changes `UpdateService.Repository` to its own repository.
+
 ## Triggers
 
 | How | What happens |
