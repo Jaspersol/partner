@@ -3,6 +3,7 @@ using Partner.Api.Voice;
 using Partner.Core.Agent.Llm;
 using Partner.Api.Auth;
 using Partner.Api.Endpoints;
+using Partner.Api.Updates;
 
 namespace Partner.Api;
 
@@ -20,7 +21,8 @@ public static class ApiHost
         TimeProvider? clock = null,
         ILlmClient? llm = null,
         IVoiceComponents? components = null,
-        EnginePackage? enginePackage = null)
+        EnginePackage? enginePackage = null,
+        UpdateService? updates = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
@@ -34,6 +36,7 @@ public static class ApiHost
         var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents(), () => consumer.LiveAssistant);
         var package = enginePackage ?? new EnginePackage(EnginePackage.ResolveAppDir(), workspace);
         var localEngines = new LocalEngineHost(package.AppDir);
+        var updateService = updates ?? new UpdateService();
 
         // The engines are separate processes that wait on their own /health, and nothing below needs them until
         // the voice halves are configured, so they warm up while the model loop and the scheduler are set up.
@@ -70,6 +73,7 @@ public static class ApiHost
         builder.Services.AddSingleton(voice);
         builder.Services.AddSingleton(localEngines);
         builder.Services.AddSingleton(package);
+        builder.Services.AddSingleton(updateService);
         builder.Services.AddSingleton(maintenance);
 
         // The shell serves the UI from its own origin, so every API call is cross-origin. CORS is a
@@ -104,6 +108,7 @@ public static class ApiHost
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
         EnginePackageEndpoints.Map(app);
+        UpdateEndpoints.Map(app);
 
         return (app, context, consumer, voice, localEngines, maintenance);
     }

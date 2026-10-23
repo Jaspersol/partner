@@ -1,113 +1,113 @@
 # Partner
 
-给电脑加一个能用嘴喊的助手：说一句话，它排队执行、回你一句语音。
+An assistant you can talk to on your PC: say a sentence, it queues the task, runs it, and answers out loud.
 
-**简体中文** | [繁體中文](README.zh-TW.md) | [English](README.en.md)
+[简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | **English**
 
-Partner 不替代编码 agent 或工作 agent。它给现有工作流加一层语音入口：用语音触发任务，配置尽量少，语音引擎和模型服务按需分体下载到本地。适合想在 Windows 桌面上“喊一声就办事”、又不想折腾一堆服务配置的人。
+Partner does not replace coding agents or work agents. It adds a voice entry point to the workflow you already have: trigger tasks by voice, keep configuration to a minimum, and download local voice engines and model services separately, only when you need them. It is for people who want to "just say it" on a Windows desktop without wiring up a pile of services.
 
-## 它是什么 / 不是什么
+## What it is / what it is not
 
-| 是 | 不是 |
+| It is | It is not |
 |---|---|
-| Windows 桌面应用，语音和文字共用一条输入队列 | 编码 agent、IDE 插件，也不替代你现有的工作 agent |
-| 连接你自己的 OpenAI 兼容模型端点 | 自带大模型或云服务 |
-| 本地语音引擎可选、可单独下载、可随时关掉 | 必须先下 3 GB 模型才能用的安装包 |
+| A Windows desktop app where voice and text share one input queue | A coding agent or IDE plugin, or a replacement for the work agent you already use |
+| A client for your own OpenAI-compatible model endpoint | A bundled LLM or cloud service |
+| Optional local voice engines you download separately and can switch off at any time | An installer that makes you download 3 GB of models first |
 
-## 核心特点
+## Key points
 
-- **单会话，按日期查看**：只有一条会话，不用新建、切换或管理多个对话；记忆和上下文始终连续。界面按日期渲染，用“年 → 月 → 日”选择器翻看有对话的日子，默认停在最新一天。
-- **语音控制**：唤醒词开闸，说完自动断句、识别、入队；回复按句朗读，播放时暂停收音。
-- **一站式简约配置**：一个设置页填完模型地址就能跑。端口、启动 API、令牌注入由桌面壳自动完成；模型名和音频设备从下拉里选，不用手打；改完立即生效，不用重启。
-- **分体式下载本地引擎**：安装包只带两个小服务脚本。TTS（约 3.0 GB）和唤醒+识别（约 380 MB）在“设置 → 本地引擎”里各自下载，支持续传和校验；关闭即结束进程，显存和内存全部归还。
+- **One session, viewed by date**: there is a single conversation, nothing to create, switch or manage; memory and context stay continuous. The UI renders it by day, with a year → month → day picker over the days that have conversation, opening on the newest day.
+- **Voice control**: a wake word opens the gate; speech is segmented, transcribed and queued automatically. Replies are read sentence by sentence, and the microphone pauses during playback.
+- **One-stop, minimal setup**: fill in a model endpoint on one settings page and it runs. The desktop shell picks the port, starts the API and injects the token; model names and audio devices come from drop-downs instead of typing; changes apply without a restart.
+- **Split download for local engines**: the installer carries only two small server scripts. TTS (about 3.0 GB) and wake word + speech recognition (about 380 MB) are downloaded separately under "Settings → Local engines", with resume and verification. Switching an engine off ends its process and gives back all VRAM and RAM.
 
-## 单会话 + 按日期渲染
+## One session + rendering by date
 
-所有输入（打字、语音、定时任务、子 agent 回报）都进同一条会话日志，按到达顺序执行。
+Every input (typing, voice, scheduled tasks, sub-agent reports) goes into the same session log and runs in arrival order.
 
-- **日期只是视图**：日志不按天拆分，选哪天只决定显示哪一段。在旧日期下发消息，仍然追加到日志末尾。
-- **只列有对话的日子**：没有对话的日期选不到；某天有了第一条消息会自动出现。
-- **按本机日历划分**：前端把时区偏移传给服务端，“哪一天”以你所在时区为准。
-- **跨午夜不跳页**：零点前开始的回合还在写时，界面停在原来那天，空闲后再切到新的一天。
+- **A day is only a view**: the log is not split by day; picking a day only chooses which part is shown. A message sent while viewing an old day still lands at the end of the log.
+- **Only days with conversation are listed**: empty days cannot be picked; a day appears as soon as it gets its first message.
+- **Your calendar decides the day**: the frontend sends its UTC offset, so "which day" follows your time zone.
+- **No jump at midnight**: while a turn that started before midnight is still writing, the view stays on that day and switches once idle.
 
-## 功能概览
+## Features
 
-| 功能 | 解决什么问题 | 文档 |
+| Feature | What it solves | Docs |
 |---|---|---|
-| 记忆 | 记住你说过的事实和偏好，下次自动带上，可查看、改层级、删除 | [memory](doc/memory.md) |
-| 子 agent | 主 agent 只对话和派活，桌面操作、读文件交给专门的子 agent 后台执行 | [sub-agents](doc/sub-agents.md) |
-| 桌面操控 | 让模型看窗口、点控件、打字、启动程序，每步可审批 | [desktop-control](doc/desktop-control.md) |
-| 语音功能 | 唤醒、识别、朗读整条链路，可接本地引擎或外部服务 | [voice](doc/voice.md) |
-| 定时 | 到点把一句话当成你发的消息投进队列，你或助手都能建 | [schedules](doc/schedules.md) |
-| MCP | 接入 stdio MCP 服务器，工具默认逐次询问 | [mcp](doc/mcp.md) |
-| Skills | 把常用做法写成 `SKILL.md`，上传或新建后，技能列表自动进入模型提示 | [skills](doc/skills.md) |
+| Memory | Remembers facts and preferences you mentioned and brings them back later; you can view, re-tier and delete them | [memory](doc/memory.en.md) |
+| Sub-agents | The main agent talks and delegates; desktop work and file reading run in the background on dedicated sub-agents | [sub-agents](doc/sub-agents.en.md) |
+| Desktop control | Lets the model see windows, press controls, type and launch programs, with per-step approval | [desktop-control](doc/desktop-control.en.md) |
+| Voice | Wake, recognition and read-aloud end to end, using local engines or external services | [voice](doc/voice.en.md) |
+| Schedules | At the set time, a sentence enters the queue as if you had sent it; you or the assistant can create them | [schedules](doc/schedules.en.md) |
+| MCP | Connects stdio MCP servers; their tools ask before every call by default | [mcp](doc/mcp.en.md) |
+| Skills | Write a routine as a `SKILL.md`, upload or create it, and the skill list goes into the model prompt | [skills](doc/skills.en.md) |
 
-## 快速启动
+## Quick start
 
-### 前置条件
+### Prerequisites
 
-| 项 | 要求 |
+| Item | Requirement |
 |---|---|
-| 系统 | Windows 10 2004 及以上 |
+| OS | Windows 10 2004 or later |
 | .NET | .NET 8 SDK |
-| Node | Node 22 + npm（不要用 pnpm，esbuild 会装不上） |
-| Rust | cargo 1.98+（只有桌面壳需要） |
-| WebView2 | Win10+ 自带 |
-| 模型 | 一个 OpenAI 兼容端点，例如本地 Ollama |
+| Node | Node 22 + npm (not pnpm: esbuild fails to install) |
+| Rust | cargo 1.98+ (only for the desktop shell) |
+| WebView2 | Included with Win10+ |
+| Model | An OpenAI-compatible endpoint, such as a local Ollama |
 
-### 安装与启动
+### Install and run
 
 ```bash
-npm --prefix ui install          # 首次
-npx --prefix ui tauri dev        # 启动前端 + 桌面壳，壳会自动拉起 API
+npm --prefix ui install          # first time
+npx --prefix ui tauri dev        # starts the frontend + desktop shell; the shell starts the API
 ```
 
-启动后在“设置 → 对话模型”填服务地址并选模型。没配模型时队列不会执行，界面会写明缺什么。也可以用环境变量：
+Then open "Settings → Chat model", enter the endpoint and pick a model. Without a model the queue is not executed, and the UI says what is missing. Environment variables also work:
 
 ```bash
 export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1
 export PARTNER_LLM_MODEL=qwen3
-export PARTNER_LLM_API_KEY=...   # 可选
+export PARTNER_LLM_API_KEY=...   # optional
 ```
 
-### 打安装包
+### Build the installer
 
 ```bash
-bash scripts/build-shell.sh      # 发布 API → 构建前端 → 编译壳 → 打 NSIS 安装包
+bash scripts/build-shell.sh      # publish API → build frontend → compile shell → NSIS installer
 ```
 
-### 只跑测试
+### Run the checks only
 
 ```bash
-bash scripts/ci.sh               # 编译、单测、smoke、能力门禁、前端、壳
-SKIP_SHELL=1 bash scripts/ci.sh  # 跳过最慢的壳编译
+bash scripts/ci.sh               # build, unit tests, smoke, capability gate, frontend, shell
+SKIP_SHELL=1 bash scripts/ci.sh  # skip the slow shell build
 ```
 
-## 文档导航
+## Documentation
 
-完整目录见 [doc/README.md](doc/README.md)，包括开发调试方式和每个功能的配置说明。
+See [doc/README.en.md](doc/README.en.md) for the full index, including development notes and configuration for each feature.
 
-## 项目结构
+## Project layout
 
-| 路径 | 内容 |
+| Path | Contents |
 |---|---|
-| `src/Partner.Core` | 会话、队列、agent 回合、记忆、调度、MCP、Skills、治理 |
-| `src/Partner.Desktop` | 窗口枚举、截图、输入注入、动作校验 |
-| `src/Partner.Voice` | 麦克风输入、断句、ASR/TTS 客户端、播放 |
-| `src/Partner.Api` | 本地 HTTP API、队列消费者、语音宿主、本地引擎管理 |
-| `ui/` | Vue 3 前端（简中 / 繁中 / 英文界面） |
-| `src-tauri/` | Tauri 2 桌面壳 |
-| `engines/` | 本地语音引擎的服务脚本；运行时和模型不进 git |
-| `scripts/` | CI、打包、引擎安装脚本 |
+| `src/Partner.Core` | Session, queue, agent turns, memory, scheduler, MCP, Skills, governance |
+| `src/Partner.Desktop` | Window enumeration, capture, input injection, action verification |
+| `src/Partner.Voice` | Microphone input, segmentation, ASR/TTS clients, playback |
+| `src/Partner.Api` | Local HTTP API, queue consumer, voice host, local engine management |
+| `ui/` | Vue 3 frontend (Simplified Chinese / Traditional Chinese / English UI) |
+| `src-tauri/` | Tauri 2 desktop shell |
+| `engines/` | Server scripts for the local voice engines; runtimes and models stay out of git |
+| `scripts/` | CI, packaging and engine install scripts |
 
-## 常见问题
+## FAQ
 
-**必须下载本地语音引擎吗？** 不必。文字输入不依赖语音；语音也可以接你已有的 ASR/TTS 服务地址。
+**Do I have to download the local voice engines?** No. Text input does not need voice, and voice can use ASR/TTS services you already run.
 
-**数据存在哪？** 默认 `%LocalAppData%/Partner/workspace`：会话日志、队列、记忆库、设置都在这里。记忆库是唯一存储，删除即丢失。
+**Where is my data?** By default in `%LocalAppData%/Partner/workspace`: session log, queue, memory database and settings. The memory database is the only copy; deleting it loses it.
 
-**支持 macOS / Linux 吗？** 不支持。桌面操控和音频都依赖 Win32 接口。
+**macOS / Linux?** Not supported. Desktop control and audio depend on Win32 APIs.
 
-## 许可
+## License
 
-Partner 的代码用 [MIT](LICENSE) 许可。语音引擎的运行环境、模型权重和音色锚点不在本仓库，按 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 里列的各自许可单独发布（Apache-2.0、FunASR MODEL_LICENSE 等），MIT 不覆盖它们。
+The code is [MIT](LICENSE) licensed. The voice engines — runtimes, model weights and voice anchors — are not in this repository; each ships under its own licence (Apache-2.0, FunASR MODEL_LICENSE, …) as listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and MIT does not cover them.

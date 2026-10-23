@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | [繁體中文](./README.zh-TW.md) | **English**
 
-Back to the [project home](../README.en.md).
+Back to the [project home](../README.md).
 
 ## Getting started
 

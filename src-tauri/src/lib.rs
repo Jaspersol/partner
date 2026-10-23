@@ -10,6 +10,9 @@ use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -116,13 +119,42 @@ fn set_tray_enabled(
     Ok(())
 }
 
+/// Starts the verified installer and quits, because the installer replaces the files this process runs from.
+///
+/// The path comes from the API's download state, but it is re-checked here: this is the step that executes a
+/// downloaded file, so a path that is not an existing `.exe` must never reach `Command`.
+#[tauri::command]
+fn install_update(app: AppHandle, path: String) -> Result<(), String> {
+    let installer = PathBuf::from(&path);
+    let is_exe = installer
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    if !installer.is_file() || !is_exe {
+        return Err(format!("not an installer: {path}"));
+    }
+
+    Command::new(&installer)
+        .spawn()
+        .map_err(|error| format!("could not start the installer: {error}"))?;
+
+    // The installer replaces this executable, so the shell has to go. Let the installer start first: its own
+    // check for a running instance then sees a process already on its way out instead of prompting the person
+    // to close the app that just told them it was updating.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        app.exit(0);
+    });
+
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
         ))
-        .invoke_handler(tauri::generate_handler![get_tray_enabled, set_tray_enabled])
+        .invoke_handler(tauri::generate_handler![get_tray_enabled, set_tray_enabled, install_update])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let enabled = window
@@ -192,11 +224,16 @@ fn free_port() -> Result<u16, String> {
     Ok(port)
 }
 
+/// `CREATE_NO_WINDOW`. Only this flag is set; the child still gets the inherited environment and the pipes.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn start_api(port: u16, token: &str) -> Result<Child, String> {
     let exe = api_exe_path()?;
     let workspace = workspace_dir()?;
 
-    let mut child = Command::new(&exe)
+    let mut command = Command::new(&exe);
+    command
         .arg(&workspace)
         .arg(port.to_string())
         // The token travels in the child's environment, never argv and never a file. The child also watches
@@ -211,7 +248,15 @@ fn start_api(port: u16, token: &str) -> Result<Child, String> {
         .env("PARTNER_API_TOKEN", token)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // The release shell is a GUI process, so Windows would give the console-subsystem child its own console
+    // window. Everything the API prints already goes to the pipes above and nothing reads its console, so the
+    // flag suppresses that window without taking anything away from the child.
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", exe.display()))?;
 

@@ -13,8 +13,11 @@ import type {
   SessionView as SessionViewData,
   SettingsView,
   RuntimeSettings,
+  UpdateCheck,
+  UpdateDownload,
   WebView,
 } from '../src/api'
+import { version as packageVersion } from '../package.json'
 import MemoryView from '../src/views/MemoryView.vue'
 import SessionView from '../src/views/SessionView.vue'
 import Composer from '../src/components/Composer.vue'
@@ -289,6 +292,17 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     downloadEnginePackage: vi.fn(),
     cancelEnginePackage: vi.fn(),
     setEngineRoot: vi.fn(),
+    checkUpdate: vi.fn(async (current: string): Promise<UpdateCheck> => ({
+      current,
+      latest: current,
+      available: false,
+      installerName: null,
+      sizeBytes: null,
+      error: null,
+    })),
+    downloadUpdate: vi.fn(async (): Promise<UpdateDownload> => ({ phase: 'idle', bytesDone: 0, bytesTotal: null, path: null, error: null })),
+    updateDownload: vi.fn(async (): Promise<UpdateDownload> => ({ phase: 'idle', bytesDone: 0, bytesTotal: null, path: null, error: null })),
+    cancelUpdate: vi.fn(async (): Promise<UpdateDownload> => ({ phase: 'cancelled', bytesDone: 0, bytesTotal: null, path: null, error: null })),
     testVoice: vi.fn(async (kind: 'asr' | 'tts' | 'kws' | 'model') => {
       calls.probes.push(kind)
       return kind === 'model'
@@ -1832,6 +1846,100 @@ describe('settings view', () => {
     // The wake words are edited where a person looks for them — under voice input — though they are stored with
     // the engine.
     expect(wrapper.find('[data-test="settings-section-input"] [data-test="local-kws-keywords"]').exists()).toBe(true)
+  })
+
+  it('shows the installed version and the release the check finds', async () => {
+    // The check button belongs to the desktop shell; the version itself is shown without one.
+    const invoke = vi.fn(async () => true)
+    const globals = window as unknown as { __TAURI_INTERNALS__?: { invoke: typeof invoke } }
+    globals.__TAURI_INTERNALS__ = { invoke }
+
+    try {
+      const { stub } = createStub({
+        checkUpdate: vi.fn(async (current: string): Promise<UpdateCheck> => ({
+          current,
+          latest: '9.9.9',
+          available: true,
+          installerName: 'Partner_9.9.9_x64-setup.exe',
+          sizeBytes: 20 * 1024 * 1024,
+          error: null,
+        })),
+      })
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="settings-version"]').text()).toBe(`v${packageVersion}`)
+
+      await wrapper.find('[data-test="settings-check-update"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="settings-update-available"]').text()).toContain('9.9.9')
+      expect(wrapper.find('[data-test="settings-update-install"]').exists()).toBe(true)
+    } finally {
+      delete globals.__TAURI_INTERNALS__
+    }
+  })
+
+  it('hands a verified installer to the shell instead of keeping the app alive', async () => {
+    const invoke = vi.fn(async (command: string) => (command === 'install_update' ? undefined : false))
+    const globals = window as unknown as { __TAURI_INTERNALS__?: { invoke: typeof invoke } }
+    globals.__TAURI_INTERNALS__ = { invoke }
+    // The download state is polled, not pushed. Capture the interval instead of waiting for it, so the test is
+    // driven by the callback the view registered and not by a guessed duration.
+    const timers: { callback: () => void; milliseconds: number | undefined }[] = []
+    const setIntervalSpy = vi.spyOn(window, 'setInterval').mockImplementation(((
+      callback: () => void,
+      milliseconds?: number,
+    ) => {
+      timers.push({ callback, milliseconds })
+      return 1
+    }) as typeof window.setInterval)
+
+    try {
+      const { stub } = createStub({
+        checkUpdate: vi.fn(async (current: string): Promise<UpdateCheck> => ({
+          current,
+          latest: '9.9.9',
+          available: true,
+          installerName: 'Partner_9.9.9_x64-setup.exe',
+          sizeBytes: 1024,
+          error: null,
+        })),
+        downloadUpdate: vi.fn(async (): Promise<UpdateDownload> => ({
+          phase: 'downloading',
+          bytesDone: 0,
+          bytesTotal: 1024,
+          path: null,
+          error: null,
+        })),
+        updateDownload: vi.fn(async (): Promise<UpdateDownload> => ({
+          phase: 'ready',
+          bytesDone: 1024,
+          bytesTotal: 1024,
+          path: 'C:\\Temp\\Partner_9.9.9_x64-setup.exe',
+          error: null,
+        })),
+      })
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      await wrapper.find('[data-test="settings-check-update"]').trigger('click')
+      await flushPromises()
+      await wrapper.find('[data-test="settings-update-install"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="settings-update-progress"]').exists()).toBe(true)
+
+      const poll = timers.find((timer) => timer.milliseconds === 600)
+      expect(poll).toBeDefined()
+      poll?.callback()
+      await flushPromises()
+
+      expect(invoke).toHaveBeenCalledWith('install_update', { path: 'C:\\Temp\\Partner_9.9.9_x64-setup.exe' })
+      expect(wrapper.find('[data-test="settings-update-starting"]').exists()).toBe(true)
+    } finally {
+      setIntervalSpy.mockRestore()
+      delete globals.__TAURI_INTERNALS__
+    }
   })
 
   describe('local engine package', () => {
