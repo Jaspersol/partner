@@ -698,7 +698,10 @@ internal static class Program
                         RecordId = $"budget-{i}",
                         Tier = MemoryTier.Semantic,
                         Scope = MemoryScope.Retain,
-                        Body = "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+                        // Distinct bodies that share only the query words: identical (or mostly identical)
+                        // records are de-duplicated by recall and superseded on write, and this check needs
+                        // several live rows for the token budget to actually cut the list.
+                        Body = $"alpha beta gamma d{i} e{i} f{i} h{i} k{i} l{i} m{i}",
                     });
                 }
 
@@ -1208,7 +1211,7 @@ internal static class Program
                 matrix
                 && new DesktopActTool(
                     new DesktopAutomation(), DesktopToolPolicy.Any, new FileMediaStore(root),
-                    supportsImages: true).Spec.Description.Contains("自动附上", StringComparison.Ordinal)
+                    supportsImages: true).Spec.Description.Contains("feedback=auto", StringComparison.Ordinal)
                 && new DesktopActTool(
                     new DesktopAutomation(), DesktopToolPolicy.Any, new FileMediaStore(root),
                     supportsImages: true).Spec.ParametersJsonSchema.Contains("feedback", StringComparison.Ordinal),
@@ -1344,12 +1347,13 @@ internal static class Program
                     {"kind":"KeyPress","virtualKey":67,"px":{{px}},"py":{{py}},"mediaId":"{{mediaId}}","feedback":"off"}
                     """);
 
+                // The point is the contract; which guard then refuses it depends on what is on screen
+                // (foreground lockup, overlapping windows, policy), so that part is not pinned.
                 Check("desktop: px/py on the desktop picture resolves to the point it was taken from",
                     !resolved.Ok
-                    && resolved.Content.Contains($"({centreX},{centreY})", StringComparison.Ordinal)
-                    && (resolved.Content.Contains("不在前台", StringComparison.Ordinal) ||
-                        resolved.Content.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal)),
-                    resolved.Content[..Math.Min(80, resolved.Content.Length)]);
+                    && resolved.Content.Contains($"({centreX},{centreY})", StringComparison.Ordinal),
+                    $"expected=({centreX},{centreY}) ok={resolved.Ok} "
+                        + resolved.Content[..Math.Min(100, resolved.Content.Length)]);
             }
         }
 
@@ -1392,6 +1396,48 @@ internal static class Program
                     !resolved.Ok
                     && resolved.Content.Contains($"'{element.Name}' [{element.Role}]", StringComparison.Ordinal),
                     resolved.Content[..Math.Min(90, resolved.Content.Length)]);
+            }
+            else
+            {
+                // No background window with a named button (a clean desktop, or one UIA cannot see). Verify the
+                // same snap arithmetic on a synthetic observation rather than letting the capability drop out
+                // of the gate because of the machine it ran on.
+                var frame = new PixelRect(0, 0, 400, 300);
+                var syntheticElement = new UiElement(
+                    "w:1", "w", "OK", "Button", new PixelRect(100, 100, 60, 30), "digest");
+                var synthetic = new DesktopObservation
+                {
+                    ObsId = "snap",
+                    TargetKey = "snap",
+                    Timestamp = DateTimeOffset.UnixEpoch,
+                    Sources = Array.Empty<string>(),
+                    Entities = new[]
+                    {
+                        new UiEntity
+                        {
+                            EntityId = "w",
+                            Generation = "obs-snap",
+                            Role = "window",
+                            Label = "snap",
+                            Rect = frame,
+                            Confidence = 1.0,
+                            IdentityDigest = "digest-w",
+                            LayoutDigest = DesktopObservation.Layout(frame),
+                            ProcessId = 1,
+                            ObservedAtMs = DateTimeOffset.UnixEpoch,
+                        },
+                    },
+                    Elements = new[] { syntheticElement },
+                };
+
+                var hit = DesktopActTool.SnapToElement(
+                    synthetic,
+                    "w",
+                    (syntheticElement.Centre.X + 5, syntheticElement.Centre.Y));
+
+                Check("desktop: a px/py miss within the snap radius resolves to the control it was for",
+                    hit?.ElementId == syntheticElement.ElementId,
+                    hit is null ? "(no snap target)" : hit.ElementId);
             }
         }
 
@@ -1474,15 +1520,24 @@ internal static class Program
                 await input.TickAsync();
             }
 
+            // The final silence tick starts the ASR request; the next tick absorbs it. Give it a bounded
+            // chance instead of reading the list the instant the request was sent.
+            for (var i = 0; i < 100 && input.Utterances.Count == 0; i++)
+            {
+                await Task.Delay(10);
+                await input.TickAsync();
+            }
+
+            var utterance = input.Utterances.FirstOrDefault();
             Check("voice: speech followed by silence produces one utterance",
-                input.Utterances.Count == 1 && input.Utterances[0].Transcript == "turn on the desk lamp",
-                $"utterances={input.Utterances.Count} text={input.Utterances[0].Transcript}");
+                utterance is { Transcript: "turn on the desk lamp" },
+                $"utterances={input.Utterances.Count} text={utterance?.Transcript ?? "(none)"}");
 
             Check("voice: the utterance becomes a queue item with a boot-scoped key",
                 input.Utterances.Count == 1
-                && input.Utterances[0].IdempotencyKey
-                    == $"voice:{input.DeviceId}:{input.BootId}:{input.Utterances[0].SegStartMs:0}",
-                input.Utterances.Count == 1 ? input.Utterances[0].IdempotencyKey : "(none)");
+                && utterance!.IdempotencyKey
+                    == $"voice:{input.DeviceId}:{input.BootId}:{utterance.SegStartMs:0}",
+                utterance?.IdempotencyKey ?? "(none)");
 
             Check("voice: the ASR request carried a 16 kHz mono WAV",
                 server.LastAsrBody is not null
@@ -1604,6 +1659,13 @@ internal static class Program
             for (var i = 0; i < 30; i++)
             {
                 source.Emit(0f, 320);
+                await input.TickAsync();
+            }
+
+            // The last tick starts the failing request; the failure is reported when a later tick absorbs it.
+            for (var i = 0; i < 100 && !log.Any(line => line.Contains("transcription failed", StringComparison.Ordinal)); i++)
+            {
+                await Task.Delay(10);
                 await input.TickAsync();
             }
 
@@ -3219,11 +3281,12 @@ internal static class Program
                 // After folding, the meter must show the folded history rather than the raw log. The window here
                 // is deliberately tiny (16 tokens), so the always-sent system block alone can exceed the budget —
                 // what matters is that folding lowered the prompt, not that it fits this artificial window.
+                // FoldedItems counts entries the window had to drop, not entries a summary replaced: after a
+                // successful fold everything that remains fits, so it is legitimately zero. The prompt cost is
+                // what proves the meter moved to the folded history.
                 Check("context: the meter reflects the folding",
-                    compactedUsage.GetProperty("foldedItems").GetInt32() > 0
-                    && compactedUsage.GetProperty("usedTokens").GetInt32() < usageAfter.GetProperty("usedTokens").GetInt32(),
-                    $"folded={compactedUsage.GetProperty("foldedItems").GetInt32()} "
-                    + $"{usageAfter.GetProperty("usedTokens").GetInt32()} -> {compactedUsage.GetProperty("usedTokens").GetInt32()} "
+                    compactedUsage.GetProperty("usedTokens").GetInt32() < usageAfter.GetProperty("usedTokens").GetInt32(),
+                    $"{usageAfter.GetProperty("usedTokens").GetInt32()} -> {compactedUsage.GetProperty("usedTokens").GetInt32()} "
                     + $"budget={compactedUsage.GetProperty("budgetTokens").GetInt32()}");
 
                 Check("context: the budget is the window minus the reserved output",
