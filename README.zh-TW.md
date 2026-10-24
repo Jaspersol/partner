@@ -11,7 +11,7 @@ Partner 不取代程式開發 agent 或工作 agent。它為現有工作流程�
 | 是 | 不是 |
 |---|---|
 | Windows 桌面應用程式，語音和文字共用一條輸入佇列 | 程式開發 agent、IDE 外掛，也不取代你現有的工作 agent |
-| 連接你自己的 OpenAI 相容模型端點 | 自帶大型模型或雲端服務 |
+| 連接你自己的 OpenAI 相容或 Anthropic 模型端點 | 自帶大型模型或雲端服務 |
 | 本機語音引擎可選、可單獨下載、可隨時關閉 | 必須先下載 3 GB 模型才能用的安裝包 |
 
 ## 核心特點
@@ -53,7 +53,7 @@ Partner 不取代程式開發 agent 或工作 agent。它為現有工作流程�
 | Node | Node 22 + npm（不要用 pnpm，esbuild 會裝不上） |
 | Rust | cargo 1.98+（只有桌面殼需要） |
 | WebView2 | Win10+ 內建 |
-| 模型 | 一個 OpenAI 相容端點，例如本機 Ollama |
+| 模型 | 一個 OpenAI 相容或 Anthropic 端點，例如本機 Ollama 或 Claude |
 
 ### 安裝與啟動
 
@@ -68,6 +68,7 @@ npx --prefix ui tauri dev        # 啟動前端 + 桌面殼，殼會自動帶起
 export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1
 export PARTNER_LLM_MODEL=qwen3
 export PARTNER_LLM_API_KEY=...   # 選填
+export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 ```
 
 ### 打包安裝檔

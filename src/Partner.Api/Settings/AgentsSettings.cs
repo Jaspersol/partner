@@ -18,6 +18,9 @@ public sealed record MainAgentSettings
 /// </summary>
 public sealed record SubAgentModelSettings
 {
+    /// <summary>Same choice as <see cref="ModelSettings.Protocol"/>, for this sub-agent's own endpoint.</summary>
+    public string Protocol { get; init; } = Partner.Core.Agent.Llm.LlmProtocols.OpenAi;
+
     public string? BaseUrl { get; init; }
 
     public string? Model { get; init; }

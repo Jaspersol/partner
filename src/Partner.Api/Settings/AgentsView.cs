@@ -6,6 +6,7 @@ namespace Partner.Api.Settings;
 public sealed record MainAgentView(string? Prompt, string DefaultPrompt, string EffectivePrompt, int PromptTokens);
 
 public sealed record SubAgentModelView(
+    string Protocol,
     string? BaseUrl,
     string? Model,
     bool ApiKeySet,
@@ -105,6 +106,7 @@ public sealed record AgentsView(
             agent.Model is null
                 ? null
                 : new SubAgentModelView(
+                    Partner.Core.Agent.Llm.LlmProtocols.Normalize(agent.Model.Protocol),
                     agent.Model.BaseUrl,
                     agent.Model.Model,
                     !string.IsNullOrEmpty(agent.Model.ApiKey),

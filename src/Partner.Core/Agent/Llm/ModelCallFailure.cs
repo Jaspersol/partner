@@ -108,8 +108,15 @@ public sealed class ModelCallFailure : Exception
             string.Empty);
 
     /// <summary>An answer that is not a completion.</summary>
-    public static ModelCallFailure Unreadable(string what, string detail) =>
-        new(FailureKind.Unreadable, what, "响应格式", "端点返回的不是预期的补全结构", "确认端点兼容 OpenAI 的 /chat/completions", null, Sanitize(detail));
+    public static ModelCallFailure Unreadable(string what, string detail, string? nextStep = null) =>
+        new(
+            FailureKind.Unreadable,
+            what,
+            "响应格式",
+            "端点返回的不是预期的补全结构",
+            nextStep ?? "确认端点兼容 OpenAI 的 /chat/completions",
+            null,
+            Sanitize(detail));
 
     /// <summary>Builds the right failure for an exception the transport threw.</summary>
     public static ModelCallFailure From(string what, Exception cause, TimeSpan? limit = null) =>

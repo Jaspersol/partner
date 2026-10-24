@@ -75,7 +75,7 @@ const form = reactive<RuntimeSettings>({
     tts: { enabled: false, command: 'engines/tts/python/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102, readyTimeoutSeconds: 30, keywords: [] as string[] },
     kws: { enabled: false, command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
-  model: { baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 128000, maxTokens: 32000, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
+  model: { protocol: 'openai', baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 128000, maxTokens: 32000, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', inputMode: 'foreground', allowedWindowTitles: [] as string[] },
 
   // Carried through untouched so the two capability pages' state survives a save made here. Not editable on
@@ -287,7 +287,7 @@ async function probeModels() {
   modelProbeError.value = ''
 
   try {
-    const probe = await props.api.listModels(form.model.baseUrl ?? undefined)
+    const probe = await props.api.listModels(form.model.baseUrl ?? undefined, form.model.protocol)
     models.value = probe.models
     modelProbeError.value = probe.error ?? ''
   } catch (failure) {
@@ -345,6 +345,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     allowedWindowTitles: settings.desktop?.allowedWindowTitles ?? [],
   })
   Object.assign(form.model, {
+    protocol: settings.model.protocol ?? 'openai',
     baseUrl: settings.model.baseUrl,
     model: settings.model.model,
     timeoutSeconds: settings.model.timeoutSeconds,
@@ -715,6 +716,7 @@ async function persist() {
       disabledEngines: [...form.web.disabledEngines],
     },
     model: {
+      protocol: form.model.protocol,
       baseUrl: form.model.baseUrl === '' ? null : form.model.baseUrl,
       model: form.model.model === '' ? null : form.model.model,
       timeoutSeconds: form.model.timeoutSeconds,
@@ -1196,12 +1198,25 @@ defineExpose({ refresh, hasUnsavedChanges })
                 />
               </div>
 
+              <SettingRow :label="t('接口格式')">
+                <template #hint>{{ t('选择服务商使用的接口协议：OpenAI 兼容端点选 OpenAI，Claude 或兼容 Anthropic Messages 的端点选 Anthropic。') }}</template>
+                <select v-model="form.model.protocol" data-test="model-protocol">
+                  <option value="openai">{{ t('OpenAI 兼容') }}</option>
+                  <option value="anthropic">Anthropic (Claude)</option>
+                </select>
+              </SettingRow>
+
               <SettingRow :label="t('接口地址')">
                 <template #hint>
                   {{ t('模型服务的网址，一般以 /v1 结尾，比如 Ollama 是') }} <code>http://127.0.0.1:11434/v1</code>{{ t('。留空则读环境变量') }}
                   <code>PARTNER_LLM_BASE_URL</code>{{ t('。') }}
                 </template>
-                <input type="text" v-model="form.model.baseUrl" placeholder="http://127.0.0.1:11434/v1" data-test="model-base-url" />
+                <input
+                  type="text"
+                  v-model="form.model.baseUrl"
+                  :placeholder="form.model.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'http://127.0.0.1:11434/v1'"
+                  data-test="model-base-url"
+                />
               </SettingRow>
 
               <SettingRow :label="t('模型')">

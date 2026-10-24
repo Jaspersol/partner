@@ -262,6 +262,7 @@ function payload(): AgentsSettings {
         agent.model === null
           ? null
           : {
+              protocol: agent.model.protocol,
               baseUrl: agent.model.baseUrl,
               model: agent.model.model,
               timeoutSeconds: agent.model.timeoutSeconds,
@@ -343,6 +344,7 @@ function setCustomModel(on: boolean) {
 
   current.model = on
     ? {
+        protocol: 'openai',
         baseUrl: null,
         model: null,
         timeoutSeconds: 120,
@@ -715,6 +717,12 @@ defineExpose({ refresh, hasUnsavedChanges })
                 </SettingRow>
 
                 <template v-if="selectedSub.model">
+                  <SettingRow :label="t('接口格式')" :hint="t('OpenAI 兼容端点选 OpenAI；Claude 或兼容 Anthropic Messages 的端点选 Anthropic。')">
+                    <select v-model="selectedSub.model.protocol" data-test="prompts-agent-protocol">
+                      <option value="openai">{{ t('OpenAI 兼容') }}</option>
+                      <option value="anthropic">Anthropic (Claude)</option>
+                    </select>
+                  </SettingRow>
                   <SettingRow :label="t('接口地址')" :hint="t('模型服务的网址，一般以 /v1 结尾。')">
                     <input v-model="selectedSub.model.baseUrl" type="text" data-test="prompts-agent-base-url" />
                   </SettingRow>

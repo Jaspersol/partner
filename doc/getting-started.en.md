@@ -28,11 +28,12 @@ The desktop shell picks a free port, starts the API and injects the access token
 
 Open "Settings → Chat model":
 
-1. Enter an OpenAI-compatible endpoint, such as `http://127.0.0.1:11434/v1`.
-2. Pick a model from the drop-down. The list is fetched from the endpoint; if that fails, the reason is shown.
-3. Enter an API key if needed. It is write-only: after saving, the UI only shows that one is set.
+1. Pick the API format: OpenAI-compatible for most local services, Anthropic for Claude or any endpoint that implements the Anthropic Messages API.
+2. Enter the endpoint: `http://127.0.0.1:11434/v1` for OpenAI-compatible, `https://api.anthropic.com/v1` for Anthropic.
+3. Pick a model from the drop-down. The list is fetched from the endpoint; if that fails, the reason is shown.
+4. Enter an API key if needed. It is write-only: after saving, the UI only shows that one is set.
 
-Changes apply on save. Without a model, messages stay in the queue and the input area says the model is not configured.
+Changes apply on save. Without a model, messages stay in the queue and the input area says the model is not configured. The Anthropic format does not request extended thinking; the thinking-strength setting applies to OpenAI-compatible endpoints only.
 
 Environment variables also work; values from the settings page take precedence:
 
@@ -40,6 +41,7 @@ Environment variables also work; values from the settings page take precedence:
 export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1
 export PARTNER_LLM_MODEL=qwen3
 export PARTNER_LLM_API_KEY=...   # optional
+export PARTNER_LLM_PROTOCOL=openai   # optional: openai / anthropic
 ```
 
 ## 4. Turn on voice (optional)

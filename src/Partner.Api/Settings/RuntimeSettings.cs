@@ -497,6 +497,12 @@ public sealed record LocalEngineSettings : IEquatable<LocalEngineSettings>
 /// <summary>Mirrors <c>HttpLlmOptions</c>. The key is write-only; see <see cref="ModelSettingsView"/>.</summary>
 public sealed record ModelSettings
 {
+    /// <summary>
+    /// Which wire protocol the endpoint speaks: <see cref="LlmProtocols.OpenAi"/> (the historical default) or
+    /// <see cref="LlmProtocols.Anthropic"/>.
+    /// </summary>
+    public string Protocol { get; init; } = LlmProtocols.OpenAi;
+
     public string? BaseUrl { get; init; }
 
     public string? Model { get; init; }
@@ -568,6 +574,8 @@ public sealed record ModelSettings
 /// <summary>What the API returns: the same shape, minus the secret, plus whether one is stored.</summary>
 public sealed record ModelSettingsView
 {
+    public string Protocol { get; init; } = LlmProtocols.OpenAi;
+
     public string? BaseUrl { get; init; }
 
     public bool PromptCache { get; init; }
@@ -635,6 +643,7 @@ public sealed record SettingsView
         Local = settings.Local,
         Model = new ModelSettingsView
         {
+            Protocol = LlmProtocols.Normalize(settings.Model.Protocol),
             BaseUrl = settings.Model.BaseUrl,
             Model = settings.Model.Model,
             ApiKeySet = !string.IsNullOrEmpty(settings.Model.ApiKey),

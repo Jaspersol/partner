@@ -479,6 +479,8 @@ internal static class Program
                     SessionEventKind.TurnStart,
                     SessionEventKind.StepStart,
                     SessionEventKind.User,
+                    // Two hooks inject: the smoke's own hook, then the skills index.
+                    SessionEventKind.System,
                     SessionEventKind.System,
                     SessionEventKind.ToolCall,
                     SessionEventKind.ToolResult,
@@ -557,7 +559,13 @@ internal static class Program
             }
 
             // A scheduled item runs through the same turn path as any other input.
-            await using (var failing = new JsonlScheduler(root, new FailOnceQueue(queue5), clock))
+            // Backoff is disabled so the second pass exercises recovery rather than the retry timer; the delay
+            // itself is covered by the scheduler tests.
+            await using (var failing = new JsonlScheduler(
+                root,
+                new FailOnceQueue(queue5),
+                clock,
+                new SchedulerOptions { RetryBaseDelay = TimeSpan.Zero }))
             {
                 await failing.ScheduleAsync(new ScheduleTask
                 {

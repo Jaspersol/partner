@@ -355,6 +355,8 @@ export interface EnginePackageStatus {
 
 /** What a client sends: the key is optional and write-only. */
 export interface ModelSettings {
+  /** Wire protocol: `openai` for chat/completions, `anthropic` for the Claude Messages API. */
+  protocol: string
   baseUrl: string | null
   model: string | null
   /** Absent keeps the stored key, empty clears it, a value replaces it. */
@@ -378,6 +380,8 @@ export interface ModelSettings {
 
 /** What the API returns: no key, only whether one is stored. */
 export interface ModelSettingsView {
+  /** Wire protocol the consumer speaks: `openai` or `anthropic`. */
+  protocol: string
   baseUrl: string | null
   model: string | null
   apiKeySet: boolean
@@ -402,6 +406,8 @@ export interface MainAgentSettings {
 
 /** A sub-agent's own endpoint, in the shape the settings file stores it (the key is write-only). */
 export interface SubAgentModelSettings {
+  /** Wire protocol: `openai` or `anthropic`. */
+  protocol: string
   baseUrl: string | null
   model: string | null
   /** Absent keeps the stored key, empty clears it, a value replaces it. Never read back. */
@@ -482,6 +488,7 @@ export interface WebView {
 
 /** A sub-agent's endpoint as the read endpoints report it: whether a key is stored, never the key. */
 export interface SubAgentModelView {
+  protocol: string
   baseUrl: string | null
   model: string | null
   apiKeySet: boolean
@@ -958,7 +965,7 @@ export interface PartnerApiSurface {
   consumer(): Promise<ConsumerState>
   voice(): Promise<VoiceState>
   devices(): Promise<DeviceList>
-  listModels(baseUrl?: string): Promise<ModelProbe>
+  listModels(baseUrl?: string, protocol?: string): Promise<ModelProbe>
   memory(tier?: string, scope?: string, take?: number): Promise<MemoryItem[]>
   recall(query: string, limit?: number): Promise<RecallHit[]>
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
@@ -1237,8 +1244,8 @@ export class PartnerApi implements PartnerApiSurface {
    * Asks the API to probe the model endpoint's listing. Proxied because the endpoint will not allow the
    * webview's origin and the API key must not travel to the browser.
    */
-  listModels(baseUrl?: string): Promise<ModelProbe> {
-    return this.request<ModelProbe>('POST', '/api/models', { baseUrl: baseUrl ?? null })
+  listModels(baseUrl?: string, protocol?: string): Promise<ModelProbe> {
+    return this.request<ModelProbe>('POST', '/api/models', { baseUrl: baseUrl ?? null, protocol: protocol ?? null })
   }
 
 

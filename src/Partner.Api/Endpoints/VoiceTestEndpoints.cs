@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Partner.Api.Settings;
 using Partner.Api.Voice;
+using Partner.Core.Agent.Llm;
 using Partner.Voice.Asr;
 using Partner.Voice.Tts;
 
@@ -497,21 +498,40 @@ public static class VoiceTestEndpoints
             return new VoiceTestResult(false, "未配置 model.baseUrl 或 model.model", 0);
         }
 
+        var anthropic = LlmProtocols.Normalize(settings.Model.Protocol) == LlmProtocols.Anthropic;
+        if (anthropic)
+        {
+            // Same normalization the real client uses, so the probe tests the route a turn will take.
+            base_ = AnthropicLlmClient.NormalizeBaseUrl(base_);
+        }
+
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(settings.Model.TimeoutSeconds > 0 ? settings.Model.TimeoutSeconds : 30) };
         if (!string.IsNullOrEmpty(settings.Model.ApiKey))
         {
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.Model.ApiKey);
+            if (anthropic)
+            {
+                http.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", settings.Model.ApiKey);
+            }
+            else
+            {
+                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.Model.ApiKey);
+            }
         }
 
-        var chat = $"{base_}/chat/completions";
+        if (anthropic)
+        {
+            http.DefaultRequestHeaders.TryAddWithoutValidation("anthropic-version", AnthropicLlmClient.ApiVersion);
+        }
+
+        var chat = $"{base_}{(anthropic ? "/messages" : "/chat/completions")}";
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             // Vision probe first: it is the expensive request, so avoid two synthesized calls.
-            var vision = await ChatAsync(http, chat, VisionBody(settings.Model.Model), ct).ConfigureAwait(false);
+            var vision = await ChatAsync(http, chat, VisionBody(settings.Model.Model, anthropic), ct).ConfigureAwait(false);
             var visionOk = vision is not null;
 
-            var text = await ChatAsync(http, chat, TextBody(settings.Model.Model), ct).ConfigureAwait(false);
+            var text = await ChatAsync(http, chat, TextBody(settings.Model.Model, anthropic), ct).ConfigureAwait(false);
             if (text is null)
             {
                 return new VoiceTestResult(false, "无响应", (int)watch.ElapsedMilliseconds);
@@ -546,13 +566,20 @@ public static class VoiceTestEndpoints
         return document.RootElement;
     }
 
-    private static string TextBody(string model) =>
-        "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}";
+    private static string TextBody(string model, bool anthropic) =>
+        anthropic
+            ? "{\"model\":\"" + model + "\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            : "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}";
 
     // 1×1 red PNG as a data URI: enough to prove the endpoint accepts multimodal messages, small enough to be free.
-    private static string VisionBody(string model) =>
-        "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":[" +
-        "{\"type\":\"text\",\"text\":\"ping\"}," +
-        "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"}}" +
-        "]}],\"max_tokens\":1}";
+    private static string VisionBody(string model, bool anthropic) =>
+        anthropic
+            ? "{\"model\":\"" + model + "\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":[" +
+              "{\"type\":\"text\",\"text\":\"ping\"}," +
+              "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"}}" +
+              "]}]}"
+            : "{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":[" +
+              "{\"type\":\"text\",\"text\":\"ping\"}," +
+              "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\"}}" +
+              "]}],\"max_tokens\":1}";
 }

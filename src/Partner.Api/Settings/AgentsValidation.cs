@@ -127,6 +127,12 @@ public static partial class AgentsValidation
 
     private static void ValidateModel(string label, SubAgentModelSettings model, List<string> errors)
     {
+        if (!Partner.Core.Agent.Llm.LlmProtocols.IsValid(model.Protocol))
+        {
+            errors.Add($"「{label}」的接口格式必须是 "
+                + string.Join(" / ", Partner.Core.Agent.Llm.LlmProtocols.Values));
+        }
+
         if (string.IsNullOrWhiteSpace(model.BaseUrl)
             || !Uri.TryCreate(model.BaseUrl, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))

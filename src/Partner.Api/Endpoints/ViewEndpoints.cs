@@ -66,24 +66,28 @@ public static class ViewEndpoints
                 : null;
 
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-            var client = new HttpLlmClient(http, new HttpLlmOptions
+            var set = LlmClientFactory.Create(http, new HttpLlmOptions
             {
                 BaseUrl = baseUrl.TrimEnd('/'),
                 // The model name is irrelevant for a listing, but the type requires one.
                 Model = stored.Model.Model ?? "listing",
                 ApiKey = apiKey,
                 Timeout = TimeSpan.FromSeconds(Math.Max(1, stored.Model.TimeoutSeconds)),
+                Protocol = string.IsNullOrWhiteSpace(request.Protocol)
+                    ? stored.Model.Protocol
+                    : request.Protocol,
             });
 
             try
             {
-                var models = await client.ListModelsAsync(ct).ConfigureAwait(false);
+                var models = await set.Catalog.ListModelsAsync(ct).ConfigureAwait(false);
                 return Results.Ok(new { baseUrl, models });
             }
             catch (Exception error) when (
                 error is HttpRequestException
                     or InvalidOperationException
                     or TaskCanceledException
+                    or ArgumentException
                     or ModelCallFailure)
             {
                 // The reason travels: "the endpoint says 404" and "the endpoint is unreachable" need different
@@ -93,7 +97,7 @@ public static class ViewEndpoints
         });
     }
 
-    public sealed record ModelProbeRequest(string? BaseUrl);
+    public sealed record ModelProbeRequest(string? BaseUrl, string? Protocol);
 
     private static void MapInput(WebApplication app)
     {

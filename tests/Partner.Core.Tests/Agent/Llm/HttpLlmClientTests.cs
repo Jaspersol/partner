@@ -689,6 +689,36 @@ public sealed class HttpLlmClientTests
     }
 
     [Fact]
+    public void The_environment_can_select_the_protocol_and_rejects_an_unknown_one()
+    {
+        var previousUrl = Environment.GetEnvironmentVariable(HttpLlmClient.BaseUrlVariable);
+        var previousModel = Environment.GetEnvironmentVariable(HttpLlmClient.ModelVariable);
+        var previousProtocol = Environment.GetEnvironmentVariable(HttpLlmClient.ProtocolVariable);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(HttpLlmClient.BaseUrlVariable, "https://api.anthropic.com/v1");
+            Environment.SetEnvironmentVariable(HttpLlmClient.ModelVariable, "claude-test");
+            Environment.SetEnvironmentVariable(HttpLlmClient.ProtocolVariable, "claude");
+
+            var (options, _) = HttpLlmClient.OptionsFromEnvironment();
+            Assert.Equal(LlmProtocols.Anthropic, options?.Protocol);
+
+            Environment.SetEnvironmentVariable(HttpLlmClient.ProtocolVariable, "gemini");
+            var (invalid, reason) = HttpLlmClient.OptionsFromEnvironment();
+
+            Assert.Null(invalid);
+            Assert.Contains(HttpLlmClient.ProtocolVariable, reason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(HttpLlmClient.BaseUrlVariable, previousUrl);
+            Environment.SetEnvironmentVariable(HttpLlmClient.ModelVariable, previousModel);
+            Environment.SetEnvironmentVariable(HttpLlmClient.ProtocolVariable, previousProtocol);
+        }
+    }
+
+    [Fact]
     public void A_configured_environment_builds_a_client()
     {
         var previousUrl = Environment.GetEnvironmentVariable(HttpLlmClient.BaseUrlVariable);
