@@ -19,7 +19,7 @@
 
 ## 應用內更新
 
-「設定 → 一般」顯示的版本號來自 `ui/package.json`（workflow 已按 tag 寫入），「檢查更新」讀取 GitHub 的 `releases/latest`（倉庫常數在 `src/Partner.Api/Updates/UpdateService.cs`）。所以每個應用 release 必須保留兩個資產：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校驗檔時應用不會提供這次更新。
+「設定 → 一般」顯示的版本號來自 `ui/package.json`（workflow 已按 tag 寫入），「檢查更新」走 GitHub 的 release 網頁而不是 API：`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本號從這裡取），資產從 `releases/latest/download/<檔名>` 取（倉庫常數在 `src/Partner.Api/Updates/UpdateService.cs`）。這條路不消耗 `api.github.com` 的每小時 60 次配額，所以共用出口 IP 被別的程式用滿時也不會 403。所以每個應用 release 必須保留兩個資產：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校驗檔時應用不會提供這次更新，安裝程式的檔名也由這份校驗檔裡的那一行決定。
 
 下載完成後先核對 SHA-256，再啟動安裝程式並結束應用。更新走的是普通 NSIS 安裝程式，不會繞過它靜默替換檔案。fork 需要把 `UpdateService.Repository` 改成自己的倉庫。
 

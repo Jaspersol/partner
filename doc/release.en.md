@@ -19,7 +19,7 @@ The installer does **not** contain the engines: after installing, click download
 
 ## In-app updates
 
-Settings → General shows the version from `ui/package.json` (the workflow writes it from the tag), and Check for updates reads GitHub's `releases/latest` (the repository constant lives in `src/Partner.Api/Updates/UpdateService.cs`). Every app release therefore has to keep two assets: `Partner_<version>_x64-setup.exe` and the `SHA256SUMS.txt` that lists it. Without the checksum file the app refuses to offer that update.
+Settings → General shows the version from `ui/package.json` (the workflow writes it from the tag), and Check for updates walks GitHub's release pages rather than its API: `releases/latest` answers with a 302 to `releases/tag/<tag>` (where the version comes from), and assets come from `releases/latest/download/<file name>` (the repository constant lives in `src/Partner.Api/Updates/UpdateService.cs`). That path spends none of `api.github.com`'s 60-calls-an-hour quota, so a shared egress address someone else has exhausted no longer turns the check into a 403. Every app release therefore has to keep two assets: `Partner_<version>_x64-setup.exe` and the `SHA256SUMS.txt` that lists it. Without the checksum file the app refuses to offer that update, and the installer's file name is the one that file lists.
 
 The download is checked against that SHA-256 before the installer is started and the app exits. Updating goes through the ordinary NSIS installer; nothing silently replaces files behind it. A fork changes `UpdateService.Repository` to its own repository.
 

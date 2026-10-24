@@ -19,7 +19,7 @@
 
 ## 应用内更新
 
-「设置 → 通用」显示的版本号来自 `ui/package.json`（workflow 已按 tag 写入），「检查更新」读取 GitHub 的 `releases/latest`（仓库常量在 `src/Partner.Api/Updates/UpdateService.cs`）。所以每个应用 release 必须保留两个资产：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校验文件时应用不会提供这次更新。
+「设置 → 通用」显示的版本号来自 `ui/package.json`（workflow 已按 tag 写入），「检查更新」走 GitHub 的 release 网页而不是 API：`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本号从这里取），资产从 `releases/latest/download/<文件名>` 取（仓库常量在 `src/Partner.Api/Updates/UpdateService.cs`）。这条路不消耗 `api.github.com` 的每小时 60 次配额，所以共享出口 IP 被别的程序用满时也不会 403。所以每个应用 release 必须保留两个资产：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校验文件时应用不会提供这次更新，安装包的文件名也由这份校验文件里的那一行决定。
 
 下载完成后先核对 SHA-256，再启动安装程序并退出应用。更新走的是普通 NSIS 安装程序，不会绕过它静默替换文件。fork 需要把 `UpdateService.Repository` 改成自己的仓库。
 
