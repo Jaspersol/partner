@@ -59,6 +59,14 @@ public sealed class SettingsEndpointTests : ApiFixture
     [Fact]
     public async Task Growing_the_context_does_not_compact()
     {
+        // Start from a context smaller than the one this test grows to. Other tests in this class change the
+        // stored context, so reading it from whatever ran before would make the verdict order-dependent.
+        var pinned = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { contextTokens = 8192, maxTokens = 2048 },
+        });
+        pinned.EnsureSuccessStatusCode();
+
         await _context.Session.AppendAsync(new SessionEvent
         {
             Kind = SessionEventKind.User,

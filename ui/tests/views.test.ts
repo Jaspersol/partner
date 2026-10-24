@@ -80,7 +80,7 @@ const SETTINGS_FIXTURE: SettingsView = {
   asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
   local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
-  model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+  model: { protocol: 'openai', baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
   desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
   mcp: { enabled: false, servers: [], allowedTools: [] },
   skills: { disabled: [] },
@@ -125,7 +125,7 @@ const AGENTS_FIXTURE: AgentsView = {
       effectivePrompt: '只读，不要猜。\n\n汇报格式…',
       promptTokens: 14,
       maxRounds: 3,
-      model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' },
+      model: { protocol: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' },
     },
   ],
   scenarios: [
@@ -2257,7 +2257,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
         local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+        model: { protocol: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
@@ -2284,7 +2284,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
         local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
-        model: { baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+        model: { protocol: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKeySet: true, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
       desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
@@ -2432,7 +2432,7 @@ describe('settings view', () => {
         asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
         tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
         local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
-        model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
+        model: { protocol: 'openai', baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: 32768, maxTokens: 4096, supportsImages: false, reasoningEffort: 'medium', reasoningGears: ['off', 'low', 'medium', 'high'] },
         desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
         mcp: { enabled: false, servers: [], allowedTools: [] },
         skills: { disabled: [] },
@@ -2501,6 +2501,21 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="model-name"]').element.tagName).toBe('INPUT')
   })
 
+  it('saves the selected model protocol', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const protocol = wrapper.find<HTMLSelectElement>('[data-test="model-protocol"]')
+    expect(protocol.element.value).toBe('openai')
+
+    await protocol.setValue('anthropic')
+    await wrapper.find('[data-test=settings-save]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[0]?.model).toHaveProperty('protocol', 'anthropic')
+  })
+
   it('shows the context and output limits, and reports what a shrink did', async () => {
     const { stub, calls } = createStub({
       saveSettings: vi.fn(async (patch: RuntimeSettings) => {
@@ -2512,7 +2527,7 @@ describe('settings view', () => {
             asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
             tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
             local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
-            model: { baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens, supportsImages: patch.model.supportsImages, reasoningEffort: patch.model.reasoningEffort, reasoningGears: patch.model.reasoningGears },
+            model: { protocol: 'openai', baseUrl: null, model: null, apiKeySet: false, timeoutSeconds: 120, contextTokens: patch.model.contextTokens, maxTokens: patch.model.maxTokens, supportsImages: patch.model.supportsImages, reasoningEffort: patch.model.reasoningEffort, reasoningGears: patch.model.reasoningGears },
             desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', allowedWindowTitles: [] },
             mcp: { enabled: false, servers: [], allowedTools: [] },
             skills: { disabled: [] },
@@ -2648,7 +2663,7 @@ describe('settings view', () => {
           main: { prompt: '你是我的人。' },
           subAgents: [
             { id: 'desktop', name: '桌面操控', enabled: false, scenario: 'desktop', prompt: null, maxRounds: 5, model: null },
-            { id: 'agent-a1', name: '读文件的', enabled: true, scenario: 'file-read', prompt: '只读。', maxRounds: 2, model: { baseUrl: 'http://x/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' } },
+            { id: 'agent-a1', name: '读文件的', enabled: true, scenario: 'file-read', prompt: '只读。', maxRounds: 2, model: { protocol: 'openai', baseUrl: 'http://x/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' } },
           ],
         },
         files: { enabled: true, roots: ['D:/资料', 'E:/扫描'] },

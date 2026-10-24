@@ -1,3 +1,4 @@
+using Partner.Core.Agent.Llm;
 using Partner.Voice.Asr;
 using Partner.Voice.Tts;
 
@@ -60,6 +61,11 @@ public static class SettingsValidation
         CheckEndpoint("asr", settings.Asr.BaseUrl, settings.Asr.Model, errors);
         CheckEndpoint("tts", settings.Tts.BaseUrl, null, errors);
         CheckEndpoint("model", settings.Model.BaseUrl, settings.Model.Model, errors);
+
+        if (!LlmProtocols.IsValid(settings.Model.Protocol))
+        {
+            errors.Add($"model.protocol 必须是 {string.Join(" / ", LlmProtocols.Values)}");
+        }
 
         var asrProtocols = AsrProtocols.Values;
         if (!asrProtocols.Contains(settings.Asr.Protocol, StringComparer.Ordinal))

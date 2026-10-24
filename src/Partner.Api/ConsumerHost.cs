@@ -130,20 +130,22 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             // One client per endpoint for the life of the consumer, not one per job: a per-job client would open a
             // connection (and TLS handshake) for a model it had just been talking to.
             var http = _subClients.GetOrAdd(
-                own.BaseUrl!.TrimEnd('/'),
+                $"{LlmProtocols.Normalize(own.Protocol)}|{own.BaseUrl!.TrimEnd('/')}",
                 _ => new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
-            var client = new HttpLlmClient(http, new HttpLlmOptions
+            var client = LlmClientFactory.Create(http, new HttpLlmOptions
             {
                 BaseUrl = own.BaseUrl!.TrimEnd('/'),
                 Model = own.Model!,
                 ApiKey = own.ApiKey,
                 Timeout = TimeSpan.FromSeconds(own.TimeoutSeconds),
                 ReasoningEffort = own.ReasoningEffort,
+                Protocol = own.Protocol,
+                MaxOutputTokens = own.MaxTokens,
             });
 
             return new ModelBinding(
-                client,
-                new DualArmTokenCounter(client, new ApproximateTokenCounter()),
+                client.Client,
+                new DualArmTokenCounter(client.Tokens, new ApproximateTokenCounter()),
                 own.ContextTokens,
                 own.MaxTokens,
                 own.SupportsImages);
@@ -441,7 +443,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         else
         {
             _http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-            var client = new HttpLlmClient(_http, new HttpLlmOptions
+            var client = LlmClientFactory.Create(_http, new HttpLlmOptions
             {
                 BaseUrl = config!.BaseUrl,
                 Model = config.Model,
@@ -449,12 +451,14 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 Timeout = config.Timeout,
                 ReasoningEffort = config.ReasoningEffort,
                 PromptCacheMarkers = config.PromptCache,
+                Protocol = config.Protocol,
+                MaxOutputTokens = config.MaxTokens,
             });
 
-            llm = client;
+            llm = client.Client;
 
             // Two arms: the model's own tokenizer where the server has one, the local estimate as the floor.
-            Tokens = new DualArmTokenCounter(client, new ApproximateTokenCounter());
+            Tokens = new DualArmTokenCounter(client.Tokens, new ApproximateTokenCounter());
         }
 
         var turnOptions = new AgentTurnOptions

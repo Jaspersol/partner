@@ -93,6 +93,7 @@ public sealed class SettingsStore
             Agents = incoming.AgentsSpecified ? MergeAgentKeys(incoming.Agents, stored.Agents) : stored.Agents,
             Model = incoming.Model with
             {
+                Protocol = LlmProtocols.Normalize(incoming.Model.Protocol),
                 ApiKey = ResolveKey(incoming.Model.ApiKey, stored.Model.ApiKey),
                 // The gear is free text by design (an endpoint may understand a word the menu does not offer),
                 // so only its shape is normalized here — casing and stray spaces are not a different setting.
@@ -131,6 +132,7 @@ public sealed class SettingsStore
                 ? null
                 : agent.Model with
                 {
+                    Protocol = LlmProtocols.Normalize(agent.Model.Protocol),
                     ApiKeySet = false,
                     ApiKey = ResolveKey(
                         agent.Model.ApiKey,

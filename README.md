@@ -11,7 +11,7 @@ Partner does not replace coding agents or work agents. It adds a voice entry poi
 | It is | It is not |
 |---|---|
 | A Windows desktop app where voice and text share one input queue | A coding agent or IDE plugin, or a replacement for the work agent you already use |
-| A client for your own OpenAI-compatible model endpoint | A bundled LLM or cloud service |
+| A client for your own OpenAI-compatible or Anthropic model endpoint | A bundled LLM or cloud service |
 | Optional local voice engines you download separately and can switch off at any time | An installer that makes you download 3 GB of models first |
 
 ## Key points
@@ -53,7 +53,7 @@ Every input (typing, voice, scheduled tasks, sub-agent reports) goes into the sa
 | Node | Node 22 + npm (not pnpm: esbuild fails to install) |
 | Rust | cargo 1.98+ (only for the desktop shell) |
 | WebView2 | Included with Win10+ |
-| Model | An OpenAI-compatible endpoint, such as a local Ollama |
+| Model | An OpenAI-compatible or Anthropic endpoint, such as a local Ollama or Claude |
 
 ### Install and run
 
@@ -68,6 +68,7 @@ Then open "Settings → Chat model", enter the endpoint and pick a model. Withou
 export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1
 export PARTNER_LLM_MODEL=qwen3
 export PARTNER_LLM_API_KEY=...   # optional
+export PARTNER_LLM_PROTOCOL=openai   # optional: openai / anthropic
 ```
 
 ### Build the installer

@@ -28,11 +28,12 @@ npx --prefix ui tauri dev        # 开发模式，改 Vue 立即生效
 
 打开“设置 → 对话模型”：
 
-1. 填 OpenAI 兼容的服务地址，例如 `http://127.0.0.1:11434/v1`。
-2. 从下拉里选模型。列表是从端点拉取的，拉不到会写明原因。
-3. 需要时填 API Key。它只写不读，保存后界面只显示“已设置”。
+1. 先选接口格式：大多数本地服务选 OpenAI 兼容；Claude 或兼容 Anthropic Messages 的端点选 Anthropic。
+2. 填服务地址：OpenAI 兼容例如 `http://127.0.0.1:11434/v1`，Anthropic 例如 `https://api.anthropic.com/v1`。
+3. 从下拉里选模型。列表是从端点拉取的，拉不到会写明原因。
+4. 需要时填 API Key。它只写不读，保存后界面只显示“已设置”。
 
-保存后立即生效。没配模型时，消息会停在队列里，输入区写明“未配置模型”。
+保存后立即生效。没配模型时，消息会停在队列里，输入区写明“未配置模型”。Anthropic 格式目前不请求扩展思考，界面里的“思考强度”只对 OpenAI 兼容端点生效。
 
 也可以用环境变量，设置页的值优先：
 
@@ -40,6 +41,7 @@ npx --prefix ui tauri dev        # 开发模式，改 Vue 立即生效
 export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1
 export PARTNER_LLM_MODEL=qwen3
 export PARTNER_LLM_API_KEY=...   # 可选
+export PARTNER_LLM_PROTOCOL=openai   # 可选，openai / anthropic
 ```
 
 ## 4. 打开语音（可选）

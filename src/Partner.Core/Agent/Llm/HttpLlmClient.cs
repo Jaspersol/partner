@@ -22,6 +22,19 @@ public sealed record HttpLlmOptions
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(2);
 
     /// <summary>
+    /// Which wire protocol the endpoint speaks; see <see cref="LlmProtocols"/>. The OpenAI client is the
+    /// default for backward compatibility, and it ignores the value — <see cref="LlmClientFactory"/> picks
+    /// the implementation.
+    /// </summary>
+    public string Protocol { get; init; } = LlmProtocols.OpenAi;
+
+    /// <summary>
+    /// The output ceiling used by protocols that require one on every request (Anthropic's <c>max_tokens</c>).
+    /// A request-level <see cref="LlmRequest.MaxTokens"/> wins; this is the fallback.
+    /// </summary>
+    public int? MaxOutputTokens { get; init; }
+
+    /// <summary>
     /// The thinking gear sent as <c>reasoning_effort</c>; <see cref="ReasoningEfforts.Off"/> (or blank) sends
     /// nothing.
     /// </summary>
@@ -36,16 +49,18 @@ public sealed record HttpLlmOptions
 }
 
 /// <summary>
-/// The production <see cref="ILlmClient"/>: an OpenAI-compatible <c>chat/completions</c> call.
+/// The OpenAI-compatible <see cref="ILlmClient"/>: a <c>POST /chat/completions</c> call. The Anthropic wire
+/// lives in <see cref="AnthropicLlmClient"/>; <see cref="LlmClientFactory"/> picks between them.
 /// <para>
 /// When it is not configured the host starts no consumer at all (see <see cref="TryFromEnvironment"/>).
 /// </para>
 /// </summary>
-public sealed class HttpLlmClient : ILlmClient, ITokenCounter
+public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
 {
     public const string BaseUrlVariable = "PARTNER_LLM_BASE_URL";
     public const string ModelVariable = "PARTNER_LLM_MODEL";
     public const string ApiKeyVariable = "PARTNER_LLM_API_KEY";
+    public const string ProtocolVariable = "PARTNER_LLM_PROTOCOL";
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -92,6 +107,12 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
         var baseUrl = Environment.GetEnvironmentVariable(BaseUrlVariable);
         var model = Environment.GetEnvironmentVariable(ModelVariable);
         var apiKey = Environment.GetEnvironmentVariable(ApiKeyVariable);
+        var protocol = Environment.GetEnvironmentVariable(ProtocolVariable);
+
+        if (!string.IsNullOrWhiteSpace(protocol) && !LlmProtocols.IsValid(protocol))
+        {
+            return (null, $"未配置模型：{ProtocolVariable} 必须是 {string.Join(" 或 ", LlmProtocols.Values)}");
+        }
 
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(model))
         {
@@ -114,6 +135,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter
             BaseUrl = baseUrl.TrimEnd('/'),
             Model = model,
             ApiKey = apiKey,
+            Protocol = LlmProtocols.Normalize(protocol),
         }, "已从环境变量配置模型");
     }
 

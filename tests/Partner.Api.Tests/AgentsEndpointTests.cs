@@ -226,6 +226,14 @@ public sealed class AgentsEndpointTests : ApiFixture
     [Fact]
     public async Task The_round_count_and_the_prompt_have_limits()
     {
+        // The prompt limit is derived from the model's context, and other tests in this class change that
+        // context. Pin it here so the verdict does not depend on which test happened to run first.
+        var pinned = await _http.PutAsJsonAsync("/api/settings", new
+        {
+            model = new { contextTokens = 16000, maxTokens = 2000 },
+        });
+        pinned.EnsureSuccessStatusCode();
+
         var rounds = await PutAgentsAsync(null, new
         {
             id = "desktop",

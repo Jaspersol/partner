@@ -19,7 +19,8 @@ public sealed record ModelConfig(
     int ContextTokens = 128000,
     int MaxTokens = 32000,
     string ReasoningEffort = ReasoningEfforts.Default,
-    bool PromptCache = false)
+    bool PromptCache = false,
+    string Protocol = LlmProtocols.OpenAi)
 {
     public static (ModelConfig? Config, string Reason) Resolve(RuntimeSettings settings)
     {
@@ -28,6 +29,11 @@ public sealed record ModelConfig(
         var fromSettings = settings.Model;
         if (!string.IsNullOrWhiteSpace(fromSettings.BaseUrl) && !string.IsNullOrWhiteSpace(fromSettings.Model))
         {
+            if (!LlmProtocols.IsValid(fromSettings.Protocol))
+            {
+                return (null, $"model.protocol 无效：只能是 {string.Join(" / ", LlmProtocols.Values)}");
+            }
+
             return (new ModelConfig(
                 fromSettings.BaseUrl.TrimEnd('/'),
                 fromSettings.Model,
@@ -37,7 +43,8 @@ public sealed record ModelConfig(
                 fromSettings.ContextTokens,
                 fromSettings.MaxTokens,
                 fromSettings.ReasoningEffort,
-                fromSettings.PromptCache), "运行中（设置）");
+                fromSettings.PromptCache,
+                LlmProtocols.Normalize(fromSettings.Protocol)), "运行中（设置）");
         }
 
         var (options, reason) = HttpLlmClient.OptionsFromEnvironment();
@@ -52,7 +59,8 @@ public sealed record ModelConfig(
             options.ApiKey,
             options.Timeout,
             "环境变量",
-            ReasoningEffort: options.ReasoningEffort), "运行中（环境变量）");
+            ReasoningEffort: options.ReasoningEffort,
+            Protocol: options.Protocol), "运行中（环境变量）");
     }
 
     /// <summary>True when the two describe a different endpoint, so a restart is warranted.</summary>
@@ -62,6 +70,11 @@ public sealed record ModelConfig(
         || !string.Equals(left.ApiKey, right.ApiKey, StringComparison.Ordinal)
         || left.PromptCache != right.PromptCache
         || left.TimeoutSeconds != right.TimeoutSeconds
+        // The protocol decides the request route and body shape, so changing it is an endpoint change.
+        || !string.Equals(
+            LlmProtocols.Normalize(left.Protocol),
+            LlmProtocols.Normalize(right.Protocol),
+            StringComparison.Ordinal)
         // The turn window and output ceiling are part of the same configuration: changing either has to
         // reach the running runner, which only happens through a restart.
         || left.ContextTokens != right.ContextTokens
