@@ -1,6 +1,5 @@
 using System.Net;
 using System.Security.Cryptography;
-using System.Text.Json;
 
 namespace Partner.Api.Updates;
 
@@ -28,10 +27,12 @@ public sealed record UpdateDownloadState(
 /// Checks the project's GitHub releases for a newer installer and downloads it into the temp folder.
 ///
 /// <para>
-/// The check is a plain GET of <c>releases/latest</c> — the one place the version has to come from, since the
-/// installer and the app carry no feed of their own. The download is verified against the release's
-/// <c>SHA256SUMS.txt</c> asset before it is offered to the shell: the shell will execute it, so a truncated or
-/// swapped file must not reach that point.
+/// The check walks the release pages rather than the API: <c>releases/latest</c> answers with a redirect to
+/// <c>releases/tag/&lt;tag&gt;</c>, and <c>releases/latest/download/&lt;asset&gt;</c> serves the asset itself. Those two
+/// are plain web requests with no quota; <c>api.github.com/repos/…/releases/latest</c> allows 60 calls an hour
+/// per address and answers 403 once a shared connection has spent them, which left the settings page unable to
+/// check at all. The download is verified against the release's <c>SHA256SUMS.txt</c> asset before it is offered
+/// to the shell: the shell will execute it, so a truncated or swapped file must not reach that point.
 /// </para>
 ///
 /// <para>
@@ -44,7 +45,8 @@ public sealed class UpdateService
     /// <summary>The repository whose releases the app ships from. A fork changes this one constant.</summary>
     public const string Repository = "Jaspersol/partner";
 
-    private const string LatestReleaseUrl = $"https://api.github.com/repos/{Repository}/releases/latest";
+    private const string LatestReleaseUrl = $"https://github.com/{Repository}/releases/latest";
+    private const string LatestAssetUrl = $"https://github.com/{Repository}/releases/latest/download/";
     private const string ChecksumsAsset = "SHA256SUMS.txt";
     private static readonly TimeSpan CheckTtl = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(20);
@@ -104,7 +106,7 @@ public sealed class UpdateService
             release.Version.ToString(),
             true,
             release.Installer!.Name,
-            release.Installer.SizeBytes,
+            release.Installer.SizeBytes > 0 ? release.Installer.SizeBytes : null,
             null);
     }
 
@@ -136,7 +138,8 @@ public sealed class UpdateService
 
             _cancel?.Dispose();
             _cancel = new CancellationTokenSource();
-            _download = new UpdateDownloadState("downloading", 0, installer.SizeBytes > 0 ? installer.SizeBytes : null, null, null);
+            // No size up front: the release pages do not carry one, so the total arrives with Content-Length.
+            _download = new UpdateDownloadState("downloading", 0, null, null, null);
             var token = _cancel.Token;
             _ = Task.Run(() => RunDownloadAsync(installer, token));
             error = "";
@@ -166,32 +169,32 @@ public sealed class UpdateService
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(CheckTimeout);
 
+        // Followed or not, the answer names the tag: with auto-redirect on, RequestMessage carries the URL the
+        // chain ended at; with it off, Location carries the next hop. Both point at /releases/tag/<tag>, so the
+        // tag is read before the status is judged — a 302 is the normal answer, not a failure.
         using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUrl);
-        request.Headers.Accept.ParseAdd("application/vnd.github+json");
-        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        using var response = await _http
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+            .ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, timeout.Token).ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        var tag = LatestTag(response);
+        if (tag is null)
         {
-            throw new InvalidOperationException("更新源没有可用的公开版本（仓库或 Release 不可见）。");
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw new InvalidOperationException("更新源没有可用的公开版本（仓库或 Release 不可见）。");
+            }
+
+            response.EnsureSuccessStatusCode();
+            throw new InvalidOperationException("最新发布没有可识别的版本号。");
         }
 
-        response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-
-        using var document = JsonDocument.Parse(json);
-        var root = document.RootElement;
-        var tag = root.TryGetProperty("tag_name", out var tagElement) ? tagElement.GetString() : null;
         if (!AppVersion.TryParse(tag, out var version))
         {
             throw new InvalidOperationException("最新发布没有可识别的版本号。");
         }
 
-        var assets = root.TryGetProperty("assets", out var list) && list.ValueKind == JsonValueKind.Array
-            ? list.EnumerateArray().Select(ReadAsset).ToList()
-            : [];
-
-        var release = new LatestRelease(version, assets, null);
+        var release = new LatestRelease(version, null);
         lock (_gate)
         {
             _latest = release;
@@ -201,7 +204,32 @@ public sealed class UpdateService
         return release;
     }
 
-    /// <summary>Reads <c>SHA256SUMS.txt</c> and pins the one installer it lists. Cached with the release.</summary>
+    /// <summary>The tag in <c>…/releases/tag/&lt;tag&gt;</c>, from wherever the redirect chain ended.</summary>
+    private static string? LatestTag(HttpResponseMessage response)
+    {
+        var target = response.Headers.Location is { } location
+            ? location.IsAbsoluteUri ? location : new Uri(new Uri(LatestReleaseUrl), location)
+            : response.RequestMessage?.RequestUri;
+
+        if (target is null)
+        {
+            return null;
+        }
+
+        const string Marker = "/releases/tag/";
+        var path = target.AbsolutePath.TrimEnd('/');
+        var marker = path.LastIndexOf(Marker, StringComparison.Ordinal);
+        return marker < 0 ? null : Uri.UnescapeDataString(path[(marker + Marker.Length)..]);
+    }
+
+    /// <summary>
+    /// Reads <c>SHA256SUMS.txt</c> and pins the one installer it lists. Cached with the release.
+    ///
+    /// <para>
+    /// The checksum file is the only asset listing there is: without the API's release JSON, the name of the
+    /// installer comes from the line that lists it, and so does its URL under <c>latest/download/</c>.
+    /// </para>
+    /// </summary>
     private async Task<LatestRelease> WithInstallerAsync(LatestRelease release, CancellationToken ct)
     {
         if (release.Installer is not null)
@@ -209,18 +237,27 @@ public sealed class UpdateService
             return release;
         }
 
-        var sums = release.Assets.FirstOrDefault(asset => asset.Name.Equals(ChecksumsAsset, StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"最新发布没有提供校验文件（{ChecksumsAsset}），已取消更新。");
-        var exe = release.Assets.FirstOrDefault(asset => asset.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException("最新发布里没有安装包。");
-
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(CheckTimeout);
-        var text = await _http.GetStringAsync(sums.Url, timeout.Token).ConfigureAwait(false);
-        var sha = FindChecksum(text, exe.Name)
-            ?? throw new InvalidOperationException($"更新包缺少校验值（{ChecksumsAsset} 中没有 {exe.Name}）。");
 
-        var complete = release with { Installer = new Installer(exe.Name, exe.Url, sha, exe.Size) };
+        using var request = new HttpRequestMessage(HttpMethod.Get, LatestAssetUrl + ChecksumsAsset);
+        using var response = await _http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new InvalidOperationException($"最新发布没有提供校验文件（{ChecksumsAsset}），已取消更新。");
+        }
+
+        response.EnsureSuccessStatusCode();
+        var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+
+        var installer = FindInstaller(text)
+            ?? throw new InvalidOperationException($"更新包缺少校验值（{ChecksumsAsset} 中没有安装包）。");
+
+        // The release JSON used to carry the size; the pages do not, so ask the asset itself. A host that will
+        // not answer a HEAD leaves the size unknown, which only means the page shows no size before the download.
+        var size = await InstallerSizeAsync(installer.Url, timeout.Token).ConfigureAwait(false);
+
+        var complete = release with { Installer = installer with { SizeBytes = size } };
         lock (_gate)
         {
             _latest = complete;
@@ -229,15 +266,24 @@ public sealed class UpdateService
         return complete;
     }
 
-    private static Asset ReadAsset(JsonElement element)
+    /// <summary>The installer's byte count from a HEAD, or 0 when the host will not say.</summary>
+    private async Task<long> InstallerSizeAsync(string url, CancellationToken ct)
     {
-        var name = element.TryGetProperty("name", out var nameElement) ? nameElement.GetString() ?? "" : "";
-        var url = element.TryGetProperty("browser_download_url", out var urlElement) ? urlElement.GetString() ?? "" : "";
-        var size = element.TryGetProperty("size", out var sizeElement) ? sizeElement.GetInt64() : 0;
-        return new Asset(name, url, size);
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Head, url);
+            using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+            return response.IsSuccessStatusCode ? response.Content.Headers.ContentLength ?? 0 : 0;
+        }
+        catch (HttpRequestException)
+        {
+            // A size is a nicety for the page; the download measures itself from Content-Length regardless.
+            return 0;
+        }
     }
 
-    private static string? FindChecksum(string checksums, string fileName)
+    /// <summary>The one <c>.exe</c> line in the checksum file, as an installer whose URL is its asset URL.</summary>
+    private static Installer? FindInstaller(string checksums)
     {
         foreach (var line in checksums.Split('\n'))
         {
@@ -250,9 +296,9 @@ public sealed class UpdateService
 
             var hash = trimmed[..split];
             var name = trimmed[split..].TrimStart();
-            if (hash.Length == 64 && name == fileName)
+            if (hash.Length == 64 && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             {
-                return hash;
+                return new Installer(name, LatestAssetUrl + Uri.EscapeDataString(name), hash, 0);
             }
         }
 
@@ -264,7 +310,7 @@ public sealed class UpdateService
         var part = Path.Combine(_downloadRoot, installer.Name + ".part");
         var final = Path.Combine(_downloadRoot, installer.Name);
         long done = 0;
-        long? total = installer.SizeBytes > 0 ? installer.SizeBytes : null;
+        long? total = null;
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(DownloadTimeout);
@@ -364,14 +410,14 @@ public sealed class UpdateService
     private static string Describe(Exception error) => error switch
     {
         OperationCanceledException => "连接更新服务器超时。",
+        // A status means the connection worked and the server answered; only a request without one is unreachable.
+        HttpRequestException { StatusCode: { } status } http => $"更新服务器返回 HTTP {(int)status}：{http.Message}",
         HttpRequestException http => $"无法连接更新服务器：{http.Message}",
         _ => error.Message,
     };
 
-    private sealed record Asset(string Name, string Url, long Size);
-
     private sealed record Installer(string Name, string Url, string Sha256, long SizeBytes);
 
     /// <summary>The release as last read. The installer is resolved on demand, only when the check found it newer.</summary>
-    private sealed record LatestRelease(AppVersion Version, IReadOnlyList<Asset> Assets, Installer? Installer);
+    private sealed record LatestRelease(AppVersion Version, Installer? Installer);
 }

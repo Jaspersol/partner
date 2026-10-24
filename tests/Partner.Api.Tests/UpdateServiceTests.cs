@@ -8,26 +8,22 @@ namespace Partner.Api.Tests;
 /// <summary>
 /// The update check and download against a scripted GitHub: what the settings page asks for, and the one rule
 /// that makes executing a remote installer acceptable — the file must match the release's SHA-256.
+///
+/// <para>
+/// The check must never touch <c>api.github.com</c>: that host allows 60 calls an hour per address and answers
+/// 403 rate limit exceeded once a shared connection has spent them, which is what the release pages avoid.
+/// </para>
 /// </summary>
 public sealed class UpdateServiceTests
 {
+    private const string Repo = "Jaspersol/partner";
+    private const string LatestUrl = $"https://github.com/{Repo}/releases/latest";
     private const string InstallerName = "Partner_0.2.0_x64-setup.exe";
-    private const string InstallerUrl = "https://example.test/Partner_0.2.0_x64-setup.exe";
-    private const string SumsUrl = "https://example.test/SHA256SUMS.txt";
+    private const string InstallerUrl = $"https://github.com/{Repo}/releases/latest/download/{InstallerName}";
+    private const string SumsUrl = $"https://github.com/{Repo}/releases/latest/download/SHA256SUMS.txt";
     private static readonly byte[] Payload = Encoding.UTF8.GetBytes("installer bytes");
 
     private static string Sha(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-    private static string ReleaseJson(string tag) =>
-        $$"""
-        {
-          "tag_name": "{{tag}}",
-          "assets": [
-            { "name": "{{InstallerName}}", "browser_download_url": "{{InstallerUrl}}", "size": {{Payload.Length}} },
-            { "name": "SHA256SUMS.txt", "browser_download_url": "{{SumsUrl}}" }
-          ]
-        }
-        """;
 
     private static UpdateService Create(HttpMessageHandler handler, out string root)
     {
@@ -47,7 +43,12 @@ public sealed class UpdateServiceTests
         }
     }
 
-    private static HttpResponseMessage Answer(HttpRequestMessage request, string tag, string sums, bool fail)
+    /// <summary>
+    /// The release pages: <c>releases/latest</c> redirects to <c>releases/tag/&lt;tag&gt;</c>, and
+    /// <c>latest/download/&lt;asset&gt;</c> serves the asset. <paramref name="sums"/> of <c>null</c> means the
+    /// release has no checksum file.
+    /// </summary>
+    private static HttpResponseMessage Answer(HttpRequestMessage request, string tag, string? sums, bool fail)
     {
         if (fail)
         {
@@ -55,17 +56,25 @@ public sealed class UpdateServiceTests
         }
 
         var url = request.RequestUri!.ToString();
-        if (url.EndsWith("/releases/latest", StringComparison.Ordinal))
+        if (url == LatestUrl)
         {
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(ReleaseJson(tag), Encoding.UTF8, "application/json"),
-            };
+            var redirect = new HttpResponseMessage(HttpStatusCode.Found);
+            redirect.Headers.Location = new Uri($"https://github.com/{Repo}/releases/tag/{tag}");
+            return redirect;
         }
 
         if (url == SumsUrl)
         {
-            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(sums) };
+            return sums is null
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(sums) };
+        }
+
+        if (url == InstallerUrl && request.Method == HttpMethod.Head)
+        {
+            var head = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([]) };
+            head.Content.Headers.ContentLength = Payload.Length;
+            return head;
         }
 
         if (url == InstallerUrl)
@@ -157,16 +166,7 @@ public sealed class UpdateServiceTests
     [Fact]
     public async Task A_release_without_a_checksum_file_is_not_offered()
     {
-        var handler = new StubHandler(request =>
-            request.RequestUri!.ToString().EndsWith("/releases/latest", StringComparison.Ordinal)
-                ? new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(
-                        $$"""{"tag_name":"v0.2.0","assets":[{"name":"{{InstallerName}}","browser_download_url":"{{InstallerUrl}}","size":{{Payload.Length}}}]}""",
-                        Encoding.UTF8,
-                        "application/json"),
-                }
-                : new HttpResponseMessage(HttpStatusCode.NotFound));
+        var handler = new StubHandler(request => Answer(request, "v0.2.0", sums: null, fail: false));
         var service = Create(handler, out var root);
 
         try
@@ -176,6 +176,57 @@ public sealed class UpdateServiceTests
             Assert.False(check.Available);
             Assert.NotNull(check.Error);
             Assert.Contains("SHA256SUMS.txt", check.Error);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task The_check_never_touches_the_rate_limited_api()
+    {
+        var handler = new StubHandler(request => Answer(request, "v0.2.0", string.Join('\n', ValidSums()), fail: false));
+        var service = Create(handler, out var root);
+
+        try
+        {
+            var check = await service.CheckAsync("0.1.0", CancellationToken.None);
+
+            Assert.Null(check.Error);
+            Assert.True(check.Available);
+            Assert.NotEmpty(handler.Requests);
+            Assert.All(handler.Requests, url => Assert.DoesNotContain("api.github.com", url));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_403_from_the_update_host_is_not_reported_as_unreachable()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("rate limit exceeded"),
+        });
+        var service = Create(handler, out var root);
+
+        try
+        {
+            var check = await service.CheckAsync("0.1.0", CancellationToken.None);
+
+            Assert.False(check.Available);
+            Assert.NotNull(check.Error);
+            Assert.Contains("403", check.Error);
+            Assert.DoesNotContain("无法连接", check.Error);
         }
         finally
         {
