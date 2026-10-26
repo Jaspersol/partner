@@ -105,6 +105,34 @@ public sealed class WakeGateTests
         Assert.Single(utterances);
         Assert.False(half.Awake); // A submit ends the utterance and the gate waits for the next wake.
         Assert.True(half.Utterances.Single().Transcript.Length > 0);
+        Assert.Equal("小爱同学", half.Utterances.Single().WakeWord);
+    }
+
+    [Fact]
+    public async Task Approval_listening_bypasses_the_wake_word_until_it_is_stopped()
+    {
+        var (half, source, wake, utterances) = Create();
+
+        Assert.True(half.WakeEnabled);
+        Assert.False(half.ApprovalListening);
+
+        half.SetApprovalListening(true);
+        Assert.True(half.ApprovalListening);
+
+        // Speech without a wake hit: pending approval is what lets it through.
+        await AdvanceAsync(half, source, 1.0, 0.5f);
+        await AdvanceAsync(half, source, 1.4, 0f);
+
+        Assert.Single(utterances);
+        Assert.True(utterances.Single().ApprovalListening);
+        Assert.Equal(0, wake.Polls);
+
+        // The request is settled: the ordinary wake rule returns.
+        half.SetApprovalListening(false);
+        await AdvanceAsync(half, source, 1.0, 0f);
+
+        Assert.False(half.ApprovalListening);
+        Assert.True(wake.Polls > 0);
     }
 
     /// <summary>A wake hit followed by silence must close the session itself.</summary>

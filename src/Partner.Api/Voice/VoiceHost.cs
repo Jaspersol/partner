@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using Partner.Core.Agent.Tools;
 using Partner.Core.Contracts;
 using Partner.Core.Queue;
 using Partner.Voice;
@@ -181,7 +183,8 @@ public sealed record VoiceInputState(
     double Rms = 0,
     double AmbientRms = 0,
     bool ThresholdMisconfigured = false,
-    bool Awake = false);
+    bool Awake = false,
+    bool AwaitingApproval = false);
 
 public sealed record VoiceState(VoiceInputState Input, VoiceHalfState Output)
 {
@@ -214,6 +217,9 @@ public sealed class VoiceHost : IAsyncDisposable
     /// <summary>While a reply is being written the live text is read much more often: it sets how soon the first word is heard.</summary>
     private static readonly TimeSpan StreamingPollInterval = TimeSpan.FromMilliseconds(50);
 
+    /// <summary>How soon a new pending approval is noticed. The request itself lives for 120 seconds.</summary>
+    private static readonly TimeSpan ApprovalPollInterval = TimeSpan.FromMilliseconds(200);
+
     private readonly ApiContext _context;
     private readonly IVoiceComponents _components;
 
@@ -222,6 +228,16 @@ public sealed class VoiceHost : IAsyncDisposable
     private readonly LiveSpeech _liveSpeech = new();
     private readonly SemaphoreSlim _reconfigure = new(1, 1);
     private readonly PlaybackGate _playbackGate = new();
+
+    // Approval state crosses three loops without sharing mutable objects: the watcher and the input loop only
+    // enqueue cues, and the output loop (the only one that touches VoiceOutputHalf) drains them.
+    private readonly ConcurrentQueue<ApprovalCue> _approvalCues = new();
+    private readonly ConcurrentDictionary<string, PendingApproval> _announced = new(StringComparer.Ordinal);
+
+    /// <summary>The ring time at which the speaker last went quiet; a block that ended at or before it is not
+    /// allowed to answer an approval, because it may be the prompt's own voice coming back through the mic.</summary>
+    private double _quietAtSeconds;
+    private bool _wasSpeaking;
 
     private VoiceInputHalf? _input;
     private VoiceOutputHalf? _output;
@@ -232,6 +248,7 @@ public sealed class VoiceHost : IAsyncDisposable
     private CancellationTokenSource? _stop;
     private Task? _inputLoop;
     private Task? _outputLoop;
+    private Task? _approvalLoop;
     private VoiceInputState _inputState = VoiceState.Idle.Input;
     private VoiceHalfState _outputState = VoiceState.Idle.Output;
 
@@ -287,7 +304,28 @@ public sealed class VoiceHost : IAsyncDisposable
         // would never see the sink (_sink is still null), silently losing the tone. There is no dependency the
         // other way, so this order must not change.
         StartOutput(settings);
+        StartApproval();
         StartInput(settings);
+    }
+
+    /// <summary>
+    /// Watches the approval queue and queues a spoken prompt for every new request. It runs only when voice
+    /// output does: without a speaker there is no prompt to answer, so intercepting "批准执行" would approve
+    /// something the person was never asked about aloud.
+    /// </summary>
+    private void StartApproval()
+    {
+        _announced.Clear();
+        _approvalCues.Clear();
+        Volatile.Write(ref _quietAtSeconds, 0);
+        _wasSpeaking = false;
+
+        if (_output is null)
+        {
+            return;
+        }
+
+        _approvalLoop = RunApprovalAsync(_stop!.Token);
     }
 
     private void StartInput(Settings.RuntimeSettings settings)
@@ -429,6 +467,7 @@ public sealed class VoiceHost : IAsyncDisposable
                     AmbientRms = _input.AmbientRms,
                     ThresholdMisconfigured = _input.ThresholdMisconfigured,
                     Awake = _input.Awake,
+                    AwaitingApproval = _input.ApprovalListening,
                 };
                 await Task.Delay(InputTickInterval, ct).ConfigureAwait(false);
             }
@@ -448,6 +487,25 @@ public sealed class VoiceHost : IAsyncDisposable
     /// <summary>An utterance becomes a queue item with the half's boot-scoped key, so a retry cannot duplicate it.</summary>
     private async Task EnqueueAsync(VoiceUtterance utterance)
     {
+        // An answer to an approval is not a new message: it is consumed here, before the withdrawal is
+        // committed and before anything reaches the model. The next assistant text is a new reply, so the
+        // interruption state is cleared on both paths.
+        if (TryAnswerApproval(utterance))
+        {
+            _output?.ResumeAfterInterruption();
+            return;
+        }
+
+        // In wake mode, approval listening bypasses the wake word for the answer only. Everything else spoken
+        // while it was on was captured without a wake word, so it must not reach the message queue — that is
+        // exactly the rule the wake gate normally enforces. Without a wake word configured there is no such
+        // rule, and ordinary speech keeps behaving as a message.
+        if (utterance.ApprovalListening && utterance.WakeWord is null && _input is { WakeEnabled: true })
+        {
+            VoiceLog("voice: ignored non-command speech captured while waiting for approval (no wake word)");
+            return;
+        }
+
         // Speaking is sending a new message, and a new message is what makes a pending withdrawal final.
         await _context.Withdrawals.CommitAsync().ConfigureAwait(false);
 
@@ -475,6 +533,13 @@ public sealed class VoiceHost : IAsyncDisposable
         {
             try
             {
+                DrainApprovalCues();
+
+                // Approval speech is not tied to a session event, so nothing else in this loop would synthesize
+                // it. Playing here also means a prompt queued while the loop was idle is heard within one poll.
+                await _output!.PlayPendingAsync(ct).ConfigureAwait(false);
+                _outputState = _outputState with { Count = _output.Items.Count };
+
                 await foreach (var e in _context.Session.ReadAsync(from + 1, 100, ct).ConfigureAwait(false))
                 {
                     from = e.Seq;
@@ -493,11 +558,16 @@ public sealed class VoiceHost : IAsyncDisposable
                     }
 
                     _output!.OnText(rest, e.Seq);
+
+                    // The answer's confirmation or a newly arrived prompt goes in before this reply is
+                    // synthesized, so the reply cannot start speaking over the decision it just caused.
+                    DrainApprovalCues();
                     await _output.FlushTurnAsync(ct).ConfigureAwait(false);
                     _outputState = _outputState with { Count = _output.Items.Count };
                 }
 
                 await SpeakLiveAsync(from, ct).ConfigureAwait(false);
+                DrainApprovalCues();
                 _output!.ReleaseStreamIfDue();
 
                 // Playback closes the gate; only the conditions being clear may reopen it.
@@ -505,6 +575,9 @@ public sealed class VoiceHost : IAsyncDisposable
                     pendingBlock: _input?.PendingBlock ?? false,
                     asrBusy: _input?.AsrBusy ?? false,
                     nowSeconds: Environment.TickCount64 / 1000.0);
+
+                TrackQuiet();
+                UpdateApprovalListening();
 
                 await Task.Delay(_output.IsStreaming || _liveSpeech.InProgress ? StreamingPollInterval : OutputPollInterval, ct)
                     .ConfigureAwait(false);
@@ -545,6 +618,268 @@ public sealed class VoiceHost : IAsyncDisposable
         _outputState = _outputState with { Count = _output.Items.Count };
     }
 
+    /// <summary>
+    /// Notices new approval requests and queues a prompt for each. Reading the queue is deliberately a poll:
+    /// approvals are owned by the API context, not by the voice host, and a subscription would have to be torn
+    /// down and rebuilt on every settings change.
+    /// </summary>
+    private async Task RunApprovalAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var pending = _context.Approvals.Pending;
+                var live = new HashSet<string>(pending.Select(request => request.ApprovalId), StringComparer.Ordinal);
+
+                foreach (var id in _announced.Keys)
+                {
+                    if (live.Contains(id))
+                    {
+                        continue;
+                    }
+
+                    if (_announced.TryRemove(id, out _))
+                    {
+                        _approvalCues.Enqueue(new DropCue(id));
+                    }
+                }
+
+                var now = _context.Clock.GetUtcNow();
+                foreach (var request in pending)
+                {
+                    if (request.ExpiresAt <= now)
+                    {
+                        continue;
+                    }
+
+                    if (_announced.TryAdd(request.ApprovalId, request))
+                    {
+                        _approvalCues.Enqueue(new AnnounceCue(request));
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception error)
+            {
+                VoiceLog($"voice: approval watch failed: {error.Message}");
+            }
+
+            await Task.Delay(ApprovalPollInterval, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Turns queued approval cues into speech. Only the output loop calls this: <see cref="VoiceOutputHalf"/>
+    /// stays single-threaded, and a prompt that arrives while a sentence is being synthesized waits for the
+    /// next sentence boundary instead of touching the item list from another thread.
+    /// </summary>
+    private void DrainApprovalCues()
+    {
+        var output = _output;
+        if (output is null)
+        {
+            return;
+        }
+
+        while (_approvalCues.TryDequeue(out var cue))
+        {
+            switch (cue)
+            {
+                case AnnounceCue announce:
+                    if (!_announced.ContainsKey(announce.Request.ApprovalId)
+                        || announce.Request.ExpiresAt <= _context.Clock.GetUtcNow()
+                        || !IsPending(announce.Request.ApprovalId))
+                    {
+                        break;
+                    }
+
+                    output.Say(
+                        ApprovalSpeech.Prompt(announce.Request),
+                        SpeechKind.ApprovalPrompt,
+                        announce.Request.ApprovalId,
+                        priority: true,
+                        forceGate: true);
+                    SpeakingStarted();
+                    VoiceLog($"voice: approval prompt queued ({announce.Request.ApprovalId}, {announce.Request.ToolName})");
+                    break;
+
+                case DropCue drop:
+                    output.DropTag(drop.ApprovalId, "请求已处理");
+                    break;
+
+                case ResultCue result:
+                    output.Say(result.Text, SpeechKind.ApprovalResult, priority: true, forceGate: true);
+                    SpeakingStarted();
+                    break;
+            }
+        }
+    }
+
+    private bool IsPending(string approvalId) =>
+        _context.Approvals.Pending.Any(request => string.Equals(request.ApprovalId, approvalId, StringComparison.Ordinal));
+
+    /// <summary>Approval speech was handed to the output half: nothing captured before it goes quiet may answer it.</summary>
+    private void SpeakingStarted()
+    {
+        _wasSpeaking = true;
+        Volatile.Write(ref _quietAtSeconds, double.PositiveInfinity);
+    }
+
+    /// <summary>
+    /// Records the ring time at which the speaker last fell silent. An utterance's segment start is compared
+    /// against this, so a transcript that contains the prompt's own voice cannot approve the prompt.
+    /// </summary>
+    private void TrackQuiet()
+    {
+        var output = _output;
+        if (output is null)
+        {
+            return;
+        }
+
+        var speaking = output.IsPlaying || output.PendingAudio || output.TtsBusy || output.IsStreaming;
+        if (speaking)
+        {
+            _wasSpeaking = true;
+            return;
+        }
+
+        if (!_wasSpeaking)
+        {
+            return;
+        }
+
+        // The input half starts after the approval watcher. Without this guard a prompt spoken in that gap
+        // would clear the flag with no ring clock to record, leaving the quiet timestamp at infinity and
+        // blocking every later voice answer.
+        if (_input is not { } input)
+        {
+            return;
+        }
+
+        _wasSpeaking = false;
+        Volatile.Write(ref _quietAtSeconds, input.Ring.Seconds);
+    }
+
+    /// <summary>
+    /// Turns approval listening on while a request is pending and nothing is queued or playing. The playback
+    /// gate already discards audio during speech; this flag additionally lets the input bypass a wake word, so
+    /// "批准执行" works for as long as the person is waiting. Requiring the output to be fully idle keeps the
+    /// prompt's own audio from being transcribed into an answer.
+    /// </summary>
+    private void UpdateApprovalListening()
+    {
+        var input = _input;
+        var output = _output;
+        if (input is null || output is null)
+        {
+            return;
+        }
+
+        var listening = _context.Approvals.Pending.Count > 0 && IsQuiet(output);
+        input.SetApprovalListening(listening);
+    }
+
+    /// <summary>
+    /// Output-loop view of "nothing is queued or playing". The sentence list is safe to read there and only
+    /// there; the input thread uses <see cref="IsAudiblyQuiet"/>, which reads scalar flags instead.
+    /// </summary>
+    private bool IsQuiet(VoiceOutputHalf output) =>
+        IsAudiblyQuiet(output) && output.SentencesEmpty;
+
+    /// <summary>The scalar part of the quiet test: safe to read from the input loop while the output loop
+    /// mutates its item list.</summary>
+    private bool IsAudiblyQuiet(VoiceOutputHalf output) =>
+        !output.IsPlaying
+        && !output.PendingAudio
+        && !output.TtsBusy
+        && !output.IsStreaming
+        && !_playbackGate.Engaged;
+
+    /// <summary>
+    /// Reads an utterance as an answer when it was captured while an approval was pending and the speaker was
+    /// idle. With a wake word configured, an utterance that came through a wake session is equally deliberate.
+    /// The capture-time flag matters: ASR can finish after playback starts, and a block that began in silence
+    /// is still the person's answer.
+    /// </summary>
+    private bool TryAnswerApproval(VoiceUtterance utterance)
+    {
+        var input = _input;
+        var output = _output;
+        if (input is null || output is null)
+        {
+            return false;
+        }
+
+        if (!utterance.ApprovalListening && !input.WakeEnabled)
+        {
+            return false;
+        }
+
+        if (!IsAudiblyQuiet(output))
+        {
+            return false;
+        }
+
+        // The block must have collected audio after the speaker last went quiet. Its start can be much earlier
+        // (the detector cursor includes the silence before speech), so the end is the reliable side. A
+        // transcript produced from the prompt's own audio ends at or before the quiet transition and is
+        // rejected here.
+        if (utterance.SegEndMs / 1000.0 <= Volatile.Read(ref _quietAtSeconds))
+        {
+            return false;
+        }
+
+        var intent = ApprovalSpeech.Classify(utterance.Transcript, utterance.WakeWord);
+        if (intent == ApprovalIntent.None)
+        {
+            return false;
+        }
+
+        var pending = _context.Approvals.Pending;
+        if (pending.Count == 0)
+        {
+            return false;
+        }
+
+        var target = pending[0];
+        var approved = intent == ApprovalIntent.Approve;
+
+        if (target.ExpiresAt <= _context.Clock.GetUtcNow())
+        {
+            QueueResult(ApprovalSpeech.Expired());
+            return true;
+        }
+
+        if (!_context.Approvals.Answer(target.ApprovalId, approved))
+        {
+            QueueResult(ApprovalSpeech.Settled());
+            return true;
+        }
+
+        // Answer() unblocks the waiting turn; the request may still be visible for a moment, so count only the
+        // other ids rather than trusting Pending.Count.
+        var remaining = _context.Approvals.Pending.Count(request =>
+            !string.Equals(request.ApprovalId, target.ApprovalId, StringComparison.Ordinal));
+        QueueResult(ApprovalSpeech.Result(target, approved, remaining));
+        VoiceLog($"voice: approval {(approved ? "granted" : "denied")} by speech ({target.ApprovalId}, {target.ToolName})");
+        return true;
+    }
+
+    private void QueueResult(string text) => _approvalCues.Enqueue(new ResultCue(text));
+
+    private abstract record ApprovalCue;
+
+    private sealed record AnnounceCue(PendingApproval Request) : ApprovalCue;
+
+    private sealed record DropCue(string ApprovalId) : ApprovalCue;
+
+    private sealed record ResultCue(string Text) : ApprovalCue;
+
     private async Task StopAsync()
     {
         if (_stop is null)
@@ -554,7 +889,7 @@ public sealed class VoiceHost : IAsyncDisposable
 
         await _stop.CancelAsync().ConfigureAwait(false);
 
-        foreach (var loop in new[] { _inputLoop, _outputLoop })
+        foreach (var loop in new[] { _inputLoop, _outputLoop, _approvalLoop })
         {
             if (loop is null)
             {
@@ -582,12 +917,20 @@ public sealed class VoiceHost : IAsyncDisposable
         _stop = null;
         _inputLoop = null;
         _outputLoop = null;
+        _approvalLoop = null;
         _input = null;
         _output = null;
         _source = null;
         _sink = null;
         _asr = null;
         _tts = null;
+
+        // Cues are host-scoped: the approvals they refer to are not. A restart re-reads what is still pending
+        // and announces it again, which is what a person who just enabled the speaker needs to hear.
+        _approvalCues.Clear();
+        _announced.Clear();
+        _wasSpeaking = false;
+        Volatile.Write(ref _quietAtSeconds, 0);
     }
 
     public async ValueTask DisposeAsync()

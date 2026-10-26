@@ -20,7 +20,7 @@ A ready-to-use, single-session Windows desktop AI assistant
 Partner is a single-session assistant with voice input and output. It connects to the OpenAI-compatible or Anthropic endpoint you configure and covers most of what a typical agent harness does:
 
 - **Single session**: one session only, nothing to create or switch. See [Single session](#single-session).
-- **Voice**: wake word, phrase splitting, recognition and sentence-by-sentence read-aloud, with local engines or your own ASR/TTS services.
+- **Voice**: wake word, phrase splitting, recognition, sentence-by-sentence read-aloud, and spoken approval, with local engines or your own ASR/TTS services.
 - **Desktop control and sub-agents**: requests that need a window or a file go to a background sub-agent, which asks before it acts by default.
 - **Memory, schedules, MCP, Skills**: see [Features](#features).
 

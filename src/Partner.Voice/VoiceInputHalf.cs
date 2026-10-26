@@ -26,6 +26,14 @@ public sealed record VoiceUtterance
 
     public required double AsrLatencyMs { get; init; }
 
+    /// <summary>The wake word that opened this segment, when there was one. The catch-up window can include the
+    /// spoken wake word in the same block, so the command matcher has to know what to strip.</summary>
+    public string? WakeWord { get; init; }
+
+    /// <summary>The block began while an approval was pending and the speaker was idle, so no wake word was
+    /// required. Non-command speech captured in this mode is not queued in wake mode.</summary>
+    public bool ApprovalListening { get; init; }
+
     /// <summary><c>voice:{deviceId}:{bootId}:{segStartMs}</c> — see <see cref="BootId"/> for why.</summary>
     public string IdempotencyKey => $"voice:{DeviceId}:{BootId}:{SegStartMs:0}";
 }
@@ -69,6 +77,17 @@ public sealed class VoiceInputHalf : IDisposable
     // advance and nothing is submitted to ASR. The wake session closes on the G2 tick (utterance gap); a
     // mid-utterance submission (WindowCap/G1) does not close it.
     private bool _awake;
+
+    // While an approval is pending and the speaker is idle, the microphone listens without a wake word. The
+    // output loop owns this flag; the input loop only reads it. The interval matters, not just the moment of
+    // submission: a block can span the transition into or out of listening, and in wake mode its speech was
+    // still captured without a wake word.
+    private volatile bool _approvalListening;
+    private double _approvalListeningFrom = double.PositiveInfinity;
+    private double _approvalListeningUntil = double.NegativeInfinity;
+
+    /// <summary>Keyword that opened the active wake session; null outside one.</summary>
+    private string? _wakeWord;
 
     public VoiceInputHalf(
         VoiceInputSetting settings,
@@ -125,6 +144,44 @@ public sealed class VoiceInputHalf : IDisposable
 
     /// <summary>The wake gate is currently open (only meaningful when <see cref="VoiceInputSetting.Wake"/> is set).</summary>
     public bool Awake => _awake;
+
+    /// <summary>Whether a wake word is required before speech reaches ASR.</summary>
+    public bool WakeEnabled => _settings.Wake is not null;
+
+    /// <summary>
+    /// An approval is pending and the speaker is idle, so speech is transcribed without a wake word. The
+    /// output loop turns this on and off; the gate still discards audio while the assistant is talking.
+    /// </summary>
+    public bool ApprovalListening => _approvalListening;
+
+    /// <summary>Starts or stops listening for an approval answer without a wake word.</summary>
+    public void SetApprovalListening(bool listening)
+    {
+        if (listening == _approvalListening)
+        {
+            return;
+        }
+
+        if (listening)
+        {
+            Volatile.Write(ref _approvalListeningFrom, Ring.Seconds);
+            Volatile.Write(ref _approvalListeningUntil, double.PositiveInfinity);
+        }
+        else
+        {
+            Volatile.Write(ref _approvalListeningUntil, Ring.Seconds);
+        }
+
+        _approvalListening = listening;
+        _log(listening
+            ? "voice: approval pending — listening for an answer without a wake word"
+            : "voice: approval listening stopped");
+    }
+
+    /// <summary>Whether any part of a block was captured while approval listening was on.</summary>
+    private bool WasApprovalListening(double start, double end) =>
+        end > Volatile.Read(ref _approvalListeningFrom)
+        && start < Volatile.Read(ref _approvalListeningUntil);
 
     public IReadOnlyList<VoiceUtterance> Utterances => _utterances;
 
@@ -217,8 +274,18 @@ public sealed class VoiceInputHalf : IDisposable
         // right after the wake word is not cut off.
         if (_settings.Wake is not null && !_awake)
         {
-            await PollWakeAsync(ct).ConfigureAwait(false);
-            return;
+            if (_approvalListening)
+            {
+                // KWS is bypassed while listening. Advance its cursor anyway, or the next probe would feed
+                // the whole approval exchange back to the wake engine.
+                _wakeCursor = now;
+                _wakeNeedsLead = true;
+            }
+            else
+            {
+                await PollWakeAsync(ct).ConfigureAwait(false);
+                return;
+            }
         }
 
         _loudSince = null;
@@ -247,6 +314,7 @@ public sealed class VoiceInputHalf : IDisposable
             if (_settings.Wake is not null && _awake)
             {
                 _awake = false;
+                _wakeWord = null;
                 _log($"voice: wake session closed — {SessionSummary()}; waiting for the next wake word");
             }
 
@@ -265,6 +333,7 @@ public sealed class VoiceInputHalf : IDisposable
         if (_awake && decision.Trigger == BlockTrigger.UtteranceGap && decision.Pause)
         {
             _awake = false;
+            _wakeWord = null;
             _log($"voice: wake session closed after the utterance — {SessionSummary()}; waiting for the next wake word");
         }
     }
@@ -322,6 +391,7 @@ public sealed class VoiceInputHalf : IDisposable
             if (hit.IsHit && !_awake)
             {
                 _awake = true;
+                _wakeWord = hit.Keyword;
                 _sessionChars = 0;
                 _sessionAsrCalls = 0;
 
@@ -545,7 +615,15 @@ public sealed class VoiceInputHalf : IDisposable
         AsrBusy = true;
         PendingBlock = true;
         _sessionAsrCalls++;
-        _inFlight = new InFlightAsr(decision, start, end, duration, System.Diagnostics.Stopwatch.StartNew(), _asr.TranscribeAsync(audio, ct));
+        _inFlight = new InFlightAsr(
+            decision,
+            start,
+            end,
+            duration,
+            System.Diagnostics.Stopwatch.StartNew(),
+            _asr.TranscribeAsync(audio, ct),
+            _wakeWord,
+            WasApprovalListening(start, end));
 
         // A fast ASR (or a scripted one) is already done: absorbing it now keeps one block, one tick.
         await AbsorbAsrAsync(ct).ConfigureAwait(false);
@@ -558,7 +636,9 @@ public sealed class VoiceInputHalf : IDisposable
         double End,
         double Duration,
         System.Diagnostics.Stopwatch Watch,
-        Task<string> Text);
+        Task<string> Text,
+        string? WakeWord,
+        bool ApprovalListening);
 
     private InFlightAsr? _inFlight;
 
@@ -598,6 +678,8 @@ public sealed class VoiceInputHalf : IDisposable
                     Transcript = text.Trim(),
                     Trigger = decision.Trigger,
                     AsrLatencyMs = watch.Elapsed.TotalMilliseconds,
+                    WakeWord = job.WakeWord,
+                    ApprovalListening = job.ApprovalListening,
                 };
 
                 _utterances.Add(utterance);
