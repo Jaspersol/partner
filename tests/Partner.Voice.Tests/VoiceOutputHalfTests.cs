@@ -286,6 +286,55 @@ public sealed class VoiceOutputHalfTests
     }
 
     [Fact]
+    public async Task Approval_speech_keeps_its_own_sentences_and_goes_before_unplayed_assistant_text()
+    {
+        var sink = new RecordingSink();
+        var tts = new ScriptedTts();
+        using var output = Half(sink, tts, out var gate);
+
+        output.OnText("第一句话。第二句话。", sessionEventSeq: 1);
+        output.Say(
+            "需要批准：桌面操作。说「批准执行」或「拒绝执行」。",
+            SpeechKind.ApprovalPrompt,
+            "ap-1",
+            priority: true,
+            forceGate: true);
+
+        await output.PlayPendingAsync();
+
+        Assert.Equal(4, tts.Requests.Count);
+        Assert.Contains("需要批准", tts.Requests[0], StringComparison.Ordinal);
+        Assert.Contains("批准执行", tts.Requests[1], StringComparison.Ordinal);
+        Assert.Equal(new[] { "第一句话。", "第二句话。" }, tts.Requests.Skip(2));
+
+        Assert.Equal(SpeechKind.ApprovalPrompt, output.Items[0].Kind);
+        Assert.Equal("ap-1", output.Items[0].Tag);
+        Assert.All(
+            output.Items.Where(item => item.Tag == "ap-1"),
+            item => Assert.Equal(SpeechStatus.Played, item.Status));
+
+        // The prompt's audio contains the command words, so it closes the microphone even when the output
+        // setting would normally leave it open.
+        Assert.True(gate.Engaged);
+    }
+
+    [Fact]
+    public async Task A_dropped_prompt_is_not_synthesized()
+    {
+        var sink = new RecordingSink();
+        var tts = new ScriptedTts();
+        using var output = Half(sink, tts, out _);
+
+        output.Say("需要批准：桌面操作。", SpeechKind.ApprovalPrompt, "ap-2", priority: true, forceGate: true);
+        output.DropTag("ap-2", "请求已处理");
+
+        await output.PlayPendingAsync();
+
+        Assert.Empty(tts.Requests);
+        Assert.All(output.Items, item => Assert.Equal(SpeechStatus.Failed, item.Status));
+    }
+
+    [Fact]
     public async Task The_time_to_first_audio_is_recorded_when_the_speaker_is_let_go()
     {
         Partner.Core.Diagnostics.LatencyTracker.Reset();

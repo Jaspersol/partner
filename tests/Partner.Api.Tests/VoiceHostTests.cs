@@ -41,10 +41,11 @@ public sealed class VoiceHostTests : ApiFixture
     private static object EnabledVoice(
         string? asrBaseUrl = "http://127.0.0.1:45101",
         string? ttsBaseUrl = "http://127.0.0.1:45102",
-        object? model = null) => new
+        object? model = null,
+        bool output = true) => new
         {
             input = new { enabled = true, utteranceGapMs = 200 },
-            output = new { enabled = true },
+            output = new { enabled = output },
             asr = new { baseUrl = asrBaseUrl, model = "test-asr" },
             tts = new { baseUrl = ttsBaseUrl, lang = "zh" },
             model = model ?? new { baseUrl = (string?)null, model = (string?)null },
@@ -211,6 +212,138 @@ public sealed class VoiceHostTests : ApiFixture
 
         // Each sentence exactly once: the log event added only what the live text had not.
         Assert.Equal(new[] { "书房的灯已经打开了。", "窗帘也拉上了。" }, _components.TtsRequests);
+    }
+
+    [Theory]
+    [InlineData("批准执行", true)]
+    [InlineData("拒绝执行", false)]
+    public async Task A_spoken_prompt_is_answered_by_voice(string command, bool expected)
+    {
+        await PutAsync(EnabledVoice());
+
+        var approval = _context.Approvals.RequestAsync("desktop_act", """{"entityId":"7"}""");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_context.Approvals.Pending.Count == 1)));
+
+        Assert.True(await WaitForPromptsAsync(1), "the approval prompt was not spoken");
+        _components.LastSink!.MarkDrained();
+        Assert.True(await WaitForApprovalListeningAsync(), "the host never started listening for an answer");
+
+        _components.AsrTranscript = command;
+        await FeedAsync(_components.LastSource!);
+
+        var approved = await approval.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(expected, approved);
+        Assert.Empty(_context.Approvals.Pending);
+
+        Assert.True(
+            await Eventually.IsTrueAsync(() => Task.FromResult(_components.TtsRequests.Any(text =>
+                text.Contains(expected ? "已批准" : "已拒绝", StringComparison.Ordinal)))),
+            "the decision was not spoken");
+
+        Assert.Empty(await VoiceInputItemsAsync());
+    }
+
+    [Fact]
+    public async Task Without_voice_output_a_command_is_an_ordinary_message()
+    {
+        await PutAsync(EnabledVoice(output: false));
+
+        var approval = _context.Approvals.RequestAsync("desktop_act", """{"entityId":"7"}""");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_context.Approvals.Pending.Count == 1)));
+        var approvalId = _context.Approvals.Pending[0].ApprovalId;
+
+        _components.AsrTranscript = "批准执行";
+        await FeedAsync(_components.LastSource!);
+
+        Assert.True(
+            await Eventually.IsTrueAsync(async () =>
+                (await VoiceInputItemsAsync()).Any(item => item.Payload == "批准执行")),
+            "the command should have reached the message queue without a spoken prompt");
+        Assert.False(approval.IsCompleted);
+        Assert.Contains(_context.Approvals.Pending, request => request.ApprovalId == approvalId);
+
+        _context.Approvals.Answer(approvalId, false);
+        Assert.False(await approval);
+    }
+
+    [Fact]
+    public async Task One_command_answers_only_the_oldest_request()
+    {
+        await PutAsync(EnabledVoice());
+
+        var first = _context.Approvals.RequestAsync("desktop_act", """{"entityId":"7"}""");
+        await Task.Delay(50);
+        var second = _context.Approvals.RequestAsync("schedule_delete", """{"id":"nightly"}""");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_context.Approvals.Pending.Count == 2)));
+
+        var ids = _context.Approvals.Pending.Select(request => request.ApprovalId).ToArray();
+        Assert.True(await WaitForPromptsAsync(2), "both approval prompts should have been spoken");
+
+        _components.LastSink!.MarkDrained();
+        Assert.True(await WaitForApprovalListeningAsync(), "the host never started listening for an answer");
+
+        _components.AsrTranscript = "批准执行";
+        await FeedAsync(_components.LastSource!);
+
+        Assert.True(await first.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(second.IsCompleted);
+
+        var remaining = Assert.Single(_context.Approvals.Pending);
+        Assert.Equal(ids[1], remaining.ApprovalId);
+
+        _context.Approvals.Answer(ids[1], false);
+        Assert.False(await second);
+    }
+
+    private async Task<bool> WaitForPromptsAsync(int expected)
+    {
+        // Each prompt is two sentences. The output count is published only after PlayPendingAsync has
+        // synthesized them, so this waits for the prompt audio to be enqueued, not just requested.
+        return await Eventually.IsTrueAsync(async () =>
+        {
+            var state = await StateAsync();
+            return _components.TtsRequests.Count(text => text.Contains("拒绝执行", StringComparison.Ordinal)) >= expected
+                && state.GetProperty("output").GetProperty("count").GetInt32() >= expected * 2;
+        });
+    }
+
+    private async Task<bool> WaitForApprovalListeningAsync()
+    {
+        return await Eventually.IsTrueAsync(async () =>
+        {
+            var state = await StateAsync();
+            return state.GetProperty("input").GetProperty("awaitingApproval").GetBoolean();
+        });
+    }
+
+    /// <summary>Feeds one voiced segment followed by enough silence for the pause detector to submit it.</summary>
+    private static async Task FeedAsync(SyntheticAudioSource source)
+    {
+        for (var i = 0; i < 30; i++)
+        {
+            source.Emit(0.5f, 320);
+            await Task.Delay(25);
+        }
+
+        for (var i = 0; i < 70; i++)
+        {
+            source.Emit(0f, 320);
+            await Task.Delay(25);
+        }
+    }
+
+    private async Task<List<Core.Queue.InputItem>> VoiceInputItemsAsync()
+    {
+        var items = new List<Core.Queue.InputItem>();
+        await foreach (var entry in _context.Queue.ReadLogAsync())
+        {
+            if (entry.Source == Core.Contracts.InputSource.Voice)
+            {
+                items.Add(entry);
+            }
+        }
+
+        return items;
     }
 }
 

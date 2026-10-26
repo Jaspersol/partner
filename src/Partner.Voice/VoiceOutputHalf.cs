@@ -6,6 +6,15 @@ using Partner.Voice.Tts;
 
 namespace Partner.Voice;
 
+/// <summary>Where a sentence came from. Approval speech is not part of the conversation and must not share
+/// the assistant's segmenter or its duplicate suppression.</summary>
+public enum SpeechKind
+{
+    Assistant,
+    ApprovalPrompt,
+    ApprovalResult,
+}
+
 public enum SpeechStatus
 {
     Queued,
@@ -33,6 +42,13 @@ public sealed record SpeechItem
     public required SpeechStatus Status { get; init; }
 
     public string? Error { get; init; }
+
+    /// <summary>Assistant text by default; approval prompts and their results are marked so they can be found
+    /// and dropped by their <see cref="Tag"/>.</summary>
+    public SpeechKind Kind { get; init; } = SpeechKind.Assistant;
+
+    /// <summary>The approval id this item belongs to, when it is not assistant text.</summary>
+    public string? Tag { get; init; }
 }
 
 /// <summary>
@@ -48,6 +64,7 @@ public sealed class VoiceOutputHalf : IDisposable
     private readonly Action<string> _log;
     private readonly List<SpeechItem> _items = new();
     private readonly Func<long> _nowMs;
+    private readonly int _maxSplitChars;
     private int _seq;
 
     // Streaming start: audio is latched until the first sentence (or a short lead) is ready, see BeginStream.
@@ -83,7 +100,8 @@ public sealed class VoiceOutputHalf : IDisposable
         _log = log ?? (_ => { });
 
         _sink.DrainMs = settings.DrainMs;
-        Segmenter = new SpeechSegmenter(Math.Max(1, maxSplitChars));
+        _maxSplitChars = Math.Max(1, maxSplitChars);
+        Segmenter = new SpeechSegmenter(_maxSplitChars);
         Enabled = settings.Enabled;
     }
 
@@ -144,6 +162,117 @@ public sealed class VoiceOutputHalf : IDisposable
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Adds text that is not part of the assistant's reply — an approval prompt or its result.
+    /// <para>
+    /// It gets its own segmenter, so a prompt can never be joined to a half-written assistant sentence, and it
+    /// bypasses <see cref="DeduplicateAgainstPending"/> because approval ids, not text, decide what was already
+    /// announced. <paramref name="priority"/> puts the item before sentences that have not started playing yet:
+    /// an approval has a 120-second lifetime, and waiting behind a long reply can spend it before it is heard.
+    /// </para>
+    /// <para>
+    /// <paramref name="forceGate"/> is for approval speech. It closes the microphone even when
+    /// <see cref="VoiceOutputSetting.MuteDuringTts"/> is off: the prompt itself contains "批准执行", and a
+    /// speaker heard by the microphone must never turn into the answer to its own question.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<SpeechItem> Say(
+        string text,
+        SpeechKind kind,
+        string? tag = null,
+        bool priority = false,
+        bool forceGate = false)
+    {
+        if (!Enabled || string.IsNullOrWhiteSpace(text))
+        {
+            return Array.Empty<SpeechItem>();
+        }
+
+        var cleaned = TtsTextCleaner.Clean(text);
+        if (cleaned.Length == 0)
+        {
+            return Array.Empty<SpeechItem>();
+        }
+
+        // Approval speech is not the rest of an interrupted reply: the person has just answered, and the
+        // assistant's next reply must be spoken normally.
+        if (kind != SpeechKind.Assistant)
+        {
+            _interrupted = false;
+        }
+
+        if (forceGate)
+        {
+            _gate.Engage();
+        }
+
+        var segmenter = new SpeechSegmenter(_maxSplitChars);
+        var sentences = new List<string>(segmenter.Push(cleaned));
+        sentences.AddRange(segmenter.Flush());
+
+        var items = new List<SpeechItem>(sentences.Count);
+
+        // A result answers something the person just said, so it goes before every queued item. A prompt is
+        // inserted before assistant text but after prompts that arrived earlier: reversing two pending
+        // questions would make the order on screen disagree with the order in the speaker.
+        var insertAt = priority
+            ? kind == SpeechKind.ApprovalResult
+                ? _items.FindIndex(item => item.Status == SpeechStatus.Queued)
+                : _items.FindIndex(item => item.Status == SpeechStatus.Queued && item.Kind == SpeechKind.Assistant)
+            : -1;
+
+        foreach (var sentence in sentences)
+        {
+            var item = new SpeechItem
+            {
+                SpeechId = Guid.NewGuid().ToString("n"),
+                Seq = ++_seq,
+                SessionEventSeq = 0,
+                Text = sentence,
+                Status = SpeechStatus.Queued,
+                Kind = kind,
+                Tag = tag,
+            };
+
+            var index = insertAt >= 0 ? insertAt : _items.Count;
+            if (insertAt >= 0)
+            {
+                insertAt++;
+            }
+
+            _items.Insert(index, item);
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// Removes a prompt whose request was answered elsewhere (the banner, or an earlier voice command) or
+    /// expired. Only items that have not been synthesized can be dropped; one already in the sink finishes,
+    /// which is harmless because the answer path treats the request as settled.
+    /// </summary>
+    public void DropTag(string tag, string reason)
+    {
+        if (string.IsNullOrEmpty(tag))
+        {
+            return;
+        }
+
+        for (var i = 0; i < _items.Count; i++)
+        {
+            var item = _items[i];
+            if (item.Tag is null
+                || !string.Equals(item.Tag, tag, StringComparison.Ordinal)
+                || item.Status != SpeechStatus.Queued)
+            {
+                continue;
+            }
+
+            _items[i] = item with { Status = SpeechStatus.Failed, Error = reason };
+        }
     }
 
     /// <summary>
@@ -261,7 +390,7 @@ public sealed class VoiceOutputHalf : IDisposable
             {
                 SpeechId = Guid.NewGuid().ToString("n"),
                 Seq = ++_seq,
-                SessionEventSeq = _items.Count == 0 ? 0 : _items[^1].SessionEventSeq,
+                SessionEventSeq = _items.LastOrDefault(item => item.Kind == SpeechKind.Assistant)?.SessionEventSeq ?? 0,
                 Text = sentence,
                 Status = SpeechStatus.Queued,
             });
@@ -442,6 +571,7 @@ public sealed class VoiceOutputHalf : IDisposable
         {
             // Comparing against the most recent unfinished sentence is enough: duplicates come from replaying the same text through the pipeline.
             var duplicate = _items
+                .Where(i => i.Kind == SpeechKind.Assistant)
                 .Where(i => i.Status is not (SpeechStatus.Played or SpeechStatus.Failed))
                 .Any(i => string.Equals(i.Text, sentence, StringComparison.Ordinal));
             if (!duplicate)
