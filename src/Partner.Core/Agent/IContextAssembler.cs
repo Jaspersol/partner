@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using Partner.Core.Agent.Delegation;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
@@ -327,7 +330,85 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         && meta.ContainsKey("id");
 
     private static string Trim(string? text) =>
-        text is null ? string.Empty : text.Length <= TraceChars ? text : text[..TraceChars] + "…";
+        text is null ? string.Empty : text.Length <= TraceChars ? text : Cut(text, TraceChars) + "…";
+
+    /// <summary>
+    /// A historic tool call's arguments, kept valid JSON. The wire field is a string that the provider parses:
+    /// cutting it mid-string (as <see cref="Trim"/> does for prose) makes a strict endpoint reject the whole
+    /// request — llama.cpp answers HTTP 500 before generation. Long string values are shortened instead, and an
+    /// already-unparseable entry becomes <c>{}</c> so one bad turn cannot wedge every later turn.
+    /// </summary>
+    internal static string TraceArguments(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (json.Length <= TraceChars)
+            {
+                return json;
+            }
+
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions
+            {
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            }))
+            {
+                WriteTrace(writer, document.RootElement);
+            }
+
+            return Encoding.UTF8.GetString(buffer.ToArray());
+        }
+        catch (JsonException)
+        {
+            return "{}";
+        }
+    }
+
+    private static void WriteTrace(Utf8JsonWriter writer, JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteTrace(writer, property.Value);
+                }
+
+                writer.WriteEndObject();
+                break;
+
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteTrace(writer, item);
+                }
+
+                writer.WriteEndArray();
+                break;
+
+            case JsonValueKind.String:
+                var text = element.GetString() ?? string.Empty;
+                writer.WriteStringValue(text.Length <= TraceChars ? text : Cut(text, TraceChars) + "…");
+                break;
+
+            default:
+                element.WriteTo(writer);
+                break;
+        }
+    }
+
+    /// <summary>A prefix that does not split a surrogate pair.</summary>
+    private static string Cut(string text, int length) =>
+        char.IsHighSurrogate(text[length - 1]) ? text[..(length - 1)] : text[..length];
 
     /// <summary>
     /// Says where a message came from when that changes how it should be read: a sub-agent report is data, and a
@@ -346,7 +427,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// <summary>What an entry costs in the window: its text, and for a hand-off call its arguments too.</summary>
     internal static string CostText(SessionViewItem entry) =>
         entry.Kind == SessionEventKind.ToolCall && entry.Meta is { } meta
-            ? entry.Body + Trim(meta.GetValueOrDefault("args"))
+            ? entry.Body + TraceArguments(meta.GetValueOrDefault("args"))
             : IsHandoffTrace(entry) ? Trim(entry.Body) : entry.Body;
 
     /// <summary>
@@ -375,7 +456,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
                 if (entry.Kind == SessionEventKind.ToolCall)
                 {
-                    var call = new LlmToolCall(id, DelegationTools.Delegate, Trim(entry.Meta!.GetValueOrDefault("args") ?? "{}"));
+                    var call = new LlmToolCall(id, DelegationTools.Delegate, TraceArguments(entry.Meta!.GetValueOrDefault("args")));
                     var last = turns.Count > 0 ? turns[^1] : null;
 
                     if (openCalls && last is { Role: "assistant", ToolCalls: { } calls })
