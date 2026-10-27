@@ -401,6 +401,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
         var reasoning = new StringBuilder();
         var calls = new SortedDictionary<int, ToolCallBuilder>();
         var finish = "stop";
+        var completed = false;
         var promptTokens = 0;
         var completionTokens = 0;
         var nextAnonymousIndex = 0;
@@ -424,6 +425,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
 
             if (payload == "[DONE]")
             {
+                completed = true;
                 break;
             }
 
@@ -503,7 +505,20 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
             if (!string.IsNullOrEmpty(choice.FinishReason))
             {
                 finish = choice.FinishReason;
+                completed = true;
             }
+        }
+
+        // A connection that closes between frames looks exactly like a finished answer: the text read so far is
+        // valid, and the loop simply ends. Without this check a server killed mid-generation would leave a
+        // half-sentence recorded as the reply — the truncation the reader sees with no error anywhere. The
+        // contract is OpenAI's: a finished stream carries a finish_reason, `[DONE]`, or both.
+        if (!completed)
+        {
+            throw ModelCallFailure.Unreadable(
+                "模型补全",
+                "流在服务器报告完成前结束；这段不完整的回答没有保存。",
+                "重试这次请求；若反复出现，查看端点日志确认生成是否被中断");
         }
 
         var assembled = calls.Values
@@ -513,6 +528,16 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
                 builder.Name!,
                 builder.Arguments.Length == 0 ? "{}" : builder.Arguments.ToString()))
             .ToList();
+
+        // The finish reason and the payload have to agree: a turn declared as a tool call but delivered with
+        // no (or incomplete) calls would otherwise end as a normal answer whose text stops at the colon.
+        if (finish == "tool_calls" && (assembled.Count == 0 || assembled.Count != calls.Count))
+        {
+            throw ModelCallFailure.Unreadable(
+                "模型补全",
+                "服务器声明了工具调用，但流里没有完整的调用；这段回答没有保存。",
+                "重试这次请求；若反复出现，确认端点的工具调用格式与 OpenAI 兼容");
+        }
 
         return new LlmResponse(
             text.Length == 0 ? null : text.ToString(),
