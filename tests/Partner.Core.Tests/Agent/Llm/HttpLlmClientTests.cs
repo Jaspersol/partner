@@ -216,6 +216,7 @@ public sealed class HttpLlmClientTests
         var handler = new SseHandler(
             Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"clock","arguments":"{\"city\":\""}}]}}]}"""),
             Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"上海\"}"}}]}}]}"""),
+            Frame("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"""),
             "data: [DONE]");
 
         var response = await Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), _ => { });
@@ -224,6 +225,38 @@ public sealed class HttpLlmClientTests
         Assert.Equal("call_1", call.Id);
         Assert.Equal("clock", call.Name);
         Assert.Equal("{\"city\":\"上海\"}", call.ArgumentsJson);
+    }
+
+    [Fact]
+    public async Task A_stream_that_closes_before_a_finish_frame_is_a_failure_not_a_short_answer()
+    {
+        // A killed server closes the connection between frames. The text read so far is valid, so without a
+        // completeness check it would be recorded as the whole reply — a visible truncation with no error.
+        var handler = new SseHandler(
+            Frame("""{"choices":[{"delta":{"content":"前半句"}}]}"""));
+
+        var failure = await Assert.ThrowsAsync<ModelCallFailure>(
+            () => Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), _ => { }));
+
+        Assert.Equal(ModelCallFailure.FailureKind.Unreadable, failure.Kind);
+        Assert.Contains("完成前结束", failure.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_declared_tool_call_with_no_call_is_a_failure_not_a_finished_answer()
+    {
+        // The model wrote its preamble and the tool call itself was lost (a dropped or malformed frame). If
+        // this were accepted, the turn would end as a normal answer whose last words are a colon.
+        var handler = new SseHandler(
+            Frame("""{"choices":[{"delta":{"content":"我来搜索："}}]}"""),
+            Frame("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"""),
+            "data: [DONE]");
+
+        var failure = await Assert.ThrowsAsync<ModelCallFailure>(
+            () => Build(handler).StreamAsync(Request(new LlmMessage("user", "hi")), _ => { }));
+
+        Assert.Equal(ModelCallFailure.FailureKind.Unreadable, failure.Kind);
+        Assert.Contains("工具调用", failure.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
