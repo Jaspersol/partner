@@ -348,7 +348,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
         StreamWithReasoningAsync(request, onText, _ => { }, ct);
 
     /// <inheritdoc />
-    public async Task<LlmResponse> StreamWithReasoningAsync(
+    public Task<LlmResponse> StreamWithReasoningAsync(
         LlmRequest request,
         Action<string> onText,
         Action<string> onReasoning,
@@ -358,7 +358,17 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
         ArgumentNullException.ThrowIfNull(onText);
         ArgumentNullException.ThrowIfNull(onReasoning);
 
-        var json = JsonSerializer.Serialize(BuildBody(request) with { Stream = true }, Json);
+        return StreamCoreAsync(request, onText, onReasoning, requireToolCall: false, ct);
+    }
+
+    private async Task<LlmResponse> StreamCoreAsync(
+        LlmRequest request,
+        Action<string> onText,
+        Action<string> onReasoning,
+        bool requireToolCall,
+        CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(BuildBody(request, requireToolCall) with { Stream = true }, Json);
 
         using var message = new HttpRequestMessage(HttpMethod.Post, $"{_options.BaseUrl}/chat/completions")
         {
@@ -539,14 +549,62 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
                 "重试这次请求；若反复出现，确认端点的工具调用格式与 OpenAI 兼容");
         }
 
-        return new LlmResponse(
+        var completion = new LlmResponse(
             text.Length == 0 ? null : text.ToString(),
             assembled,
             finish,
             PromptTokens: promptTokens,
             CompletionTokens: completionTokens,
             Reasoning: reasoning.Length == 0 ? null : reasoning.ToString());
+
+        // A local model may announce the call and then finish with `stop` without emitting it: "let me search:"
+        // and nothing. On llama.cpp the same prompt with tool_choice=required does produce the calls, so the
+        // intent was there and the endpoint's automatic choice let it end. Retry once, forcing the choice, and
+        // keep the first attempt's reasoning (the retry may not repeat it).
+        if (!requireToolCall && IsDanglingPreamble(request, completion))
+        {
+            var retried = await StreamCoreAsync(request, _ => { }, _ => { }, requireToolCall: true, ct)
+                .ConfigureAwait(false);
+
+            return retried with { Reasoning = retried.Reasoning ?? completion.Reasoning };
+        }
+
+        return completion;
     }
+
+    /// <summary>
+    /// Whether the model said it was about to act and then ended the turn without the action. Only a short,
+    /// colon-terminated fragment counts: a normal answer that happens to end with a colon is longer and has
+    /// already said something worth keeping.
+    /// </summary>
+    private static bool IsDanglingPreamble(LlmRequest request, LlmResponse response)
+    {
+        if (request.Tools.Count == 0
+            || response.ToolCalls.Count > 0
+            || response.FinishReason != "stop"
+            || response.Text is not { } text)
+        {
+            return false;
+        }
+
+        var trimmed = text.TrimEnd();
+        return trimmed.Length is > 0 and <= 160
+            && (trimmed.EndsWith(':') || trimmed.EndsWith('：'))
+            && AnnouncesAction(trimmed);
+    }
+
+    /// <summary>A phrase that says the model is about to act, rather than one that introduces a finished answer.</summary>
+    private static bool AnnouncesAction(string text) =>
+        text.Contains("我来", StringComparison.Ordinal)
+        || text.Contains("让我", StringComparison.Ordinal)
+        || text.Contains("我先", StringComparison.Ordinal)
+        || text.Contains("接下来", StringComparison.Ordinal)
+        || text.Contains("搜索", StringComparison.Ordinal)
+        || text.Contains("查询", StringComparison.Ordinal)
+        || text.Contains("查一下", StringComparison.Ordinal)
+        || text.Contains("看看", StringComparison.Ordinal)
+        || text.Contains("调用", StringComparison.Ordinal)
+        || text.Contains("继续", StringComparison.Ordinal);
 
     private sealed class ToolCallBuilder
     {
@@ -557,7 +615,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
         public StringBuilder Arguments { get; } = new();
     }
 
-    private RequestBody BuildBody(LlmRequest request) => new(
+    private RequestBody BuildBody(LlmRequest request, bool requireToolCall = false) => new(
         _options.Model,
         request.Messages.Select(message => ToMessage(message, _options.PromptCacheMarkers)).ToList(),
         request.Tools.Count == 0
@@ -568,7 +626,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
         request.MaxTokens,
         // The request wins when it carries a gear: a turn may have been sent with one chosen per message.
         // Absent means "whatever the client was configured with", which is the single global default.
-        ReasoningEfforts.Wire(request.ReasoningEffort ?? _options.ReasoningEffort));
+        ReasoningEfforts.Wire(request.ReasoningEffort ?? _options.ReasoningEffort),
+        ToolChoice: requireToolCall ? "required" : null);
 
     private static JsonElement Schema(string parametersJson)
     {
@@ -683,7 +742,8 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
         IReadOnlyList<ToolPayload>? Tools,
         int? MaxTokens,
         string? ReasoningEffort,
-        bool? Stream = null);
+        bool? Stream = null,
+        string? ToolChoice = null);
 
     private sealed record OutboundContentPart(
         string Type,

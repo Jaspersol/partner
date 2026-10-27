@@ -13,12 +13,19 @@ internal sealed class SequencedHandler(params HttpResponseMessage[] responses) :
 
     public int Requests { get; private set; }
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    /// <summary>Every request body, in order; the last one is what a retry sent.</summary>
+    public List<string> Bodies { get; } = new();
+
+    public string? RequestBody => Bodies.Count == 0 ? null : Bodies[^1];
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         Requests++;
-        return Task.FromResult(_responses.Count > 0
+        Bodies.Add(request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(ct));
+
+        return _responses.Count > 0
             ? _responses.Dequeue()
-            : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            : new HttpResponseMessage(HttpStatusCode.InternalServerError);
     }
 }
 
@@ -257,6 +264,38 @@ public sealed class HttpLlmClientTests
 
         Assert.Equal(ModelCallFailure.FailureKind.Unreadable, failure.Kind);
         Assert.Contains("工具调用", failure.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_dangling_preamble_is_retried_with_a_required_tool_choice()
+    {
+        // The local model announces the search and ends with `stop` before emitting the call. llama.cpp does
+        // produce the call when the choice is required, so the intent was there; the retry recovers it instead
+        // of leaving a one-line answer that ends at the colon.
+        static HttpResponseMessage Sse(params string[] frames) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(string.Join("\n\n", frames), Encoding.UTF8, "text/event-stream"),
+        };
+
+        var handler = new SequencedHandler(
+            Sse(
+                Frame("""{"choices":[{"delta":{"content":"让我查一下："}}]}"""),
+                Frame("""{"choices":[{"delta":{},"finish_reason":"stop"}]}"""),
+                "data: [DONE]"),
+            Sse(
+                Frame("""{"choices":[{"delta":{"content":"让我查一下："}}]}"""),
+                Frame("""{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"clock","arguments":"{}"}}]}}]}"""),
+                Frame("""{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"""),
+                "data: [DONE]"));
+
+        var response = await Build(handler).StreamAsync(Request(new LlmMessage("user", "what time")), _ => { });
+
+        Assert.Equal(2, handler.Requests);
+        Assert.Equal("tool_calls", response.FinishReason);
+        Assert.Single(response.ToolCalls);
+
+        using var retry = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal("required", retry.RootElement.GetProperty("tool_choice").GetString());
     }
 
     [Fact]
