@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
@@ -143,6 +144,53 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.Contains("desktop", call.ArgumentsJson, StringComparison.Ordinal);
         Assert.Equal("c1", messages[3].ToolCallId);
         Assert.Equal("handed over as job-1", messages[3].Content);
+    }
+
+    [Fact]
+    public async Task A_long_hand_off_is_replayed_as_valid_json()
+    {
+        // llama.cpp parses the arguments of a replayed tool call before it generates anything. Cutting the
+        // string at 400 characters leaves an unterminated quote, and the server answers HTTP 500 for the whole
+        // request — every later turn included. Long values are shortened, not the JSON.
+        var args = JsonSerializer.Serialize(new { scenario = "desktop", goal = new string('走', 1000) });
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.User, "open the music app", null),
+            (SessionEventKind.Assistant, "handing that to the desktop agent", null),
+            (SessionEventKind.ToolCall, "agent_delegate", Call("c1", "agent_delegate", args)),
+            (SessionEventKind.ToolResult, "handed over as job-1", Result("c1", "agent_delegate")),
+            (SessionEventKind.Assistant, "it is with the desktop agent now", null));
+
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        var call = Assert.Single(messages[2].ToolCalls!);
+        using var document = JsonDocument.Parse(call.ArgumentsJson);
+        Assert.Equal("desktop", document.RootElement.GetProperty("scenario").GetString());
+
+        var goal = document.RootElement.GetProperty("goal").GetString();
+        Assert.NotNull(goal);
+        Assert.True(goal.Length < 1000);
+        Assert.EndsWith("…", goal);
+    }
+
+    [Fact]
+    public async Task A_hand_off_with_unparseable_arguments_is_replayed_as_empty_json()
+    {
+        // A canceled stream can leave a call truncated in the log. Replaying it verbatim wedges every later
+        // request on an endpoint that validates tool arguments; an empty object keeps the call/result pairing
+        // and lets the conversation continue.
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.User, "open the music app", null),
+            (SessionEventKind.ToolCall, "agent_delegate", Call("c1", "agent_delegate", "{\"goal\":\"cut")),
+            (SessionEventKind.ToolResult, "handed over as job-1", Result("c1", "agent_delegate")),
+            (SessionEventKind.Assistant, "it is with the desktop agent now", null));
+
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        var call = Assert.Single(messages[2].ToolCalls!);
+        Assert.Equal("{}", call.ArgumentsJson);
+        Assert.Equal("c1", messages[3].ToolCallId);
     }
 
     [Fact]
