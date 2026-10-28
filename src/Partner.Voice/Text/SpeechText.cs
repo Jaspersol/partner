@@ -151,8 +151,14 @@ public static class TtsTextCleaner
 }
 
 /// <summary>
-/// Splits a stream of text into speakable sentences: sentence-ending punctuation first,
-/// soft breaks when a fragment gets long, and a hard character cap for text that has no punctuation at all.
+/// Splits a stream of text into speakable sentences: sentence-ending punctuation first, soft breaks when a
+/// fragment gets long, and a hard character cap for text that has no punctuation at all.
+/// <para>
+/// A fragment shorter than <c>minSentenceChars</c> is not a sentence of its own, so "嗯。" is read with whatever
+/// follows instead of on its own. The length is measured from the previous sentence ending, not from the start:
+/// a chain of short clauses has to add up before it is cut. The cap still wins when the text runs long — it then
+/// cuts at the last sentence ending, else at the last soft break, else at the cap.
+/// </para>
 /// </summary>
 public sealed class SpeechSegmenter
 {
@@ -160,12 +166,15 @@ public sealed class SpeechSegmenter
     private static readonly char[] SoftBreaks = { '，', '、', '；', '：', ',', ':', ' ' };
 
     private readonly int _maxChars;
+    private readonly int _minChars;
     private readonly StringBuilder _pending = new();
 
-    public SpeechSegmenter(int maxChars = 40)
+    public SpeechSegmenter(int maxChars = 40, int minSentenceChars = 10)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxChars);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(minSentenceChars);
         _maxChars = maxChars;
+        _minChars = minSentenceChars;
     }
 
     public bool IsEmpty => _pending.Length == 0;
@@ -208,46 +217,98 @@ public sealed class SpeechSegmenter
 
         var text = _pending.ToString();
 
-        // 1) a sentence ending (skipping a leading marker so "。" alone never becomes a sentence).
+        // 1) A sentence ending, once the fragment it closes reaches the minimum length. A shorter one is not a
+        //    sentence: the text keeps accumulating and the next ending is measured from the one skipped here, so
+        //    "嗯。好。今天……" is one sentence until enough has been said.
+        var previous = -1;
         for (var i = 0; i < text.Length; i++)
+        {
+            if (Array.IndexOf(SentenceEndings, text[i]) < 0)
+            {
+                continue;
+            }
+
+            var length = previous < 0 ? i + 1 : i - previous;
+            if (length < _minChars)
+            {
+                previous = i;
+                continue;
+            }
+
+            sentence = text[..(i + 1)].Trim();
+            _pending.Remove(0, i + 1);
+
+            if (sentence.Length == 0)
+            {
+                return TryTake(out sentence);
+            }
+
+            return true;
+        }
+
+        // 2) Too long: the last sentence ending (a short one — the loop above rejected every longer candidate),
+        //    then a soft break, then a hard cut at the cap so the engine is never handed a wall of text.
+        if (text.Length < _maxChars)
+        {
+            return false;
+        }
+
+        var limit = Math.Min(text.Length, _maxChars);
+        var cut = LastSentenceEnding(text, limit);
+        if (cut < 0)
+        {
+            cut = LastSoftBreak(text, limit);
+        }
+
+        if (cut < 0)
+        {
+            cut = _maxChars;
+        }
+
+        sentence = text[..cut].Trim();
+        _pending.Remove(0, cut);
+        return sentence.Length > 0;
+    }
+
+    /// <summary>Index just past the last sentence ending at or before <paramref name="limit"/>, or -1.</summary>
+    private static int LastSentenceEnding(string text, int limit)
+    {
+        for (var i = limit - 1; i >= 0; i--)
         {
             if (Array.IndexOf(SentenceEndings, text[i]) >= 0)
             {
-                sentence = text[..(i + 1)].Trim();
-                _pending.Remove(0, i + 1);
-
-                if (sentence.Length == 0)
-                {
-                    return TryTake(out sentence);
-                }
-
-                return true;
+                return i + 1;
             }
         }
 
-        // 2) too long: prefer a soft break, else cut hard so the engine is never handed a wall of text.
-        if (text.Length >= _maxChars)
+        return -1;
+    }
+
+    /// <summary>
+    /// Index just past the last soft break at or before <paramref name="limit"/>, or -1.
+    /// <para>
+    /// A break one character after another break is not a break: cleaning turns a line ending in "，" into
+    /// "， ", and "、," survives too. Cutting at the second one would leave the first as the head of the next
+    /// sentence, so a run of breaks is cut after its first character.
+    /// </para>
+    /// </summary>
+    private int LastSoftBreak(string text, int limit)
+    {
+        for (var i = limit - 1; i >= _maxChars / 2; i--)
         {
-            var cut = -1;
-            for (var i = Math.Min(text.Length, _maxChars) - 1; i >= _maxChars / 2; i--)
+            if (Array.IndexOf(SoftBreaks, text[i]) < 0)
             {
-                if (Array.IndexOf(SoftBreaks, text[i]) >= 0)
-                {
-                    cut = i + 1;
-                    break;
-                }
+                continue;
             }
 
-            if (cut <= 0)
+            if (i > 0 && Array.IndexOf(SoftBreaks, text[i - 1]) >= 0)
             {
-                cut = _maxChars;
+                continue;
             }
 
-            sentence = text[..cut].Trim();
-            _pending.Remove(0, cut);
-            return sentence.Length > 0;
+            return i + 1;
         }
 
-        return false;
+        return -1;
     }
 }

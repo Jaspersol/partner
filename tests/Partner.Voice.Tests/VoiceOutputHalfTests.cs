@@ -11,6 +11,10 @@ namespace Partner.Voice.Tests;
 /// </summary>
 public sealed class VoiceOutputHalfTests
 {
+    /// <summary>
+    /// <c>minSentenceChars: 1</c> keeps the minimum sentence length out of these tests: they are about playback
+    /// order and buffering, and the default (10) would join their five-character sentences.
+    /// </summary>
     private static VoiceOutputHalf Half(IAudioSink sink, ITtsClient tts, out PlaybackGate gate)
     {
         gate = new PlaybackGate();
@@ -18,7 +22,8 @@ public sealed class VoiceOutputHalfTests
             new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0 },
             sink,
             tts,
-            gate);
+            gate,
+            minSentenceChars: 1);
     }
 
     [Fact]
@@ -69,7 +74,8 @@ public sealed class VoiceOutputHalfTests
             sink,
             tts,
             new PlaybackGate(),
-            nowMs: nowMs);
+            nowMs: nowMs,
+            minSentenceChars: 1);
 
     [Fact]
     public async Task A_streamed_reply_starts_once_two_sentences_are_ready_not_when_it_ends()
@@ -259,7 +265,8 @@ public sealed class VoiceOutputHalfTests
             new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0, GapMs = 200, SampleRate = 24_000 },
             sink,
             new ScriptedTts(),
-            new PlaybackGate());
+            new PlaybackGate(),
+            minSentenceChars: 1);
 
         output.OnText("第一句话。", sessionEventSeq: 1);
         await output.FlushTurnAsync();
@@ -283,6 +290,23 @@ public sealed class VoiceOutputHalfTests
 
         Assert.True(items.Count >= 2, "25 characters with no punctuation should be cut at 10");
         Assert.All(items, item => Assert.True(item.Text.Length <= 10));
+    }
+
+    [Fact]
+    public void The_minimum_sentence_length_comes_from_the_setting()
+    {
+        var sink = new RecordingSink();
+        using var output = new VoiceOutputHalf(
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false },
+            sink,
+            new ScriptedTts(),
+            new PlaybackGate(),
+            minSentenceChars: 1);
+
+        // 5 字一句：默认的 10 会连成一句，设成 1 就各自成句。
+        var items = output.OnText("第一句话。第二句话。", sessionEventSeq: 1);
+
+        Assert.Equal(new[] { "第一句话。", "第二句话。" }, items.Select(item => item.Text));
     }
 
     [Fact]

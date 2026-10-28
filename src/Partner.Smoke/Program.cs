@@ -1551,7 +1551,7 @@ internal static class Program
             var outputSetting = new VoiceOutputSetting { Enabled = true, MuteDuringTts = true, DrainMs = 0 };
             var output = new VoiceOutputHalf(outputSetting, sink, tts, gate, log.Add);
 
-            var spoken = output.OnText("## Answer\n\nUse **dark** mode. Thanks! 🎉", sessionEventSeq: 42);
+            var spoken = output.OnText("## Answer\n\nUse **dark** mode. Thanks for asking! 🎉", sessionEventSeq: 42);
             await output.FlushTurnAsync();
 
             Check("voice: output speaks sentences in order, cleaned of markdown",

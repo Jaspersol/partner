@@ -60,6 +60,9 @@ public sealed record VoiceInputSetting
     /// <summary>Forced split length for text with no punctuation.</summary>
     public int MaxSplitChars { get; init; } = 40;
 
+    /// <summary>Shortest fragment spoken as its own sentence; shorter pieces are read with what follows.</summary>
+    public int MinSentenceChars { get; init; } = 10;
+
     public static VoiceInputSetting Default { get; } = new();
 }
 

@@ -65,6 +65,7 @@ public sealed class VoiceOutputHalf : IDisposable
     private readonly List<SpeechItem> _items = new();
     private readonly Func<long> _nowMs;
     private readonly int _maxSplitChars;
+    private readonly int _minChars;
     private int _seq;
 
     // Streaming start: audio is latched until the first sentence (or a short lead) is ready, see BeginStream.
@@ -90,7 +91,8 @@ public sealed class VoiceOutputHalf : IDisposable
         PlaybackGate gate,
         Action<string>? log = null,
         Func<long>? nowMs = null,
-        int maxSplitChars = 40)
+        int maxSplitChars = 40,
+        int minSentenceChars = 10)
     {
         _nowMs = nowMs ?? (() => Environment.TickCount64);
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -101,7 +103,8 @@ public sealed class VoiceOutputHalf : IDisposable
 
         _sink.DrainMs = settings.DrainMs;
         _maxSplitChars = Math.Max(1, maxSplitChars);
-        Segmenter = new SpeechSegmenter(_maxSplitChars);
+        _minChars = Math.Max(1, minSentenceChars);
+        Segmenter = new SpeechSegmenter(_maxSplitChars, _minChars);
         Enabled = settings.Enabled;
     }
 
@@ -208,7 +211,7 @@ public sealed class VoiceOutputHalf : IDisposable
             _gate.Engage();
         }
 
-        var segmenter = new SpeechSegmenter(_maxSplitChars);
+        var segmenter = new SpeechSegmenter(_maxSplitChars, _minChars);
         var sentences = new List<string>(segmenter.Push(cleaned));
         sentences.AddRange(segmenter.Flush());
 

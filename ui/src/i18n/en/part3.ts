@@ -103,6 +103,8 @@ const part3: Record<string, string> = {
   '无标点时多少字断开': 'Characters before a forced break',
   '字': 'chars',
   '识别结果没有标点时，超过这个字数就强行断句。默认 40。': 'When the result has no punctuation, a break is forced after this many characters. Default 40.',
+  '最小句长': 'Shortest sentence',
+  '朗读时，断句点之间不足这个字数就连成一句，不单独断开。默认 10。': 'When reading aloud, a fragment shorter than this many characters is joined to what follows instead of being spoken on its own. Default 10.',
   '语言': 'Language',
   '告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。': 'Tells the model which language you speak, e.g. Chinese. This avoids a “language:” prefix in front of the result.',
   '连接等待': 'Connection timeout',

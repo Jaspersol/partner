@@ -18,6 +18,7 @@ speakers ← ordered playback ← TTS ← sentence split ← new assistant reply
 - Only replies that appear after start-up are read; history is not read out on launch.
 - "Mute the microphone while speaking" is recommended, so the assistant does not hear itself as you.
 - "Interrupt the assistant by speaking": speak for about half a second while it talks and it stops. There is no echo cancellation, so use it with headphones.
+- Sentence split: a sentence ending (period, question mark, exclamation mark, …) cuts the text, but a fragment shorter than "Shortest sentence" (default 10 characters) is not read on its own — it is joined to what follows. Text with no punctuation is cut after "Characters before a forced break" (default 40), preferring the last sentence ending, then a soft break (comma, space), then the cap.
 
 ## Two ways to connect
 

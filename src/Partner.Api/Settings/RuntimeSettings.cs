@@ -336,6 +336,9 @@ public sealed record InputSettings
 
     /// <summary>Forced split length for text with no punctuation.</summary>
     public int MaxSplitChars { get; init; } = 40;
+
+    /// <summary>Shortest fragment read aloud as its own sentence; shorter pieces are joined to what follows.</summary>
+    public int MinSentenceChars { get; init; } = 10;
 }
 
 /// <summary>Mirrors <c>VoiceOutputSetting</c>.</summary>

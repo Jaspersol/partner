@@ -23,6 +23,7 @@ const SETTINGS = {
     windowSeconds: 8,
     asrStream: false,
     maxSplitChars: 40,
+    minSentenceChars: 10,
     wakeTone: true,
     bargeIn: false,
   },

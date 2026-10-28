@@ -56,6 +56,7 @@ const form = reactive<RuntimeSettings>({
     windowSeconds: 8,
     asrStream: false,
     maxSplitChars: 40,
+    minSentenceChars: 10,
     wakeTone: true,
     bargeIn: false,
   },
@@ -1424,6 +1425,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
               <SettingRow :label="t('无标点时多少字断开')" :unit="t('字')" :hint="t('识别结果没有标点时，超过这个字数就强行断句。默认 40。')">
                 <input type="number" v-model.number="form.input.maxSplitChars" />
+              </SettingRow>
+              <SettingRow :label="t('最小句长')" :unit="t('字')" :hint="t('朗读时，断句点之间不足这个字数就连成一句，不单独断开。默认 10。')" data-test="min-sentence-chars">
+                <input type="number" v-model.number="form.input.minSentenceChars" />
               </SettingRow>
               <div class="g-card-head"><h3>{{ t('识别服务') }}</h3></div>
               <SettingRow :label="t('语言')" :hint="t('告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。')">
