@@ -55,8 +55,6 @@ const form = reactive<RuntimeSettings>({
     sentenceGapMs: 450,
     windowSeconds: 8,
     asrStream: false,
-    maxSplitChars: 40,
-    minSentenceChars: 10,
     wakeTone: true,
     bargeIn: false,
   },
@@ -69,6 +67,8 @@ const form = reactive<RuntimeSettings>({
     drainMs: 400,
     sampleRate: 24000,
     muteDuringTts: true,
+    maxSplitChars: 40,
+    minSentenceChars: 10,
   },
   asr: { baseUrl: 'http://127.0.0.1:45103', protocol: 'sensevoice', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
   tts: { baseUrl: 'http://127.0.0.1:45102', protocol: 'local', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
@@ -1423,12 +1423,6 @@ defineExpose({ refresh, hasUnsavedChanges })
               <SettingRow :label="t('单次识别最长')" :unit="t('秒')" :hint="t('一次最多把多长的录音送去识别。默认 8 秒。')">
                 <input type="number" v-model.number="form.input.windowSeconds" />
               </SettingRow>
-              <SettingRow :label="t('无标点时多少字断开')" :unit="t('字')" :hint="t('识别结果没有标点时，超过这个字数就强行断句。默认 40。')">
-                <input type="number" v-model.number="form.input.maxSplitChars" />
-              </SettingRow>
-              <SettingRow :label="t('最小句长')" :unit="t('字')" :hint="t('朗读时，断句点之间不足这个字数就连成一句，不单独断开。默认 10。')" data-test="min-sentence-chars">
-                <input type="number" v-model.number="form.input.minSentenceChars" />
-              </SettingRow>
               <div class="g-card-head"><h3>{{ t('识别服务') }}</h3></div>
               <SettingRow :label="t('语言')" :hint="t('告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。')">
                 <input type="text" v-model="form.asr.language" placeholder="Chinese" />
@@ -1465,6 +1459,12 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
               <SettingRow :label="t('朗读时不听麦克风')" :hint="t('避免助手把自己的声音当成你在说话。建议保持开启。')">
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.output.muteDuringTts" data-test="output-mute-during-tts" />
+              </SettingRow>
+              <SettingRow :label="t('最小句长')" :unit="t('字')" :hint="t('朗读时，断句点之间不足这个字数就连成一句，不单独断开。默认 10。')" data-test="min-sentence-chars">
+                <input type="number" v-model.number="form.output.minSentenceChars" />
+              </SettingRow>
+              <SettingRow :label="t('无标点时多少字断开')" :unit="t('字')" :hint="t('整句没有标点时，超过这个字数就强行断句。默认 40。')" data-test="max-split-chars">
+                <input type="number" v-model.number="form.output.maxSplitChars" />
               </SettingRow>
               <p class="status-line" data-test="output-effect">
                 <template v-if="voice?.output.running">{{ t('运行中 · {device} · 已朗读 {count} 句', { device: voice.output.device, count: voice.output.count }) }}</template>

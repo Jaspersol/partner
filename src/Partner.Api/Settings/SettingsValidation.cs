@@ -38,19 +38,19 @@ public static class SettingsValidation
             errors.Add("input.windowSeconds 必须为正");
         }
 
-        if (settings.Input.MaxSplitChars <= 0)
-        {
-            errors.Add("input.maxSplitChars 必须为正");
-        }
-
-        if (settings.Input.MinSentenceChars <= 0)
-        {
-            errors.Add("input.minSentenceChars 必须为正");
-        }
-
         if (settings.Output.Speed <= 0)
         {
             errors.Add("output.speed 必须为正");
+        }
+
+        if (settings.Output.MaxSplitChars <= 0)
+        {
+            errors.Add("output.maxSplitChars 必须为正");
+        }
+
+        if (settings.Output.MinSentenceChars <= 0)
+        {
+            errors.Add("output.minSentenceChars 必须为正");
         }
 
         if (settings.Output.DrainMs < 0)

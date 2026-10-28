@@ -90,9 +90,7 @@ public sealed class VoiceOutputHalf : IDisposable
         ITtsClient tts,
         PlaybackGate gate,
         Action<string>? log = null,
-        Func<long>? nowMs = null,
-        int maxSplitChars = 40,
-        int minSentenceChars = 10)
+        Func<long>? nowMs = null)
     {
         _nowMs = nowMs ?? (() => Environment.TickCount64);
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -102,8 +100,8 @@ public sealed class VoiceOutputHalf : IDisposable
         _log = log ?? (_ => { });
 
         _sink.DrainMs = settings.DrainMs;
-        _maxSplitChars = Math.Max(1, maxSplitChars);
-        _minChars = Math.Max(1, minSentenceChars);
+        _maxSplitChars = Math.Max(1, settings.MaxSplitChars);
+        _minChars = Math.Max(1, settings.MinSentenceChars);
         Segmenter = new SpeechSegmenter(_maxSplitChars, _minChars);
         Enabled = settings.Enabled;
     }

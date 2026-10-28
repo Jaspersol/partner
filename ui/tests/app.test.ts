@@ -22,8 +22,6 @@ const SETTINGS = {
     sentenceGapMs: 450,
     windowSeconds: 8,
     asrStream: false,
-    maxSplitChars: 40,
-    minSentenceChars: 10,
     wakeTone: true,
     bargeIn: false,
   },
@@ -36,6 +34,8 @@ const SETTINGS = {
     drainMs: 400,
     sampleRate: 24000,
     muteDuringTts: true,
+    maxSplitChars: 40,
+    minSentenceChars: 10,
   },
   asr: {
     baseUrl: null,

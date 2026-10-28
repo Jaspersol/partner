@@ -235,8 +235,6 @@ export interface InputSettings {
   sentenceGapMs: number
   windowSeconds: number
   asrStream: boolean
-  maxSplitChars: number
-  minSentenceChars: number
 }
 
 export interface OutputSettings {
@@ -248,6 +246,10 @@ export interface OutputSettings {
   drainMs: number
   sampleRate: number
   muteDuringTts: boolean
+  /** Forced break length for a sentence that carries no punctuation. */
+  maxSplitChars: number
+  /** Shortest fragment read aloud on its own; shorter pieces are joined to what follows. */
+  minSentenceChars: number
 }
 
 export interface AsrSettings {

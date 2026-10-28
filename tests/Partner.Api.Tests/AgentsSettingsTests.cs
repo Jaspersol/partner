@@ -144,6 +144,32 @@ public sealed class AgentsSettingsTests : IDisposable
     }
 
     [Fact]
+    public void Split_lengths_stored_under_input_are_carried_to_output()
+    {
+        var path = Path.Combine(_dir, "runtime.json");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(path, """{"input":{"maxSplitChars":25,"minSentenceChars":7}}""");
+
+        var loaded = new SettingsStore(path).Load();
+
+        Assert.Equal(25, loaded.Output.MaxSplitChars);
+        Assert.Equal(7, loaded.Output.MinSentenceChars);
+    }
+
+    [Fact]
+    public void The_new_location_wins_over_the_legacy_one()
+    {
+        var path = Path.Combine(_dir, "runtime.json");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(path, """{"input":{"maxSplitChars":25},"output":{"maxSplitChars":33,"minSentenceChars":3}}""");
+
+        var loaded = new SettingsStore(path).Load();
+
+        Assert.Equal(33, loaded.Output.MaxSplitChars);
+        Assert.Equal(3, loaded.Output.MinSentenceChars);
+    }
+
+    [Fact]
     public void A_file_that_lost_the_builtin_agent_still_loads_and_gets_it_back()
     {
         var path = Path.Combine(_dir, "runtime.json");

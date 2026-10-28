@@ -333,12 +333,6 @@ public sealed record InputSettings
 
     /// <summary>Streaming ASR (one sentence per request) versus batch (one request per utterance).</summary>
     public bool AsrStream { get; init; }
-
-    /// <summary>Forced split length for text with no punctuation.</summary>
-    public int MaxSplitChars { get; init; } = 40;
-
-    /// <summary>Shortest fragment read aloud as its own sentence; shorter pieces are joined to what follows.</summary>
-    public int MinSentenceChars { get; init; } = 10;
 }
 
 /// <summary>Mirrors <c>VoiceOutputSetting</c>.</summary>
@@ -359,6 +353,12 @@ public sealed record OutputSettings
     public int SampleRate { get; init; } = 24_000;
 
     public bool MuteDuringTts { get; init; } = true;
+
+    /// <summary>Forced split length for a sentence that carries no punctuation.</summary>
+    public int MaxSplitChars { get; init; } = 40;
+
+    /// <summary>Shortest fragment read aloud as its own sentence; shorter pieces are joined to what follows.</summary>
+    public int MinSentenceChars { get; init; } = 10;
 }
 
 /// <summary>Mirrors <c>AsrOptions</c>. An absent <see cref="BaseUrl"/> means speech input is not configured.</summary>
