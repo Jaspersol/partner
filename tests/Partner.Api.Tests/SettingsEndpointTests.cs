@@ -213,8 +213,9 @@ public sealed class SettingsEndpointTests : ApiFixture
         }
 
         Assert.Equal(1200, settings.GetProperty("input").GetProperty("utteranceGapMs").GetDouble());
-        Assert.Equal(40, settings.GetProperty("input").GetProperty("maxSplitChars").GetInt32());
         Assert.Equal(24000, settings.GetProperty("output").GetProperty("sampleRate").GetInt32());
+        Assert.Equal(40, settings.GetProperty("output").GetProperty("maxSplitChars").GetInt32());
+        Assert.Equal(10, settings.GetProperty("output").GetProperty("minSentenceChars").GetInt32());
         Assert.Equal("qwen3-asr", settings.GetProperty("asr").GetProperty("model").GetString());
         Assert.Equal("zh", settings.GetProperty("tts").GetProperty("lang").GetString());
         Assert.Equal(120, settings.GetProperty("model").GetProperty("timeoutSeconds").GetDouble());

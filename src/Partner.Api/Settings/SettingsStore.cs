@@ -37,8 +37,9 @@ public sealed class SettingsStore
 
         try
         {
-            return Repaired(JsonSerializer.Deserialize<RuntimeSettings>(File.ReadAllText(_path), Json)
-                ?? RuntimeSettings.Default);
+            using var document = JsonDocument.Parse(File.ReadAllText(_path));
+            var loaded = document.RootElement.Deserialize<RuntimeSettings>(Json) ?? RuntimeSettings.Default;
+            return Repaired(loaded, document.RootElement);
         }
         catch (JsonException)
         {
@@ -52,13 +53,45 @@ public sealed class SettingsStore
     /// Fills in what a hand-edited or partial file leaves out. The built-in desktop agent is restored here rather
     /// than refused, because a file that cannot be loaded cannot be fixed from the UI either.
     /// </summary>
-    private static RuntimeSettings Repaired(RuntimeSettings loaded) => loaded with
+    private static RuntimeSettings Repaired(RuntimeSettings loaded, JsonElement raw) => loaded with
     {
         Agents = (loaded.Agents ?? new AgentsSettings()).WithBuiltins(),
         Files = loaded.Files ?? new FilesSettings(),
         Web = loaded.Web ?? new WebSettings(),
         Tts = LocalTtsMigrated(loaded),
+        Output = SplitCharsMigrated(loaded.Output ?? new OutputSettings(), raw),
     };
+
+    /// <summary>
+    /// The two split lengths used to be stored under <c>input</c>, where they never belonged: they only decide how
+    /// a reply is cut for read-aloud. A value saved there is carried over, unless the file already has the new
+    /// location — then that one is what the user last saved.
+    /// </summary>
+    private static OutputSettings SplitCharsMigrated(OutputSettings output, JsonElement raw) => output with
+    {
+        MaxSplitChars = LegacySplitChars(raw, "maxSplitChars") ?? output.MaxSplitChars,
+        MinSentenceChars = LegacySplitChars(raw, "minSentenceChars") ?? output.MinSentenceChars,
+    };
+
+    private static int? LegacySplitChars(JsonElement raw, string name)
+    {
+        if (raw.ValueKind != JsonValueKind.Object
+            || !raw.TryGetProperty("input", out var legacy)
+            || legacy.ValueKind != JsonValueKind.Object
+            || !legacy.TryGetProperty(name, out var value)
+            || value.ValueKind != JsonValueKind.Number
+            || !value.TryGetInt32(out var chars)
+            || chars <= 0)
+        {
+            return null;
+        }
+
+        return raw.TryGetProperty("output", out var moved)
+            && moved.ValueKind == JsonValueKind.Object
+            && moved.TryGetProperty(name, out _)
+                ? null
+                : chars;
+    }
 
     /// <summary>
     /// The managed local engine only serves /audio/speech, so a client aimed at that engine's own port speaks the

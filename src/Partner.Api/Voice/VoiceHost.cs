@@ -34,8 +34,6 @@ public static class VoiceSettingsMapping
             SentenceGapMs = settings.SentenceGapMs,
             WindowSeconds = settings.WindowSeconds,
             AsrStream = settings.AsrStream,
-            MaxSplitChars = settings.MaxSplitChars,
-            MinSentenceChars = settings.MinSentenceChars,
         };
 
         // The wake gate only applies when the local engine host is enabled: the host does not run the KWS model,
@@ -66,6 +64,8 @@ public static class VoiceSettingsMapping
             DrainMs = settings.DrainMs,
             SampleRate = settings.SampleRate,
             MuteDuringTts = settings.MuteDuringTts,
+            MaxSplitChars = settings.MaxSplitChars,
+            MinSentenceChars = settings.MinSentenceChars,
         };
     }
 
@@ -448,7 +448,7 @@ public sealed class VoiceHost : IAsyncDisposable
         // sink opens one device stream per rate and replays what is currently playing.
         _toneSampleRate = outputSetting.SampleRate;
 
-        _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate, maxSplitChars: settings.Input.MaxSplitChars, minSentenceChars: settings.Input.MinSentenceChars);
+        _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate);
         _outputLoop = RunOutputAsync(_stop!.Token);
         _outputState = new VoiceHalfState(true, "运行中", _sink.DeviceName, 0);
     }

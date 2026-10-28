@@ -57,12 +57,6 @@ public sealed record VoiceInputSetting
     /// <summary>Streaming ASR (one sentence per request) versus batch (one request per utterance).</summary>
     public bool AsrStream { get; init; }
 
-    /// <summary>Forced split length for text with no punctuation.</summary>
-    public int MaxSplitChars { get; init; } = 40;
-
-    /// <summary>Shortest fragment spoken as its own sentence; shorter pieces are read with what follows.</summary>
-    public int MinSentenceChars { get; init; } = 10;
-
     public static VoiceInputSetting Default { get; } = new();
 }
 
@@ -88,6 +82,12 @@ public sealed record VoiceOutputSetting
 
     /// <summary>While playing, input is discarded so the assistant never transcribes itself.</summary>
     public bool MuteDuringTts { get; init; } = true;
+
+    /// <summary>Forced split length for a sentence that carries no punctuation.</summary>
+    public int MaxSplitChars { get; init; } = 40;
+
+    /// <summary>Shortest fragment spoken as its own sentence; shorter pieces are read with what follows.</summary>
+    public int MinSentenceChars { get; init; } = 10;
 
     public static VoiceOutputSetting Default { get; } = new();
 }

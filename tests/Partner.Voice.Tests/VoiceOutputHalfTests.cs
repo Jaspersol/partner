@@ -12,18 +12,17 @@ namespace Partner.Voice.Tests;
 public sealed class VoiceOutputHalfTests
 {
     /// <summary>
-    /// <c>minSentenceChars: 1</c> keeps the minimum sentence length out of these tests: they are about playback
+    /// <c>MinSentenceChars = 1</c> keeps the minimum sentence length out of these tests: they are about playback
     /// order and buffering, and the default (10) would join their five-character sentences.
     /// </summary>
     private static VoiceOutputHalf Half(IAudioSink sink, ITtsClient tts, out PlaybackGate gate)
     {
         gate = new PlaybackGate();
         return new VoiceOutputHalf(
-            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0 },
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0, MinSentenceChars = 1 },
             sink,
             tts,
-            gate,
-            minSentenceChars: 1);
+            gate);
     }
 
     [Fact]
@@ -70,12 +69,11 @@ public sealed class VoiceOutputHalfTests
 
     private static VoiceOutputHalf TimedHalf(IAudioSink sink, ITtsClient tts, Func<long> nowMs) =>
         new(
-            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0 },
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0, MinSentenceChars = 1 },
             sink,
             tts,
             new PlaybackGate(),
-            nowMs: nowMs,
-            minSentenceChars: 1);
+            nowMs: nowMs);
 
     [Fact]
     public async Task A_streamed_reply_starts_once_two_sentences_are_ready_not_when_it_ends()
@@ -262,11 +260,10 @@ public sealed class VoiceOutputHalfTests
     {
         var sink = new RecordingSink();
         using var output = new VoiceOutputHalf(
-            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0, GapMs = 200, SampleRate = 24_000 },
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, DrainMs = 0, GapMs = 200, SampleRate = 24_000, MinSentenceChars = 1 },
             sink,
             new ScriptedTts(),
-            new PlaybackGate(),
-            minSentenceChars: 1);
+            new PlaybackGate());
 
         output.OnText("第一句话。", sessionEventSeq: 1);
         await output.FlushTurnAsync();
@@ -280,11 +277,10 @@ public sealed class VoiceOutputHalfTests
     {
         var sink = new RecordingSink();
         using var output = new VoiceOutputHalf(
-            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false },
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, MaxSplitChars = 10 },
             sink,
             new ScriptedTts(),
-            new PlaybackGate(),
-            maxSplitChars: 10);
+            new PlaybackGate());
 
         var items = output.OnText(new string('字', 25), sessionEventSeq: 1);
 
@@ -297,11 +293,10 @@ public sealed class VoiceOutputHalfTests
     {
         var sink = new RecordingSink();
         using var output = new VoiceOutputHalf(
-            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false },
+            new VoiceOutputSetting { Enabled = true, MuteDuringTts = false, MinSentenceChars = 1 },
             sink,
             new ScriptedTts(),
-            new PlaybackGate(),
-            minSentenceChars: 1);
+            new PlaybackGate());
 
         // 5 字一句：默认的 10 会连成一句，设成 1 就各自成句。
         var items = output.OnText("第一句话。第二句话。", sessionEventSeq: 1);

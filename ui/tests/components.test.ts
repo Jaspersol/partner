@@ -932,9 +932,9 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     deleteMemory: vi.fn(async () => {}),
     memoryRevisions: vi.fn(async () => []),
     settings: vi.fn(async () => ({
-      input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, maxSplitChars: 40,
-    minSentenceChars: 10, wakeTone: true, bargeIn: false },
-      output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true },
+      input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false,
+      wakeTone: true, bargeIn: false },
+      output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true, maxSplitChars: 40, minSentenceChars: 10 },
       asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
       tts: { baseUrl: null, protocol: 'native', model: null, voice: null, speed: 1, lang: 'zh', sampleRate: 24000, speakerRefPath: null, speakerRefText: null, timeoutSeconds: 600, chunkMs: 100 },
       local: { tts: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45102, readyTimeoutSeconds: 30, keywords: [] }, kws: { enabled: false, command: null, arguments: [], workingDirectory: null, port: 45103, readyTimeoutSeconds: 30, keywords: [] } },
