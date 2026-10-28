@@ -322,9 +322,9 @@ public sealed class PlaybackGateTests
 public sealed class SpeechTextTests
 {
     [Fact]
-    public void Sentences_split_on_endings_and_flush_the_tail()
+    public void Sentences_split_on_endings_once_the_minimum_length_is_reached()
     {
-        var segmenter = new SpeechSegmenter();
+        var segmenter = new SpeechSegmenter(minSentenceChars: 5);
 
         var first = segmenter.Push("第一句话。第二句话");
         Assert.Equal(new[] { "第一句话。" }, first);
@@ -332,6 +332,56 @@ public sealed class SpeechTextTests
         var tail = segmenter.Flush();
         Assert.Equal(new[] { "第二句话" }, tail);
         Assert.True(segmenter.IsEmpty);
+    }
+
+    [Fact]
+    public void A_fragment_shorter_than_the_minimum_is_not_a_sentence()
+    {
+        var segmenter = new SpeechSegmenter();
+
+        Assert.Empty(segmenter.Push("第一句话。第二句话"));
+        Assert.Equal(new[] { "第一句话。第二句话" }, segmenter.Flush());
+    }
+
+    [Fact]
+    public void The_minimum_is_measured_from_the_previous_ending()
+    {
+        var segmenter = new SpeechSegmenter(minSentenceChars: 10);
+
+        Assert.Empty(segmenter.Push("一二三四五六七八。九。"));
+        Assert.Equal(new[] { "一二三四五六七八。九。" }, segmenter.Flush());
+    }
+
+    [Fact]
+    public void A_forced_cut_prefers_the_last_sentence_ending()
+    {
+        var segmenter = new SpeechSegmenter(maxChars: 10, minSentenceChars: 10);
+
+        // 没有够长的句子就到了字数上限：断在最后一个句号，而不是更靠后的逗号。
+        var ready = segmenter.Push("嗯。今天天气不错，真的很好");
+
+        Assert.Equal(new[] { "嗯。", "今天天气不错，" }, ready);
+    }
+
+    [Fact]
+    public void A_break_next_to_another_break_is_not_a_soft_break()
+    {
+        var segmenter = new SpeechSegmenter(maxChars: 10, minSentenceChars: 10);
+
+        // 清洗后的行尾会留下「， 」：切在第二个字符上会把第一个留成下一句的开头。
+        var ready = segmenter.Push("一二三四五六七， ，八九十十一");
+
+        Assert.Equal(new[] { "一二三四五六七，" }, ready);
+    }
+
+    [Fact]
+    public void Mixed_languages_follow_the_same_rule()
+    {
+        var segmenter = new SpeechSegmenter(minSentenceChars: 10);
+
+        var ready = segmenter.Push("I paid 3 dollars for it. 然后我回家了，路上很堵。");
+
+        Assert.Equal(new[] { "I paid 3 dollars for it.", "然后我回家了，路上很堵。" }, ready);
     }
 
     [Fact]

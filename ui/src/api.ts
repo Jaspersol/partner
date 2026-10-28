@@ -236,6 +236,7 @@ export interface InputSettings {
   windowSeconds: number
   asrStream: boolean
   maxSplitChars: number
+  minSentenceChars: number
 }
 
 export interface OutputSettings {

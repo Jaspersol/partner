@@ -43,6 +43,11 @@ public static class SettingsValidation
             errors.Add("input.maxSplitChars 必须为正");
         }
 
+        if (settings.Input.MinSentenceChars <= 0)
+        {
+            errors.Add("input.minSentenceChars 必须为正");
+        }
+
         if (settings.Output.Speed <= 0)
         {
             errors.Add("output.speed 必须为正");
