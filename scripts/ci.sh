@@ -57,7 +57,10 @@ echo "== smoke + capability gate =="
 # The frontend's contract test starts the API binary, so it runs after the .NET build above.
 echo "== frontend (typecheck, unit + contract tests, build) =="
 if [ ! -d ui/node_modules ]; then
-  "$NPM" --prefix ui install
+  # `npm ci --prefix ui`, not `npm install --prefix ui`: npm 10 (the version Node 22 ships) reads `--prefix`
+  # for `ci` and `run` but ignores it for `install`, which then looks for a package.json at the repo root and
+  # fails with ENOENT. `ci` is also what the release job uses, so the two agree on the tree being installed.
+  "$NPM" --prefix ui ci
 fi
 "$NPM" --prefix ui run typecheck
 "$NPM" --prefix ui run test
