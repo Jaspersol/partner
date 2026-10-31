@@ -56,9 +56,23 @@ public sealed class SyntheticAudioSource(int sampleRate = 16_000, string deviceN
 
     public bool IsRunning => _running;
 
+    /// <summary>
+    /// Makes <see cref="Start"/> throw the way a machine with no capture endpoint does. Opening the device
+    /// succeeds and starting it fails, which is the order the real adapter has (both checks exist there); a test
+    /// that only covered the first would not prove the host survives the second.
+    /// </summary>
+    public bool RefuseToStart { get; set; }
+
     public void Start(Action<float[]> onSamples)
     {
-        _sink = onSamples ?? throw new ArgumentNullException(nameof(onSamples));
+        ArgumentNullException.ThrowIfNull(onSamples);
+
+        if (RefuseToStart)
+        {
+            throw new InvalidOperationException("No capture device is available.");
+        }
+
+        _sink = onSamples;
         _running = true;
     }
 
@@ -110,7 +124,18 @@ public sealed class SyntheticAudioSink(int sampleRate = 24_000, string deviceNam
 
     public bool IsRunning => _running;
 
-    public void Start() => _running = true;
+    /// <summary>Makes <see cref="Start"/> throw the way a machine with no playback endpoint does.</summary>
+    public bool RefuseToStart { get; set; }
+
+    public void Start()
+    {
+        if (RefuseToStart)
+        {
+            throw new InvalidOperationException("No playback device is available.");
+        }
+
+        _running = true;
+    }
 
     public void Enqueue(float[] pcm, int sampleRate, bool final = false)
     {
