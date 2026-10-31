@@ -121,6 +121,18 @@ jobs:
           [System.IO.File]::WriteAllText('SHA256SUMS.txt', (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
           $files += 'SHA256SUMS.txt'
 
+          # Release notes come from the repository, one file per tag, so a published release can be reviewed
+          # and corrected like anything else instead of being typed into a workflow string. English is the
+          # default: `.github/release-notes/<tag>.md`, with `.zh-CN.md` and `.zh-TW.md` beside it and linked
+          # from its header. A tag with no file still publishes, with the installer blurb alone — the pipeline
+          # must not fail because someone forgot the notes.
+          $notesFile = ".github/release-notes/$tag.md"
+          $notes = if (Test-Path $notesFile) {
+            (Get-Content -Raw $notesFile).TrimEnd()
+          } else {
+            "Installer for $tag."
+          }
+
           # Name the engine release the build actually pins by reading it back out of the constants, so the
           # notes cannot end up pointing at engines-v1 after the pins moved to engines-v2.
           $engineTag = [regex]::Match(
@@ -128,7 +140,7 @@ jobs:
             'releases/download/(engines-v\d+)/').Groups[1].Value
           if (-not $engineTag) { throw 'cannot read the pinned engine tag out of EnginePackage.cs' }
 
-          $notes = "Installer for $tag. The voice engines are downloaded from the $engineTag release on first use; their URLs and SHA-256 are pinned in this build." + "`n`n" + 'The app code is MIT licensed; the engine runtimes and model weights keep their own licences, see THIRD-PARTY-NOTICES.md in the release assets.'
+          $notes += "`n`n---`n`n" + "The voice engines are downloaded from the $engineTag release on first use; their URLs and SHA-256 are pinned in this build. " + 'The app code is MIT licensed; the engine runtimes and model weights keep their own licences, see THIRD-PARTY-NOTICES.md in the release assets.'
 
           # `gh release list` only returns the 30 newest releases, so an older tag looked missing and `create`
           # then failed with "release already exists". Ask for the tag itself.
@@ -136,11 +148,15 @@ jobs:
           & gh release view $tag --json tagName 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) { $existing = $true }
 
+          $notesPath = Join-Path ([System.IO.Path]::GetTempPath()) "partner-notes-$tag.md"
+          [System.IO.File]::WriteAllText($notesPath, $notes, [System.Text.UTF8Encoding]::new($false))
+
           if ($existing) {
             & gh release upload $tag $files --clobber
+            if ($LASTEXITCODE -eq 0) { & gh release edit $tag --notes-file $notesPath }
           } elseif ($fromTag) {
-            & gh release create $tag $files --title "Partner $tag" --notes $notes
+            & gh release create $tag $files --title "Partner $tag" --notes-file $notesPath
           } else {
-            & gh release create $tag $files --target '${{ github.sha }}' --title "Partner $tag" --notes $notes
+            & gh release create $tag $files --target '${{ github.sha }}' --title "Partner $tag" --notes-file $notesPath
           }
           if ($LASTEXITCODE -ne 0) { throw 'gh release failed' }
