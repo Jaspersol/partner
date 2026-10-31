@@ -457,7 +457,19 @@ public sealed class VoiceHost : IAsyncDisposable
         }
 
         _tts = _components.CreateTts(ttsOptions);
-        _sink.Start();
+        try
+        {
+            _sink.Start();
+        }
+        catch (Exception error)
+        {
+            _sink.Dispose();
+            _sink = null;
+            _tts.Dispose();
+            _tts = null;
+            _outputState = new VoiceHalfState(false, $"启动输出设备失败：{error.Message}", null, 0);
+            return;
+        }
 
         // The tone sample rate is fixed here: every later path (TTS chunks, tone) must use this rate, or the
         // sink opens one device stream per rate and replays what is currently playing.
