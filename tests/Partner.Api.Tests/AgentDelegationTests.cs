@@ -256,8 +256,16 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
             new LlmResponse(null, [new LlmToolCall("m1", "agent_delegate", """{"scenario":"file-read","goal":"甲"}""")], "tool_calls"),
             Say("交出去了")]);
 
+        var completed = (await _http.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/consumer"))
+            .GetProperty("stats").GetProperty("completed").GetInt32();
+
         await SendAsync("读一个");
         await WaitForAssistantAsync("交出去了");
+        await WaitAsync(async () =>
+        {
+            var state = await _http.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/consumer");
+            return state.GetProperty("stats").GetProperty("completed").GetInt32() > completed;
+        }, "the main turn to finish");
         Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_consumer.Agents.HasActiveJobs)));
 
         // The turn is over, but the job will report back as a new message: taking history away now would drop it

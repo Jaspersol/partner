@@ -339,8 +339,8 @@ public sealed class EnginePackageTests : IDisposable
             Tts = new LocalEngineSettings
             {
                 Enabled = true,
-                Command = "powershell",
-                Arguments = ["-NoProfile", "-Command", "Set-Content -Path where.txt -Value 'here'; Start-Sleep -Seconds 60"],
+                Command = "cmd",
+                Arguments = ["/c", "echo here>where.txt & ping -n 60 127.0.0.1 >nul"],
                 WorkingDirectory = "engines/tts",
                 Port = ApiFixture.FreePort(),
                 ReadyTimeoutSeconds = 3,
