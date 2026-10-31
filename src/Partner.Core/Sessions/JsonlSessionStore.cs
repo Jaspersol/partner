@@ -24,28 +24,18 @@ public sealed class JsonlSessionStore : ISessionStore
     /// </summary>
     private long _version;
 
-    /// <summary>
-    /// The last built projection, kept for as long as the log has not moved.
-    /// </summary>
-    /// <para>
-    /// <c>ProjectAsync</c> reads the entire log, deserialises every line and replays the projection rules. That
-    /// work is a pure function of the log, and the store is the only thing that writes it, so the result can be
-    /// held until a write lands.
-    /// </para>
-    /// </remarks>
-    private SessionView? _cachedProjection;
-    private long _cachedVersion = -1;
+    /// <summary>Cached projection and the event list it was built from; dropped whenever the log changes.</summary>
+    private ProjectionCache? _cache;
     private readonly object _cacheGate = new();
 
-    /// <summary>
-    /// Past this many events the projection is rebuilt every time instead of being held.
-    /// </summary>
-    /// <para>
-    /// A retained projection keeps every parsed event alive for the life of the process, and past this size the
-    /// memory stops being a single conversation's worth.
-    /// </para>
-    /// </summary>
-    private const int CacheCeiling = 20_000;
+    private sealed class ProjectionCache(List<SessionEvent> events, long version)
+    {
+        public List<SessionEvent> Events { get; } = events;
+        public long Version { get; set; } = version;
+        public SessionView? View { get; set; }
+
+        public void MarkStale() => View = null;
+    }
 
     /// <summary>Last seq handed out by <see cref="AppendAsync"/> (may be ahead of durability in buffered mode).</summary>
     private long _assignedSeq;
@@ -117,11 +107,12 @@ public sealed class JsonlSessionStore : ISessionStore
 
         var record = sessionEvent with { Seq = next, At = sessionEvent.At == default ? _clock.GetUtcNow() : sessionEvent.At };
         var durableBefore = _sink.DurableLength;
-        _sink.Append(SessionJson.Serialize(record));
+        var line = SessionJson.Serialize(record);
+        _sink.Append(line);
 
-        // Bumped before the flush, so a flush that faults and rolls back cannot leave a cache claiming to
-        // describe a record the log no longer has. `RollBackAndFault` bumps again for the same reason.
-        InvalidateProjection();
+        // Parse the serialized line so the cache matches a disk replay; bump the version before flushing so a
+        // rollback cannot leave it claiming a record that is gone.
+        RecordProjectionAppend(SessionJson.Deserialize(line), include: _flushOnAppend);
 
         if (_flushOnAppend)
         {
@@ -271,6 +262,12 @@ public sealed class JsonlSessionStore : ISessionStore
             }
 
             Interlocked.Exchange(ref _durableSeq, Interlocked.Read(ref _assignedSeq));
+
+            // Buffered appends become visible only now; drop any projection built before the flush.
+            if (!_flushOnAppend)
+            {
+                InvalidateProjection();
+            }
         }
         finally
         {
@@ -303,12 +300,34 @@ public sealed class JsonlSessionStore : ISessionStore
 
         var version = Interlocked.Read(ref _version);
 
+        List<SessionEvent>? retained = null;
         lock (_cacheGate)
         {
-            if (_cachedProjection is not null && _cachedVersion == version)
+            if (_cache is { } cached && cached.Version == version)
             {
-                return _cachedProjection;
+                if (cached.View is { } view)
+                {
+                    return view;
+                }
+
+                // Copy under the lock; build outside it so readers do not block each other.
+                retained = new List<SessionEvent>(cached.Events);
             }
+        }
+
+        if (retained is not null)
+        {
+            var rebuilt = SessionProjection.Build(retained);
+            lock (_cacheGate)
+            {
+                // Publish only if the log has not moved.
+                if (_cache is { } cached && cached.Version == version)
+                {
+                    cached.View = rebuilt;
+                }
+            }
+
+            return rebuilt;
         }
 
         var events = new List<SessionEvent>();
@@ -320,18 +339,10 @@ public sealed class JsonlSessionStore : ISessionStore
         return Cache(events, version);
     }
 
-    /// <summary>
-    /// Builds the projection and holds it, unless the log moved while we were reading it or it is too big to
-    /// keep. A stale cache would be a correctness bug; an unbounded one would trade a slow read for a slow process.
-    /// </summary>
+    /// <summary>Builds the projection and caches it unless the log moved while reading.</summary>
     private SessionView Cache(List<SessionEvent> events, long version)
     {
         var view = SessionProjection.Build(events);
-
-        if (events.Count > CacheCeiling)
-        {
-            return view;
-        }
 
         lock (_cacheGate)
         {
@@ -343,17 +354,45 @@ public sealed class JsonlSessionStore : ISessionStore
                 return view;
             }
 
-            _cachedProjection = view;
-            _cachedVersion = version;
+            _cache = new ProjectionCache(events, version) { View = view };
         }
 
         return view;
     }
 
-    /// <summary>Marks the log as changed, so the next <see cref="ProjectAsync"/> rebuilds rather than reusing.</summary>
+    /// <summary>Extends the cached projection for one append, or drops it when there is no valid base.</summary>
+    private void RecordProjectionAppend(SessionEvent? appended, bool include)
+    {
+        lock (_cacheGate)
+        {
+            var previous = Interlocked.Read(ref _version);
+            var version = previous + 1;
+            Interlocked.Exchange(ref _version, version);
+
+            if (include
+                && appended is not null
+                && _cache is { } cached
+                && cached.Version == previous)
+            {
+                cached.Events.Add(appended);
+                cached.Version = version;
+                cached.MarkStale();
+            }
+            else
+            {
+                _cache = null;
+            }
+        }
+    }
+
+    /// <summary>Marks the log as changed so the next projection rebuilds from disk.</summary>
     private void InvalidateProjection()
     {
-        Interlocked.Increment(ref _version);
+        lock (_cacheGate)
+        {
+            Interlocked.Increment(ref _version);
+            _cache = null;
+        }
     }
 
     public ValueTask DisposeAsync()

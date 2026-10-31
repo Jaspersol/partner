@@ -250,11 +250,10 @@ public sealed class ProcessGameAdapterTests : IDisposable
                 "cannot locate the game test server.");
         }
 
+        // Pick the newest build; the framework folder name changes with the TFM.
         var binRoot = Path.Combine(directory.FullName, "tests", "Partner.GameTestServer", "bin");
         var candidates = Directory.Exists(binRoot)
             ? Directory.GetFiles(binRoot, "partner-game-testserver.dll", SearchOption.AllDirectories)
-                .Where(path => string.Equals(
-                    Path.GetFileName(Path.GetDirectoryName(path)), "net8.0", StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(File.GetLastWriteTimeUtc)
                 .ToArray()
             : Array.Empty<string>();
@@ -263,7 +262,7 @@ public sealed class ProcessGameAdapterTests : IDisposable
         {
             throw new InvalidOperationException(
                 $"The game test server is not built; expected 'partner-game-testserver.dll' under " +
-                $"'{binRoot}\\<configuration>\\net8.0'. Run `dotnet build` on the solution before running these tests.");
+                $"'{binRoot}\\<configuration>\\<framework>'. Run `dotnet build` on the solution before running these tests.");
         }
 
         return candidates[0];

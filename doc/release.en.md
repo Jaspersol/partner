@@ -71,7 +71,7 @@ npm --prefix ui ci
 node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \
-  -o src/Partner.Api/bin/Release/net8.0/win-x64/publish
+  -o src/Partner.Api/bin/Release/net10.0/win-x64/publish
 npm --prefix ui exec tauri build
 ```
 
@@ -79,6 +79,6 @@ The installer ends up in `src-tauri/target/release/bundle/nsis/`.
 
 ## Known limitations
 
-- The unit-test step is marked `continue-on-error`: the repository has two pre-existing failures unrelated to releasing (`AgentsEndpointTests.The_round_count_and_the_prompt_have_limits`, `SettingsEndpointTests.Growing_the_context_does_not_compact`). Drop the exemption once they are fixed.
+- Unit tests, frontend unit/contract tests and `Partner.Smoke --verify-baseline` run before publishing; any failure stops the job. The old `continue-on-error` exemption is gone.
 - `bundle.targets` in `tauri.conf.json` is `nsis` only, so the release ships an exe installer and no msi.
 - The biggest engine pack is 1.16 GB, still under GitHub's 2 GiB per-asset limit; anything larger has to be split further.

@@ -18,7 +18,7 @@ if [ -z "${NPM:-}" ]; then
   NPM=$(command -v npm || command -v npm.cmd) || { echo "npm not found" >&2; exit 127; }
 fi
 
-PUBLISH_DIR="src/Partner.Api/bin/Release/net8.0/win-x64/publish"
+PUBLISH_DIR="src/Partner.Api/bin/Release/net10.0/win-x64/publish"
 
 echo "== publish the API sidecar =="
 "$DOTNET" publish src/Partner.Api -c Release -r win-x64 --self-contained true -o "$PUBLISH_DIR" -v q --nologo

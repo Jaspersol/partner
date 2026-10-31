@@ -3,17 +3,8 @@ using Partner.Core.Memory;
 namespace Partner.Api;
 
 /// <summary>
-/// Periodic memory self-maintenance: promotion, idle demotion, TTL trim, and the physical removal of
-/// soft-deleted rows, in that order.
-/// <para>
-/// The store otherwise only maintains itself as a side effect of reads and writes, so a workspace left idle
-/// would never age.
-/// </para>
-/// <para>
-/// Started and stopped with <see cref="ConsumerHost.ReconfigureAsync"/>: a one-shot pass before the loop starts
-/// is not enough, because a workspace can sit idle far longer than a TTL. Errors are logged to the console,
-/// never thrown, so a failed pass does not take down the consumer; the next interval tries again.
-/// </para>
+/// Periodic memory maintenance: promotion, demotion, TTL trim, and physical removal of soft-deleted rows.
+/// Started by <see cref="ApiHost"/>; errors are logged so a failed pass does not take down the consumer.
 /// </summary>
 public sealed class MemoryMaintenanceService : IAsyncDisposable
 {
@@ -21,6 +12,7 @@ public sealed class MemoryMaintenanceService : IAsyncDisposable
     private readonly TimeProvider _clock;
     private readonly TimeSpan _interval;
     private readonly Timer _timer;
+    private Task? _catchUp;
 
     /// <summary>Interval between passes. Default is one day; tests pass a shorter one.</summary>
     public MemoryMaintenanceService(IMemoryStore memory, TimeProvider? clock = null, TimeSpan? interval = null)
@@ -34,8 +26,12 @@ public sealed class MemoryMaintenanceService : IAsyncDisposable
         _timer = new Timer(Tick, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>Starts the periodic pass.</summary>
-    public void Start() => _timer.Change(_interval, _interval);
+    /// <summary>Starts the timer and takes a startup backup if one is due.</summary>
+    public void Start()
+    {
+        _timer.Change(_interval, _interval);
+        _catchUp ??= Task.Run(EnsureBackupAsync);
+    }
 
     /// <summary>Stops the periodic pass and drops nothing in flight.</summary>
     public void Stop() => _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -43,12 +39,27 @@ public sealed class MemoryMaintenanceService : IAsyncDisposable
     /// <summary>One pass. Counted so a test can score it.</summary>
     public async Task<MemoryMaintenance.Run> RunAsync(CancellationToken ct = default)
     {
+        // Back up before this pass permanently removes soft-deleted rows.
+        await _memory.EnsureBackupAsync(_interval, keep: 7, ct).ConfigureAwait(false);
+
         var promoted = await _memory.PromoteEligibleAsync(ct).ConfigureAwait(false);
         var demoted = await _memory.DemoteIdleAsync(ct).ConfigureAwait(false);
         var trimmed = await _memory.TrimAsync(ct).ConfigureAwait(false);
         var compacted = await _memory.CompactAsync(ct).ConfigureAwait(false);
 
         return new MemoryMaintenance.Run(promoted, demoted, trimmed, compacted);
+    }
+
+    private async Task EnsureBackupAsync()
+    {
+        try
+        {
+            await _memory.EnsureBackupAsync(_interval, keep: 7).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            Console.Error.WriteLine($"memory backup catch-up failed: {error.Message}");
+        }
     }
 
     private void Tick(object? state)
@@ -66,6 +77,12 @@ public sealed class MemoryMaintenanceService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _timer.DisposeAsync().ConfigureAwait(false);
+
+        // Let an in-flight startup backup finish before the store closes.
+        if (_catchUp is not null)
+        {
+            await _catchUp.ConfigureAwait(false);
+        }
     }
 }
 

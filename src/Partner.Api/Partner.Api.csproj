@@ -2,13 +2,15 @@
   <PropertyGroup>
     <!-- UI data layer (M14): the four views bind to this. Kestrel + Minimal API, no extra packages. -->
     <!-- Windows-only on purpose: the queue has a single in-process consumer and no cross-process lock, so the
-       voice halves must live in this same process. Partner.Voice is net8.0-windows, which settles it. -->
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+       voice halves must live in this same process. Partner.Voice is net10.0-windows, which settles it. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <RootNamespace>Partner.Api</RootNamespace>
     <AssemblyName>partner-api</AssemblyName>
     <!-- Startup: a published (win-x64, self-contained) build ships precompiled code, so the first requests do not
          wait on the JIT. Has no effect on plain builds and tests. -->
     <PublishReadyToRun>true</PublishReadyToRun>
+    <!-- One interactive user, not a throughput server. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />

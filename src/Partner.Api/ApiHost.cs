@@ -67,6 +67,8 @@ public static class ApiHost
         await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);
 
         var builder = WebApplication.CreateBuilder();
+        // Polling makes per-request Information logs noise.
+        builder.Logging.AddFilter("Microsoft.AspNetCore", Microsoft.Extensions.Logging.LogLevel.Warning);
         builder.WebHost.UseSetting("urls", $"http://127.0.0.1:{port}");
         builder.Services.AddSingleton(context);
         builder.Services.AddSingleton(consumer);

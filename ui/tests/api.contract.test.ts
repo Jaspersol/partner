@@ -17,20 +17,21 @@ import { ApiError, PartnerApi } from '../src/api'
 const repoRoot = join(process.cwd(), '..')
 
 /**
- * Finds the built API. The framework folder name follows the project's target framework, and a stale one can
- * linger after a retarget — picking by existence rather than by a hardcoded name keeps the test pointed at
- * what was actually built.
+ * Finds the newest built API across Debug and Release; the framework folder name changes with the TFM.
  */
 function findApiExecutable(): string {
-  const debugRoot = join(repoRoot, 'src', 'Partner.Api', 'bin', 'Debug')
-  const candidates = existsSync(debugRoot)
-    ? readdirSync(debugRoot)
-        .map((name) => join(debugRoot, name, 'partner-api.exe'))
-        .filter((path) => existsSync(path))
-    : []
+  const binRoot = join(repoRoot, 'src', 'Partner.Api', 'bin')
+  const candidates = ['Debug', 'Release']
+    .map((configuration) => join(binRoot, configuration))
+    .filter((root) => existsSync(root))
+    .flatMap((root) =>
+      readdirSync(root)
+        .map((name) => join(root, name, 'partner-api.exe'))
+        .filter((path) => existsSync(path)),
+    )
 
   if (candidates.length === 0) {
-    throw new Error(`missing partner-api.exe under ${debugRoot} — run "dotnet build" before the frontend tests`)
+    throw new Error(`missing partner-api.exe under ${binRoot} — run "dotnet build" before the frontend tests`)
   }
 
   return candidates.sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)[0]!

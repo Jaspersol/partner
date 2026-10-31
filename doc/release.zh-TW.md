@@ -73,7 +73,7 @@ npm --prefix ui ci
 node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \
-  -o src/Partner.Api/bin/Release/net8.0/win-x64/publish
+  -o src/Partner.Api/bin/Release/net10.0/win-x64/publish
 npm --prefix ui exec tauri build
 ```
 
@@ -81,6 +81,6 @@ npm --prefix ui exec tauri build
 
 ## 已知
 
-- 單元測試步驟標了 `continue-on-error`：倉庫裡有兩個與發佈無關的既有失敗（`AgentsEndpointTests.The_round_count_and_the_prompt_have_limits`、`SettingsEndpointTests.Growing_the_context_does_not_compact`），修好後可以去掉這個豁免。
+- 發佈前會跑單元測試、前端單元/契約測試和 `Partner.Smoke --verify-baseline`；任一失敗會終止 job。舊的 `continue-on-error` 豁免已移除。
 - `tauri.conf.json` 的 `bundle.targets` 只有 `nsis`，所以只出 exe 安裝包，沒有 msi。
 - 引擎包超大（最大 1.16GB），單資產仍在 GitHub 的 2GiB 上限內；再大就必須繼續切包。

@@ -9,7 +9,7 @@
 | 項目 | 要求 |
 |---|---|
 | 系統 | Windows 10 2004 以上 |
-| .NET | .NET 8 SDK |
+| .NET | .NET 10 SDK |
 | Node | Node 22 + npm。不要用 pnpm：它預設攔截相依套件的建置腳本，esbuild 裝不上 |
 | Rust | cargo 1.98+，只有桌面殼需要 |
 | WebView2 | Win10+ 內建 |
@@ -57,12 +57,13 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
   session/events.jsonl    工作階段記錄
   queue/items.jsonl       輸入佇列
   memory/memory.db        記憶庫（SQLite）
+  memory/backups/         記憶庫備份（每天維護前，保留最近 7 份）
   scheduler/              定時任務
   skills/                 技能
   media/                  附件
 ```
 
-工作階段和佇列可以從記錄重建。記憶庫是唯一儲存，刪了就沒了。
+工作階段和佇列可以從記錄重建。記憶庫至少每天備份一次到 `memory/backups/`（啟動時補一次，每日維護前也檢查），保留最近 7 份；備份之後寫入的記憶不在副本裡。
 
 ## 6. 打包安裝檔
 

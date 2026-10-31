@@ -9,7 +9,7 @@
 | 项 | 要求 |
 |---|---|
 | 系统 | Windows 10 2004 及以上 |
-| .NET | .NET 8 SDK |
+| .NET | .NET 10 SDK |
 | Node | Node 22 + npm。不要用 pnpm：它默认拦截依赖的构建脚本，esbuild 装不上 |
 | Rust | cargo 1.98+，只有桌面壳需要 |
 | WebView2 | Win10+ 自带 |
@@ -57,12 +57,13 @@ export PARTNER_LLM_PROTOCOL=openai   # 可选，openai / anthropic
   session/events.jsonl    会话日志
   queue/items.jsonl       输入队列
   memory/memory.db        记忆库（SQLite）
+  memory/backups/         记忆库备份（每天维护前，保留最近 7 份）
   scheduler/              定时任务
   skills/                 技能
   media/                  附件
 ```
 
-会话和队列可以从日志重建。记忆库是唯一存储，删了就没了。
+会话和队列可以从日志重建。记忆库至少每天备份一次到 `memory/backups/`（启动时补一次，每日维护前也检查），保留最近 7 份；备份之后写入的记忆不在副本里。
 
 ## 6. 打安装包
 

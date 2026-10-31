@@ -12,6 +12,7 @@ namespace Partner.Core.Memory;
 public sealed class MemoryStore : IMemoryStore
 {
     private readonly SqliteConnection _db;
+    private readonly string _databasePath;
     private readonly MemoryStoreOptions _options;
     private readonly TimeProvider _clock;
 
@@ -20,14 +21,15 @@ public sealed class MemoryStore : IMemoryStore
         ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         _options = options ?? new MemoryStoreOptions();
         _clock = clock ?? TimeProvider.System;
+        _databasePath = Path.GetFullPath(databasePath);
 
-        var directory = Path.GetDirectoryName(Path.GetFullPath(databasePath));
+        var directory = Path.GetDirectoryName(_databasePath);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString());
+        _db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _databasePath }.ToString());
         _db.Open();
 
         // Whether the file already held a store decides what the DDL means: for a new one it is the schema; for
@@ -755,6 +757,111 @@ public sealed class MemoryStore : IMemoryStore
         }
 
         return revisions;
+    }
+
+    public async Task<string?> EnsureBackupAsync(TimeSpan maxAge, int keep = 7, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxAge, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThan(keep, 1);
+
+        if (LatestBackupAt() is { } latest && _clock.GetUtcNow() - latest < maxAge)
+        {
+            return null;
+        }
+
+        return await BackupAsync(keep, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Timestamp from the newest backup's name, using the store clock.</summary>
+    private DateTimeOffset? LatestBackupAt()
+    {
+        var directory = Path.GetDirectoryName(_databasePath);
+        if (directory is null)
+        {
+            return null;
+        }
+
+        var backupDirectory = Path.Combine(directory, "backups");
+        if (!Directory.Exists(backupDirectory))
+        {
+            return null;
+        }
+
+        const string prefix = "memory-";
+        const string format = "yyyyMMdd-HHmmss-fff";
+        DateTimeOffset? newest = null;
+
+        foreach (var file in Directory.GetFiles(backupDirectory, "memory-*.db"))
+        {
+            var name = Path.GetFileNameWithoutExtension(file);
+            if (name.Length < prefix.Length + format.Length)
+            {
+                continue;
+            }
+
+            var stamp = name.Substring(prefix.Length, format.Length);
+            if (!DateTimeOffset.TryParseExact(
+                    stamp,
+                    format,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal,
+                    out var at))
+            {
+                continue;
+            }
+
+            if (newest is null || at > newest)
+            {
+                newest = at;
+            }
+        }
+
+        return newest;
+    }
+
+    public async Task<string> BackupAsync(int keep = 7, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(keep, 1);
+
+        var directory = Path.GetDirectoryName(_databasePath)
+            ?? throw new InvalidOperationException("The memory store has no directory to back up into.");
+        var backupDirectory = Path.Combine(directory, "backups");
+        Directory.CreateDirectory(backupDirectory);
+
+        var stamp = _clock.GetUtcNow().ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+        var suffix = 0;
+        string path;
+        do
+        {
+            path = Path.Combine(backupDirectory, $"memory-{stamp}-{suffix:D3}.db");
+            suffix++;
+        }
+        while (File.Exists(path));
+
+        await using (var cmd = _db.CreateCommand())
+        {
+            cmd.CommandText = $"VACUUM INTO '{path.Replace("'", "''", StringComparison.Ordinal)}'";
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        foreach (var stale in Directory.GetFiles(backupDirectory, "memory-*.db")
+                     .OrderByDescending(file => Path.GetFileName(file), StringComparer.Ordinal)
+                     .Skip(keep))
+        {
+            try
+            {
+                File.Delete(stale);
+            }
+            catch (IOException)
+            {
+                // Best effort; retry on the next pass.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return path;
     }
 
     public async ValueTask DisposeAsync()

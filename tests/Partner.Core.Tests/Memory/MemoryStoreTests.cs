@@ -559,6 +559,52 @@ public sealed class MemoryStoreTests : IDisposable
         Assert.Single(reopened.UnknownScopes);
     }
 
+    [Fact]
+    public async Task Ensure_backup_copies_once_per_interval_and_again_once_it_has_aged()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("m1", "alpha"));
+
+        var first = await store.EnsureBackupAsync(TimeSpan.FromHours(1));
+        Assert.NotNull(first);
+        Assert.Null(await store.EnsureBackupAsync(TimeSpan.FromHours(1)));
+
+        _clock.Advance(TimeSpan.FromHours(2));
+
+        var second = await store.EnsureBackupAsync(TimeSpan.FromHours(1));
+        Assert.NotNull(second);
+        Assert.NotEqual(first, second);
+
+        var backups = Path.Combine(_dir, "memory", "backups");
+        Assert.Equal(2, Directory.GetFiles(backups, "memory-*.db").Length);
+    }
+
+    [Fact]
+    public async Task A_backup_opens_as_a_store_with_the_same_records_and_rotation_keeps_the_newest()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("m1", "alpha"));
+        await store.WriteAsync(Rec("m2", "beta"));
+
+        var first = await store.BackupAsync(keep: 2);
+        await store.WriteAsync(Rec("m3", "gamma"));
+        var second = await store.BackupAsync(keep: 2);
+        var third = await store.BackupAsync(keep: 2);
+
+        Assert.True(File.Exists(third));
+        Assert.Equal(2, Directory.GetFiles(Path.GetDirectoryName(third)!, "memory-*.db").Length);
+
+        await using (var copied = new MemoryStore(third))
+        {
+            Assert.NotNull(await copied.GetAsync("m1"));
+            Assert.NotNull(await copied.GetAsync("m2"));
+            Assert.NotNull(await copied.GetAsync("m3"));
+            Assert.Equal(3, (await copied.ListAsync()).Count);
+        }
+
+        Assert.NotEqual(first, second);
+    }
+
     private sealed class FailingEmbeddingProvider : IEmbeddingProvider
     {
         public int Attempts { get; private set; }

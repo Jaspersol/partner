@@ -1,0 +1,44 @@
+name: ci
+
+# Pull requests and pushes run the same gate the release job trusts: docs/CSS contracts, build, unit tests,
+# smoke plus capability baseline, frontend typecheck/unit/contract tests, and the production frontend build.
+# The Rust shell is exercised by the release build; SKIP_SHELL keeps this job from paying for a second compile.
+
+on:
+  pull_request:
+  # Only the default branch: a PR already runs this, and pushing the PR branch would run it twice.
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # The desktop checks that take the reader's focus are deliberately not enabled: a shared runner has no
+      # interactive desktop, and a gate that goes red for environmental reasons gets ignored.
+      - name: CI
+        shell: bash
+        env:
+          SKIP_SHELL: 1
+        run: bash scripts/ci.sh

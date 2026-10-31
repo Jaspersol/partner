@@ -111,7 +111,7 @@ No, typing doesn't use them. The wake word and recognition engine is about 380 M
 GitHub limits release assets to 2 GiB and the engine is about 3 GB. The app downloads the parts in order into one folder, checks their SHA-256, and resumes after a dropped connection.
 
 **Where is my data?**
-In `%LocalAppData%/Partner/workspace` by default: the session log, queue, memory database and settings. The session and queue can be rebuilt from their `.jsonl` files. `memory.db` has no backup; deleting it loses the memories.
+In `%LocalAppData%/Partner/workspace` by default: the session log, queue, memory database and settings. The session and queue can be rebuilt from their `.jsonl` files. `memory.db` is copied into `memory/backups/` at least once a day — on startup when the newest copy is stale, and before the daily maintenance pass — keeping the newest 7; deleting the original loses only what was written since the last copy.
 
 **Does anything leave my machine?**
 Conversations go to the model endpoint you configured. Web search is on by default and sends search queries to third-party search engines; turn it off under Settings → Web search. The app also contacts GitHub to check for updates and download voice engines. The local API listens only on `127.0.0.1`, and every request needs the token generated at startup.
@@ -123,7 +123,7 @@ More in the [documentation index](doc/README.en.md).
 
 ## Building from source
 
-You need the .NET 8 SDK, Node 22 with npm (not pnpm, which fails to install esbuild), and Rust (cargo 1.98+).
+You need the .NET 10 SDK, Node 22 with npm (not pnpm, which fails to install esbuild), and Rust (cargo 1.98+).
 
 ```bash
 npm --prefix ui install          # first time
@@ -147,7 +147,7 @@ Debugging and running the API or frontend on their own: [Development](doc/develo
 | `engines/` | Server scripts for the local voice engines; runtimes and models stay out of git |
 | `scripts/` | CI, packaging and engine install scripts |
 
-**Tech stack**: C# / .NET 8 · Vue 3 · TypeScript · Tauri 2 · SQLite
+**Tech stack**: C# / .NET 10 · Vue 3 · TypeScript · Tauri 2 · SQLite
 
 ## Contributing
 

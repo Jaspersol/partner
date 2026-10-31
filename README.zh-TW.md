@@ -111,7 +111,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 GitHub 單一 release 附件上限 2 GiB，朗讀引擎約 3 GB。應用程式依序下載到同一目錄並校驗 SHA-256，斷線後續傳。
 
 **資料存在哪裡？**
-預設在 `%LocalAppData%/Partner/workspace`，包括工作階段記錄、佇列、記憶庫和設定。工作階段和佇列可以從對應的 `.jsonl` 重建；`memory.db` 沒有備份，刪除後記憶無法復原。
+預設在 `%LocalAppData%/Partner/workspace`，包括工作階段記錄、佇列、記憶庫和設定。工作階段和佇列可以從對應的 `.jsonl` 重建；`memory.db` 至少每天複製一次到 `memory/backups/`（啟動時最新備份過期就補一份，每日維護前也會檢查），保留最近 7 份；刪除原庫只遺失上次備份之後的記憶。
 
 **會把我的資料傳到別處嗎？**
 對話內容傳給你設定的模型端點。「聯網搜尋」預設開啟，搜尋時查詢語句會傳給第三方搜尋引擎，可以在「設定 → 聯網搜尋」關閉。應用程式還會連 GitHub 檢查更新和下載語音引擎。本機 API 只監聽 `127.0.0.1`，請求必須帶啟動時產生的權杖。
@@ -123,7 +123,7 @@ GitHub 單一 release 附件上限 2 GiB，朗讀引擎約 3 GB。應用程式�
 
 ## 從原始碼建置
 
-需要 .NET 8 SDK、Node 22 + npm（不要用 pnpm，esbuild 會裝不上）、Rust（cargo 1.98+）。
+需要 .NET 10 SDK、Node 22 + npm（不要用 pnpm，esbuild 會裝不上）、Rust（cargo 1.98+）。
 
 ```bash
 npm --prefix ui install          # 第一次
@@ -147,7 +147,7 @@ bash scripts/ci.sh               # 完整檢查；SKIP_SHELL=1 跳過殼編譯
 | `engines/` | 本機語音引擎的服務腳本，執行環境和模型不進 git |
 | `scripts/` | CI、打包、引擎安裝腳本 |
 
-**技術堆疊**：C# / .NET 8 · Vue 3 · TypeScript · Tauri 2 · SQLite
+**技術堆疊**：C# / .NET 10 · Vue 3 · TypeScript · Tauri 2 · SQLite
 
 ## 參與貢獻
 

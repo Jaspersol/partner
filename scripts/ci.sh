@@ -68,7 +68,7 @@ if [ -z "${SKIP_SHELL:-}" ]; then
   if command -v cargo >/dev/null 2>&1; then
     # Same ordering as scripts/build-shell.sh: the shell bundles the published API, so publish first.
     "$DOTNET" publish src/Partner.Api -c Release -r win-x64 --self-contained true \
-      -o src/Partner.Api/bin/Release/net8.0/win-x64/publish -v q --nologo
+      -o src/Partner.Api/bin/Release/net10.0/win-x64/publish -v q --nologo
     cargo build --manifest-path src-tauri/Cargo.toml
   else
     echo "cargo not found on PATH — skipping the shell build" >&2

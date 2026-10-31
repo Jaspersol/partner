@@ -3,13 +3,15 @@
 //! Two things are load-bearing here. The shell picks a free port, generates a token, and passes both to the
 //! `partner-api` sidecar — the token through the child's environment, never a command line and never a file —
 //! then injects the same token into the webview. The window is built without waiting for the sidecar to finish
-//! starting, and the UI retries until `/api/health` answers. The stdout pipe is drained on a thread for the
-//! lifetime of the process: the API logs requests to stdout, and an unread pipe fills up and blocks the server.
+//! starting, and the UI retries until `/api/health` answers. Both pipes feed a capped log: an unread pipe
+//! fills up and blocks the server.
 
-use std::io::{BufRead, BufReader};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -19,15 +21,55 @@ use std::sync::Mutex;
 use rand::RngCore;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{
-    AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-};
+use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 const TRAY_ID: &str = "main-tray";
 
-/// Keeps the sidecar handle so it can be killed when the shell exits.
-struct Sidecar(Mutex<Option<Child>>);
+/// Keeps the sidecar handle and marks intentional stops so the supervisor does not restart it.
+struct Sidecar {
+    child: Mutex<Option<Child>>,
+    stopping: AtomicBool,
+}
+
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+static LOG_GATE: Mutex<()> = Mutex::new(());
+
+fn api_log_path() -> Option<PathBuf> {
+    let base = std::env::var("LOCALAPPDATA").ok()?;
+    Some(PathBuf::from(base).join("Partner").join("partner-api.log"))
+}
+
+fn append_api_log(stream: &str, line: &str) {
+    let Some(path) = api_log_path() else {
+        return;
+    };
+
+    let _guard = match LOG_GATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    append_log_file(&path, MAX_LOG_BYTES, stream, line);
+}
+
+/// Rotates to `partner-api.1.log` at `cap`, keeping one previous file.
+fn append_log_file(path: &std::path::Path, cap: u64, stream: &str, line: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    if let Ok(metadata) = std::fs::metadata(path) {
+        if metadata.len() >= cap {
+            let rotated = path.with_extension("1.log");
+            let _ = std::fs::remove_file(&rotated);
+            let _ = std::fs::rename(path, &rotated);
+        }
+    }
+
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "[{stream}] {line}");
+    }
+}
 
 /// Whether closing the window hides it to the tray instead of quitting. Mirrors the file on disk.
 struct TrayEnabled(AtomicBool);
@@ -154,7 +196,11 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
-        .invoke_handler(tauri::generate_handler![get_tray_enabled, set_tray_enabled, install_update])
+        .invoke_handler(tauri::generate_handler![
+            get_tray_enabled,
+            set_tray_enabled,
+            install_update
+        ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let enabled = window
@@ -194,7 +240,11 @@ pub fn run() {
                 .initialization_script(&script)
                 .build()?;
 
-            app.manage(Sidecar(Mutex::new(Some(child))));
+            app.manage(Sidecar {
+                child: Mutex::new(Some(child)),
+                stopping: AtomicBool::new(false),
+            });
+            supervise_sidecar(app.handle().clone(), port, token);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -202,7 +252,9 @@ pub fn run() {
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<Sidecar>() {
-                    if let Ok(mut guard) = state.0.lock() {
+                    // Mark the stop before killing the child so the supervisor does not restart it.
+                    state.stopping.store(true, Ordering::SeqCst);
+                    if let Ok(mut guard) = state.child.lock() {
                         if let Some(mut child) = guard.take() {
                             let _ = child.kill();
                             let _ = child.wait();
@@ -263,21 +315,112 @@ fn start_api(port: u16, token: &str) -> Result<Child, String> {
     let stdout = child.stdout.take().ok_or("the sidecar has no stdout")?;
     let stderr = child.stderr.take().ok_or("the sidecar has no stderr")?;
 
-    // Drain both pipes for the lifetime of the process: the API logs to stdout, and an unread pipe fills up
-    // and blocks the server. Nothing is read back for startup — the token is already ours, and the UI retries
-    // /api/health instead of waiting on a line here.
-    std::thread::spawn(
-        move || {
-            for _ in BufReader::new(stdout).lines().map_while(Result::ok) {}
-        },
-    );
-    std::thread::spawn(
-        move || {
-            for _ in BufReader::new(stderr).lines().map_while(Result::ok) {}
-        },
-    );
+    // Drain both pipes; unread output would block the API, and the log keeps startup failures.
+    pump_api_output(stdout, "stdout");
+    pump_api_output(stderr, "stderr");
 
     Ok(child)
+}
+
+fn pump_api_output<R: std::io::Read + Send + 'static>(stream: R, name: &'static str) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            append_api_log(name, &line);
+        }
+    });
+}
+
+/// Restarts the sidecar after abnormal exits; the port and token stay fixed for the loaded webview.
+fn supervise_sidecar(app: AppHandle, port: u16, token: String) {
+    std::thread::spawn(move || {
+        let mut delay = Duration::from_millis(500);
+        let mut started = Instant::now();
+
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+
+            let Some(state) = app.try_state::<Sidecar>() else {
+                return;
+            };
+            if state.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let exited: Option<Option<ExitStatus>> = {
+                let mut guard = match state.child.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                match guard.as_mut() {
+                    Some(child) => match child.try_wait() {
+                        Ok(None) => None,
+                        Ok(Some(status)) => {
+                            guard.take();
+                            Some(Some(status))
+                        }
+                        Err(error) => {
+                            append_api_log("shell", &format!("sidecar try_wait failed: {error}"));
+                            None
+                        }
+                    },
+                    None => Some(None),
+                }
+            };
+
+            let Some(status) = exited else {
+                continue;
+            };
+
+            if state.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+
+            // Reset after a long run; startup failures keep backing off up to 30 s.
+            if started.elapsed() > Duration::from_secs(60) {
+                delay = Duration::from_millis(500);
+            }
+
+            match status {
+                Some(status) => append_api_log(
+                    "shell",
+                    &format!(
+                        "sidecar exited (code {:?}); restarting in {} ms",
+                        status.code(),
+                        delay.as_millis()
+                    ),
+                ),
+                None => append_api_log(
+                    "shell",
+                    &format!(
+                        "sidecar is not running; restarting in {} ms",
+                        delay.as_millis()
+                    ),
+                ),
+            }
+
+            std::thread::sleep(delay);
+            if state.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+
+            match start_api(port, &token) {
+                Ok(child) => {
+                    let mut guard = match state.child.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    *guard = Some(child);
+                    started = Instant::now();
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                    append_api_log("shell", "sidecar restarted");
+                }
+                Err(error) => {
+                    append_api_log("shell", &format!("sidecar restart failed: {error}"));
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                }
+            }
+        }
+    });
 }
 
 /// A fresh bearer token for this launch. Any strong random string works — the API compares the bytes it is
@@ -329,7 +472,7 @@ fn api_exe_path() -> Result<PathBuf, String> {
 /// The most recently written `partner-api.exe` under `bin/Debug/<framework>/`.
 ///
 /// The framework folder is scanned for rather than spelled out: the moniker carries the Windows SDK version
-/// (`net8.0-windows10.0.19041.0`), so a path pinned to `net8.0` never exists — and a debug shell then falls
+/// (`net10.0-windows10.0.19041.0`), so a path pinned to `net10.0` never exists — and a debug shell then falls
 /// through to the bundled snapshot, which is exactly the staleness this function exists to prevent. Several
 /// framework folders can also coexist after a target framework change, so newest wins.
 fn newest_api_build(debug_root: &std::path::Path) -> Option<PathBuf> {
@@ -378,15 +521,15 @@ mod tests {
     }
 
     /// The scan exists because the framework folder is not a constant: the moniker carries the Windows SDK
-    /// version, so a path pinned to `net8.0` never exists — and a debug shell then falls through to the
+    /// version, so a path pinned to `net10.0` never exists — and a debug shell then falls through to the
     /// bundled snapshot, which is the staleness the function was written to prevent. Several folders can also
     /// coexist after a target framework change, so the newest has to win.
     #[test]
     fn the_newest_framework_folder_wins() {
         let root = scratch("sidecar-newest");
 
-        let older = root.join("net8.0-windows");
-        let newer = root.join("net8.0-windows10.0.19041.0");
+        let older = root.join("net10.0-windows");
+        let newer = root.join("net10.0-windows10.0.19041.0");
         std::fs::create_dir_all(&older).unwrap();
         std::fs::create_dir_all(&newer).unwrap();
 
@@ -408,7 +551,7 @@ mod tests {
     #[test]
     fn a_folder_without_the_sidecar_is_not_a_candidate() {
         let root = scratch("sidecar-empty");
-        std::fs::create_dir_all(root.join("net8.0-windows10.0.19041.0")).unwrap();
+        std::fs::create_dir_all(root.join("net10.0-windows10.0.19041.0")).unwrap();
 
         assert_eq!(newest_api_build(&root), None);
 
@@ -421,5 +564,36 @@ mod tests {
             newest_api_build(&PathBuf::from("no-such-directory-here")),
             None
         );
+    }
+
+    #[test]
+    fn the_api_log_rotates_at_its_cap() {
+        let root = scratch("sidecar-log");
+        let path = root.join("partner-api.log");
+
+        for i in 0..20 {
+            append_log_file(
+                &path,
+                200,
+                "stdout",
+                &format!("line {i} padded to force rotation"),
+            );
+        }
+
+        let current = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let rotated = std::fs::metadata(path.with_extension("1.log"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        assert!(current > 0, "the log should still be written");
+        assert!(rotated > 0, "rotation should have produced a previous file");
+        assert!(
+            current <= 1_000 && rotated <= 1_000,
+            "both files should stay near the cap, got current={current} rotated={rotated}"
+        );
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[stdout] line"), "the prefix should be kept");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

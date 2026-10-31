@@ -1347,12 +1347,12 @@ defineExpose({ refresh, hasUnsavedChanges })
               <div class="g-card-head"><h3>{{ t('唤醒') }}</h3></div>
               <SettingRow :label="t('唤醒词')" :disabled="!form.local.kws.enabled">
                 <template #hint>
-                  {{ t('用逗号分隔多个，例如「你好军哥，蛋哥蛋哥」。留空则保留引擎里现有的词。需要先开启「本地引擎」里的唤醒与识别引擎。') }}
+                  {{ t('用逗号分隔多个，例如「小克小克，小柯小柯」。留空则保留引擎里现有的词。需要先开启「本地引擎」里的唤醒与识别引擎。') }}
                 </template>
                 <input
                   type="text"
                   :value="keywordDrafts.kws"
-                  :placeholder="t('你好军哥，蛋哥蛋哥')"
+                  :placeholder="t('小克小克，小柯小柯')"
                   data-test="local-kws-keywords"
                   @input="onEngineKeywordsInput('kws', $event)"
                 />

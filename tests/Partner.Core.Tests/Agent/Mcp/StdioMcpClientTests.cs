@@ -97,8 +97,9 @@ public sealed class StdioMcpClientTests : IDisposable
     [Fact]
     public async Task Hang_times_out_with_the_method_name_and_the_client_stays_usable()
     {
+        // The same timeout covers the stdio handshake; allow for a loaded `dotnet` start.
         await using var client = new StdioMcpClient(
-            Config(LogPath, callTimeout: TimeSpan.FromMilliseconds(300)));
+            Config(LogPath, callTimeout: TimeSpan.FromSeconds(1)));
         await client.StartAsync();
 
         var stopwatch = Stopwatch.StartNew();
@@ -218,19 +219,20 @@ public sealed class StdioMcpClientTests : IDisposable
                 "cannot locate the MCP test-double server.");
         }
 
-        var dll = Path.Combine(
-            directory.FullName,
-            "tests",
-            "Partner.McpTestServer",
-            "bin",
-            Configuration,
-            "net8.0",
-            "Partner.McpTestServer.dll");
+        // Use the newest build; the framework folder name changes with the TFM.
+        var binRoot = Path.Combine(
+            directory.FullName, "tests", "Partner.McpTestServer", "bin", Configuration);
 
-        if (!File.Exists(dll))
+        var dll = Directory.Exists(binRoot)
+            ? Directory.GetFiles(binRoot, "Partner.McpTestServer.dll", SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault()
+            : null;
+
+        if (dll is null)
         {
             throw new InvalidOperationException(
-                $"MCP test-double server is not built; expected '{dll}'. " +
+                $"MCP test-double server is not built under '{binRoot}'. " +
                 "Run `dotnet build` on the solution before running these tests.");
         }
 

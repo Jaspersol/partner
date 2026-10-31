@@ -39,7 +39,7 @@ Deleting or withdrawing a conversation also deletes the memories distilled from 
 
 ## Maintenance and settings
 
-- The host runs maintenance once a day: promote, demote, drop expired, compact. A failed pass is logged and retried next time.
+- The host runs maintenance once a day: it first ensures the database has a copy younger than 24 hours (`memory/backups/`, newest 7 kept), then promotes, demotes, drops expired records and compacts. Startup also takes a copy when the newest one is stale. A failed pass is logged and retried next time.
 - `memory.embeddings`: local n-gram hashing vectors, off by default, no external dependency. Takes effect the next time the database is opened.
 
 ## Storage
