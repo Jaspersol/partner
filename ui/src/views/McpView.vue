@@ -31,7 +31,7 @@ const open = ref<boolean[]>([])
 const attempted = ref(false)
 
 function blankServer(): McpServerSettings {
-  return { name: '', command: '', arguments: [], workingDirectory: null, callTimeoutSeconds: 30 }
+  return { name: '', command: '', arguments: [], workingDirectory: null, callTimeoutSeconds: 30, startTimeoutSeconds: 30 }
 }
 
 function addServer() {
@@ -256,7 +256,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 />
               </SettingRow>
 
-              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('一次工具调用超过这个时间还没结果就放弃。默认 30 秒。')">
+              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('一次工具调用超过这个时间还没结果就放弃。默认 30 秒。不影响启动：服务启动慢不会被判失败。')">
                 <input
                   :value="server.callTimeoutSeconds"
                   type="number"

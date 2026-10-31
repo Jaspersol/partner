@@ -166,6 +166,8 @@ export interface McpServerSettings {
   arguments: string[]
   workingDirectory: string | null
   callTimeoutSeconds: number
+  /** Timeout for the stdio handshake; separate because it bounds the child starting, not the server answering. */
+  startTimeoutSeconds: number
 }
 
 export interface McpSettings {

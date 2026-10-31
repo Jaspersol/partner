@@ -18,17 +18,21 @@ public sealed class PostActionVerifierPollTests
     public async Task A_repaint_that_arrives_after_the_first_capture_is_confirmed_on_the_later_round()
     {
         var capture = new SequenceCapture(unchanged: Frame(), changed: Frame(dirty: (0, 0, 8, 8)));
-        var verifier = new PostActionVerifier(capture);
+        // An explicit, generous recheck delay. The default is 50 ms, and asserting `ElapsedMs >= 50` against it
+        // measures the OS timer rather than the loop: Windows' timer granularity lets a wait come back a few ms
+        // over or under, which is enough to turn a passing run red on a loaded runner. Waiting 200 ms and asking
+        // for half of it still proves the loop waited instead of answering on the first frame, and no timer
+        // skew can close a 100 ms margin.
+        var verifier = new PostActionVerifier(capture, recheckDelay: TimeSpan.FromMilliseconds(200));
 
         var result = await verifier.VerifyAsync(1, new PixelRect(0, 0, Width, Height), Before());
 
         Assert.Equal(VerifyDecision.AnyChange, result.Decision);
+        // Two captures is the structural half of the same claim: a second look was taken.
         Assert.Equal(2, capture.WindowCaptures);
-        // The loop waited at least one round rather than answering immediately: a finding the first frame
-        // could not support on its own.
         Assert.True(
-            result.ElapsedMs >= PostActionVerifier.DefaultRecheckDelay.TotalMilliseconds,
-            $"elapsed {result.ElapsedMs:0.0}ms < one recheck delay {PostActionVerifier.DefaultRecheckDelay.TotalMilliseconds}ms");
+            result.ElapsedMs >= 100,
+            $"elapsed {result.ElapsedMs:0.0}ms < half of the 200ms recheck delay: it answered without waiting");
     }
 
     [Fact]

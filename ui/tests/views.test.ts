@@ -2638,7 +2638,7 @@ describe('settings view', () => {
         ...SETTINGS_FIXTURE,
         mcp: {
           enabled: true,
-          servers: [{ name: 'files', command: 'node', arguments: ['server.js'], workingDirectory: null, callTimeoutSeconds: 30 }],
+          servers: [{ name: 'files', command: 'node', arguments: ['server.js'], workingDirectory: null, callTimeoutSeconds: 30, startTimeoutSeconds: 30 }],
           allowedTools: ['read_file'],
         },
         skills: { disabled: ['greet'] },

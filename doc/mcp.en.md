@@ -12,6 +12,7 @@ The **MCP** page in the sidebar:
 
 1. Turn on the master switch.
 2. Add a server: name, command, arguments (one per line), optionally a working directory and a call timeout (default 30 seconds). Name and command are required.
+   The call timeout bounds tool calls only, not start-up: a slow server (a cold `dotnet` process takes 300 ms or more) is not treated as broken, and the handshake has its own 30-second budget.
    A bare command name is only looked up on the system PATH; otherwise give the full path.
 3. Save. The consumer starts each server on launch and registers the result of `tools/list` in its tool table.
 
