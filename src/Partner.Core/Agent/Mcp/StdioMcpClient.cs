@@ -123,7 +123,8 @@ public sealed class StdioMcpClient : IMcpClient
                     },
                 };
 
-                var response = await SendRequestAsync("initialize", parameters, ct).ConfigureAwait(false);
+                var response = await SendRequestAsync("initialize", parameters, ct, _config.StartTimeout)
+                    .ConfigureAwait(false);
                 EnsureNoError("initialize", response);
 
                 await SendNotificationAsync("notifications/initialized", null, ct).ConfigureAwait(false);
@@ -342,9 +343,17 @@ public sealed class StdioMcpClient : IMcpClient
         process.Dispose();
     }
 
-    private async Task<JsonElement> SendRequestAsync(string method, JsonNode? parameters, CancellationToken ct)
+    private async Task<JsonElement> SendRequestAsync(
+        string method,
+        JsonNode? parameters,
+        CancellationToken ct,
+        TimeSpan? timeout = null)
     {
         ThrowIfNotRunning();
+
+        // The handshake is bounded by the child process starting, every other request by the server answering.
+        // One timeout for both would let a short per-call setting fail a server that is merely slow to boot.
+        var limit = timeout ?? _config.CallTimeout;
 
         var id = Interlocked.Increment(ref _nextId);
         var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -365,13 +374,13 @@ public sealed class StdioMcpClient : IMcpClient
         try
         {
             await WriteLineAsync(request.ToJsonString(), ct).ConfigureAwait(false);
-            return await completion.Task.WaitAsync(_config.CallTimeout, ct).ConfigureAwait(false);
+            return await completion.Task.WaitAsync(limit, ct).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             _pending.TryRemove(id, out _);
             throw new TimeoutException(
-                $"MCP request '{method}' to server '{_config.Name}' timed out after {_config.CallTimeout}.{_stderr.Tail()}");
+                $"MCP request '{method}' to server '{_config.Name}' timed out after {limit}.{_stderr.Tail()}");
         }
         catch (Exception)
         {

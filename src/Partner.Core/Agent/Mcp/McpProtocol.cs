@@ -23,6 +23,13 @@ public sealed record McpServerConfig
     /// <summary>Timeout for one request (initialize / tools/list / tools/call).</summary>
     public TimeSpan CallTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// Timeout for the <c>initialize</c> handshake, which is bounded by the child process starting rather than by
+    /// the server answering. Kept apart from <see cref="CallTimeout"/> so a short per-call timeout cannot make a
+    /// slow-starting server look broken.
+    /// </summary>
+    public TimeSpan StartTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     /// <summary>How long a tools/list result stays valid (10s).</summary>
     public TimeSpan CapabilityCacheTtl { get; init; } = TimeSpan.FromSeconds(10);
 }

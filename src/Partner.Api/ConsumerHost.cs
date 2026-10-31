@@ -677,6 +677,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 Arguments = server.Arguments,
                 WorkingDirectory = server.WorkingDirectory,
                 CallTimeout = TimeSpan.FromSeconds(Math.Max(1, server.CallTimeoutSeconds)),
+                StartTimeout = TimeSpan.FromSeconds(Math.Max(1, server.StartTimeoutSeconds)),
             });
 
             await client.StartAsync().ConfigureAwait(false);

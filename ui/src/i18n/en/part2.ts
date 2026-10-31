@@ -29,6 +29,7 @@ const part2: Record<string, string> = {
   '最长等待': 'Longest wait',
   '秒': 's',
   '一次工具调用超过这个时间还没结果就放弃。默认 30 秒。': 'A tool call that takes longer than this is abandoned. Default 30 seconds.',
+  '一次工具调用超过这个时间还没结果就放弃。默认 30 秒。不影响启动：服务启动慢不会被判失败。': 'A tool call that takes longer than this is abandoned. Default 30 seconds. This does not affect start-up: a slow server is not treated as broken.',
   '添加服务': 'Add server',
   '{live} 条生效 · 共 {length} 条': '{live} active · {length} in total',
   '检索「{value}」→ {length} 条命中': 'Search “{value}” → {length} hits',

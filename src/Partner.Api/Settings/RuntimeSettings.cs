@@ -275,16 +275,24 @@ public sealed record McpServerSettings : IEquatable<McpServerSettings>
     /// <summary>Per-call timeout, seconds. A server that never answers must not park the turn.</summary>
     public int CallTimeoutSeconds { get; init; } = 30;
 
+    /// <summary>
+    /// Timeout for the stdio handshake, seconds. Separate from <see cref="CallTimeoutSeconds"/> because it bounds
+    /// something else: the child process starting. Under <c>CallTimeout</c> alone, a short per-call timeout (or a
+    /// loaded machine) fails the handshake and the server reads as broken rather than slow to start.
+    /// </summary>
+    public int StartTimeoutSeconds { get; init; } = 30;
+
     public bool Equals(McpServerSettings? other) =>
         other is not null
         && Name == other.Name
         && Command == other.Command
         && Arguments.SequenceEqual(other.Arguments, StringComparer.Ordinal)
         && WorkingDirectory == other.WorkingDirectory
-        && CallTimeoutSeconds == other.CallTimeoutSeconds;
+        && CallTimeoutSeconds == other.CallTimeoutSeconds
+        && StartTimeoutSeconds == other.StartTimeoutSeconds;
 
     public override int GetHashCode() =>
-        HashCode.Combine(Name, Command, Arguments.Count, WorkingDirectory, CallTimeoutSeconds);
+        HashCode.Combine(Name, Command, Arguments.Count, WorkingDirectory, CallTimeoutSeconds, StartTimeoutSeconds);
 }
 
 /// <summary>

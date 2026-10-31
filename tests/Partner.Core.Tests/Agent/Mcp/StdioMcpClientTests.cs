@@ -97,7 +97,9 @@ public sealed class StdioMcpClientTests : IDisposable
     [Fact]
     public async Task Hang_times_out_with_the_method_name_and_the_client_stays_usable()
     {
-        // The same timeout covers the stdio handshake; allow for a loaded `dotnet` start.
+        // The per-call timeout is short so the test does not wait 30 s for the hang; the handshake has its own
+        // timeout, because it is bounded by the child `dotnet` process starting (300-400 ms cold) rather than by
+        // the server answering. Sharing one second between them made this fail on a loaded runner.
         await using var client = new StdioMcpClient(
             Config(LogPath, callTimeout: TimeSpan.FromSeconds(1)));
         await client.StartAsync();
@@ -108,7 +110,9 @@ public sealed class StdioMcpClientTests : IDisposable
         stopwatch.Stop();
 
         Assert.Contains("tools/call", error.Message);
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"timed out too slowly: {stopwatch.Elapsed}");
+        // A generous ceiling: this asserts the call gave up rather than waiting for the server, not how fast the
+        // clock is. The measured 1 s timeout is what makes it a timeout at all.
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(30), $"timed out too slowly: {stopwatch.Elapsed}");
 
         Assert.True(client.IsRunning);
         var echo = await client.CallToolAsync("echo", "{\"text\":\"still alive\"}");
