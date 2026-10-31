@@ -370,7 +370,22 @@ public sealed class VoiceHost : IAsyncDisposable
             wakeTone: _sink is null ? null : PlayWakeTone,
             onBargeIn: () => _output?.StopPlayback());
 
-        _input.Start();
+        try
+        {
+            _input.Start();
+        }
+        catch (Exception error)
+        {
+            _input.Dispose();
+            _input = null;
+            _source.Dispose();
+            _source = null;
+            _asr.Dispose();
+            _asr = null;
+            _inputState = new VoiceInputState(false, $"启动输入设备失败：{error.Message}", null, 0);
+            return;
+        }
+
         _inputLoop = RunInputAsync(_stop!.Token);
         _inputState = new VoiceInputState(true, "运行中", _source.DeviceName, 0);
     }
