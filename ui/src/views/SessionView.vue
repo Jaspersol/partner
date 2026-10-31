@@ -15,6 +15,7 @@ import type {
   SessionWindow,
 } from '../api'
 import { sourceLabel } from '../sessionKind'
+import { isPageHidden } from '../pageVisibility'
 import ApprovalBanner from '../components/ApprovalBanner.vue'
 import Icon from '../components/Icon.vue'
 import Segmented from '../components/Segmented.vue'
@@ -437,6 +438,10 @@ function pollJobs() {
 let pollInFlight = false
 
 async function poll() {
+  if (isPageHidden()) {
+    return
+  }
+
   pollJobs()
 
   if (pollInFlight) {

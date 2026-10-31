@@ -21,7 +21,9 @@ use std::sync::Mutex;
 use rand::RngCore;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 use tauri_plugin_autostart::MacosLauncher;
 
 const TRAY_ID: &str = "main-tray";
@@ -101,6 +103,7 @@ fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        let _ = window.emit("partner:visibility", true);
     }
 }
 
@@ -211,6 +214,7 @@ pub fn run() {
                 if enabled && window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
+                    let _ = window.emit("partner:visibility", false);
                 }
             }
         })

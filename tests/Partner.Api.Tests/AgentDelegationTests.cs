@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Partner.Api.Agents;
 using Partner.Api.Settings;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
@@ -353,6 +354,33 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         Assert.Equal(string.Empty, await File.ReadAllTextAsync(Path.Combine(_workspace, "agents", "jobs.jsonl")));
 
         Assert.Equal(0, await _consumer.Agents.RecoverAsync());
+    }
+
+    [Fact]
+    public async Task Startup_prunes_old_job_directories_and_keeps_the_newest()
+    {
+        var agentRoot = Path.Combine(_workspace, "agents", "file-read");
+        var total = SubAgentHost.KeepFinished + 1;
+        for (var i = 0; i < total; i++)
+        {
+            var session = Path.Combine(agentRoot, $"job-{i:D3}", "session");
+            Directory.CreateDirectory(session);
+            var events = Path.Combine(session, "events.jsonl");
+            await File.WriteAllTextAsync(events, string.Empty);
+            File.SetLastWriteTimeUtc(events, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(i));
+        }
+
+        Assert.Equal(0, await _consumer.Agents.RecoverAsync());
+
+        var remaining = Directory.GetDirectories(agentRoot)
+            .Select(Path.GetFileName)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(SubAgentHost.KeepFinished, remaining.Count);
+        Assert.DoesNotContain("job-000", remaining);
+        Assert.Contains("job-001", remaining);
+        Assert.Contains($"job-{total - 1:D3}", remaining);
     }
 
     [Fact]

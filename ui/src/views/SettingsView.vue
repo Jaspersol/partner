@@ -11,6 +11,7 @@ import { INPUT_MODES } from '../api'
 import { version as appVersion } from '../../package.json'
 import { LOCALES, LOCALE_NAMES, locale, setLocale, t, type Locale, type MessageKey, tr } from '../i18n'
 import { normalizeGear } from '../gears'
+import { isPageHidden } from '../pageVisibility'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
 import {
   getAutostart,
@@ -234,6 +235,10 @@ const outputOptions = computed(() => withStored(devices.value.outputs, form.outp
 let levelTimer: ReturnType<typeof setInterval> | null = null
 
 async function pollLevel() {
+  if (isPageHidden()) {
+    return
+  }
+
   if (voice.value !== null && !voice.value.input.running) {
     return
   }
@@ -502,6 +507,10 @@ function syncEnginePolling() {
 }
 
 async function pollEnginePackage() {
+  if (isPageHidden()) {
+    return
+  }
+
   try {
     const wasRunning = downloadRunning.value
     enginePackage.value = await props.api.enginePackage()
@@ -954,6 +963,7 @@ function applyUpdateState(state: UpdateDownload): void {
 }
 
 async function pollUpdate(): Promise<void> {
+  if (isPageHidden()) return
   if (updatePollBusy) return
   updatePollBusy = true
   try {
