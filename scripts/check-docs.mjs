@@ -85,6 +85,37 @@ const read = (file) => {
   return caches.get(file)
 }
 
+function structureOf(file) {
+  const headings = []
+  const fences = []
+  let inFence = false
+
+  for (const line of read(file).split(/\r?\n/)) {
+    if (!inFence) {
+      const heading = /^(#{1,6})\s+/.exec(line)
+      if (heading?.[1] !== undefined) headings.push(heading[1].length)
+    }
+
+    const fence = /^\s{0,3}(`{3,}|~{3,})\s*(.*)$/.exec(line)
+    if (fence === null) continue
+    if (!inFence) {
+      inFence = true
+      fences.push(fence[2].trim())
+    } else if (fence[2].trim() === '') {
+      inFence = false
+    }
+  }
+
+  return { headings, fences }
+}
+
+const translationGroups = [['README.md', 'README.zh-CN.md', 'README.zh-TW.md']]
+for (const name of readdirSync(join(ROOT, 'doc'))) {
+  if (!name.endsWith('.md') || name.endsWith('.en.md') || name.endsWith('.zh-TW.md')) continue
+  const base = `doc/${name}`
+  translationGroups.push([base, base.replace(/\.md$/, '.en.md'), base.replace(/\.md$/, '.zh-TW.md')])
+}
+
 const files = walk(ROOT)
   .map((full) => relative(ROOT, full).split(sep).join('/'))
   .filter((file) => file !== SELF)
@@ -130,3 +161,42 @@ if (problems.length > 0) {
 }
 
 console.log(`doc references OK (${EXEMPT.size} exempt names)`)
+
+const translationProblems = []
+for (const [primary, ...variants] of translationGroups) {
+  if (!existsSync(join(ROOT, primary))) {
+    translationProblems.push(`${primary} is missing its base document`)
+    continue
+  }
+
+  const expected = structureOf(primary)
+  for (const variant of variants) {
+    if (!existsSync(join(ROOT, variant))) {
+      translationProblems.push(`${variant} is missing`)
+      continue
+    }
+
+    const actual = structureOf(variant)
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      translationProblems.push(`${variant} has different headings or code fences from ${primary}`)
+    }
+  }
+}
+
+for (const name of readdirSync(join(ROOT, 'doc'))) {
+  if (!name.endsWith('.en.md') && !name.endsWith('.zh-TW.md')) continue
+  const primary = `doc/${name.replace(/\.(en|zh-TW)\.md$/, '.md')}`
+  if (!existsSync(join(ROOT, primary))) {
+    translationProblems.push(`${primary} has no base document for doc/${name}`)
+  }
+}
+
+console.log(`== doc translations: ${translationGroups.length} three-language sets ==`)
+
+if (translationProblems.length > 0) {
+  for (const problem of translationProblems) console.error(`  ${problem}`)
+  console.error(`\n${translationProblems.length} translation structure problem(s).`)
+  process.exit(1)
+}
+
+console.log('doc translations OK')

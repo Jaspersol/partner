@@ -10,6 +10,7 @@ import {
   type ScheduleTaskView,
 } from '../api'
 import { showToast } from '../toast'
+import { isPageHidden } from '../pageVisibility'
 import DateTimePicker from '../components/DateTimePicker.vue'
 import HintTip from '../components/HintTip.vue'
 import Icon from '../components/Icon.vue'
@@ -223,7 +224,9 @@ let timer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   void refresh()
-  timer = setInterval(() => void refresh(), REFRESH_MS)
+  timer = setInterval(() => {
+    if (!isPageHidden()) void refresh()
+  }, REFRESH_MS)
 })
 
 onBeforeUnmount(() => {

@@ -35,8 +35,8 @@ public sealed partial class SubAgentHost : IAsyncDisposable
     /// </summary>
     public static readonly TimeSpan DefaultDeadline = TimeSpan.FromMinutes(15);
 
-    /// <summary>How many finished jobs stay listed. The journal on disk keeps them all.</summary>
-    private const int KeepFinished = 30;
+    /// <summary>How many finished jobs stay listed and how many job logs stay on disk.</summary>
+    internal const int KeepFinished = 30;
 
     /// <summary>How many jobs may wait behind the one a sub-agent is running.</summary>
     public const int MaxQueued = 2;

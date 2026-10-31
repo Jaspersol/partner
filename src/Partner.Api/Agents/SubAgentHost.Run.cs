@@ -124,12 +124,14 @@ public sealed partial class SubAgentHost
             // to a conversation that never asked for it.
             Journal("finished-late", job, agentName, outcome.Category ?? "completed");
             TrimFinished();
+            PruneJobLogs();
             return;
         }
 
         Journal("finished", job, agentName, outcome.Category ?? "completed");
         await QueueReportAsync(job.Id, agentName, job.Goal, outcome).ConfigureAwait(false);
         TrimFinished();
+        PruneJobLogs();
     }
 
     private async Task QueueReportAsync(string jobId, string agentName, string goal, JobOutcome outcome)
@@ -156,6 +158,8 @@ public sealed partial class SubAgentHost
     /// </summary>
     public async Task<int> RecoverAsync()
     {
+        PruneJobLogs();
+
         if (!File.Exists(JournalPath))
         {
             return 0;
@@ -205,6 +209,65 @@ public sealed partial class SubAgentHost
         TruncateJournal();
 
         return open.Count;
+    }
+
+    private void PruneJobLogs()
+    {
+        // Best-effort cleanup; locked directories are retried on the next pass.
+        try
+        {
+            PruneJobLogsCore();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private void PruneJobLogsCore()
+    {
+        var root = Path.Combine(_workspace, "agents");
+        if (!Directory.Exists(root))
+        {
+            return;
+        }
+
+        var jobs = Directory.EnumerateDirectories(root)
+            .SelectMany(Directory.EnumerateDirectories)
+            .Where(directory => Path.GetFileName(directory).StartsWith("job-", StringComparison.Ordinal))
+            .OrderByDescending(JobLogStamp)
+            .ToList();
+
+        HashSet<string> active;
+        lock (_gate)
+        {
+            active = _jobs.Where(job => job.IsRunning).Select(job => job.Id).ToHashSet(StringComparer.Ordinal);
+        }
+
+        var kept = 0;
+        foreach (var job in jobs)
+        {
+            if (kept++ < KeepFinished || active.Contains(Path.GetFileName(job)))
+            {
+                continue;
+            }
+
+            try
+            {
+                Directory.Delete(job, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    private static DateTime JobLogStamp(string jobDirectory)
+    {
+        var events = Path.Combine(jobDirectory, "session", "events.jsonl");
+        return File.Exists(events) ? File.GetLastWriteTimeUtc(events) : Directory.GetLastWriteTimeUtc(jobDirectory);
     }
 
     private void TruncateJournal()

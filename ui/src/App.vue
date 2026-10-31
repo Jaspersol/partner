@@ -16,6 +16,7 @@ import {
 import { resolveConnection } from './config'
 import { t } from './i18n'
 import { useRailOnlyMode } from './narrow'
+import { isPageHidden } from './pageVisibility'
 import { applyReducedTransparency, applyTheme, nextTheme, readReducedTransparency, readTheme, type Theme } from './theme'
 import SideBar, { type NavItem } from './components/SideBar.vue'
 import { setGearLabels } from './gears'
@@ -409,10 +410,12 @@ onMounted(async () => {
   await Promise.all([refreshSummary(), refreshGears()])
   // Two cadences: the badge can wait five seconds, a parked turn cannot.
   poller = setInterval(() => {
+    if (isPageHidden()) return
     void refreshSummary()
   }, QUEUE_POLL_MS)
 
   approvalPoller = setInterval(() => {
+    if (isPageHidden()) return
     if (approvals.value.length > 0) {
       void refreshSummary()
     }
