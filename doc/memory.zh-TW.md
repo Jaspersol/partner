@@ -44,4 +44,4 @@
 
 ## 儲存
 
-`<workspace>/memory/memory.db`。這是唯一儲存，刪除即遺失。
+`<workspace>/memory/memory.db` 是主庫；`memory/backups/` 保留最近 7 份每日備份。刪除主庫只會遺失上次備份之後的寫入。

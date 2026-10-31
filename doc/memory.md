@@ -44,4 +44,4 @@
 
 ## 存储
 
-`<workspace>/memory/memory.db`。这是唯一存储，删除即丢失。
+`<workspace>/memory/memory.db` 是主库；`memory/backups/` 保存最近 7 份每日备份。删除主库只会丢失上次备份之后的写入。

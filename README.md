@@ -113,6 +113,9 @@ GitHub limits release assets to 2 GiB and the engine is about 3 GB. The app down
 **Where is my data?**
 In `%LocalAppData%/Partner/workspace` by default: the session log, queue, memory database and settings. The session and queue can be rebuilt from their `.jsonl` files. `memory.db` is copied into `memory/backups/` at least once a day — on startup when the newest copy is stale, and before the daily maintenance pass — keeping the newest 7; deleting the original loses only what was written since the last copy.
 
+**Where are the logs?**
+The shell writes the API's stdout/stderr and its own diagnostics to `%LocalAppData%/Partner/partner-api.log`; it rotates at 10 MB and keeps one previous file.
+
 **Does anything leave my machine?**
 Conversations go to the model endpoint you configured. Web search is on by default and sends search queries to third-party search engines; turn it off under Settings → Web search. The app also contacts GitHub to check for updates and download voice engines. The local API listens only on `127.0.0.1`, and every request needs the token generated at startup.
 
