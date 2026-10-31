@@ -22,7 +22,7 @@ There are two fixed scenes, at most one sub-agent each:
 
 - The main agent gets three tools: `agent_delegate` (returns immediately), `agent_job_status`, `agent_job_cancel`.
 - Jobs run in the background without holding the main conversation. The report enters the same queue, and the main agent starts a new turn to relay it.
-- Each job has its own session log. Screenshots and file contents stay out of the main session and out of memory.
+- Each job has its own session log (`agents/<agent>/job-*/session/`); each agent keeps only the newest 30 jobs. Screenshots and file contents stay out of the main session and out of memory.
 - A sub-agent runs one job at a time. A target that just failed cannot be delegated again unchanged for 10 minutes.
 - After a crash, unfinished jobs get an "interrupted" report on the next start.
 

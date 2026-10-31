@@ -6,7 +6,7 @@ namespace Partner.Desktop.Interop;
 /// The Win32 surface used for window enumeration, foreground control, input injection and GDI capture.
 /// <para>
 /// Capture uses GDI (<c>PrintWindow</c> with a screen-DC <c>BitBlt</c> fallback) rather than
-/// <c>Windows.Graphics.Capture</c>: the .NET 8 Windows SDK projection exposes no
+/// <c>Windows.Graphics.Capture</c>: the Windows SDK projection exposes no
 /// <c>GraphicsCaptureItem.CreateFromWindowId</c> / <c>Win32Interop</c>, so WGC would require hand-written
 /// COM interop plus a D3D11 device.
 /// </para>

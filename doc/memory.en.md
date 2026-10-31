@@ -44,4 +44,4 @@ Deleting or withdrawing a conversation also deletes the memories distilled from 
 
 ## Storage
 
-`<workspace>/memory/memory.db`. It is the only copy; deleting it loses it.
+`<workspace>/memory/memory.db` is the primary database; `memory/backups/` holds the newest 7 daily copies. Deleting the primary loses only what was written since the last copy.

@@ -10,7 +10,7 @@ The application code is MIT licensed, see [LICENSE](LICENSE). That licence does 
 |---|---|---|
 | Tauri 2（`src-tauri/`） | MIT OR Apache-2.0 | 桌面壳、插件 |
 | Vue 3、Vite、vue-tsc、Vitest（`ui/`） | MIT | 前端 |
-| .NET 8 / ASP.NET Core（`src/`） | MIT | sidecar 运行时随安装包 |
+| .NET 10 / ASP.NET Core（`src/`） | MIT | sidecar 运行时随安装包 |
 | Microsoft.Data.Sqlite | MIT | SQLite 绑定；SQLite 本身为 Public Domain |
 | AngleSharp | MIT | HTML 解析 |
 | NAudio | MIT | 音频设备 |
