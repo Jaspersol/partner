@@ -29,6 +29,9 @@ concurrency:
 jobs:
   app:
     runs-on: windows-latest
+    # The whole job took ~14 minutes on a warm cache, nearly half of it the installer build. 60 leaves room for
+    # a cold cargo cache without letting a hung step (the smoke run waits on child processes) hold the runner.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
