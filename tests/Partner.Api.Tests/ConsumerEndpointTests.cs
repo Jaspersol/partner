@@ -148,25 +148,44 @@ public sealed class ConsumerEndpointTests : ApiFixture
     [Fact]
     public async Task Cancelling_a_queued_item_keeps_it_out_of_the_turn()
     {
-        // The consumer is busy with the first item, so the second can be cancelled while it waits.
-        await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "first" });
-        var second = await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "second" });
-        var secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+        // Keep the first turn busy so the second item stays queued for cancellation.
+        var llm = new GatedStreamingLlm("第一", "条回复");
+        try
+        {
+            await _consumer.ReconfigureAsync(config: null, reason: "cancel test", injected: llm);
 
-        using var cancel = await _http.PostAsync($"/api/queue/{secondId}/cancel", content: null);
-        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+            await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "first" });
+            await WaitForSessionAsync(session => session.GetProperty("busy").GetBoolean());
 
-        Assert.True(
-            await Eventually.IsTrueAsync(async () => await HasLeftTheQueueAsync(secondId!)),
-            "the cancelled item was not settled as canceled");
+            var second = await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "second" });
+            var secondId = (await second.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
 
-        var session = await _http.GetFromJsonAsync<JsonElement>("/api/session");
-        var userBodies = session.GetProperty("items").EnumerateArray()
-            .Where(item => item.GetProperty("kind").GetString() == "User")
-            .Select(item => item.GetProperty("body").GetString())
-            .ToList();
+            using var cancel = await _http.PostAsync($"/api/queue/{secondId}/cancel", content: null);
+            Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
 
-        Assert.DoesNotContain("second", userBodies);
+            Assert.True(
+                await Eventually.IsTrueAsync(async () => await HasLeftTheQueueAsync(secondId!)),
+                "the cancelled item was not settled as canceled");
+
+            llm.Release.SetResult();
+            var session = await WaitForSessionAsync(candidate =>
+                !candidate.GetProperty("busy").GetBoolean()
+                && candidate.GetProperty("items").EnumerateArray()
+                    .Any(item => item.GetProperty("kind").GetString() == "Assistant"));
+
+            var userBodies = session.GetProperty("items").EnumerateArray()
+                .Where(item => item.GetProperty("kind").GetString() == "User")
+                .Select(item => item.GetProperty("body").GetString())
+                .ToList();
+
+            Assert.Contains("first", userBodies);
+            Assert.DoesNotContain("second", userBodies);
+        }
+        finally
+        {
+            // Do not leave the consumer parked if an assertion throws.
+            llm.Release.TrySetResult();
+        }
     }
 
     /// <summary>True once the queue no longer holds the item, which is how a settled item is reported.</summary>

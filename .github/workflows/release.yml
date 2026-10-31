@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -73,11 +73,16 @@ jobs:
         run: dotnet build Partner.sln -c Release --nologo
 
       - name: Unit tests
-        continue-on-error: true
         run: dotnet test --nologo -c Release --no-build
 
+      - name: Frontend unit and contract tests
+        run: npm --prefix ui run test
+
+      - name: Smoke and capability baseline
+        run: dotnet run --project src/Partner.Smoke -c Release --no-build -- --verify-baseline capabilities/manifest.baseline.json
+
       - name: Publish the API sidecar
-        run: dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true -o src/Partner.Api/bin/Release/net8.0/win-x64/publish -v q --nologo
+        run: dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true -o src/Partner.Api/bin/Release/net10.0/win-x64/publish -v q --nologo
 
       - name: Build the installer
         run: npm --prefix ui exec tauri build

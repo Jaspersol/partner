@@ -88,6 +88,12 @@ public sealed class SerializedMemoryStore(IMemoryStore inner) : IMemoryStore
     public Task<int> CompactAsync(CancellationToken ct = default) =>
         RunAsync(() => inner.CompactAsync(ct), ct);
 
+    public Task<string> BackupAsync(int keep = 7, CancellationToken ct = default) =>
+        RunAsync(() => inner.BackupAsync(keep, ct), ct);
+
+    public Task<string?> EnsureBackupAsync(TimeSpan maxAge, int keep = 7, CancellationToken ct = default) =>
+        RunAsync(() => inner.EnsureBackupAsync(maxAge, keep, ct), ct);
+
     public Task<int> RebuildIndexAsync(CancellationToken ct = default) =>
         RunAsync(() => inner.RebuildIndexAsync(ct), ct);
 

@@ -38,11 +38,27 @@ public abstract class ApiFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _workspace = Path.Combine(Path.GetTempPath(), WorkspaceName, Guid.NewGuid().ToString("N"));
-        _port = FreePort();
         _token = TokenAuth.Generate();
 
-        var (app, context, consumer, voice, localEngines, _) = await ApiHost.BuildAsync(
-            _workspace, _port, _token, clock: null, llm: Llm, components: Components);
+        // Hold the port until Kestrel is about to bind, so another fixture cannot take it.
+        var reservation = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        reservation.Start();
+        _port = ((System.Net.IPEndPoint)reservation.LocalEndpoint).Port;
+
+        WebApplication app;
+        ApiContext context;
+        ConsumerHost consumer;
+        VoiceHost voice;
+        LocalEngineHost localEngines;
+        try
+        {
+            (app, context, consumer, voice, localEngines, _) = await ApiHost.BuildAsync(
+                _workspace, _port, _token, clock: null, llm: Llm, components: Components);
+        }
+        finally
+        {
+            reservation.Stop();
+        }
 
         _app = app;
         _context = context;

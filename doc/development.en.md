@@ -8,7 +8,7 @@ Back to the [documentation index](./README.en.md).
 
 | Layer | Technology | Responsibility |
 |---|---|---|
-| Runtime | C# / .NET 8 | Session, queue, turns, memory, governance, MCP, desktop, voice |
+| Runtime | C# / .NET 10 | Session, queue, turns, memory, governance, MCP, desktop, voice |
 | Frontend | Vue 3 + Vite + TS | The UI; can be debugged alone in a browser |
 | Desktop shell | Tauri 2 (Rust) | Opens the window, starts the API, injects the token |
 

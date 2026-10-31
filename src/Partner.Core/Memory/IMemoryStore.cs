@@ -102,6 +102,12 @@ public interface IMemoryStore : IAsyncDisposable
     /// <summary>Physically removes soft-deleted rows (the last step of a privacy delete).</summary>
     Task<int> CompactAsync(CancellationToken ct = default);
 
+    /// <summary>Copies the store into `backups/` with VACUUM INTO and keeps the newest <paramref name="keep"/> copies.</summary>
+    Task<string> BackupAsync(int keep = 7, CancellationToken ct = default);
+
+    /// <summary>Backs up only when the newest copy is missing or older than <paramref name="maxAge"/>; null when fresh.</summary>
+    Task<string?> EnsureBackupAsync(TimeSpan maxAge, int keep = 7, CancellationToken ct = default);
+
     /// <summary>
     /// Rebuilds the full-text index from the content table. The index is a projection, so it must be
     /// reconstructible — and rebuilding must not change what a query returns.

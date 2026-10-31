@@ -120,15 +120,12 @@ public sealed class ParentWatchdogTests
             throw new InvalidOperationException("could not locate the solution root from " + AppContext.BaseDirectory);
         }
 
-        var debugRoot = Path.Combine(directory.FullName, "src", "Partner.Api", "bin", "Debug");
-
-        if (!Directory.Exists(debugRoot))
-        {
-            throw new InvalidOperationException($"missing {debugRoot} — build the solution first");
-        }
-
-        var candidates = Directory
-            .EnumerateDirectories(debugRoot)
+        // Both configurations: `scripts/ci.sh` builds Debug, while the release workflow builds only Release.
+        var binRoot = Path.Combine(directory.FullName, "src", "Partner.Api", "bin");
+        var candidates = new[] { "Debug", "Release" }
+            .Select(configuration => Path.Combine(binRoot, configuration))
+            .Where(Directory.Exists)
+            .SelectMany(root => Directory.EnumerateDirectories(root))
             .Select(folder => Path.Combine(folder, "partner-api.exe"))
             .Where(File.Exists)
             .OrderByDescending(File.GetLastWriteTimeUtc)
@@ -136,7 +133,7 @@ public sealed class ParentWatchdogTests
 
         return candidates.Count > 0
             ? candidates[0]
-            : throw new InvalidOperationException($"no partner-api.exe under {debugRoot} — build the solution first");
+            : throw new InvalidOperationException($"no partner-api.exe under {binRoot} — build the solution first");
     }
 
     /// <summary>Kills the child if a test leaves it running, and removes its workspace.</summary>

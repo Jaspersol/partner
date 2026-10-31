@@ -9,7 +9,7 @@ Back to the [documentation index](./README.en.md).
 | Item | Requirement |
 |---|---|
 | OS | Windows 10 2004 or later |
-| .NET | .NET 8 SDK |
+| .NET | .NET 10 SDK |
 | Node | Node 22 + npm. Not pnpm: it blocks dependency build scripts by default, so esbuild fails to install |
 | Rust | cargo 1.98+, only for the desktop shell |
 | WebView2 | Included with Win10+ |
@@ -57,12 +57,13 @@ The default workspace is `%LocalAppData%/Partner/workspace`:
   session/events.jsonl    session log
   queue/items.jsonl       input queue
   memory/memory.db        memory database (SQLite)
+  memory/backups/         database copies (before each daily pass, newest 7 kept)
   scheduler/              scheduled tasks
   skills/                 skills
   media/                  attachments
 ```
 
-The session and queue can be rebuilt from their logs. The memory database is the only copy; delete it and it is gone.
+The session and queue can be rebuilt from their logs. The memory database is copied into `memory/backups/` at least once a day (startup catch-up plus the daily pass), newest 7 kept; anything written after the last copy is not in a backup.
 
 ## 6. Build the installer
 

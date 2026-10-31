@@ -111,7 +111,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 可选：openai / anthropic
 GitHub 单个 release 附件上限 2 GiB，朗读引擎约 3 GB。应用按顺序下载到同一目录并校验 SHA-256，断线后续传。
 
 **数据存在哪里？**
-默认在 `%LocalAppData%/Partner/workspace`，包括会话日志、队列、记忆库和设置。会话和队列可以从对应的 `.jsonl` 重建；`memory.db` 没有备份，删除后记忆无法恢复。
+默认在 `%LocalAppData%/Partner/workspace`，包括会话日志、队列、记忆库和设置。会话和队列可以从对应的 `.jsonl` 重建；`memory.db` 至少每天复制一次到 `memory/backups/`（启动时最新备份过期就补一份，每日维护前也会检查），保留最近 7 份；删除原库只丢失上次备份之后的记忆。
 
 **会把我的数据传到别处吗？**
 对话内容发给你配置的模型端点。“联网搜索”默认开启，搜索时查询语句会发给第三方搜索引擎，可以在“设置 → 联网搜索”关闭。应用还会访问 GitHub 检查更新和下载语音引擎。本地 API 只监听 `127.0.0.1`，请求必须带启动时生成的令牌。
@@ -123,7 +123,7 @@ GitHub 单个 release 附件上限 2 GiB，朗读引擎约 3 GB。应用按顺�
 
 ## 从源码构建
 
-需要 .NET 8 SDK、Node 22 + npm（不要用 pnpm，esbuild 会装不上）、Rust（cargo 1.98+）。
+需要 .NET 10 SDK、Node 22 + npm（不要用 pnpm，esbuild 会装不上）、Rust（cargo 1.98+）。
 
 ```bash
 npm --prefix ui install          # 首次
@@ -147,7 +147,7 @@ bash scripts/ci.sh               # 全量检查；SKIP_SHELL=1 跳过壳编译
 | `engines/` | 本地语音引擎的服务脚本，运行时和模型不进 git |
 | `scripts/` | CI、打包、引擎安装脚本 |
 
-**技术栈**：C# / .NET 8 · Vue 3 · TypeScript · Tauri 2 · SQLite
+**技术栈**：C# / .NET 10 · Vue 3 · TypeScript · Tauri 2 · SQLite
 
 ## 参与贡献
 

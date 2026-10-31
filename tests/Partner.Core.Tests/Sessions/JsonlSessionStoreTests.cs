@@ -142,6 +142,77 @@ public sealed class JsonlSessionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Incremental_projection_matches_a_full_rebuild_through_random_mutations()
+    {
+        // A cached view must match a full replay after every mutation.
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        var random = new Random(20261030);
+        var kinds = new[]
+        {
+            SessionEventKind.User, SessionEventKind.Assistant, SessionEventKind.Thinking,
+            SessionEventKind.ToolCall, SessionEventKind.ToolResult,
+        };
+
+        for (var step = 0; step < 120; step++)
+        {
+            var lastSeq = store.LastSeq;
+            var operation = random.Next(100);
+
+            if (operation < 50 || lastSeq == 0)
+            {
+                await store.AppendAsync(Ev(
+                    kinds[random.Next(kinds.Length)],
+                    $"body {step} {new string('x', random.Next(0, 40))}"));
+            }
+            else if (operation < 65)
+            {
+                var target = random.NextInt64(1, lastSeq + 1);
+                await store.AppendAsync(Ev(SessionEventKind.Edit, $"edited {step}") with
+                {
+                    EditedFromSeq = target,
+                });
+            }
+            else if (operation < 80)
+            {
+                var from = random.NextInt64(1, lastSeq + 1);
+                var to = Math.Min(lastSeq, from + random.Next(0, 3));
+                await store.AppendAsync(Ev(SessionEventKind.Retract, $"retracted {step}") with
+                {
+                    Meta = SessionRetraction.Between(from, to),
+                });
+            }
+            else
+            {
+                var from = random.NextInt64(1, lastSeq + 1);
+                var to = Math.Min(lastSeq, from + random.Next(0, 3));
+                await store.PurgeAsync(from, to);
+            }
+
+            var actual = await store.ProjectAsync();
+            var full = SessionProjection.Build(await ReadAllAsync(store));
+
+            Assert.Equal(full.LastSeq, actual.LastSeq);
+            Assert.Equal(full.Items.Count, actual.Items.Count);
+            for (var i = 0; i < full.Items.Count; i++)
+            {
+                Assert.Equal(full.Items[i], actual.Items[i]);
+            }
+        }
+    }
+
+    private static async Task<List<SessionEvent>> ReadAllAsync(ISessionStore store)
+    {
+        var events = new List<SessionEvent>();
+        await foreach (var e in store.ReadAllAsync())
+        {
+            events.Add(e);
+        }
+
+        return events;
+    }
+
+    [Fact]
     public async Task Projection_is_rebuilt_after_a_purge_rewrites_the_log()
     {
         // A purge rewrites the file rather than appending, so an append-only invalidation would miss it and
@@ -432,8 +503,11 @@ public sealed class JsonlSessionStoreTests : IDisposable
             }
 
             Assert.Empty(before);
+            Assert.Empty((await store.ProjectAsync()).Items);
 
             await store.FlushAsync();
+
+            Assert.Single((await store.ProjectAsync()).Items);
 
             var after = new List<SessionEvent>();
             await foreach (var e in store.ReadAllAsync())

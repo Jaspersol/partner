@@ -127,6 +127,11 @@ public sealed class MemoryMaintenanceTests : ApiFixture
         Assert.Equal(0, run.Compacted);
         Assert.Equal(MemoryTier.Episodic, (await _context.Memory.GetAsync("idle-1"))!.Tier);
 
+        // The pass removes rows for real, so it must have written its safety copy first.
+        var backups = Path.Combine(_workspace, "memory", "backups");
+        Assert.True(Directory.Exists(backups), "the maintenance pass should create a backup folder");
+        Assert.Single(Directory.GetFiles(backups, "memory-*.db"));
+
         maintenance.Stop();
         await maintenance.DisposeAsync();
     }

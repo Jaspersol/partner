@@ -4,7 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Memory layer (M5): SQLite + FTS5. -->
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
 
     <!-- Web layer: HTML parsing for the search-engine responses and the page reader. Pinned at 1.8.5 because the
          older versions carry NU1902 (GHSA-pgww-w46g-26qg), which TreatWarningsAsErrors turns into a build

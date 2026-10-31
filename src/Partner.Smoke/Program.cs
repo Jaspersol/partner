@@ -957,7 +957,7 @@ internal static class Program
         if (mcpDll is null)
         {
             Check("mcp: test-double server is built", false,
-                "tests/Partner.McpTestServer/bin/*/net8.0/Partner.McpTestServer.dll not found — run dotnet build first");
+                "tests/Partner.McpTestServer/bin/*/net10.0/Partner.McpTestServer.dll not found — run dotnet build first");
         }
         else
         {
@@ -1727,7 +1727,7 @@ internal static class Program
         if (gameDll is null)
         {
             Check("game: test server is built", false,
-                "tests/Partner.GameTestServer/bin/*/net8.0/partner-game-testserver.dll not found — run dotnet build first");
+                "tests/Partner.GameTestServer/bin/*/net10.0/partner-game-testserver.dll not found — run dotnet build first");
         }
         else
         {
@@ -4384,7 +4384,7 @@ internal static class Program
         var bin = Path.Combine(directory.FullName, "tests", "Partner.GameTestServer", "bin");
         return Directory.Exists(bin)
             ? Directory.GetFiles(bin, "partner-game-testserver.dll", SearchOption.AllDirectories)
-                .Where(m => m.Contains("net8.0", StringComparison.Ordinal))
+                .Where(m => m.Contains("net10.0", StringComparison.Ordinal))
                 .OrderByDescending(File.GetLastWriteTimeUtc)
                 .FirstOrDefault()
             : null;
@@ -4433,7 +4433,7 @@ internal static class Program
             return null;
         }
 
-        var pattern = Path.Combine("tests", "Partner.McpTestServer", "bin", "*", "net8.0", "Partner.McpTestServer.dll");
+        var pattern = Path.Combine("tests", "Partner.McpTestServer", "bin", "*", "net10.0", "Partner.McpTestServer.dll");
         var root = directory.FullName;
         var matches = Directory.Exists(Path.Combine(root, "tests"))
             ? Directory.GetFiles(Path.Combine(root, "tests", "Partner.McpTestServer", "bin"), "Partner.McpTestServer.dll",
@@ -4441,7 +4441,7 @@ internal static class Program
             : Array.Empty<string>();
 
         return matches
-            .Where(m => m.Contains("net8.0", StringComparison.Ordinal))
+            .Where(m => m.Contains("net10.0", StringComparison.Ordinal))
             .OrderByDescending(File.GetLastWriteTimeUtc)
             .FirstOrDefault();
     }
