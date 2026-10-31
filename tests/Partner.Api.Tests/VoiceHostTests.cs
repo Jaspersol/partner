@@ -97,6 +97,42 @@ public sealed class VoiceHostTests : ApiFixture
     }
 
     [Fact]
+    public async Task An_output_device_that_will_not_start_is_reported_without_failing_the_settings_call()
+    {
+        // Opening succeeds and starting fails, which is the CI runner's shape: a machine with no playback
+        // endpoint. This is the path that used to escape PUT /api/settings as a 500.
+        _components.FailToStartSink = true;
+
+        await PutAsync(EnabledVoice());
+
+        var state = await StateAsync();
+
+        Assert.True(state.GetProperty("input").GetProperty("running").GetBoolean());
+
+        var output = state.GetProperty("output");
+        Assert.False(output.GetProperty("running").GetBoolean());
+        Assert.Contains("启动输出设备失败", output.GetProperty("reason").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task An_input_device_that_will_not_start_is_reported_without_failing_the_settings_call()
+    {
+        // Same shape on the capture side: no microphone on the runner. PUT must answer, not throw.
+        _components.FailToStartSource = true;
+
+        await PutAsync(EnabledVoice());
+
+        var state = await StateAsync();
+
+        var input = state.GetProperty("input");
+        Assert.False(input.GetProperty("running").GetBoolean());
+        Assert.Contains("启动输入设备失败", input.GetProperty("reason").GetString()!, StringComparison.Ordinal);
+
+        // A microphone that will not start does not take the speaker down with it.
+        Assert.True(state.GetProperty("output").GetProperty("running").GetBoolean());
+    }
+
+    [Fact]
     public async Task An_utterance_becomes_a_queue_item_with_the_boot_scoped_key()
     {
         _components.AsrTranscript = "打开书房的灯";
@@ -360,13 +396,19 @@ internal sealed class SyntheticVoice : IVoiceComponents
 
     public bool FailToOpenSink { get; set; }
 
+    /// <summary>Opening the sink succeeds but starting it throws — a machine with no playback endpoint.</summary>
+    public bool FailToStartSink { get; set; }
+
+    /// <summary>Opening the source succeeds but starting it throws — a machine with no capture endpoint.</summary>
+    public bool FailToStartSource { get; set; }
+
     public int SourcesOpened { get; private set; }
 
     public IAudioSource OpenSource(VoiceInputSetting setting)
     {
         SourcesOpened++;
         // The capture rate is fixed by the ASR contract, not by a setting.
-        LastSource = new SyntheticAudioSource(16_000, "synthetic-mic");
+        LastSource = new SyntheticAudioSource(16_000, "synthetic-mic") { RefuseToStart = FailToStartSource };
         return LastSource;
     }
 
@@ -377,7 +419,10 @@ internal sealed class SyntheticVoice : IVoiceComponents
             throw new InvalidOperationException("no output device");
         }
 
-        LastSink = new SyntheticAudioSink(setting.SampleRate, "synthetic-speaker");
+        LastSink = new SyntheticAudioSink(setting.SampleRate, "synthetic-speaker")
+        {
+            RefuseToStart = FailToStartSink,
+        };
         return LastSink;
     }
 

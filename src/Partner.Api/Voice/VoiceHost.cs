@@ -376,11 +376,11 @@ public sealed class VoiceHost : IAsyncDisposable
         }
         catch (Exception error)
         {
+            // The half owns the source and the client, so disposing it releases both; disposing them here as
+            // well would be a second release of the same device.
             _input.Dispose();
             _input = null;
-            _source.Dispose();
             _source = null;
-            _asr.Dispose();
             _asr = null;
             _inputState = new VoiceInputState(false, $"启动输入设备失败：{error.Message}", null, 0);
             return;
@@ -934,6 +934,9 @@ public sealed class VoiceHost : IAsyncDisposable
             }
         }
 
+        // The halves dispose the devices and clients they were given. The individual disposals below are the
+        // safety net for a half that was never built: StartInput/StartOutput can fail after opening a device but
+        // before constructing the half, and that device still has to be released.
         _input?.Dispose();
         _output?.Dispose();
         _source?.Dispose();
