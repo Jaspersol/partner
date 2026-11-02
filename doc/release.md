@@ -15,13 +15,13 @@
 | `Partner_<版本>_x64-setup.exe` | `.github/workflows/release.yml` 的 `app` job | 应用 release（tag `vX.Y.Z`） |
 | `SHA256SUMS.txt`、`THIRD-PARTY-NOTICES.md` | 同上 | 同上 |
 
-安装包里**不含**引擎：装完在「设置 → 本地引擎」点下载，地址与 SHA-256 来自 `src/Partner.Api/Voice/EnginePackage.cs` 里已提交的常量，指向 `engines-v1` release。
+安装包里**不含**引擎：装完在「设置 → 本地引擎」点下载，地址与 SHA-256 来自 `src/Partner.Api/Voice/EnginePackage.cs` 里已提交的常量，指向 `engines-v1` release。安装包只为 `engines/tts/`、`engines/kws-asr/` 建好目录，并放进去两个服务脚本；`tauri.conf.json` 里 `bundle.resources` 的 map 形式把**值当作完整目标路径**（不是目录），所以值必须写成 `engines/tts/tts-server.py`——写成 `engines/tts/` 会把脚本落成名为 `tts` 的文件，占掉引擎目录的位置。
 
 ## 应用内更新
 
 「设置 → 通用」显示的版本号来自 `ui/package.json`（workflow 已按 tag 写入），「检查更新」走 GitHub 的 release 网页而不是 API：`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本号从这里取），资产从 `releases/latest/download/<文件名>` 取（仓库常量在 `src/Partner.Api/Updates/UpdateService.cs`）。这条路不消耗 `api.github.com` 的每小时 60 次配额，所以共享出口 IP 被别的程序用满时也不会 403。所以每个应用 release 必须保留两个资产：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校验文件时应用不会提供这次更新，安装包的文件名也由这份校验文件里的那一行决定。
 
-下载完成后先核对 SHA-256，再启动安装程序并退出应用。更新走的是普通 NSIS 安装程序，不会绕过它静默替换文件。fork 需要把 `UpdateService.Repository` 改成自己的仓库。
+下载完成后先核对 SHA-256，再启动安装程序并退出应用。安装程序以 `/UPDATE /P` 运行：**不卸载旧版本**，直接在原安装目录上覆盖 `api/`、壳程序和两个引擎脚本，免去 Tauri 维护页里默认的「先卸载再安装」；`engines/` 下已下载的运行环境和模型不在安装包的清单里，所以更新不会动它们，也不需要再下一遍。fork 需要把 `UpdateService.Repository` 改成自己的仓库。
 
 ## 触发方式
 

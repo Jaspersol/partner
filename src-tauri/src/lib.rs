@@ -9,7 +9,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -164,6 +164,17 @@ fn set_tray_enabled(
     Ok(())
 }
 
+/// `/UPDATE` installs over the previous version instead of running its uninstaller, whose page defaults to
+/// uninstalling first; `/P` skips that page and the directory page, so the recorded install directory is reused.
+const UPDATE_ARGS: [&str; 2] = ["/UPDATE", "/P"];
+
+/// The installer command, kept separate so the switches are a value a test can read.
+fn installer_command(installer: &Path) -> Command {
+    let mut command = Command::new(installer);
+    command.args(UPDATE_ARGS);
+    command
+}
+
 /// Starts the verified installer and quits, because the installer replaces the files this process runs from.
 ///
 /// The path comes from the API's download state, but it is re-checked here: this is the step that executes a
@@ -178,9 +189,12 @@ fn install_update(app: AppHandle, path: String) -> Result<(), String> {
         return Err(format!("not an installer: {path}"));
     }
 
-    Command::new(&installer)
+    installer_command(&installer)
         .spawn()
         .map_err(|error| format!("could not start the installer: {error}"))?;
+
+    // The installer overwrites api/*, and Windows will not replace a running image.
+    stop_sidecar(&app);
 
     // The installer replaces this executable, so the shell has to go. Let the installer start first: its own
     // check for a running instance then sees a process already on its way out instead of prompting the person
@@ -191,6 +205,21 @@ fn install_update(app: AppHandle, path: String) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// Stops the sidecar and keeps the supervisor from restarting it. Shared by the update hand-off and the exit hook.
+fn stop_sidecar(app: &AppHandle) {
+    let Some(state) = app.try_state::<Sidecar>() else {
+        return;
+    };
+    // Mark the stop before killing the child so the supervisor does not restart it.
+    state.stopping.store(true, Ordering::SeqCst);
+    if let Ok(mut guard) = state.child.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    };
 }
 
 pub fn run() {
@@ -255,16 +284,7 @@ pub fn run() {
         .expect("failed to build the shell")
         .run(|app, event| {
             if let RunEvent::Exit = event {
-                if let Some(state) = app.try_state::<Sidecar>() {
-                    // Mark the stop before killing the child so the supervisor does not restart it.
-                    state.stopping.store(true, Ordering::SeqCst);
-                    if let Ok(mut guard) = state.child.lock() {
-                        if let Some(mut child) = guard.take() {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                        }
-                    }
-                }
+                stop_sidecar(app);
             }
         });
 }
@@ -516,6 +536,18 @@ fn workspace_dir() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An update installs over the previous version; it never runs the installer's uninstall step.
+    #[test]
+    fn an_update_runs_the_installer_in_update_mode() {
+        let command = installer_command(Path::new("C:/installs/partner-setup.exe"));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, ["/UPDATE", "/P"]);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("partner-{}-{}", name, std::process::id()));
