@@ -25,13 +25,14 @@
     ],
     "resources": {
       "../src/Partner.Api/bin/Release/net10.0/win-x64/publish": "api/",
-      "../engines/tts/tts-server.py": "engines/tts/",
-      "../engines/kws-asr/asr-server.py": "engines/kws-asr/",
+      "../engines/tts/tts-server.py": "engines/tts/tts-server.py",
+      "../engines/kws-asr/asr-server.py": "engines/kws-asr/asr-server.py",
       "../THIRD-PARTY-NOTICES.md": "notices/THIRD-PARTY-NOTICES.md"
     },
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "./nsis/hooks.nsh"
       }
     }
   }

@@ -112,6 +112,25 @@ public sealed class EnginePackageTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(AppDir, "engines", ".download")), "the staging folder should be cleaned up");
     }
 
+    /// <summary>0.1.2 left the bundled scripts as `<root>/tts` / `<root>/kws-asr` files; a download repairs that.</summary>
+    [Fact]
+    public async Task A_stray_script_file_left_by_an_older_installer_does_not_block_the_extraction()
+    {
+        var engines = Path.Combine(AppDir, "engines");
+        Directory.CreateDirectory(engines);
+        File.WriteAllText(Path.Combine(engines, "tts"), "the bundled script");
+
+        var archive = Zip(TtsFiles);
+        var package = Package(archive, Sha(archive));
+
+        Assert.True(package.TryStartDownload(out var error), error);
+        var state = await WaitForAsync(package);
+
+        Assert.Equal("done", state.Phase);
+        Assert.True(Directory.Exists(Path.Combine(engines, "tts")), "the stray file should be replaced by the engine folder");
+        Assert.True(package.Status().Tts.Installed, string.Join(",", package.Status().Tts.Missing));
+    }
+
     [Fact]
     public async Task A_checksum_mismatch_fails_the_download_and_unpacks_nothing()
     {

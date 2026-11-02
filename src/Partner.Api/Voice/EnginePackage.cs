@@ -293,6 +293,12 @@ public sealed class EnginePackage
         try
         {
             Directory.CreateDirectory(root);
+
+            // 0.1.2 installers wrote the server scripts as `<root>/tts` and `<root>/kws-asr` files; extraction
+            // needs folders there. A folder is a downloaded engine and is never touched.
+            RemoveStrayEngineFile(root, "tts");
+            RemoveStrayEngineFile(root, "kws-asr");
+
             var staging = Path.Combine(root, ".download");
             Directory.CreateDirectory(staging);
 
@@ -461,6 +467,16 @@ public sealed class EnginePackage
     {
         await using var stream = File.OpenRead(path);
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false));
+    }
+
+    /// <summary>Removes a file sitting where an engine folder belongs; a folder is a downloaded engine.</summary>
+    private static void RemoveStrayEngineFile(string root, string folder)
+    {
+        var path = Path.Combine(root, folder);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 
     /// <summary>Unzips into <paramref name="root"/>, refusing any entry that would land outside it.</summary>
