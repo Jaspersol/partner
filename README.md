@@ -64,11 +64,11 @@ macOS and Linux are not supported. Desktop control and audio call the Win32 API 
 
 1. Download `Partner_<version>_x64-setup.exe` from the [Releases](https://github.com/Jaspersol/partner/releases/latest) page.
 2. Run it. It installs for the current user and needs no admin rights.
-3. The installer is not code-signed. If SmartScreen blocks it, click "More info → Run anyway". `SHA256SUMS.txt` in the same release lets you verify the file.
+3. The installer is not code-signed. If SmartScreen blocks it, click "More info → Run anyway". `SHA256SUMS.txt` and `<installer>.exe.sha256` in the same release let you verify the file.
 
 ### Updating
 
-Settings → General → "Check for updates". The app downloads the new installer, verifies its SHA-256, starts it, and exits.
+Settings → General → "Check for updates". The check uses the GitHub REST API first and falls back to direct release-download links when the API is rate-limited, unreachable, or the release has no API checksum. The app downloads the installer from whichever path answers, verifies its SHA-256, starts it, and exits.
 
 ## Quick Start
 

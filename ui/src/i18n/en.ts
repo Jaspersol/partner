@@ -78,6 +78,8 @@ const en: Record<string, string> = {
   'settings.general.updateVerifying': 'Verifying the update…',
   'settings.general.updateStarting': 'The installer has started; the app will close now.',
   'settings.general.downloadAndInstall': 'Download and install',
+  'settings.general.updateSourceApi': 'Checked via the GitHub API.',
+  'settings.general.updateSourceDirect': 'Checked via the direct download fallback.',
   'settings.general.updateDesktopOnly': 'Updates are available in the desktop app only.',
   'settings.appearance.theme': 'Theme',
   'settings.appearance.themeHint': 'The theme button in the top bar switches it too.',

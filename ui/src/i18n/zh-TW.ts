@@ -74,6 +74,8 @@ const zhTW: Record<string, string> = {
   'settings.general.updateVerifying': '正在驗證更新套件…',
   'settings.general.updateStarting': '安裝程式已啟動，應用程式即將結束…',
   'settings.general.downloadAndInstall': '下載並安裝',
+  'settings.general.updateSourceApi': '本次透過 GitHub API 檢查更新。',
+  'settings.general.updateSourceDirect': '已切換到直鏈下載備援路徑。',
   'settings.general.updateDesktopOnly': '更新僅在桌面版中提供。',
   'settings.appearance.theme': '主題',
   'settings.appearance.themeHint': '頂列的主題按鈕也可以切換。',

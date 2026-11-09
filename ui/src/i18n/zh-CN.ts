@@ -71,6 +71,8 @@ const zhCN = {
   'settings.general.updateVerifying': '正在校验更新包…',
   'settings.general.updateStarting': '安装程序已启动，应用即将退出…',
   'settings.general.downloadAndInstall': '下载并安装',
+  'settings.general.updateSourceApi': '本次通过 GitHub API 检查更新。',
+  'settings.general.updateSourceDirect': '已切换到直链下载兜底路径。',
   'settings.general.updateDesktopOnly': '更新仅在桌面版中可用。',
   'settings.appearance.theme': '主题',
   'settings.appearance.themeHint': '顶栏的主题按钮也可以切换。',

@@ -4,7 +4,8 @@ namespace Partner.Api.Endpoints;
 
 /// <summary>
 /// The update check and its download. The check is a GET because it changes nothing; the download is a POST
-/// that starts work and is then polled, the same shape as the engine-module download.
+/// that starts work and is then polled, the same shape as the engine-module download. Both keep their
+/// API-primary / direct-link-fallback choice in the service: the endpoints never see a download URL.
 /// </summary>
 public static class UpdateEndpoints
 {
