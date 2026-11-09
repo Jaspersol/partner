@@ -107,9 +107,19 @@ jobs:
           $tag = if ($fromTag) { '${{ github.ref_name }}' } else { '${{ inputs.tag }}' }
           if (-not $tag) { throw 'no tag to publish' }
 
-          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object { $_.FullName })
-          if ($files.Count -eq 0) { throw 'the installer was not built' }
-          $files += 'THIRD-PARTY-NOTICES.md'
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object { $_.FullName })
+          if ($installers.Count -eq 0) { throw 'the installer was not built' }
+          $files = $installers + @('THIRD-PARTY-NOTICES.md')
+
+          # The updater has two paths and refuses an installer it cannot verify: the GitHub REST API path reads
+          # <installer>.exe.sha256, the direct-link fallback reads the SHA256SUMS.txt manifest. Publish both.
+          $perInstaller = foreach ($installer in $installers) {
+            $name = Split-Path $installer -Leaf
+            $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+            # ASCII, no BOM: the updater picks the 64-hex token out of this file.
+            [System.IO.File]::WriteAllText("$installer.sha256", ("$hash *$name`n"), [System.Text.UTF8Encoding]::new($false))
+            "$installer.sha256"
+          }
 
           $lines = foreach ($file in $files) {
             $name = Split-Path $file -Leaf
@@ -117,9 +127,12 @@ jobs:
             "$hash  $name"
           }
           # LF, not the CRLF `Set-Content` writes: `sha256sum -c SHA256SUMS.txt` reads the \r as part of the
-          # file name and reports every line as missing.
-          [System.IO.File]::WriteAllText('SHA256SUMS.txt', (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
-          $files += 'SHA256SUMS.txt'
+          # file name and reports every line as missing. An absolute path keeps [System.IO.File] (which uses the
+          # process working directory) and the relative paths `gh` resolves in the same place.
+          $sumsPath = Join-Path (Get-Location) 'SHA256SUMS.txt'
+          [System.IO.File]::WriteAllText($sumsPath, (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+          $files += $sumsPath
+          $files += $perInstaller
 
           # Release notes come from the repository, one file per tag, so a published release can be reviewed
           # and corrected like anything else instead of being typed into a workflow string. English is the

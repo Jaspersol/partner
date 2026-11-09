@@ -1174,6 +1174,11 @@ defineExpose({ refresh, hasUnsavedChanges })
                 </div>
               </template>
 
+              <p v-if="updateResult?.source" class="hint-line" data-test="settings-update-source">
+                {{ updateResult.source === 'api'
+                  ? t('settings.general.updateSourceApi')
+                  : t('settings.general.updateSourceDirect') }}
+              </p>
               <p v-if="!shellPrefs" class="hint-line" data-test="settings-update-desktop-only">
                 {{ t('settings.general.updateDesktopOnly') }}
               </p>

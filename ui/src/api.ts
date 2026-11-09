@@ -642,6 +642,8 @@ export interface UpdateCheck {
   installerName: string | null
   sizeBytes: number | null
   error: string | null
+  /** Which path answered: 'api' (GitHub REST API) or 'direct' (release-page fallback). */
+  source?: 'api' | 'direct' | null
 }
 
 /** One installer download. `path` is set only when `phase` is `ready`; the shell then runs that file. */

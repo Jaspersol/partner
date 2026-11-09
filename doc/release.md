@@ -12,14 +12,21 @@
 
 | 资产 | 谁产出 | 放在哪 |
 |---|---|---|
-| `Partner_<版本>_x64-setup.exe` | `.github/workflows/release.yml` 的 `app` job | 应用 release（tag `vX.Y.Z`） |
+| `Partner_<版本>_x64-setup.exe`、`<安装包名>.exe.sha256` | `.github/workflows/release.yml` 的 `app` job | 应用 release（tag `vX.Y.Z`） |
 | `SHA256SUMS.txt`、`THIRD-PARTY-NOTICES.md` | 同上 | 同上 |
 
 安装包里**不含**引擎：装完在「设置 → 本地引擎」点下载，地址与 SHA-256 来自 `src/Partner.Api/Voice/EnginePackage.cs` 里已提交的常量，指向 `engines-v1` release。安装包只为 `engines/tts/`、`engines/kws-asr/` 建好目录，并放进去两个服务脚本；`tauri.conf.json` 里 `bundle.resources` 的 map 形式把**值当作完整目标路径**（不是目录），所以值必须写成 `engines/tts/tts-server.py`——写成 `engines/tts/` 会把脚本落成名为 `tts` 的文件，占掉引擎目录的位置。
 
 ## 应用内更新
 
-「设置 → 通用」显示的版本号来自 `ui/package.json`（workflow 已按 tag 写入），「检查更新」走 GitHub 的 release 网页而不是 API：`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本号从这里取），资产从 `releases/latest/download/<文件名>` 取（仓库常量在 `src/Partner.Api/Updates/UpdateService.cs`）。这条路不消耗 `api.github.com` 的每小时 60 次配额，所以共享出口 IP 被别的程序用满时也不会 403。所以每个应用 release 必须保留两个资产：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校验文件时应用不会提供这次更新，安装包的文件名也由这份校验文件里的那一行决定。
+「设置 → 通用」显示的版本号来自 `ui/package.json`（workflow 已按 tag 写入）。检查更新有两条路径，仓库常量都在 `src/Partner.Api/Updates/UpdateService.cs`：
+
+- **API 主路径**：`api.github.com/repos/Jaspersol/partner/releases/latest` 的 release JSON 给出版本号、安装包名、大小、下载地址，以及 `<安装包名>.exe.sha256` 校验文件。
+- **直链兜底**：完全不碰 REST API。`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本号从这里取），`SHA256SUMS.txt` 给出安装包名和 SHA-256，资产从 `releases/latest/download/<文件名>` 或 `releases/download/<tag>/<文件名>` 取。`api.github.com` 每 IP 每小时只有 60 次配额：被共享出口 IP 用满（API 返回 403、429 或带 `Retry-After` 的 403）、网络不通、或 release 少了 `.exe.sha256` 时，检查自动切到这条路，并在结果里用 `source: direct` 标明；失败后短时间内不再重试 API。
+
+两条路都必须拿到校验值，缺 `.exe.sha256` 且缺 `SHA256SUMS.txt` 时不提供更新。下载按 `browser_download_url` → API 资产地址 → 带 tag 的直链 → `releases/latest/download/` 直链依次尝试，任一地址可用即可：候选地址与重定向目标都限制在 GitHub 域名，流式的下载有大小上限，完成后检查 MZ 头与 SHA-256，通过后才交给壳程序。
+
+所以每个应用 release 必须保留三个资产：`Partner_<版本>_x64-setup.exe`、`<安装包名>.exe.sha256`、以及列出它的 `SHA256SUMS.txt`。旧 release 只有后两者也仍能更新（走兜底路径），但两条路都拿不到校验值时不会提供更新。
 
 下载完成后先核对 SHA-256，再启动安装程序并退出应用。安装程序以 `/UPDATE /P` 运行：**不卸载旧版本**，直接在原安装目录上覆盖 `api/`、壳程序和两个引擎脚本，免去 Tauri 维护页里默认的「先卸载再安装」；`engines/` 下已下载的运行环境和模型不在安装包的清单里，所以更新不会动它们，也不需要再下一遍。fork 需要把 `UpdateService.Repository` 改成自己的仓库。
 

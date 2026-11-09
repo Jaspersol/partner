@@ -1864,6 +1864,7 @@ describe('settings view', () => {
           installerName: 'Partner_9.9.9_x64-setup.exe',
           sizeBytes: 20 * 1024 * 1024,
           error: null,
+          source: 'direct',
         })),
       })
       const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
@@ -1876,6 +1877,36 @@ describe('settings view', () => {
 
       expect(wrapper.find('[data-test="settings-update-available"]').text()).toContain('9.9.9')
       expect(wrapper.find('[data-test="settings-update-install"]').exists()).toBe(true)
+      // A check that had to fall back says so instead of silently succeeding.
+      expect(wrapper.find('[data-test="settings-update-source"]').text()).toContain('直链')
+    } finally {
+      delete globals.__TAURI_INTERNALS__
+    }
+  })
+
+  it('names the API as the source when the primary path answered', async () => {
+    const invoke = vi.fn(async () => true)
+    const globals = window as unknown as { __TAURI_INTERNALS__?: { invoke: typeof invoke } }
+    globals.__TAURI_INTERNALS__ = { invoke }
+
+    try {
+      const { stub } = createStub({
+        checkUpdate: vi.fn(async (current: string): Promise<UpdateCheck> => ({
+          current,
+          latest: '9.9.9',
+          available: true,
+          installerName: 'Partner_9.9.9_x64-setup.exe',
+          sizeBytes: 1024,
+          error: null,
+          source: 'api',
+        })),
+      })
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      await wrapper.find('[data-test="settings-check-update"]').trigger('click')
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="settings-update-source"]').text()).toContain('API')
     } finally {
       delete globals.__TAURI_INTERNALS__
     }

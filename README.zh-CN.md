@@ -64,11 +64,11 @@
 
 1. 从 [Releases](https://github.com/Jaspersol/partner/releases/latest) 下载 `Partner_<版本>_x64-setup.exe`。
 2. 运行安装程序，装到当前用户目录，不需要管理员权限。
-3. 安装包没有代码签名，SmartScreen 拦截时点“更多信息 → 仍要运行”。可以用同一 release 里的 `SHA256SUMS.txt` 校验文件。
+3. 安装包没有代码签名，SmartScreen 拦截时点“更多信息 → 仍要运行”。可以用同一 release 里的 `SHA256SUMS.txt` 或 `<安装包名>.exe.sha256` 校验文件。
 
 ### 更新
 
-“设置 → 通用 → 检查更新”。应用下载新安装包，核对 SHA-256 后启动安装程序并退出。
+“设置 → 通用 → 检查更新”。检查以 GitHub REST API 为主，遇到配额用尽、网络不通或 release 缺少 API 校验文件时自动切到直链下载兜底；应用从可用的路径下载新安装包，核对 SHA-256 后启动安装程序并退出。
 
 ## 快速开始
 

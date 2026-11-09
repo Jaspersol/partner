@@ -12,14 +12,21 @@ There is one kind of tag: push `v*` to publish the installer. The voice engines 
 
 | Asset | Produced by | Lives in |
 |---|---|---|
-| `Partner_<version>_x64-setup.exe` | the `app` job of `.github/workflows/release.yml` | the app release (tag `vX.Y.Z`) |
+| `Partner_<version>_x64-setup.exe`, `<installer>.exe.sha256` | the `app` job of `.github/workflows/release.yml` | the app release (tag `vX.Y.Z`) |
 | `SHA256SUMS.txt`, `THIRD-PARTY-NOTICES.md` | same | same |
 
 The installer does **not** contain the engines: after installing, click download under Settings → Local engines. The URLs and SHA-256 come from the constants committed in `src/Partner.Api/Voice/EnginePackage.cs`, which point at the `engines-v1` release. The installer only creates `engines/tts/` and `engines/kws-asr/` and puts the two server scripts inside them; the map form of `bundle.resources` in `tauri.conf.json` treats the **value as the full target path** (not a directory), so it has to read `engines/tts/tts-server.py`. Writing `engines/tts/` drops the script as a file named `tts`, taking the engine folder's place.
 
 ## In-app updates
 
-Settings → General shows the version from `ui/package.json` (the workflow writes it from the tag), and Check for updates walks GitHub's release pages rather than its API: `releases/latest` answers with a 302 to `releases/tag/<tag>` (where the version comes from), and assets come from `releases/latest/download/<file name>` (the repository constant lives in `src/Partner.Api/Updates/UpdateService.cs`). That path spends none of `api.github.com`'s 60-calls-an-hour quota, so a shared egress address someone else has exhausted no longer turns the check into a 403. Every app release therefore has to keep two assets: `Partner_<version>_x64-setup.exe` and the `SHA256SUMS.txt` that lists it. Without the checksum file the app refuses to offer that update, and the installer's file name is the one that file lists.
+Settings → General shows the version from `ui/package.json` (the workflow writes it from the tag). The check has two paths; both sets of constants live in `src/Partner.Api/Updates/UpdateService.cs`:
+
+- **API primary**: the release JSON at `api.github.com/repos/Jaspersol/partner/releases/latest` supplies the version, the installer's name, size and download URLs, and its `<installer>.exe.sha256` checksum.
+- **Direct-link fallback**: no REST API at all. `releases/latest` answers with a 302 to `releases/tag/<tag>` (where the version comes from), `SHA256SUMS.txt` names the installer and carries its SHA-256, and the asset comes from `releases/latest/download/<file name>` or `releases/download/<tag>/<file name>`. `api.github.com` allows only 60 calls an hour per address: when a shared egress address has spent the quota and the API answers 403, 429, or 403 with `Retry-After`, the network is down, or a release has no `.exe.sha256`, the check switches to this path automatically and reports `source: direct`. A failed API is not retried on every check during a short cooldown.
+
+Both paths must obtain a digest: with neither `.exe.sha256` nor `SHA256SUMS.txt` the update is not offered. The download tries `browser_download_url` → the API asset URL → the tag-pinned direct link → the `releases/latest/download/` direct link in order, and any one of them answering is enough. Candidate URLs and redirect targets are restricted to GitHub hosts, the streaming download has a size cap, and the file is checked for its `MZ` header and SHA-256 before the shell is handed a path.
+
+Every app release therefore has to keep three assets: `Partner_<version>_x64-setup.exe`, `<installer>.exe.sha256`, and the `SHA256SUMS.txt` that lists it. Older releases with only the latter two still update (through the fallback); when neither path can supply a checksum the app refuses the update.
 
 The download is checked against that SHA-256 before the installer is started and the app exits. The installer is run with `/UPDATE /P`: it does **not** uninstall the previous version and rewrites `api/`, the shell and the two bundled engine scripts in place, which skips the maintenance page's default "uninstall before installing". The runtimes and models under `engines/` are not part of the installer's file list, so an update leaves them alone and nothing has to be downloaded again. A fork changes `UpdateService.Repository` to its own repository.
 

@@ -12,14 +12,21 @@
 
 | 資產 | 誰產出 | 放在哪 |
 |---|---|---|
-| `Partner_<版本>_x64-setup.exe` | `.github/workflows/release.yml` 的 `app` job | 應用 release（tag `vX.Y.Z`） |
+| `Partner_<版本>_x64-setup.exe`、`<安裝包名>.exe.sha256` | `.github/workflows/release.yml` 的 `app` job | 應用 release（tag `vX.Y.Z`） |
 | `SHA256SUMS.txt`、`THIRD-PARTY-NOTICES.md` | 同上 | 同上 |
 
 安裝包裡**不含**引擎：裝完在「設定 → 本地引擎」點下載，位址與 SHA-256 來自 `src/Partner.Api/Voice/EnginePackage.cs` 裡已提交的常數，指向 `engines-v1` release。安裝包只為 `engines/tts/`、`engines/kws-asr/` 建好目錄，並放進去兩個服務腳本；`tauri.conf.json` 裡 `bundle.resources` 的 map 形式把**值當作完整目標路徑**（不是目錄），所以值必須寫成 `engines/tts/tts-server.py`——寫成 `engines/tts/` 會把腳本落成名為 `tts` 的檔案，佔掉引擎目錄的位置。
 
 ## 應用內更新
 
-「設定 → 一般」顯示的版本號來自 `ui/package.json`（workflow 已按 tag 寫入），「檢查更新」走 GitHub 的 release 網頁而不是 API：`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本號從這裡取），資產從 `releases/latest/download/<檔名>` 取（倉庫常數在 `src/Partner.Api/Updates/UpdateService.cs`）。這條路不消耗 `api.github.com` 的每小時 60 次配額，所以共用出口 IP 被別的程式用滿時也不會 403。所以每個應用 release 必須保留兩個資產：`Partner_<版本>_x64-setup.exe`，以及列出它的 `SHA256SUMS.txt`；缺少校驗檔時應用不會提供這次更新，安裝程式的檔名也由這份校驗檔裡的那一行決定。
+「設定 → 一般」顯示的版本號來自 `ui/package.json`（workflow 已按 tag 寫入）。檢查更新有兩條路徑，倉庫常數都在 `src/Partner.Api/Updates/UpdateService.cs`：
+
+- **API 主路徑**：`api.github.com/repos/Jaspersol/partner/releases/latest` 的 release JSON 給出版本號、安裝包名、大小、下載位址，以及 `<安裝包名>.exe.sha256` 校驗檔。
+- **直鏈備援**：完全不碰 REST API。`releases/latest` 的 302 指向 `releases/tag/<tag>`（版本號從這裡取），`SHA256SUMS.txt` 給出安裝包名和 SHA-256，資產從 `releases/latest/download/<檔名>` 或 `releases/download/<tag>/<檔名>` 取。`api.github.com` 每 IP 每小時只有 60 次配額：被共用出口 IP 用滿（API 回傳 403、429 或帶 `Retry-After` 的 403）、網路不通、或 release 少了 `.exe.sha256` 時，檢查會自動切到這條路，並在結果裡以 `source: direct` 標明；失敗後短時間內不再重試 API。
+
+兩條路都必須拿到校驗值，缺 `.exe.sha256` 且缺 `SHA256SUMS.txt` 時不提供更新。下載依 `browser_download_url` → API 資產位址 → 帶 tag 的直鏈 → `releases/latest/download/` 直鏈依序嘗試，任一位址可用即可：候選位址與重導向目標都限制在 GitHub 網域，串流下載有大小上限，完成後檢查 MZ 頭與 SHA-256，通過後才交給殼程式。
+
+所以每個應用 release 必須保留三個資產：`Partner_<版本>_x64-setup.exe`、`<安裝包名>.exe.sha256`、以及列出它的 `SHA256SUMS.txt`。舊 release 只有後兩者仍能更新（走備援路徑），但兩條路都拿不到校驗值時不會提供更新。
 
 下載完成後先核對 SHA-256，再啟動安裝程式並結束應用。安裝程式以 `/UPDATE /P` 執行：**不解除安裝舊版本**，直接覆寫原安裝目錄裡的 `api/`、殼程式與兩個引擎腳本，避開 Tauri 維護頁預設的「先解除安裝再安裝」；`engines/` 下已下載的執行環境與模型不在安裝包的清單裡，所以更新不會動到它們，也不需要重新下載。fork 需要把 `UpdateService.Repository` 改成自己的倉庫。
 
