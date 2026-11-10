@@ -32,6 +32,31 @@ public sealed record MemoryStoreOptions
 }
 
 /// <summary>
+/// Knobs for a recall. Defaults reproduce the ordinary behaviour: nothing excluded, the store's own injection
+/// budget, and the recall marks what it handed out as used.
+/// </summary>
+public sealed record RecallFilter
+{
+    /// <summary>Leave out records distilled from these session event seqs.</summary>
+    public IReadOnlySet<long>? ExcludeSourceSeqs { get; init; }
+
+    /// <summary>Leave out records whose origin is one of these (e.g. this service's own summaries).</summary>
+    public IReadOnlySet<string>? ExcludeOrigins { get; init; }
+
+    /// <summary>Overrides the store's default hit count for <c>InjectAsync</c>.</summary>
+    public int? Limit { get; init; }
+
+    /// <summary>Overrides the store's <c>InjectionTokenLimit</c> for <c>InjectAsync</c>.</summary>
+    public int? TokenLimit { get; init; }
+
+    /// <summary>
+    /// False skips the <c>last_recalled_at</c> write. A pass-through service's recall must not move the main
+    /// memory's 90-day demotion clock.
+    /// </summary>
+    public bool MarkRecalled { get; init; } = true;
+}
+
+/// <summary>
 /// The memory layer. Three tiers plus working memory, explainable retrieval, promotion before trimming, and a
 /// four-step privacy delete.
 /// </summary>
@@ -51,32 +76,24 @@ public interface IMemoryStore : IAsyncDisposable
     Task<IReadOnlyList<MemoryHit>> RecallAsync(string query, int? limit = null, CancellationToken ct = default);
 
     /// <summary>
-    /// Recall that leaves out records distilled from <paramref name="excludeSourceSeqs"/>.
-    /// <para>
-    /// For a caller that already has those events in front of it, so the model does not read the same statement
-    /// twice — once as history and once as a remembered fact.
-    /// </para>
-    /// <para>
-    /// Filtering happens before the top-<c>limit</c> cut, so the answer still holds <c>limit</c> usable hits.
-    /// </para>
+    /// Recall with a filter. Leave out records distilled from the excluded source events or written by the
+    /// excluded origins; both filters run before the top-<c>limit</c> cut, so the answer still holds
+    /// <c>limit</c> usable hits. <see cref="RecallFilter.MarkRecalled"/> controls the maintenance write.
     /// </summary>
     Task<IReadOnlyList<MemoryHit>> RecallAsync(
         string query,
         int? limit,
-        IReadOnlySet<long>? excludeSourceSeqs,
+        RecallFilter filter,
         CancellationToken ct = default);
 
     /// <summary>Recall bounded by the injection token budget.</summary>
     Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default);
 
     /// <summary>
-    /// Recall bounded by the injection token budget, leaving out records distilled from
-    /// <paramref name="excludeSourceSeqs"/> (see the overload of <see cref="RecallAsync"/> for why).
+    /// Recall bounded by the injection token budget, applying <paramref name="filter"/>. When set,
+    /// <see cref="RecallFilter.TokenLimit"/> overrides the store's default injection budget.
     /// </summary>
-    Task<InjectionResult> InjectAsync(
-        string query,
-        IReadOnlySet<long>? excludeSourceSeqs,
-        CancellationToken ct = default);
+    Task<InjectionResult> InjectAsync(string query, RecallFilter filter, CancellationToken ct = default);
 
     /// <summary>Appends a revision and applies the new body.</summary>
     Task<string> ReviseAsync(string recordId, string newBody, Actor actor, CancellationToken ct = default);

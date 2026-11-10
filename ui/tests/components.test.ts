@@ -1010,6 +1010,13 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
         compaction: null,
       }
     }),
+    listServices: vi.fn(),
+    getService: vi.fn(),
+    createService: vi.fn(),
+    updateService: vi.fn(),
+    deleteService: vi.fn(),
+    flushService: vi.fn(),
+    rotateServiceToken: vi.fn(),
     ...overrides,
   }
 }

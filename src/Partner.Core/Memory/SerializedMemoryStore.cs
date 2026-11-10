@@ -57,18 +57,18 @@ public sealed class SerializedMemoryStore(IMemoryStore inner) : IMemoryStore
     public Task<IReadOnlyList<MemoryHit>> RecallAsync(
         string query,
         int? limit,
-        IReadOnlySet<long>? excludeSourceSeqs,
+        RecallFilter filter,
         CancellationToken ct = default) =>
-        RunAsync(() => inner.RecallAsync(query, limit, excludeSourceSeqs, ct), ct);
+        RunAsync(() => inner.RecallAsync(query, limit, filter, ct), ct);
 
     public Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default) =>
         RunAsync(() => inner.InjectAsync(query, ct), ct);
 
     public Task<InjectionResult> InjectAsync(
         string query,
-        IReadOnlySet<long>? excludeSourceSeqs,
+        RecallFilter filter,
         CancellationToken ct = default) =>
-        RunAsync(() => inner.InjectAsync(query, excludeSourceSeqs, ct), ct);
+        RunAsync(() => inner.InjectAsync(query, filter, ct), ct);
 
     public Task<string> ReviseAsync(string recordId, string newBody, Actor actor, CancellationToken ct = default) =>
         RunAsync(() => inner.ReviseAsync(recordId, newBody, actor, ct), ct);

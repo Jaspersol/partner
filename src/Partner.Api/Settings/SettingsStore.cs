@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Partner.Api.Auth;
 using Partner.Core.Agent.Llm;
 using Partner.Voice.Tts;
 
@@ -19,11 +20,13 @@ public sealed class SettingsStore
     };
 
     private readonly string _path;
+    private readonly int _apiPort;
 
-    public SettingsStore(string path)
+    public SettingsStore(string path, int apiPort = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         _path = path;
+        _apiPort = apiPort;
     }
 
     public string Path => _path;
@@ -56,6 +59,7 @@ public sealed class SettingsStore
     private static RuntimeSettings Repaired(RuntimeSettings loaded, JsonElement raw) => loaded with
     {
         Agents = (loaded.Agents ?? new AgentsSettings()).WithBuiltins(),
+        Services = loaded.Services.WithDefaults(),
         Files = loaded.Files ?? new FilesSettings(),
         Web = loaded.Web ?? new WebSettings(),
         Tts = LocalTtsMigrated(loaded),
@@ -124,6 +128,9 @@ public sealed class SettingsStore
         var merged = incoming with
         {
             Agents = incoming.AgentsSpecified ? MergeAgentKeys(incoming.Agents, stored.Agents) : stored.Agents,
+            Services = incoming.ServicesSpecified
+                ? MergeServiceSecrets(incoming.Services, stored.Services)
+                : stored.Services,
             Model = incoming.Model with
             {
                 Protocol = LlmProtocols.Normalize(incoming.Model.Protocol),
@@ -140,7 +147,7 @@ public sealed class SettingsStore
             },
         };
 
-        var errors = SettingsValidation.Validate(merged, stored);
+        var errors = SettingsValidation.Validate(merged, stored, _apiPort);
         if (errors.Count > 0)
         {
             throw new SettingsValidationException(errors);
@@ -173,6 +180,38 @@ public sealed class SettingsStore
                 },
         }).ToList(),
     };
+
+    /// <summary>
+    /// Service tokens and upstream keys are write-only: an empty value on a write means "keep the stored one",
+    /// matched by instance id. A newly created instance carries its generated token, so it survives unchanged.
+    /// <para>
+    /// A <b>new</b> id (the instance did not exist yet) with no token gets one generated here, so a settings PUT
+    /// that adds an instance behaves exactly like <c>POST /api/services</c> instead of failing validation.
+    /// </para>
+    /// </summary>
+    private static ServicesSettings MergeServiceSecrets(ServicesSettings incoming, ServicesSettings stored)
+    {
+        var normalized = incoming.WithDefaults();
+        return normalized with
+        {
+            Instances = normalized.Instances.Select(service =>
+            {
+                var existing = stored.Instances.FirstOrDefault(s => s.Id == service.Id);
+                return service with
+                {
+                    Token = string.IsNullOrEmpty(service.Token)
+                        ? existing?.Token ?? TokenAuth.Generate()
+                        : service.Token,
+                    Upstream = service.Upstream with
+                    {
+                        ApiKey = string.IsNullOrEmpty(service.Upstream.ApiKey)
+                            ? existing?.Upstream.ApiKey
+                            : service.Upstream.ApiKey,
+                    },
+                };
+            }).ToList(),
+        };
+    }
 
     private static string? Blank(string? text) => string.IsNullOrWhiteSpace(text) ? null : text;
 

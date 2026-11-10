@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
-import type { MemoryRevision, PartnerApiSurface } from '../api'
+import type { MemoryRevision, PartnerApiSurface, ServiceListItem } from '../api'
 import {
   memoryRowFromHit,
   memoryRowFromItem,
@@ -42,6 +42,33 @@ const tier = ref('all')
 const pinnedOnly = ref(false)
 /** Records a later statement replaced are kept but are not part of the day-to-day picture, so they start hidden. */
 const showRetired = ref(false)
+/** Which writer to show. Values map to the `origin` query parameter on GET /api/memory. */
+const ORIGIN_ALL = 'all'
+const ORIGIN_MAIN = 'main'
+const origin = ref(ORIGIN_ALL)
+/** Service names for the filter's options; a failed read just leaves the two static options. */
+const services = ref<ServiceListItem[]>([])
+
+const originOptions = computed(() => [
+  { value: ORIGIN_ALL, label: t('全部来源') },
+  { value: ORIGIN_MAIN, label: t('主记忆') },
+  ...services.value.map((item) => ({
+    value: `service:${item.settings.id}`,
+    label: item.settings.name || item.settings.id,
+  })),
+])
+
+/** null means "no filter" (use the full /all read); '' filters to main-session records. */
+function originParam(): string | null {
+  if (origin.value === ORIGIN_ALL) return null
+  if (origin.value === ORIGIN_MAIN) return ''
+  return origin.value
+}
+
+function setOrigin(value: string) {
+  origin.value = value
+  void refresh()
+}
 const error = ref('')
 
 /** True while the list shows recall hits rather than the stored records. */
@@ -121,16 +148,27 @@ const note = computed(() => {
 async function refresh() {
   error.value = ''
   try {
-    // The full list, retired records included: a memory view that hides what a later statement replaced cannot
-    // answer "why does it now believe the opposite", which is the question a conflict raises. They are filtered
-    // on screen, not left out of the read.
-    const all = await props.api.memoryAll()
+    // Unfiltered, the /all read keeps retired records visible ("fully visible"). A specific origin is a
+    // server-side filter on /api/memory, whose ?origin= is the contract this control drives.
+    const param = originParam()
+    const all = param === null
+      ? await props.api.memoryAll()
+      : await props.api.memory(undefined, undefined, undefined, param)
     rows.value = all.map((item) => memoryRowFromItem(item))
     loaded.value = true
     recalling.value = false
     recalled.value = ''
   } catch (failure) {
     error.value = String(failure)
+  }
+}
+
+async function loadServices() {
+  try {
+    const list = await props.api.listServices()
+    services.value = Array.isArray(list) ? list : []
+  } catch {
+    services.value = []
   }
 }
 
@@ -344,7 +382,10 @@ async function create() {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  void refresh()
+  void loadServices()
+})
 
 /** For Ctrl+K. See SessionView's copy of this — it is the same contract. */
 const searchInput = ref<HTMLInputElement | null>(null)
@@ -394,6 +435,14 @@ defineExpose({ refresh, focusSearch, collapseInspector })
 
         <div class="filters">
           <Segmented v-model="tier" :options="tierOptions" :label="t('按类型筛选')" data-test="memory-tier" />
+          <select
+            :value="origin"
+            :aria-label="t('按来源筛选')"
+            data-test="memory-origin"
+            @change="setOrigin(($event.target as HTMLSelectElement).value)"
+          >
+            <option v-for="option in originOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
           <span class="spacer" />
           <label class="toggle">
             <input v-model="pinnedOnly" type="checkbox" class="g-switch" role="switch" data-test="memory-pinned-only" />

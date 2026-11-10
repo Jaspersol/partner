@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+using Partner.Api.Services;
 using Partner.Api;
 using Partner.Api.Auth;
 using Partner.Desktop.Windows;
@@ -56,6 +58,12 @@ try
 }
 finally
 {
+    // Flush service summaries before the rest of the runtime tears down.
+    if (app.Services.GetService<ServiceHost>() is { } services)
+    {
+        await services.DisposeAsync();
+    }
+
     // Graceful: the consumer stops claiming new work and lets the turn in flight finish.
     maintenance.Stop();
     await maintenance.DisposeAsync();

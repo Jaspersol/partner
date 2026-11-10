@@ -152,6 +152,8 @@ export interface MemoryItem {
   supersededBy: string | null
   editedBy: string | null
   importance: number
+  /** Which writer produced this record: "" for the main session, "service:<id>" for an external service. */
+  origin?: string
 }
 
 /**
@@ -907,6 +909,92 @@ export interface ApiOptions {
   fetchImpl?: typeof fetch
 }
 
+/** How one external memory service recalls from the main store. */
+export interface ServiceRecallSettings {
+  enabled: boolean
+  limit: number
+  tokenLimit: number
+}
+
+/** How and when one service summarizes its pending rounds back into the main store. */
+export interface ServiceSummarySettings {
+  enabled: boolean
+  intervalMinutes: number
+  maxWaitMinutes: number
+}
+
+/** Upstream as read: only whether a key is stored, never the key itself. */
+export interface ServiceUpstreamView {
+  inherit: boolean
+  baseUrl: string | null
+  model: string | null
+  apiKeySet: boolean
+  /** The ceiling the upstream accepts; null = the main model's. */
+  maxTokens: number | null
+  /** Seconds to wait for response headers; null = the main model's. */
+  timeoutSeconds: number | null
+}
+
+/** Upstream as written. `apiKey` is write-only; empty means "keep the stored secret". */
+export interface ServiceUpstreamWrite {
+  inherit: boolean
+  baseUrl: string | null
+  model: string | null
+  apiKey: string
+  maxTokens: number | null
+  timeoutSeconds: number | null
+}
+
+/** One service's settings as the API reports them (the token is masked to a boolean). */
+export interface ServiceSettingsView {
+  id: string
+  name: string
+  enabled: boolean
+  port: number
+  protocol: 'openai' | 'anthropic'
+  model: string
+  contextTokens: number
+  prompt: string
+  recall: ServiceRecallSettings
+  summary: ServiceSummarySettings
+  upstream: ServiceUpstreamView
+  tokenSet: boolean
+}
+
+/** The live runtime state of one service instance. */
+export interface ServiceState {
+  running: boolean
+  error: string | null
+  port: number
+  requests: number
+  lastActivityAt: string | null
+  pendingRounds: number
+  lastFlushAt: string | null
+  lastMemoryId: string | null
+}
+
+/** What the client writes. `token` and `upstream.apiKey` are write-only; empty keeps the stored value. */
+export interface ServiceWrite {
+  id: string
+  name: string
+  enabled: boolean
+  port: number
+  protocol: 'openai' | 'anthropic'
+  model: string
+  contextTokens: number
+  prompt: string
+  recall: ServiceRecallSettings
+  summary: ServiceSummarySettings
+  upstream: ServiceUpstreamWrite
+  token: string
+}
+
+/** One service with its settings and live state, as the list and single-read endpoints return. */
+export interface ServiceListItem {
+  settings: ServiceSettingsView
+  state: ServiceState
+}
+
 /**
  * Exactly the surface the views use. Views depend on this, so a test stub is checked by the compiler against
  * the same shape the real client exposes — a stub cannot silently drift from the contract.
@@ -973,7 +1061,7 @@ export interface PartnerApiSurface {
   voice(): Promise<VoiceState>
   devices(): Promise<DeviceList>
   listModels(baseUrl?: string, protocol?: string): Promise<ModelProbe>
-  memory(tier?: string, scope?: string, take?: number): Promise<MemoryItem[]>
+  memory(tier?: string, scope?: string, take?: number, origin?: string): Promise<MemoryItem[]>
   recall(query: string, limit?: number): Promise<RecallHit[]>
   editMemory(recordId: string, body: string, actor?: string): Promise<void>
   deleteMemory(recordId: string): Promise<void>
@@ -1017,6 +1105,20 @@ export interface PartnerApiSurface {
   observeDesktop(): Promise<DesktopObservation>
   setApprovalGear(approval: string): Promise<{ approval: string; changed: boolean }>
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved>
+  /** Every external memory service with its live runtime state. */
+  listServices(): Promise<ServiceListItem[]>
+  /** One service; 404 when it does not exist. */
+  getService(id: string): Promise<ServiceListItem>
+  /** Creates a service. The plaintext token is returned only in this response. */
+  createService(body: ServiceWrite): Promise<ServiceListItem & { token: string }>
+  /** Updates a service. Empty `token`/`apiKey` keep the stored secret. */
+  updateService(id: string, body: ServiceWrite): Promise<ServiceListItem>
+  /** Deletes a service; `purgeMemories` also soft-deletes the records it wrote. */
+  deleteService(id: string, purgeMemories: boolean): Promise<{ deletedMemories: number }>
+  /** Summarizes pending rounds now; `memoryId` is null when there was nothing to write. */
+  flushService(id: string): Promise<{ memoryId: string | null }>
+  /** Rotates the bearer token. The plaintext is returned only in this response. */
+  rotateServiceToken(id: string): Promise<{ token: string }>
 }
 
 export class PartnerApi implements PartnerApiSurface {
@@ -1256,13 +1358,17 @@ export class PartnerApi implements PartnerApiSurface {
   }
 
 
-  memory(tier?: string, scope?: string, take = 200): Promise<MemoryItem[]> {
+  memory(tier?: string, scope?: string, take = 200, origin?: string): Promise<MemoryItem[]> {
     const query = new URLSearchParams({ take: String(take) })
     if (tier) {
       query.set('tier', tier)
     }
     if (scope) {
       query.set('scope', scope)
+    }
+    // Empty string is a real filter (main-session records); only "not given" omits the parameter.
+    if (origin !== undefined) {
+      query.set('origin', origin)
     }
 
     return this.request<MemoryItem[]>('GET', `/api/memory?${query}`)
@@ -1314,6 +1420,38 @@ export class PartnerApi implements PartnerApiSurface {
 
   saveSettings(settings: RuntimeSettings): Promise<SettingsSaved> {
     return this.request<SettingsSaved>('PUT', '/api/settings', settings)
+  }
+
+
+  listServices(): Promise<ServiceListItem[]> {
+    return this.request<ServiceListItem[]>('GET', '/api/services')
+  }
+
+  getService(id: string): Promise<ServiceListItem> {
+    return this.request<ServiceListItem>('GET', `/api/services/${encodeURIComponent(id)}`)
+  }
+
+  createService(body: ServiceWrite): Promise<ServiceListItem & { token: string }> {
+    return this.request<ServiceListItem & { token: string }>('POST', '/api/services', body)
+  }
+
+  updateService(id: string, body: ServiceWrite): Promise<ServiceListItem> {
+    return this.request<ServiceListItem>('PUT', `/api/services/${encodeURIComponent(id)}`, body)
+  }
+
+  deleteService(id: string, purgeMemories: boolean): Promise<{ deletedMemories: number }> {
+    return this.request<{ deletedMemories: number }>(
+      'DELETE',
+      `/api/services/${encodeURIComponent(id)}?purgeMemories=${purgeMemories ? 'true' : 'false'}`,
+    )
+  }
+
+  flushService(id: string): Promise<{ memoryId: string | null }> {
+    return this.request<{ memoryId: string | null }>('POST', `/api/services/${encodeURIComponent(id)}/flush`)
+  }
+
+  rotateServiceToken(id: string): Promise<{ token: string }> {
+    return this.request<{ token: string }>('POST', `/api/services/${encodeURIComponent(id)}/token`)
   }
 
 

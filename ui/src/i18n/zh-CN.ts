@@ -78,6 +78,9 @@ const zhCN = {
   'settings.appearance.themeHint': '顶栏的主题按钮也可以切换。',
   'settings.appearance.reduce': '减弱透明效果',
   'settings.appearance.reduceHint': '去掉毛玻璃的模糊，界面更清晰、占用更低。系统开启「减少透明」时会自动生效。',
+  'nav.services': '对外服务',
+  '最大输出 tokens': '最大输出 tokens',
+  '上游超时（秒）': '上游超时（秒）',
 } as const
 
 export type MessageKey = keyof typeof zhCN

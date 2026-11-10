@@ -2,7 +2,7 @@
 import { t } from '../i18n'
 import { nextTick, ref, watch } from 'vue'
 import { clampIndex, isActivationKey, rovingTarget } from '../rovingFocus'
-import { scopeLabel, tierShort, type MemoryRow } from '../memoryRow'
+import { isServiceOrigin, scopeLabel, tierShort, type MemoryRow } from '../memoryRow'
 import HintTip from './HintTip.vue'
 import Icon from './Icon.vue'
 
@@ -67,6 +67,9 @@ function choose(row: MemoryRow, index: number): void {
       <p class="memory-text break" :class="{ dim: row.retired }">{{ row.body }}</p>
       <div class="foot">
         <span class="g-chip" data-test="memory-row-tier">{{ tierShort(row.tier) }}</span>
+        <span v-if="isServiceOrigin(row.origin)" class="g-chip is-accent" data-test="memory-row-origin">
+          <Icon name="services" :size="12" />{{ t('对外服务') }}
+        </span>
         <span v-if="row.scope === 'Retain'" class="g-chip is-accent" data-test="memory-row-retain">
           <Icon name="pin" :size="12" />{{ scopeLabel(row.scope) }}
         </span>

@@ -278,6 +278,27 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
+    public async Task A_service_written_summary_is_labelled_as_external()
+    {
+        var (_, memory) = Open();
+        await memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "svc-1",
+            Tier = MemoryTier.Episodic,
+            Scope = MemoryScope.Recall,
+            Body = "[对外服务:demo] 调用方要求甲；服务乙。",
+            Importance = 0.9,
+            Origin = MemoryOrigins.Service("demo"),
+        });
+
+        var ctx = Context("调用方要求");
+        await new MemoryRecallHook(memory).RunAsync(ctx, default);
+
+        var injected = string.Join('\n', ctx.InjectedPrompts);
+        Assert.Contains("from external service", injected, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_memory_from_a_turn_the_prompt_still_carries_is_not_injected()
     {
         // Memory is written at the end of every turn, so the exchange right above is already in the store when

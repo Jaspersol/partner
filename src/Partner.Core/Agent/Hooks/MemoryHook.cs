@@ -31,7 +31,7 @@ public sealed class MemoryRecallHook : AgentHookBase
     /// that only wants ranked hits), in which case nothing is excluded.
     /// </param>
     /// <summary>The most of the input used as the recall query.</summary>
-    internal const int MaxQueryChars = 300;
+    public const int MaxQueryChars = 300;
 
     public MemoryRecallHook(IMemoryStore memory, ISessionStore? session)
     {
@@ -60,8 +60,9 @@ public sealed class MemoryRecallHook : AgentHookBase
             query = query[..MaxQueryChars];
         }
 
+        var visibleSeqs = await VisibleSeqsAsync(ct).ConfigureAwait(false);
         var injection = await _memory
-            .InjectAsync(query, await VisibleSeqsAsync(ct).ConfigureAwait(false), ct)
+            .InjectAsync(query, new RecallFilter { ExcludeSourceSeqs = visibleSeqs }, ct)
             .ConfigureAwait(false);
         if (injection.Hits.Count == 0)
         {
@@ -81,7 +82,9 @@ public sealed class MemoryRecallHook : AgentHookBase
         {
             var age = MemoryAge.Describe(hit.CreatedAt, hit.Now);
             var kind = hit.Tier == MemoryTier.Working ? "unconfirmed" : "established";
-            lines.Add($"- [{kind}, {age}] {hit.Body}");
+            // A service-written summary must not read as something the main agent did itself.
+            var fromService = MemoryOrigins.IsService(hit.Origin) ? " from external service" : "";
+            lines.Add($"- [{kind}, {age}]{fromService} {hit.Body}");
         }
 
         // The budget dropped something the query scored at least as highly as what is here. Saying so stops

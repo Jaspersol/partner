@@ -21,6 +21,7 @@ Back to the [project home](../README.md).
 | [Schedules](./schedules.en.md) | Put a sentence into the queue by cron, interval or a one-off time |
 | [MCP](./mcp.en.md) | Connect stdio MCP servers and choose which ones skip approval |
 | [Skills](./skills.en.md) | Give the model routines via `SKILL.md`; upload, create, disable |
+| [Memory Service](./services.en.md) | Host OpenAI/Anthropic reverse-proxy ports that inject memory recall and write summaries back into main memory |
 
 ## Advanced
 

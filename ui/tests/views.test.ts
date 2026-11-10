@@ -16,6 +16,8 @@ import type {
   UpdateCheck,
   UpdateDownload,
   WebView,
+  ServiceListItem,
+  ServiceWrite,
 } from '../src/api'
 import { version as packageVersion } from '../package.json'
 import MemoryView from '../src/views/MemoryView.vue'
@@ -26,6 +28,7 @@ import McpView from '../src/views/McpView.vue'
 import SkillsView from '../src/views/SkillsView.vue'
 import PromptsView from '../src/views/PromptsView.vue'
 import { ApiError } from '../src/api'
+import ServicesView from '../src/views/ServicesView.vue'
 
 /**
  * View behaviour with a stub API. The stub implements the same interface the real client does, so the
@@ -139,6 +142,32 @@ const AGENTS_FIXTURE: AgentsView = {
   desktopEnabled: true,
   webEnabled: false,
 }
+
+/** One external memory service, in the exact shape the services endpoints return. */
+function serviceItem(id: string, name: string): ServiceListItem {
+  return {
+    settings: {
+      id,
+      name,
+      enabled: true,
+      port: 8080,
+      protocol: 'openai',
+      model: name,
+      contextTokens: 8192,
+      prompt: '',
+      recall: { enabled: true, limit: 8, tokenLimit: 2000 },
+      summary: { enabled: true, intervalMinutes: 10, maxWaitMinutes: 60 },
+      upstream: { inherit: true, baseUrl: null, model: null, apiKeySet: false, maxTokens: null, timeoutSeconds: null },
+      tokenSet: true,
+    },
+    state: {
+      running: true, error: null, port: 8080, requests: 0, lastActivityAt: null,
+      pendingRounds: 0, lastFlushAt: null, lastMemoryId: null,
+    },
+  }
+}
+
+const SERVICE_FIXTURE = serviceItem('svc-1', 'demo')
 
 function createStub(overrides: Partial<PartnerApiSurface> = {}) {
   const calls: Calls = { edits: [], memoryEdits: [], deletes: [], cancels: [], saves: [], recalls: [], submits: [], removals: [], withdrawalCancels: 0, tierChanges: [], scopeChanges: [], creates: [], probes: [], agentSaves: [] }
@@ -330,6 +359,13 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     observeDesktop: vi.fn(async () => ({ obsId: 'obs-1', count: 0, entities: [] })),
     setApprovalGear: vi.fn(async () => ({ approval: 'all', changed: false })),
     mediaBlob: vi.fn(async () => new Blob(['png'], { type: 'image/png' })),
+    listServices: vi.fn(async () => [] as ServiceListItem[]),
+    getService: vi.fn(async (id: string) => serviceItem(id, id)),
+    createService: vi.fn(async (body: ServiceWrite) => ({ ...serviceItem('svc-new', body.name), token: 'tk' })),
+    updateService: vi.fn(async (id: string, body: ServiceWrite) => serviceItem(id, body.name)),
+    deleteService: vi.fn(async () => ({ deletedMemories: 0 })),
+    flushService: vi.fn(async () => ({ memoryId: null as string | null })),
+    rotateServiceToken: vi.fn(async () => ({ token: 'tk' })),
     ...overrides,
   }
 
@@ -3119,5 +3155,118 @@ describe('interface language', () => {
     } finally {
       setLocale('zh-CN')
     }
+  })
+})
+
+describe('services view', () => {
+  it('refuses to save a service with no name or model', async () => {
+    const created: ServiceWrite[] = []
+    const { stub } = createStub({
+      listServices: vi.fn(async () => [] as ServiceListItem[]),
+      createService: vi.fn(async (body: ServiceWrite) => {
+        created.push(body)
+        return { ...serviceItem('svc-new', body.name), token: 'tk' }
+      }),
+    })
+    const wrapper = mount(ServicesView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="services-add"]').trigger('click')
+    await wrapper.find('[data-test="services-save"]').trigger('click')
+    await flushPromises()
+
+    // A blank name or model would create a port nobody can identify or call.
+    expect(created).toEqual([])
+    expect(wrapper.find('[data-test="error"]').text()).toContain('每个服务都要有名称')
+  })
+
+  it('creates a configured service, keeps secrets empty, and shows the one-time token', async () => {
+    const created: ServiceWrite[] = []
+    const { stub } = createStub({
+      listServices: vi.fn(async () => [] as ServiceListItem[]),
+      createService: vi.fn(async (body: ServiceWrite) => {
+        created.push(body)
+        return { ...serviceItem('svc-new', body.name), token: 'tk-once' }
+      }),
+    })
+    const wrapper = mount(ServicesView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="services-add"]').trigger('click')
+    await wrapper.find('[data-test="services-name"]').setValue('Demo')
+    await wrapper.find('[data-test="services-model"]').setValue('demo-model')
+    await wrapper.find('[data-test="services-save"]').trigger('click')
+    await flushPromises()
+
+    expect(created).toHaveLength(1)
+    expect(created[0]?.name).toBe('Demo')
+    expect(created[0]?.model).toBe('demo-model')
+    // The write-only secrets start empty: the server reads that as "keep the stored value".
+    expect(created[0]?.token).toBe('')
+    expect(created[0]?.upstream.apiKey).toBe('')
+    expect(wrapper.find('[data-test="services-token"]').text()).toContain('tk-once')
+  })
+
+  it('updates an existing service through updateService when its form changes', async () => {
+    const updated: ServiceWrite[] = []
+    const { stub } = createStub({
+      listServices: vi.fn(async () => [SERVICE_FIXTURE] as ServiceListItem[]),
+      updateService: vi.fn(async (id: string, body: ServiceWrite) => {
+        updated.push(body)
+        return serviceItem(id, body.name)
+      }),
+    })
+    const wrapper = mount(ServicesView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="services-card"] .svc-toggle').trigger('click')
+    await wrapper.find('[data-test="services-model"]').setValue('new-model')
+    await wrapper.find('[data-test="services-save"]').trigger('click')
+    await flushPromises()
+
+    expect(updated).toHaveLength(1)
+    expect(updated[0]?.model).toBe('new-model')
+    expect(updated[0]?.token).toBe('')
+  })
+
+  it('sends the custom upstream limits and has no protocol picker', async () => {
+    const updated: ServiceWrite[] = []
+    const { stub } = createStub({
+      listServices: vi.fn(async () => [SERVICE_FIXTURE] as ServiceListItem[]),
+      updateService: vi.fn(async (id: string, body: ServiceWrite) => {
+        updated.push(body)
+        return serviceItem(id, body.name)
+      }),
+    })
+    const wrapper = mount(ServicesView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="services-card"] .svc-toggle').trigger('click')
+    await wrapper.find('[data-test="services-inherit"]').setValue(false)
+    // A protocol override would let a client's body format disagree with the endpoint's, which pass-through
+    // cannot convert, so the field is gone rather than merely ignored.
+    expect(wrapper.find('[data-test="services-upstream-protocol"]').exists()).toBe(false)
+
+    await wrapper.find('[data-test="services-upstream-max-tokens"]').setValue('2048')
+    await wrapper.find('[data-test="services-upstream-timeout"]').setValue('45')
+    await wrapper.find('[data-test="services-save"]').trigger('click')
+    await flushPromises()
+
+    expect(updated).toHaveLength(1)
+    expect(updated[0]?.upstream.maxTokens).toBe(2048)
+    expect(updated[0]?.upstream.timeoutSeconds).toBe(45)
+  })
+
+  it('filters memory by origin through the api memory() origin parameter', async () => {
+    const memory = vi.fn(async (_tier?: string, _scope?: string, _take?: number, _origin?: string) => [])
+    const { stub } = createStub({ memory })
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="memory-origin"]').setValue('main')
+    await flushPromises()
+
+    expect(memory).toHaveBeenCalled()
+    expect(memory.mock.calls.at(-1)?.[3]).toBe('')
   })
 })

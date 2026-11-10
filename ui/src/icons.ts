@@ -60,6 +60,7 @@ export type IconName =
   | 'undo'
   | 'shield'
   | 'sliders'
+  | 'services'
 
 /**
  * Name → path data, in a 24×24 viewBox.
@@ -158,6 +159,8 @@ export const ICONS: Record<IconName, readonly string[]> = {
   undo: ['M9 7L4 12l5 5', 'M4 12h10a6 6 0 0 1 0 6'],
   shield: ['M12 3l8 3v6c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V6l8-3z', 'M9 12l2.2 2.2L15.5 10'],
   sliders: ['M5 8h14M5 16h14', 'M9 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4z', 'M15 14a2 2 0 1 1 0 4 2 2 0 0 1 0-4z'],
+
+  services: ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M8 7h.01', 'M8 17h.01', 'M12 7h4', 'M12 17h4'],
 }
 
 /** The paths for one icon. Exported so a caller can assert a name actually has geometry. */
