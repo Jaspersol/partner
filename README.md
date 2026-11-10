@@ -4,7 +4,7 @@
 
 ### A Ready-to-Use, Single-Session Desktop AI Assistant for Windows
 
-**One continuous conversation you can type or speak to, with memory, schedules, MCP, Skills, and sub-agents that operate your desktop — only after you approve.**
+**One continuous conversation you can type or speak to; with memory, schedules, MCP, Skills, and sub-agents that operate your desktop, asking you before they act. Through Memory Services — a general-purpose API that keeps historical memory — your Partner plugs seamlessly into game AI mods, plugins and other agents.**
 
 [![Version](https://img.shields.io/github/v/release/Jaspersol/partner?color=blue&label=version)](https://github.com/Jaspersol/partner/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey.svg)](https://github.com/Jaspersol/partner/releases)
@@ -26,6 +26,7 @@ Most agent tools make you manage sessions, pick a model per chat, and type every
 - **Voice, Local or Your Own** — Wake word, phrase splitting, recognition, sentence-by-sentence read-aloud, and spoken approval, using downloadable local engines or your own ASR/TTS services
 - **Desktop Control With Approval** — Requests that need a window or a file go to a background sub-agent. By default it asks before every action, and no answer counts as a refusal
 - **Memory That Stays Visible** — Preferences you mention are kept in a local database. You can browse, re-tier, pin, and delete every record
+- **Connect External Agents & Plugins** — Give a game AI mod, an editor or browser plugin, or another agent framework a local OpenAI/Anthropic-compatible endpoint, and your own Partner joins any platform that accepts a model address: each request gets the relevant memories, and summaries of the exchange go back into the main memory
 - **Schedules, MCP & Skills** — Run a sentence on a cron, interval, or one-off time; connect stdio MCP servers; teach the model routines with `SKILL.md`
 - **Local by Default** — The local API listens only on `127.0.0.1` and requires a token generated at startup. Conversations go only to the model endpoint you configured
 - **Native Windows App** — Built with Tauri 2 and a .NET 10 backend; the installer bundles the .NET runtime
@@ -94,6 +95,7 @@ export PARTNER_LLM_PROTOCOL=openai   # optional: openai / anthropic
 - **Schedules**: Click "Schedules" in the sidebar → choose cron, interval, or a one-off time → enter the sentence to send
 - **MCP**: Click "MCP" in the sidebar → turn on the master switch → add a server (name, command, arguments)
 - **Skills**: Click "Skills" in the sidebar → upload a `SKILL.md` (or a zipped skill folder), or create one in the app
+- **Memory Services**: Click "Memory Services" in the sidebar → add a service (name, port, protocol, exposed model name) → copy the token, which is shown once → enter `http://127.0.0.1:<port>/v1`, the token and the model name in the mod or plugin
 - **Agents**: Click "agent" in the sidebar to edit the prompts of the main agent and each sub-agent, and to give a sub-agent its own model
 
 > **Note**: With no model configured, nothing is lost. Messages from every source wait in the queue until a model is available.
@@ -114,7 +116,7 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 | Schedules | Cron, fixed interval, or a specific date and time | [schedules](doc/schedules.en.md) |
 | MCP | Connects stdio MCP servers | [mcp](doc/mcp.en.md) |
 | Skills | Describes routines in `SKILL.md` | [skills](doc/skills.en.md) |
-| Memory Service | Hosts OpenAI/Anthropic reverse-proxy ports with memory recall and periodic summaries | [services](doc/services.en.md) |
+| Memory Services | Let game mods, plugins and external agents use your memory through a local OpenAI/Anthropic endpoint, with summaries written back to main memory | [services](doc/services.en.md) |
 
 ### Single Session
 
@@ -154,6 +156,13 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 - **Schedules** — Five-field cron in your local time zone, an interval of 1 minute to 1 year, or a one-off future time; up to 100 tasks. When one fires, its text enters the queue as a normal message. The assistant can create them too, and creating and deleting follow your approval level
 - **MCP** — Off by default. Tools get the prefix `mcp_{server}_`, every call asks by default, and you can turn on "Skip approval" per server. A server that fails to start does not affect the others
 - **Skills** — A folder with a `SKILL.md` (`name`, `description`, and steps). Enabled skills are listed in the model prompt, up to 50, and take effect on the next turn without a restart
+
+### Memory Services
+
+- **What for** — Connecting external agents and plugins. A game AI mod, an NPC dialogue plugin, a writing or coding plugin, or another agent framework can connect as long as it lets you enter an OpenAI- or Anthropic-compatible address, key and model name
+- **How** — Each service listens on its own `127.0.0.1` port and forwards to the main model or an upstream of its own. It changes three things: the model name, recalled memories in front of the last user message, and an optional custom prompt. Tools, streaming, `tool_calls` and errors pass through unchanged
+- **Write-back** — On a set interval, what callers asked and what came back is summarized into one sentence starting with `[对外服务:<name>]` and written to the main memory. The Memory page filters by origin, and deleting a service can delete the memories it wrote
+- **Boundaries** — The caller must run on the same computer as Partner; a service's protocol must match its upstream's, with no format conversion; each service has its own token. External text reaches the main memory, so give tokens only to programs you trust
 
 ### System & Platform
 
@@ -205,7 +214,7 @@ The shell writes the API's stdout/stderr and its own diagnostics to `%LocalAppDa
 <details>
 <summary><strong>Does anything leave my machine?</strong></summary>
 
-Conversations go to the model endpoint you configured. Web search is on by default and sends search queries to third-party search engines; turn it off under Settings → Web search. The app also contacts GitHub to check for updates and download voice engines. The local API listens only on `127.0.0.1`, and every request needs the token generated at startup.
+Conversations go to the model endpoint you configured. Web search is on by default and sends search queries to third-party search engines; turn it off under Settings → Web search. The app also contacts GitHub to check for updates and download voice engines. The local API and Memory Services listen only on `127.0.0.1`, and every request needs a token.
 
 </details>
 

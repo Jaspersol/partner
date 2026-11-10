@@ -4,7 +4,7 @@
 
 ### 開箱即用的單一工作階段 Windows 桌面 AI 助手
 
-**一條連續的工作階段，打字或開口都行；帶記憶、定時、MCP、Skills，還有能操作桌面的子 agent，動手前先問你。**
+**一條連續的工作階段，打字或開口都行；帶記憶、定時、MCP、Skills，還有能操作桌面的子 agent，動手前先問你。也能透過保留歷史記憶的對外服務通用 API，讓你的 Partner 無縫接入遊戲 AI mod、外掛和其他 agent。**
 
 [![Version](https://img.shields.io/github/v/release/Jaspersol/partner?color=blue&label=version)](https://github.com/Jaspersol/partner/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey.svg)](https://github.com/Jaspersol/partner/releases)
@@ -26,6 +26,7 @@
 - **語音：本機或自備** — 喚醒詞、斷句、辨識、逐句朗讀、語音審批。可以下載本機引擎，也可以接已有的 ASR/TTS 服務
 - **操作桌面，先批准** — 需要操作視窗或讀檔案的請求交給背景子 agent。預設每個動作都先徵求你同意，無人回應視為拒絕
 - **看得見的記憶** — 你提過的偏好存在本機資料庫裡，每條記錄都可以檢視、調整層級、置頂和刪除
+- **對接外部 agent 與外掛** — 給遊戲的 AI mod、編輯器或瀏覽器外掛、其他 agent 框架一個 OpenAI/Anthropic 相容的本機端點，獨屬於你的 Partner 就能接入任何能填大模型位址的平台：每個請求附上相關記憶，互動總結寫回主記憶
 - **定時、MCP 與 Skills** — 依 cron、固定間隔或指定時間執行一句話；接入 stdio MCP 伺服器；用 `SKILL.md` 教模型一套做法
 - **預設只在本機** — 本機 API 只監聽 `127.0.0.1`，請求必須帶啟動時產生的權杖。對話內容只傳給你設定的模型端點
 - **原生 Windows 應用程式** — 以 Tauri 2 和 .NET 10 後端打造，安裝檔內附 .NET 執行環境
@@ -94,6 +95,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 - **定時**：點選側邊欄「排程」 → 選 cron、固定間隔或指定時間 → 填要發送的那句話
 - **MCP**：點選側邊欄「MCP」 → 開啟總開關 → 新增伺服器（名稱、指令、參數）
 - **Skills**：點選側邊欄「技能」 → 上傳 `SKILL.md`（或壓縮後的技能資料夾），或在應用程式裡新建
+- **對外服務**：點選側邊欄「對外服務」 → 新增服務（名稱、連接埠、協定、對外模型名稱）→ 複製只顯示一次的權杖 → 在 mod 或外掛裡填 `http://127.0.0.1:<連接埠>/v1`、權杖和模型名稱
 - **Agent**：點選側邊欄「agent」，編輯主 agent 和各子 agent 的提示詞，也可以替子 agent 單獨指定模型
 
 > **注意**：沒設定模型時不會遺失訊息。各來源的訊息都留在佇列裡，等模型可用後再執行。
@@ -114,7 +116,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 | 定時 | cron、固定間隔或指定時間 | [schedules](doc/schedules.zh-TW.md) |
 | MCP | 接入 stdio MCP 伺服器 | [mcp](doc/mcp.zh-TW.md) |
 | Skills | 用 `SKILL.md` 描述一套做法 | [skills](doc/skills.zh-TW.md) |
-| 對外記憶服務 | 託管多個帶記憶召回的 OpenAI/Anthropic 反向代理埠，定時把互動總結寫回主記憶 | [services](doc/services.zh-TW.md) |
+| 對外服務 | 讓遊戲 mod、外掛和外部 agent 透過本機 OpenAI/Anthropic 端點用上你的記憶，互動總結寫回主記憶 | [services](doc/services.zh-TW.md) |
 
 ### 單一工作階段
 
@@ -154,6 +156,13 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 - **定時** — 五欄 cron（本機時區）、1 分鐘到 1 年的固定間隔，或一次性的未來時間；最多 100 個任務。到點後內容當作一般訊息進佇列。助手也可以建立定時任務，建立和刪除遵循你的審批檔位
 - **MCP** — 預設關閉。工具名帶 `mcp_{server}_` 前綴，每次呼叫預設都要批准，可以按伺服器開啟「跳過審批」。某個伺服器啟動失敗不影響其他伺服器
 - **Skills** — 一個帶 `SKILL.md`（`name`、`description` 和步驟）的資料夾。啟用的技能會列在模型提示裡，最多 50 個，下一回合生效，無需重新啟動
+
+### 對外服務
+
+- **用途** — 對接外部 agent 和外掛。遊戲的 AI mod、NPC 對話外掛、寫作或程式設計外掛、其他 agent 框架，只要能填 OpenAI 或 Anthropic 相容的位址、金鑰和模型名稱，就能接入
+- **做法** — 每個服務監聽一個獨立的 `127.0.0.1` 連接埠，把請求轉送給主模型或個別指定的上游。只改三處：模型名稱、插在最後一則使用者訊息前的召回記憶、可選的自訂提示詞。工具、串流輸出、`tool_calls` 和錯誤都原樣透傳
+- **寫回** — 依設定的間隔把呼叫端的要求和回覆總結成一句話，以 `[对外服务:<名稱>]` 開頭寫進主記憶。記憶頁可依來源篩選，刪除服務時可一併刪除它寫入的記憶
+- **邊界** — 呼叫端必須和 Partner 在同一台電腦上；服務協定必須與上游一致，不做格式轉換；每個服務有獨立權杖。外部文字會進入主記憶，只把權杖交給可信的程式
 
 ### 系統與平台
 
@@ -205,7 +214,7 @@ GitHub 單一 release 附件上限 2 GiB，朗讀引擎約 3 GB。應用程式�
 <details>
 <summary><strong>會把我的資料傳到別處嗎？</strong></summary>
 
-對話內容傳給你設定的模型端點。「聯網搜尋」預設開啟，搜尋時查詢語句會傳給第三方搜尋引擎，可以在「設定 → 聯網搜尋」關閉。應用程式還會連 GitHub 檢查更新和下載語音引擎。本機 API 只監聽 `127.0.0.1`，請求必須帶啟動時產生的權杖。
+對話內容傳給你設定的模型端點。「聯網搜尋」預設開啟，搜尋時查詢語句會傳給第三方搜尋引擎，可以在「設定 → 聯網搜尋」關閉。應用程式還會連 GitHub 檢查更新和下載語音引擎。本機 API 和對外服務都只監聽 `127.0.0.1`，請求必須帶權杖。
 
 </details>
 

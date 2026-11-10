@@ -21,7 +21,7 @@
 | [定时](./schedules.md) | 按 cron、间隔或一次性时间，把一句话投进队列 |
 | [MCP](./mcp.md) | 接入 stdio MCP 服务器，控制哪些工具免审批 |
 | [Skills](./skills.md) | 用 `SKILL.md` 给模型补充做法，上传、新建、停用 |
-| [对外记忆服务](./services.md) | 把多个端口做成带记忆召回的 OpenAI/Anthropic 反向代理，定时把交互总结写回主记忆 |
+| [对外服务](./services.md) | 对接外部 agent 和插件：游戏 AI mod、插件等通过本地 OpenAI/Anthropic 端点用上你的记忆，交互总结写回主记忆 |
 
 ## 进阶
 

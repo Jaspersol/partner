@@ -4,7 +4,7 @@
 
 ### 开箱即用的单会话 Windows 桌面 AI 助手
 
-**一条连续的会话，打字或开口都行；带记忆、定时、MCP、Skills，还有能操作桌面的子 agent，动手前先问你。**
+**一条连续的会话，打字或开口都行；带记忆、定时、MCP、Skills，还有能操作桌面的子 agent，动手前先问你。也能通过保留历史记忆的对外服务通用api，让你的partner无缝接入游戏 AI mod、插件和其他 agent。**
 
 [![Version](https://img.shields.io/github/v/release/Jaspersol/partner?color=blue&label=version)](https://github.com/Jaspersol/partner/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey.svg)](https://github.com/Jaspersol/partner/releases)
@@ -26,6 +26,7 @@
 - **语音：本地或自备** — 唤醒词、断句、识别、逐句朗读、语音审批。可以下载本地引擎，也可以接已有的 ASR/TTS 服务
 - **操作桌面，先批准** — 需要操作窗口或读文件的请求交给后台子 agent。默认每个动作都先征求你同意，无人应答按拒绝处理
 - **看得见的记忆** — 你提过的偏好存在本地数据库里，每条记录都可以查看、调整层级、置顶和删除
+- **对接外部 agent 与插件** — 给游戏的 AI mod、编辑器或浏览器插件、其他 agent 框架一个 OpenAI/Anthropic 兼容的本地端点，独属于你的 Partner 就能接入任何能填大模型地址的平台：每个请求附上相关记忆，交互总结写回主记忆
 - **定时、MCP 与 Skills** — 按 cron、固定间隔或指定时间执行一句话；接入 stdio MCP 服务器；用 `SKILL.md` 教模型一套做法
 - **默认只在本机** — 本地 API 只监听 `127.0.0.1`，请求必须带启动时生成的令牌。对话内容只发给你配置的模型端点
 - **原生 Windows 应用** — 基于 Tauri 2 和 .NET 10 后端，安装包自带 .NET 运行时
@@ -94,6 +95,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 可选：openai / anthropic
 - **定时**：点击侧边栏“定时” → 选 cron、固定间隔或指定时间 → 填要发送的那句话
 - **MCP**：点击侧边栏“MCP” → 打开总开关 → 添加服务器（名称、命令、参数）
 - **Skills**：点击侧边栏“技能” → 上传 `SKILL.md`（或压缩后的技能文件夹），或在应用里新建
+- **对外服务**：点击侧边栏“对外服务” → 添加服务（名称、端口、协议、对外模型名）→ 复制只显示一次的令牌 → 在 mod 或插件里填 `http://127.0.0.1:<端口>/v1`、令牌和模型名
 - **Agent**：点击侧边栏“agent”，编辑主 agent 和各子 agent 的提示词，也可以给子 agent 单独指定模型
 
 > **注意**：没配置模型时不会丢消息。各来源的消息都留在队列里，等模型可用后再执行。
@@ -114,7 +116,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 可选：openai / anthropic
 | 定时 | cron、固定间隔或指定时间 | [schedules](doc/schedules.md) |
 | MCP | 接入 stdio MCP 服务器 | [mcp](doc/mcp.md) |
 | Skills | 用 `SKILL.md` 描述一套做法 | [skills](doc/skills.md) |
-| 对外记忆服务 | 托管多个带记忆召回的 OpenAI/Anthropic 反向代理端口，定时把交互总结写回主记忆 | [services](doc/services.md) |
+| 对外服务 | 让游戏 mod、插件和外部 agent 通过本地 OpenAI/Anthropic 端点用上你的记忆，交互总结写回主记忆 | [services](doc/services.md) |
 
 ### 单会话
 
@@ -154,6 +156,13 @@ export PARTNER_LLM_PROTOCOL=openai   # 可选：openai / anthropic
 - **定时** — 五段 cron（本机时区）、1 分钟到 1 年的固定间隔，或一次性的未来时间；最多 100 个任务。到点后内容作为普通消息进队列。助手也可以创建定时任务，创建和删除遵循你的审批级别
 - **MCP** — 默认关闭。工具名带 `mcp_{server}_` 前缀，每次调用默认都要批准，可以按服务器打开“跳过审批”。某个服务器启动失败不影响其他服务器
 - **Skills** — 一个带 `SKILL.md`（`name`、`description` 和步骤）的文件夹。启用的技能会列在模型提示里，最多 50 个，下一回合生效，无需重启
+
+### 对外服务
+
+- **用途** — 对接外部 agent 和插件。游戏的 AI mod、NPC 对话插件、写作或编程插件、其他 agent 框架，只要能填 OpenAI 或 Anthropic 兼容的地址、密钥和模型名，就能接入
+- **做法** — 每个服务监听一个独立的 `127.0.0.1` 端口，把请求转发给主模型或单独指定的上游。只改三处：模型名、插在最后一条用户消息前的召回记忆、可选的自定义提示词。工具、流式输出、`tool_calls` 和错误都原样透传
+- **写回** — 按设定的间隔把调用方的要求和回复总结成一句话，以 `[对外服务:<名称>]` 开头写进主记忆。记忆页按来源筛选，删除服务时可一并删除它写入的记忆
+- **边界** — 调用方必须和 Partner 在同一台电脑上；服务协议必须与上游一致，不做格式转换；每个服务有独立令牌。外部文字会进入主记忆，只把令牌交给可信的程序
 
 ### 系统与平台
 
@@ -205,7 +214,7 @@ GitHub 单个 release 附件上限 2 GiB，朗读引擎约 3 GB。应用按顺�
 <details>
 <summary><strong>会把我的数据传到别处吗？</strong></summary>
 
-对话内容发给你配置的模型端点。“联网搜索”默认开启，搜索时查询语句会发给第三方搜索引擎，可以在“设置 → 联网搜索”关闭。应用还会访问 GitHub 检查更新和下载语音引擎。本地 API 只监听 `127.0.0.1`，请求必须带启动时生成的令牌。
+对话内容发给你配置的模型端点。“联网搜索”默认开启，搜索时查询语句会发给第三方搜索引擎，可以在“设置 → 联网搜索”关闭。应用还会访问 GitHub 检查更新和下载语音引擎。本地 API 和对外服务都只监听 `127.0.0.1`，请求必须带令牌。
 
 </details>
 

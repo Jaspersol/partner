@@ -1,10 +1,32 @@
-# Memory Service
+# Memory Services
 
 [简体中文](./services.md) | [繁體中文](./services.zh-TW.md) | **English**
 
 Back to the [documentation index](./README.en.md).
 
-The Memory Service turns the app into a host for several reverse-proxy instances: each gets its own `127.0.0.1` port, proxies an upstream OpenAI or Anthropic model, injects main-memory recall into requests, optionally prepends a custom prompt, and periodically summarizes the interactions into one sentence written back into the main memory store.
+Memory Services connect external agents and plugins: they let your own Partner join any platform that can use a large model, such as game AI mods, editor or browser plugins, and other agent frameworks. The app can host several services. Each gets its own `127.0.0.1` port, proxies an upstream OpenAI or Anthropic model, injects main-memory recall into requests, optionally prepends a custom prompt, and periodically summarizes the interactions into one sentence written back into the main memory store.
+
+## What it is for
+
+Game mods, plugins and agent frameworks usually talk to a model of their own that does not know who you are or what you talked about last time. Point their model address at a Memory Service and they use Partner's memory; what happens on their side is written back to the main memory too, so Partner knows about it when you bring it up in the main conversation.
+
+A program can connect when:
+
+- it lets you enter the model address (Base URL), API key and model name yourself. Most mods and plugins that advertise "OpenAI-compatible API" or "Claude API" support do;
+- it runs on the same computer as Partner (services listen on `127.0.0.1` only);
+- it speaks the same protocol as the service's upstream: choose `openai` for an OpenAI-compatible upstream, `anthropic` for an Anthropic one.
+
+To connect, add a service on the Memory Services page, copy its token, and enter in the mod or plugin:
+
+| Setting in the mod / plugin | Value |
+|---|---|
+| Base URL / endpoint | `http://127.0.0.1:<port>/v1` |
+| API key | the service's token |
+| Model name | the service's "Model name" |
+
+An `openai` service accepts `POST /v1/chat/completions`, an `anthropic` service `POST /v1/messages`. Some Anthropic clients, including the official SDK, append `/v1` themselves; for those, enter `http://127.0.0.1:<port>` without `/v1`.
+
+The caller's tools (function calling), streaming and its own conversation history keep working; the service does not replace them, and it does not expose Partner's MCP tools or desktop control to the caller.
 
 ## What it is
 
@@ -16,7 +38,7 @@ The Memory Service turns the app into a host for several reverse-proxy instances
 
 ## Creating a service in the UI
 
-The **Services** page in the sidebar:
+The **Memory Services** page in the sidebar:
 
 1. Click "Add" and fill in the fields below, then save. Saving starts the instance on `http://127.0.0.1:<port>/v1`.
 2. The server generates an ID and a token on creation; the **plaintext token is shown only once** (on creation or rotation), so copy and keep it.
