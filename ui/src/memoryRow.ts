@@ -19,6 +19,13 @@ export interface MemoryRow {
   retired: boolean
   /** The one short phrase a card shows: when it was last used, what replaced it, or that it was a search hit. */
   brief: string
+  /** Which writer produced this record: "" for the main session, "service:<id>" for an external service. */
+  origin: string
+}
+
+/** True when a record was written by an external memory service rather than the main session. */
+export function isServiceOrigin(origin: string | null | undefined): boolean {
+  return typeof origin === 'string' && origin.startsWith('service:')
 }
 
 /** The four tiers, in the order the picker offers them: a person can move a record between any two. */
@@ -118,6 +125,7 @@ export function memoryRowFromItem(item: MemoryItem, now = Date.now()): MemoryRow
     createdAt: item.createdAt,
     lastRecalledAt: item.lastRecalledAt ?? null,
     retired,
+    origin: item.origin ?? '',
     brief: retired ? t('已被 {successor} 取代', { successor: item.supersededBy ?? t('新记录') }) : ago(item.lastRecalledAt, now),
   }
 }
@@ -134,6 +142,7 @@ export function memoryRowFromHit(hit: RecallHit): MemoryRow {
     // A hit's why-it-surfaced line replaces the age line: recalling it is what just happened, so there is no
     // "last used" to report.
     validity: t('命中 {toFixed} · {join}', { toFixed: hit.total.toFixed(3), join: hit.reasons.join(', ') }),
+    origin: '',
     supersededBy: null,
     editedBy: null,
     createdAt: hit.createdAt,

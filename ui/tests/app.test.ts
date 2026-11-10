@@ -166,6 +166,7 @@ function respond(path: string): unknown {
   if (path.includes('/api/queue')) return QUEUE
   if (path.includes('/api/skills')) return { skills: [], warnings: [] }
   if (path.includes('/api/schedules')) return { tasks: [] }
+  if (path.includes('/api/services')) return []
   if (path.includes('/api/voice/devices')) return { inputs: [], outputs: [] }
   if (path.includes('/api/voice')) {
     return {
@@ -215,9 +216,9 @@ describe('app shell', () => {
     await flushPromises()
 
     const tabs = wrapper.findAll('[data-test^=tab-]')
-    // Seven: the queue is the composer's list now, not a page of its own, agent joined the capability pages —
+    // Eight: the queue is the composer's list now, not a page of its own, agent joined the capability pages —
     // it edits what the agents are told, not the installation — and 定时 sits right under the conversation.
-    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '定时', '记忆', 'MCP', '技能', 'agent', '设置'])
+    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '定时', '记忆', 'MCP', '对外服务', '技能', 'agent', '设置'])
 
     for (const tab of tabs) {
       await tab.trigger('click')

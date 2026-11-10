@@ -114,6 +114,7 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 | Schedules | Cron, fixed interval, or a specific date and time | [schedules](doc/schedules.en.md) |
 | MCP | Connects stdio MCP servers | [mcp](doc/mcp.en.md) |
 | Skills | Describes routines in `SKILL.md` | [skills](doc/skills.en.md) |
+| Memory Service | Hosts OpenAI/Anthropic reverse-proxy ports with memory recall and periodic summaries | [services](doc/services.en.md) |
 
 ### Single Session
 

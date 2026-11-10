@@ -15,7 +15,7 @@ public static class SettingsValidation
     /// What is stored now. A rule that depends on the machine (a directory that must exist) is held against what is
     /// <i>new</i>: otherwise an unplugged drive would make every unrelated save fail until the path was edited out.
     /// </param>
-    public static IReadOnlyList<string> Validate(RuntimeSettings settings, RuntimeSettings? stored = null)
+    public static IReadOnlyList<string> Validate(RuntimeSettings settings, RuntimeSettings? stored = null, int apiPort = 0)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -146,6 +146,7 @@ public static class SettingsValidation
         ValidateWeb(settings.Web, errors);
 
         errors.AddRange(AgentsValidation.Validate(settings, stored));
+        errors.AddRange(ServicesValidation.Validate(settings, apiPort));
 
         return errors;
     }

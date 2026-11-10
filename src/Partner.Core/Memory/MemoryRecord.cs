@@ -52,6 +52,28 @@ public sealed record MemoryRecord
     public string? SupersededBy { get; init; }
 
     public Actor? EditedBy { get; init; }
+
+    /// <summary>
+    /// Which writer produced this record. Supersede compares only records of the same origin: a summary written
+    /// by an external service must not retire a fact from the main session, and two services' summaries describe
+    /// different time spans rather than contradicting each other.
+    /// </summary>
+    public string Origin { get; init; } = MemoryOrigins.Main;
+}
+
+/// <summary>Names the writer of a memory record.</summary>
+public static class MemoryOrigins
+{
+    /// <summary>The main agent session. Empty so existing rows and the column default mean "main".</summary>
+    public const string Main = "";
+
+    /// <summary>Prefix carried by records written through an external service.</summary>
+    public const string ServicePrefix = "service:";
+
+    public static string Service(string id) => ServicePrefix + id;
+
+    public static bool IsService(string? origin) =>
+        origin is not null && origin.StartsWith(ServicePrefix, StringComparison.Ordinal);
 }
 
 /// <summary>Audit entry for an edit.</summary>
@@ -81,4 +103,5 @@ public sealed record MemoryQuery(
     MemoryTier? Tier = null,
     MemoryScope? Scope = null,
     bool IncludeInvalidated = false,
-    int Limit = 1000);
+    int Limit = 1000,
+    string? Origin = null);

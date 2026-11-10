@@ -43,7 +43,8 @@ internal static class MemorySchema
             superseded_by    TEXT,
             edited_by        TEXT,
             pending_compact  INTEGER NOT NULL DEFAULT 0,
-            last_recalled_at TEXT
+            last_recalled_at TEXT,
+            origin           TEXT    NOT NULL DEFAULT ''
         );
 
         CREATE INDEX IF NOT EXISTS ix_memories_tier        ON memories(tier);
@@ -147,10 +148,18 @@ internal static class MemorySchema
         """;
 
     /// <summary>
+    /// Index for <c>origin</c> lookups (list filtering and recall exclusion). Created <b>after</b> migrations for
+    /// every store: a new store has the column from <see cref="Tables"/>, a migrated one from step 3. It cannot
+    /// live in <see cref="Ddl"/> because that batch runs on old stores before the column exists, and
+    /// <c>CREATE INDEX ... ON memories(origin)</c> fails to prepare there ("no such column").
+    /// </summary>
+    internal const string OriginIndex = "CREATE INDEX IF NOT EXISTS ix_memories_origin ON memories(origin);";
+
+    /// <summary>
     /// The version this build writes into <c>PRAGMA user_version</c>. A store carrying a higher one was written
     /// by a newer build and is refused rather than half-read.
     /// </summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     /// <summary>
     /// The schema's history, one step per version, lowest first.
@@ -173,6 +182,15 @@ internal static class MemorySchema
             new[] { "ALTER TABLE memories ADD COLUMN body_cjk TEXT NOT NULL DEFAULT ''" },
             TolerateFailures: true,
             Data: BackfillCjk),
+        new SchemaMigration(
+            3,
+            "origin — which writer a record came from; supersede stays within one origin",
+            new[]
+            {
+                "ALTER TABLE memories ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
+                OriginIndex,
+            },
+            TolerateFailures: true),
     };
 
     /// <summary>

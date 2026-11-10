@@ -21,6 +21,7 @@
 | [定時](./schedules.zh-TW.md) | 依 cron、間隔或一次性時間，把一句話排入佇列 |
 | [MCP](./mcp.zh-TW.md) | 接入 stdio MCP 伺服器，控制哪些工具免審批 |
 | [Skills](./skills.zh-TW.md) | 用 `SKILL.md` 給模型補充做法，上傳、新建、停用 |
+| [對外記憶服務](./services.zh-TW.md) | 託管帶記憶召回的 OpenAI/Anthropic 反向代理埠，定時把互動總結寫回主記憶 |
 
 ## 進階
 

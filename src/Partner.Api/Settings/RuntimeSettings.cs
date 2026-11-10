@@ -54,6 +54,24 @@ public sealed record RuntimeSettings
     [System.Text.Json.Serialization.JsonIgnore]
     public bool AgentsSpecified => _agents is not null;
 
+    private readonly ServicesSettings? _services;
+
+    /// <summary>
+    /// Externally exposed reverse-proxy services. Like <see cref="Agents"/>, an <b>absent</b> services section
+    /// means "leave it as it is", not "reset it": it has its own page and its own endpoints, so a settings PUT
+    /// without it (the settings page, a script, an older build) must not wipe the instances somebody created.
+    /// <see cref="ServicesSpecified"/> is what lets the store tell the two apart.
+    /// </summary>
+    public ServicesSettings Services
+    {
+        get => _services ?? new ServicesSettings();
+        init => _services = value;
+    }
+
+    /// <summary>Whether the document carried a services section at all.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ServicesSpecified => _services is not null;
+
     /// <summary>Whether the file tools exist, and where they may read.</summary>
     public FilesSettings Files { get; init; } = new();
 

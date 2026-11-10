@@ -144,7 +144,7 @@ public sealed class ApiContext : IAsyncDisposable
     /// time base the sink stamped its events with.</summary>
     public TimeProvider Clock { get; }
 
-    public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null)
+    public static async Task<ApiContext> OpenAsync(string workspace, TimeProvider? clock = null, int apiPort = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
         Directory.CreateDirectory(workspace);
@@ -155,7 +155,7 @@ public sealed class ApiContext : IAsyncDisposable
         // Read once, here: the store is built with its embedding provider fixed, so turning the switch on takes
         // effect at the next process start. Changing it live would mean re-embedding or silently diverging between
         // old and new records on the vector arm of the scorer.
-        var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"));
+        var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"), apiPort);
         var memoryOptions = new MemoryStoreOptions { MinScore = 0.3 };
         if (settings.Load().Memory.Embeddings)
         {

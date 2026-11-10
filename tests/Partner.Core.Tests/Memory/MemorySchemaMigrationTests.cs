@@ -52,7 +52,7 @@ public sealed class MemorySchemaMigrationTests : IDisposable
         );
         """;
 
-    private void CreateOldStore(string? extra = null, string? row = null)
+    private void CreateOldStore(string? extra = null, string? row = null, int version = 0)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
         using var db = new SqliteConnection($"Data Source={DbPath}");
@@ -72,6 +72,11 @@ public sealed class MemorySchemaMigrationTests : IDisposable
         if (row is not null)
         {
             Execute(db, row);
+        }
+
+        if (version > 0)
+        {
+            Execute(db, $"PRAGMA user_version = {version}");
         }
     }
 
@@ -233,5 +238,34 @@ public sealed class MemorySchemaMigrationTests : IDisposable
             $"step {step.To} ({step.Description}) is past the current version {MemorySchema.Version}"));
         Assert.All(MemorySchema.Migrations, step => Assert.False(string.IsNullOrWhiteSpace(step.Description)));
         Assert.All(MemorySchema.Migrations, step => Assert.NotEmpty(step.Statements));
+    }
+
+    [Fact]
+    public async Task A_v2_store_upgrades_to_v3_and_existing_rows_get_the_main_origin()
+    {
+        // A genuine v2 store: the columns added by steps 1 and 2 are present, origin is not, and it is stamped
+        // at 2 so only step 3 runs on open.
+        CreateOldStore(
+            extra: "ALTER TABLE memories ADD COLUMN last_recalled_at TEXT; "
+                 + "ALTER TABLE memories ADD COLUMN body_cjk TEXT NOT NULL DEFAULT ''",
+            row: "INSERT INTO memories(record_id, tier, scope, body, created_at, valid_from, confidence, "
+               + "importance, veracity, pending_compact) VALUES ('old-1', 'Semantic', 'Recall', "
+               + "'deployment pipelines in region 7', '2026-09-01T00:00:00.0000000+00:00', "
+               + "'2026-09-01T00:00:00.0000000+00:00', 0.5, 0.5, 0.5, 0)",
+            version: 2);
+        Assert.Equal(2, UserVersion(DbPath));
+        Assert.False(HasColumn(DbPath, "memories", "origin"));
+
+        await using var store = new MemoryStore(DbPath, null, _clock);
+
+        Assert.Equal(MemorySchema.Version, store.SchemaVersion);
+        Assert.Equal(MemorySchema.Version, UserVersion(DbPath));
+        Assert.True(HasColumn(DbPath, "memories", "origin"));
+
+        // The row that predates the column keeps its data and is labelled as the main writer.
+        var kept = Assert.Single(await store.ListAsync());
+        Assert.Equal("old-1", kept.RecordId);
+        Assert.Equal("deployment pipelines in region 7", kept.Body);
+        Assert.Equal(MemoryOrigins.Main, kept.Origin);
     }
 }

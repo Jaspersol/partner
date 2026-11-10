@@ -43,7 +43,8 @@ public sealed record MemoryCandidate(
     double Confidence,      // 0..1
     double? FtsRank = null, // bm25 magnitude, normalised per index: -1 is this index's best hit, null when unused
     long? SourceEventSeq = null,
-    DateTimeOffset? LastRecalledAt = null);
+    DateTimeOffset? LastRecalledAt = null,
+    string Origin = MemoryOrigins.Main);
 
 /// <summary>
 /// Explainable score of a candidate: every component is in <c>[0,1]</c> and is reported separately so
@@ -104,7 +105,8 @@ public sealed record MemoryHit(
     MemoryTier Tier,
     MemoryScope Scope,
     DateTimeOffset Now,
-    long? SourceEventSeq = null);
+    long? SourceEventSeq = null,
+    string Origin = MemoryOrigins.Main);
 
 /// <summary>How old a recalled memory is, in the words a reader would use.</summary>
 public static class MemoryAge

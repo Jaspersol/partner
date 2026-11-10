@@ -1,11 +1,13 @@
 import part1 from './en/part1'
 import part2 from './en/part2'
 import part3 from './en/part3'
+import part4 from './en/part4'
 
 const en: Record<string, string> = {
   ...part1,
   ...part2,
   ...part3,
+  ...part4,
   'nav.session': 'Chat',
   'nav.schedules': 'Schedules',
   'nav.memory': 'Memory',
@@ -85,6 +87,7 @@ const en: Record<string, string> = {
   'settings.appearance.themeHint': 'The theme button in the top bar switches it too.',
   'settings.appearance.reduce': 'Reduce transparency',
   'settings.appearance.reduceHint': 'Removes the frosted-glass blur for a crisper, lighter interface. Applies automatically when the system has "reduce transparency" on.',
+  'nav.services': 'Memory Services',
 }
 
 export default en

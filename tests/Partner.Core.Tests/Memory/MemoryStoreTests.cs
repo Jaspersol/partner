@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Partner.Core.Memory;
 using Partner.Core.Tests.Sessions;
 
@@ -603,6 +604,134 @@ public sealed class MemoryStoreTests : IDisposable
         }
 
         Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public async Task Supersede_is_confined_to_one_origin()
+    {
+        await using var store = Open();
+        const string a = "deploy pipeline blue green release region seven alpha";
+        const string b = "deploy pipeline blue green release region eight alpha";
+        var origin = MemoryOrigins.Service("x");
+
+        // A service record must not be retired by a highly-similar main record (cross-origin skip), and a
+        // service write must not retire anything at all (service-wide skip).
+        await store.WriteAsync(Rec("svc", a, MemoryTier.Episodic) with { Origin = origin });
+        await store.WriteAsync(Rec("main", b, MemoryTier.Episodic));
+        Assert.Null((await store.GetAsync("svc"))!.ValidTo);
+        Assert.Null((await store.GetAsync("main"))!.ValidTo);
+
+        // Control: two main-origin records with the same kind of overlap still supersede — existing behaviour.
+        const string c = "budget forecast revenue margin quarterly grew steadily";
+        const string d = "budget forecast revenue margin quarterly fell sharply";
+        await store.WriteAsync(Rec("m1", c, MemoryTier.Episodic));
+        await store.WriteAsync(Rec("m2", d, MemoryTier.Episodic));
+        Assert.NotNull((await store.GetAsync("m1"))!.ValidTo);
+        Assert.Null((await store.GetAsync("m2"))!.ValidTo);
+    }
+
+    [Fact]
+    public async Task Service_summaries_from_one_service_never_retire_each_other()
+    {
+        await using var store = Open();
+        var origin = MemoryOrigins.Service("x");
+
+        // Both share the template's bigrams and the same origin. Only the service-wide skip (not the
+        // cross-origin rule) keeps the second write from retiring the first.
+        await store.WriteAsync(Rec(
+            "s1", "[对外服务:X] 在做部署的过程中调用方先要求检查再要求回滚服务先确认后执行", MemoryTier.Episodic)
+            with { Origin = origin });
+        await store.WriteAsync(Rec(
+            "s2", "[对外服务:X] 在做发布的过程中调用方先要求预览再要求上线服务先检查后回复", MemoryTier.Episodic)
+            with { Origin = origin });
+
+        Assert.Null((await store.GetAsync("s1"))!.ValidTo);
+        Assert.Null((await store.GetAsync("s2"))!.ValidTo);
+    }
+
+    [Fact]
+    public async Task ExcludeOrigins_filters_before_the_top_n_cut()
+    {
+        await using var store = Open(new MemoryStoreOptions { RecallLimit = 2 });
+        var origin = MemoryOrigins.Service("x");
+
+        // Three high-scoring service records would occupy the two slots; a low-scoring main record would be cut.
+        await store.WriteAsync(Rec("s1", "alpha beta service one", importance: 0.9) with { Origin = origin });
+        await store.WriteAsync(Rec("s2", "alpha beta service two", importance: 0.9) with { Origin = origin });
+        await store.WriteAsync(Rec("s3", "alpha beta service three", importance: 0.9) with { Origin = origin });
+        await store.WriteAsync(Rec("m1", "alpha beta main one", importance: 0.1));
+
+        var unfiltered = await store.RecallAsync("alpha beta", 2);
+        Assert.Equal(2, unfiltered.Count);
+        Assert.DoesNotContain(unfiltered, h => h.RecordId == "m1");
+
+        var filtered = await store.RecallAsync("alpha beta", 2, new RecallFilter
+        {
+            ExcludeOrigins = new HashSet<string> { origin },
+        });
+        Assert.DoesNotContain(filtered, h => MemoryOrigins.IsService(h.Origin));
+        Assert.Contains(filtered, h => h.RecordId == "m1"); // excluded before the cut, so m1 still fits
+    }
+
+    [Fact]
+    public async Task MarkRecalled_false_leaves_last_recalled_at_untouched()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("m1", "alpha beta gamma"));
+
+        Assert.Null(RawRecalledAt("m1"));
+
+        // A pass-through service's recall must not move the main memory's demotion clock.
+        await store.RecallAsync("alpha beta", 8, new RecallFilter { MarkRecalled = false });
+        Assert.Null(RawRecalledAt("m1"));
+
+        // The ordinary path still marks what it handed out.
+        await store.RecallAsync("alpha beta");
+        Assert.NotNull(RawRecalledAt("m1"));
+    }
+
+    [Fact]
+    public async Task ListAsync_can_filter_by_origin()
+    {
+        await using var store = Open();
+        var origin = MemoryOrigins.Service("x");
+        await store.WriteAsync(Rec("m1", "alpha beta"));
+        await store.WriteAsync(Rec("s1", "alpha gamma") with { Origin = origin });
+        await store.WriteAsync(Rec("s2", "alpha delta") with { Origin = origin });
+
+        var service = await store.ListAsync(new MemoryQuery(Origin: origin));
+        Assert.Equal(2, service.Count);
+        Assert.All(service, r => Assert.Equal(origin, r.Origin));
+
+        var main = await store.ListAsync(new MemoryQuery(Origin: MemoryOrigins.Main));
+        Assert.Equal("m1", Assert.Single(main).RecordId);
+    }
+
+    [Fact]
+    public async Task Promoted_episodic_copy_inherits_the_origin()
+    {
+        await using var store = Open();
+        var origin = MemoryOrigins.Service("x");
+        await store.WriteAsync(Rec("w", "alpha beta", MemoryTier.Working, createdAt: _clock.GetUtcNow())
+            with { Origin = origin });
+
+        _clock.Advance(TimeSpan.FromHours(25));
+        Assert.Equal(1, await store.PromoteEligibleAsync());
+
+        var copy = await store.GetAsync(MemoryStore.EpisodicCopyId("w"));
+        Assert.NotNull(copy);
+        Assert.Equal(origin, copy!.Origin);
+    }
+
+    private object? RawRecalledAt(string id)
+    {
+        using var db = new SqliteConnection($"Data Source={DbPath}");
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT last_recalled_at FROM memories WHERE record_id = $id";
+        cmd.Parameters.AddWithValue("$id", id);
+        var value = cmd.ExecuteScalar();
+        return value is DBNull ? null : value;
     }
 
     private sealed class FailingEmbeddingProvider : IEmbeddingProvider

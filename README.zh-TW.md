@@ -114,6 +114,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 | 定時 | cron、固定間隔或指定時間 | [schedules](doc/schedules.zh-TW.md) |
 | MCP | 接入 stdio MCP 伺服器 | [mcp](doc/mcp.zh-TW.md) |
 | Skills | 用 `SKILL.md` 描述一套做法 | [skills](doc/skills.zh-TW.md) |
+| 對外記憶服務 | 託管多個帶記憶召回的 OpenAI/Anthropic 反向代理埠，定時把互動總結寫回主記憶 | [services](doc/services.zh-TW.md) |
 
 ### 單一工作階段
 

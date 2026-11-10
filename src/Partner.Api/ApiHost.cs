@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Hosting;
+using Partner.Api.Services;
 using Partner.Api.Settings;
 using Partner.Api.Voice;
 using Partner.Core.Agent.Llm;
@@ -27,7 +29,7 @@ public static class ApiHost
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
 
-        var context = await ApiContext.OpenAsync(workspace, clock).ConfigureAwait(false);
+        var context = await ApiContext.OpenAsync(workspace, clock, port).ConfigureAwait(false);
         var consumer = ConsumerHost.Create(context, workspace);
 
         // A job that was running when the process last stopped never reported; say so to the main agent now,
@@ -57,6 +59,10 @@ public static class ApiHost
             await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
         }
 
+        // Pass-through listeners live on their own loopback ports. Registered as an IHostedService so the host
+        // starts them with the app and flushes pending summaries on shutdown, in production and tests alike.
+        var services = new ServiceHost(context, workspace, clock ?? TimeProvider.System);
+
         maintenance.Start();
 
         // After the consumer is configured, so the first item a due task enqueues has somewhere to go.
@@ -70,6 +76,11 @@ public static class ApiHost
         // Polling makes per-request Information logs noise.
         builder.Logging.AddFilter("Microsoft.AspNetCore", Microsoft.Extensions.Logging.LogLevel.Warning);
         builder.WebHost.UseSetting("urls", $"http://127.0.0.1:{port}");
+
+        // Shutdown budget, stated rather than assumed: each service flushes its last window to the model on stop,
+        // and the parallel stop inside ServiceHost is bounded by its own 20-second deadline. Below this the host
+        // would abandon the remaining flushes; above it a wedged stop would hold the process open.
+        builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(30));
         builder.Services.AddSingleton(context);
         builder.Services.AddSingleton(consumer);
         builder.Services.AddSingleton(voice);
@@ -77,6 +88,8 @@ public static class ApiHost
         builder.Services.AddSingleton(package);
         builder.Services.AddSingleton(updateService);
         builder.Services.AddSingleton(maintenance);
+        builder.Services.AddSingleton(services);
+        builder.Services.AddSingleton<IHostedService>(services);
 
         // The shell serves the UI from its own origin, so every API call is cross-origin. CORS is a
         // browser-enforced allowlist, not the security boundary — the bearer token is. Origins are enumerated
@@ -109,6 +122,7 @@ public static class ApiHost
         // separate from /api/consumer.
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
+        ServiceEndpoints.Map(app);
         EnginePackageEndpoints.Map(app);
         UpdateEndpoints.Map(app);
 

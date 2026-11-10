@@ -26,6 +26,7 @@ import TopBar from './components/TopBar.vue'
 import MemoryView from './views/MemoryView.vue'
 import SessionView from './views/SessionView.vue'
 import McpView from './views/McpView.vue'
+import ServicesView from './views/ServicesView.vue'
 import SchedulesView from './views/SchedulesView.vue'
 import SkillsView from './views/SkillsView.vue'
 import PromptsView from './views/PromptsView.vue'
@@ -47,6 +48,7 @@ const NAV = computed<NavItem[]>(() => [
   // Two capability pages of their own rather than cards inside settings: both are lists a person reads and
   // changes, and need the room a settings card does not give.
   { key: 'mcp', label: 'MCP', testId: 'MCP', icon: 'mcp' },
+  { key: 'services', label: t('nav.services'), testId: '服务', icon: 'services' },
   { key: 'skills', label: t('nav.skills'), testId: '技能', icon: 'skill' },
 
   // What the agents are told, and who they may hand work to.
@@ -502,6 +504,13 @@ onUnmounted(() => {
           />
           <PromptsView
             v-else-if="active === 'prompts'"
+            ref="activeView"
+            :api="api"
+            @changed="refreshSummary"
+            @navigate="select"
+          />
+          <ServicesView
+            v-else-if="active === 'services'"
             ref="activeView"
             :api="api"
             @changed="refreshSummary"

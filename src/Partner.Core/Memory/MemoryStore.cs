@@ -55,6 +55,8 @@ public sealed class MemoryStore : IMemoryStore
             // migration. The triggers name that column, and SQLite resolves a trigger body when the statement is
             // prepared — creating them any earlier makes an old store fail to open at all (measured).
             Execute(MemorySchema.CjkTriggers);
+            // origin is guaranteed by now: a new store got it from the CREATE TABLE, a migrated one from step 3.
+            Execute(MemorySchema.OriginIndex);
         }
         catch
         {
@@ -177,6 +179,14 @@ public sealed class MemoryStore : IMemoryStore
     /// </summary>
     private async Task SupersedeConflictingAsync(MemoryRecord incoming, CancellationToken ct)
     {
+
+        // Service summaries describe different windows of time, not competing claims about one fact. Their
+        // template sentences share most bigrams, so comparing them at all would retire real records — including
+        // each other and the main session's promoted episodic memories. Never supersede for a service writer.
+        if (MemoryOrigins.IsService(incoming.Origin))
+        {
+            return;
+        }
         // Two coarse filters, because a contradiction shares a subject and differs on one point. Bigrams for CJK,
         // FTS expression for Latin; both are built even for a body that is mostly one script, since a mixed body's
         // other half would otherwise be unsearchable. The decision is made by word overlap below.
@@ -189,7 +199,8 @@ public sealed class MemoryStore : IMemoryStore
 
         foreach (var candidate in candidates)
         {
-            if (candidate.Tier != incoming.Tier)
+            // A record from another origin is about a different writer/time span, not a contradiction.
+            if (candidate.Tier != incoming.Tier || candidate.Origin != incoming.Origin)
             {
                 continue;
             }
@@ -398,6 +409,12 @@ public sealed class MemoryStore : IMemoryStore
             cmd.Parameters.AddWithValue("$scope", filter.Scope.Value.ToString());
         }
 
+        if (filter.Origin is not null)
+        {
+            sql.Append(" AND origin = $origin");
+            cmd.Parameters.AddWithValue("$origin", filter.Origin);
+        }
+
         sql.Append(" ORDER BY created_at, record_id LIMIT $limit");
         cmd.Parameters.AddWithValue("$limit", Math.Max(1, filter.Limit));
         cmd.CommandText = sql.ToString();
@@ -413,12 +430,12 @@ public sealed class MemoryStore : IMemoryStore
     }
 
     public async Task<IReadOnlyList<MemoryHit>> RecallAsync(string query, int? limit = null, CancellationToken ct = default) =>
-        await RecallAsync(query, limit, excludeSourceSeqs: null, ct).ConfigureAwait(false);
+        await RecallAsync(query, limit, new RecallFilter(), ct).ConfigureAwait(false);
 
     public async Task<IReadOnlyList<MemoryHit>> RecallAsync(
         string query,
         int? limit,
-        IReadOnlySet<long>? excludeSourceSeqs,
+        RecallFilter filter,
         CancellationToken ct = default)
     {
         var take = Math.Max(1, limit ?? _options.RecallLimit);
@@ -446,9 +463,15 @@ public sealed class MemoryStore : IMemoryStore
         var now = _clock.GetUtcNow();
 
         // Excluded before scoring rather than after the top-N cut, so the caller still gets N useful hits.
-        var eligible = excludeSourceSeqs is null
+        var eligible = filter.ExcludeSourceSeqs is null && filter.ExcludeOrigins is null
             ? candidates
-            : candidates.Where(c => c.SourceEventSeq is not { } seq || !excludeSourceSeqs.Contains(seq)).ToList();
+            : candidates
+                .Where(c =>
+                    (filter.ExcludeSourceSeqs is null
+                        || c.SourceEventSeq is not { } seq
+                        || !filter.ExcludeSourceSeqs.Contains(seq))
+                    && (filter.ExcludeOrigins is null || !filter.ExcludeOrigins.Contains(c.Origin)))
+                .ToList();
 
         if (eligible.Count == 0)
         {
@@ -470,7 +493,8 @@ public sealed class MemoryStore : IMemoryStore
                     candidate.Tier,
                     candidate.Scope,
                     now,
-                    candidate.SourceEventSeq);
+                    candidate.SourceEventSeq,
+                    candidate.Origin);
             })
             .OrderByDescending(h => h.Score.Total)
             .ThenBy(h => h.RecordId, StringComparer.Ordinal)
@@ -481,21 +505,26 @@ public sealed class MemoryStore : IMemoryStore
             .Take(take)
             .ToList();
 
-        // What was actually handed out is what counts as used — not what merely became a candidate.
-        await MaintainAsync(result.Select(hit => hit.RecordId).ToList(), ct).ConfigureAwait(false);
+        // What was actually handed out is what counts as used — not what merely became a candidate. A pass-through
+        // service opts out so external traffic does not move the main memory's demotion clock.
+        if (filter.MarkRecalled)
+        {
+            await MaintainAsync(result.Select(hit => hit.RecordId).ToList(), ct).ConfigureAwait(false);
+        }
         return result;
     }
 
     public async Task<InjectionResult> InjectAsync(string query, CancellationToken ct = default) =>
-        await InjectAsync(query, excludeSourceSeqs: null, ct).ConfigureAwait(false);
+        await InjectAsync(query, new RecallFilter(), ct).ConfigureAwait(false);
 
     public async Task<InjectionResult> InjectAsync(
         string query,
-        IReadOnlySet<long>? excludeSourceSeqs,
+        RecallFilter filter,
         CancellationToken ct = default)
     {
-        var hits = await RecallAsync(query, _options.RecallLimit, excludeSourceSeqs, ct).ConfigureAwait(false);
+        var hits = await RecallAsync(query, filter.Limit ?? _options.RecallLimit, filter, ct).ConfigureAwait(false);
 
+        var budget = filter.TokenLimit ?? _options.InjectionTokenLimit;
         var kept = new List<MemoryHit>();
         var tokens = 0;
         var truncated = false;
@@ -503,7 +532,7 @@ public sealed class MemoryStore : IMemoryStore
         foreach (var hit in hits)
         {
             var cost = _options.Tokens.Count(hit.Body);
-            if (tokens + cost > _options.InjectionTokenLimit)
+            if (tokens + cost > budget)
             {
                 truncated = true;
                 break;
@@ -875,7 +904,7 @@ public sealed class MemoryStore : IMemoryStore
 
     private const string SelectColumns =
         "SELECT record_id, tier, scope, body, source_event_seq, created_at, valid_from, valid_to, ttl_expires_at, "
-        + "consolidated_at, confidence, importance, veracity, superseded_by, edited_by FROM memories";
+        + "consolidated_at, confidence, importance, veracity, superseded_by, edited_by, origin FROM memories";
 
     private async Task InsertAsync(
         MemoryRecord record,
@@ -895,9 +924,9 @@ public sealed class MemoryStore : IMemoryStore
         cmd.CommandText = (insertOrIgnore ? "INSERT OR IGNORE INTO memories(" : "INSERT INTO memories(") + """
             record_id, tier, scope, body, body_cjk, source_event_seq, created_at, valid_from, valid_to,
                                  ttl_expires_at, consolidated_at, confidence, importance, veracity, superseded_by,
-                                 edited_by, pending_compact, last_recalled_at)
+                                 edited_by, pending_compact, last_recalled_at, origin)
             VALUES ($id, $tier, $scope, $body, $cjk, $seq, $created, $from, $to, $ttl, $consolidated, $confidence,
-                    $importance, $veracity, $superseded, $edited, 0, $recalled)
+                    $importance, $veracity, $superseded, $edited, 0, $recalled, $origin)
             """;
         cmd.Parameters.AddWithValue("$id", record.RecordId);
         cmd.Parameters.AddWithValue("$tier", record.Tier.ToString());
@@ -920,6 +949,7 @@ public sealed class MemoryStore : IMemoryStore
         cmd.Parameters.AddWithValue("$edited", record.EditedBy is null ? DBNull.Value : record.EditedBy.Value.ToString());
         cmd.Parameters.AddWithValue(
             "$recalled", record.LastRecalledAt is null ? DBNull.Value : Iso(record.LastRecalledAt.Value));
+        cmd.Parameters.AddWithValue("$origin", record.Origin);
 
 
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -1114,7 +1144,7 @@ public sealed class MemoryStore : IMemoryStore
         await using var cmd = _db.CreateCommand();
         cmd.CommandText = $"""
           SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
-                 bm25({index}) AS rank, m.source_event_seq, m.last_recalled_at
+                 bm25({index}) AS rank, m.source_event_seq, m.last_recalled_at, m.origin
           FROM {index}
           JOIN memories m ON m.rowid = {index}.rowid
           WHERE {index} MATCH $q AND m.valid_to IS NULL
@@ -1161,7 +1191,8 @@ public sealed class MemoryStore : IMemoryStore
         reader.GetDouble(7),
         FtsRank: null,
         SourceEventSeq: reader.IsDBNull(9) ? null : reader.GetInt64(9),
-        LastRecalledAt: reader.IsDBNull(10) ? null : ParseTime(reader.GetString(10)));
+        LastRecalledAt: reader.IsDBNull(10) ? null : ParseTime(reader.GetString(10)),
+        Origin: reader.IsDBNull(11) ? MemoryOrigins.Main : reader.GetString(11));
 
     /// <summary>
     /// Reads a stored scope, falling back to <see cref="MemoryScope.Recall"/> for a value this build no longer
@@ -1266,6 +1297,7 @@ public sealed class MemoryStore : IMemoryStore
         Veracity = reader.GetDouble(12),
         SupersededBy = reader.IsDBNull(13) ? null : reader.GetString(13),
         EditedBy = reader.IsDBNull(14) ? null : Enum.Parse<Actor>(reader.GetString(14)),
+        Origin = reader.IsDBNull(15) ? MemoryOrigins.Main : reader.GetString(15),
     };
 
     /// <summary>

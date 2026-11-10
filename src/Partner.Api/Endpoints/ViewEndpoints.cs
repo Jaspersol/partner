@@ -1,3 +1,4 @@
+using Partner.Api.Services;
 using Partner.Core.Agent.Llm;
 using Partner.Api.Agents;
 using Partner.Api.Settings;
@@ -632,11 +633,12 @@ public static class ViewEndpoints
 
     private static void MapMemory(WebApplication app)
     {
-        app.MapGet("/api/memory", async (ApiContext ctx, string? tier, string? scope, int? take, CancellationToken ct) =>
+        app.MapGet("/api/memory", async (ApiContext ctx, string? tier, string? scope, string? origin, int? take, CancellationToken ct) =>
         {
             var query = new MemoryQuery(
                 Tier: Enum.TryParse<MemoryTier>(tier, ignoreCase: true, out var t) ? t : null,
                 Scope: Enum.TryParse<MemoryScope>(scope, ignoreCase: true, out var s) ? s : null,
+                Origin: origin,
                 Limit: take ?? 200);
 
             var records = await ctx.Memory.ListAsync(query, ct).ConfigureAwait(false);
@@ -651,6 +653,7 @@ public static class ViewEndpoints
                 supersededBy = r.SupersededBy,
                 editedBy = r.EditedBy?.ToString(),
                 importance = r.Importance,
+                origin = r.Origin,
             }));
         });
 
@@ -674,6 +677,7 @@ public static class ViewEndpoints
                 supersededBy = r.SupersededBy,
                 editedBy = r.EditedBy?.ToString(),
                 importance = r.Importance,
+                origin = r.Origin,
             }));
         });
 
@@ -910,7 +914,7 @@ public static class ViewEndpoints
 
         app.MapPut("/api/settings", async (
             RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, VoiceHost voice,
-            LocalEngineHost localEngines, CancellationToken ct) =>
+            LocalEngineHost localEngines, ServiceHost services, CancellationToken ct) =>
         {
             var before = ctx.Settings.Load();
 
@@ -970,6 +974,13 @@ public static class ViewEndpoints
                 || before.Asr != stored.Asr || before.Tts != stored.Tts)
             {
                 await voice.ReconfigureAsync(stored).ConfigureAwait(false);
+            }
+
+            // A settings PUT that actually carries a services section converges the listeners too. An absent
+            // section (the settings page) is preserved by the store and changes nothing here.
+            if (incoming.ServicesSpecified && !before.Services.Equals(stored.Services))
+            {
+                await services.ReconcileAsync(before.Services, stored.Services, ct).ConfigureAwait(false);
             }
 
             return Results.Ok(new
