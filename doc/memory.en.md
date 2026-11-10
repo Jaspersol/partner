@@ -37,6 +37,10 @@ Shown in the UI as **New / Experience / Fact / Method**.
 
 Deleting or withdrawing a conversation also deletes the memories distilled from it. Hand-written memories belong to no conversation and are not deleted with it.
 
+## Memories written by Memory Services
+
+A [Memory Service](./services.en.md) summarizes exchanges with external programs such as game mods and plugins into one sentence starting with `[对外服务:<name>]` and writes it to the main memory. The Memory page labels these records with their service, and "Filter by source" shows only main memories or only one service's. They are recalled like main-session memories but never retire one; deleting a conversation does not delete them. To remove them, delete the service on the Memory Services page with "Also delete the memories it wrote" checked.
+
 ## Maintenance and settings
 
 - The host runs maintenance once a day: it first ensures the database has a copy younger than 24 hours (`memory/backups/`, newest 7 kept), then promotes, demotes, drops expired records and compacts. Startup also takes a copy when the newest one is stale. A failed pass is logged and retried next time.
