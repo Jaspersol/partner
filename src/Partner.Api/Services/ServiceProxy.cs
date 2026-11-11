@@ -594,6 +594,9 @@ internal sealed class ServiceProxy
     private static string? Str(JsonNode? node) =>
         node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
+    private static JsonObject? FirstObject(JsonArray? array) =>
+        array is { Count: > 0 } ? array[0] as JsonObject : null;
+
     private static int? Int(JsonNode? node) =>
         node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
 
@@ -637,7 +640,7 @@ internal sealed class ServiceProxy
                     return;
                 }
 
-                var message = (root["choices"] as JsonArray)?[0] is JsonObject choice
+                var message = FirstObject(root["choices"] as JsonArray) is { } choice
                     ? choice["message"] as JsonObject
                     : null;
                 if (message is null)
@@ -698,7 +701,8 @@ internal sealed class ServiceProxy
                 return;
             }
 
-            var delta = (root["choices"] as JsonArray)?[0] is JsonObject choice ? choice["delta"] as JsonObject : null;
+            // The final usage frame of a stream (stream_options.include_usage) carries "choices": [].
+            var delta = FirstObject(root["choices"] as JsonArray) is { } choice ? choice["delta"] as JsonObject : null;
             if (delta is null)
             {
                 return;

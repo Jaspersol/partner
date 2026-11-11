@@ -545,6 +545,36 @@ public sealed class ServiceProxyTests : ApiFixture
     }
 
     [Fact]
+    public async Task A_usage_frame_with_empty_choices_does_not_abort_a_captured_stream()
+    {
+        await using var upstream = await FakeUpstream.StartAsync(async ctx =>
+        {
+            await ReadAsync(ctx);
+            ctx.Response.ContentType = "text/event-stream";
+            await ctx.Response.WriteAsync("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n");
+            await ctx.Response.WriteAsync("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n");
+            await ctx.Response.WriteAsync("data: [DONE]\n\n");
+            await ctx.Response.Body.FlushAsync();
+        });
+
+        var (id, token, port) = await CreateAsync(
+            "openai", upstream.BaseUrl, "upstream-model", "UPSTREAM-KEY", summary: true);
+        using var client = ServiceClient(port, token);
+        var response = await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "exposed-model",
+            stream = true,
+            messages = new[] { new { role = "user", content = "hi" } },
+        });
+
+        var text = await response.Content.ReadAsStringAsync();
+        Assert.Contains("[DONE]", text, StringComparison.Ordinal);
+
+        var state = await _http.GetFromJsonAsync<JsonElement>($"/api/services/{id}");
+        Assert.Equal(1, state.GetProperty("state").GetProperty("pendingRounds").GetInt32());
+    }
+
+    [Fact]
     public async Task An_html_error_page_is_forwarded_verbatim_and_not_recorded()
     {
         await using var upstream = await FakeUpstream.StartAsync(async ctx =>
