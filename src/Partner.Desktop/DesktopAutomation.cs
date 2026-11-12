@@ -107,6 +107,12 @@ public sealed class DesktopAutomation : IDisposable
     private readonly Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)> _walk;
 
     /// <summary>
+    /// Top-level window enumeration. Overridable for the same reason as <see cref="_walk"/>: which windows an
+    /// observation is about must not be decided by whatever happens to be open on the machine running a test.
+    /// </summary>
+    private readonly Func<IReadOnlyList<DesktopWindow>> _windows;
+
+    /// <summary>
     /// The DOM side of a Chromium window, and the ports of the ones this agent launched. Null-safe everywhere:
     /// a window without a debug port simply has no DOM elements, and stays on the coordinate path.
     /// </summary>
@@ -239,7 +245,8 @@ public sealed class DesktopAutomation : IDisposable
         ITelemetrySink? telemetry = null,
         Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)>? walk = null,
         Func<InputMode>? inputMode = null,
-        Func<nint, PixelRect?>? clientRect = null)
+        Func<nint, PixelRect?>? clientRect = null,
+        Func<IReadOnlyList<DesktopWindow>>? windows = null)
     {
         _inputMode = inputMode ?? (() => InputMode.Foreground);
         _clientRect = clientRect ?? (handle =>
@@ -259,6 +266,7 @@ public sealed class DesktopAutomation : IDisposable
         // that returns a chosen truncation reason drives the concurrent case, and window enumeration is a real
         // API that would otherwise decide which windows the test is about.
         _walk = walk ?? UiaTree.ReadNumberedWithNodes;
+        _windows = windows ?? WindowEnumerator.List;
         _capture = capture ?? new GdiScreenCapture();
         _injector = injector ?? new InputInjector();
         _clock = clock ?? TimeProvider.System;
@@ -493,7 +501,7 @@ public sealed class DesktopAutomation : IDisposable
         Func<DesktopWindow, bool>? walkWindow = null)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        var windows = WindowEnumerator.List();
+        var windows = _windows();
 
         // Narrower than "every window": a UI Automation tree is read only for the windows asked for. The rest
         // still appear as windows (they are on the desktop), and keep whatever elements the model was last shown.
