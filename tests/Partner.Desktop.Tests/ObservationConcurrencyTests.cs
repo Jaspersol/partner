@@ -1,4 +1,5 @@
 using Partner.Desktop.Perception;
+using Partner.Desktop.Windows;
 
 namespace Partner.Desktop.Tests;
 
@@ -20,6 +21,27 @@ public sealed class ObservationConcurrencyTests
     /// the <see cref="Task.Run"/> that starts it and is cleared before the fast one is issued.
     /// </summary>
     private static readonly AsyncLocal<bool> SlowWalk = new();
+
+    private static (nint Handle, string Id) Window(int index) => ((nint)(0x1000 + index), (0x1000 + index).ToString("x"));
+
+    /// <summary>
+    /// Two windows, enumerated through the seam: the subject of this test is two observations overlapping, and a
+    /// CI runner exposes a single window (recently also dropping cloaked and unowned tool windows), which would
+    /// make `others` legitimately empty.
+    /// </summary>
+    private static IReadOnlyList<DesktopWindow> Windows => new[]
+    {
+        new DesktopWindow
+        {
+            Handle = Window(1).Handle, Title = "first", ProcessId = 11, ProcessName = "one",
+            X = 0, Y = 0, Width = 100, Height = 100, IsForeground = true,
+        },
+        new DesktopWindow
+        {
+            Handle = Window(2).Handle, Title = "second", ProcessId = 12, ProcessName = "two",
+            X = 100, Y = 0, Width = 100, Height = 100, IsForeground = false,
+        },
+    };
 
     private static UiElement Element(string windowId, int index) => new(
         $"{windowId}:{index}",
@@ -63,7 +85,7 @@ public sealed class ObservationConcurrencyTests
 
             return (new[] { Element(windowId, 0) }, Array.Empty<IUiNode>(),
                 cutOff ? WalkStopReason.Visited : WalkStopReason.None);
-        });
+        }, windows: () => Windows);
 
         // A clean full walk: this is the snapshot the targeted call carries the other windows forward from.
         var clean = automation.Observe();
@@ -104,7 +126,7 @@ public sealed class ObservationConcurrencyTests
         var cutOff = true;
         using var automation = new DesktopAutomation(walk: (handle, windowId) =>
             (new[] { Element(windowId, 0) }, Array.Empty<IUiNode>(),
-                cutOff ? WalkStopReason.Visited : WalkStopReason.None));
+                cutOff ? WalkStopReason.Visited : WalkStopReason.None), windows: () => Windows);
 
         var full = automation.Observe();
         var target = full.Entities[0].EntityId;
