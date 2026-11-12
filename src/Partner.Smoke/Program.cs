@@ -2524,7 +2524,9 @@ internal static class Program
                             .Select(item => item.GetProperty("body").GetString() ?? string.Empty)
                             .ToList();
 
-                        if (bodies.Any(body => body.StartsWith("MovePointer", StringComparison.Ordinal))
+                        // The act answer now starts with the {"code","delivery","retry"} contract line, so the
+                        // kind is matched anywhere in the body rather than at its start.
+                        if (bodies.Any(body => body.Contains("MovePointer", StringComparison.Ordinal))
                             && bodies.Any(body => body.Contains("不落在唯一一个已观察窗口内", StringComparison.Ordinal)))
                         {
                             break;
@@ -2565,7 +2567,7 @@ internal static class Program
 
                     // The call models actually make: coordinates, no window id. It must resolve rather than be
                     // refused for a missing entityId, which would burn the step budget with the app untouched.
-                    var barePoint = allResults.LastOrDefault(r => r.StartsWith("MovePointer", StringComparison.Ordinal));
+                    var barePoint = allResults.LastOrDefault(r => r.Contains("MovePointer", StringComparison.Ordinal));
 
                     Check("desktop: a point with no window id resolves to the window that covers it",
                         barePoint is not null && barePoint.Contains("已发出", StringComparison.Ordinal),
