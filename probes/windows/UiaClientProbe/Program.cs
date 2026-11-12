@@ -7,7 +7,8 @@ using System.Windows.Forms;
 using Interop.UIAutomationClient;
 
 // A probe, not product code: it measures the UI Automation clients on this machine and writes nothing to the
-// product. Every command prints one line per measurement so a row can be copied into FINDINGS.md.
+// product. Every command prints one line per measurement so a row can be copied into the ledger in
+// probes/windows/FINDINGS.md.
 var command = args.Length > 0 ? args[0] : "compare";
 var match = args.Length > 1 ? args[1] : string.Empty;
 
