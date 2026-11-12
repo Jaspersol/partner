@@ -1,4 +1,3 @@
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
@@ -8,7 +7,7 @@ namespace Partner.Desktop.Tests;
 public sealed class DesktopWindowToolTests
 {
     private static DesktopAutomation Automation() => new(walk: (_, _) =>
-        (Array.Empty<UiElement>(), Array.Empty<AutomationElement>(), WalkStopReason.None));
+        (Array.Empty<UiElement>(), Array.Empty<IUiNode>(), WalkStopReason.None));
 
     private static DesktopWindowTool Tool(DesktopAutomation automation, params string[] allowed) =>
         new(automation, new DesktopToolPolicy(allowed));

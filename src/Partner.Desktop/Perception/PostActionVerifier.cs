@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Partner.Desktop.Capture;
+using Partner.Desktop.Windows;
 
 namespace Partner.Desktop.Perception;
 
@@ -111,9 +112,26 @@ public sealed class PostActionVerifier
     {
         var watch = Stopwatch.StartNew();
 
+        // Before and after each capture: a window that moved or was replaced between the frames makes the
+        // comparison a measurement of two different rectangles. Reporting that as a change is the misread the
+        // identity check exists to prevent.
+        var identity = WindowEnumerator.IdentityOf(handle);
+
         if (before is null || !before.Ok)
         {
             return VerifyResult.Indeterminate("no before frame", watch.Elapsed.TotalMilliseconds);
+        }
+
+        // The before-frame was taken at one rectangle; if the window has moved since, the pixels and the
+        // current rectangle describe different places and the diff would compare two coordinate spaces.
+        if (identity is { } atStart
+            && before.ScreenRect is { } frameAt
+            && (frameAt.X != atStart.X || frameAt.Y != atStart.Y
+                || frameAt.Width != atStart.Width || frameAt.Height != atStart.Height))
+        {
+            return VerifyResult.Indeterminate(
+                "窗口在动作前后移动或改变了大小：动作前的画面和当前矩形对不上，无法据此判断效果",
+                watch.Elapsed.TotalMilliseconds);
         }
 
         // Capturing just the region is much cheaper than PrintWindow, which renders the whole window through
@@ -166,6 +184,11 @@ public sealed class PostActionVerifier
                 captureFailure?.Method ?? before.Method);
         }
 
+        if (Moved(handle, identity) is { } moved)
+        {
+            return VerifyResult.Indeterminate(moved, watch.Elapsed.TotalMilliseconds, round.Value.Frame.Method);
+        }
+
         var elapsedMs = () => watch.Elapsed.TotalMilliseconds;
         var result = Compare(RoundBefore(), round.Value.Frame, round.Value.Judged, new Stopwatch(), elapsedMs);
 
@@ -182,12 +205,29 @@ public sealed class PostActionVerifier
                 break;
             }
 
+            if (Moved(handle, identity) is { } movedDuringRecheck)
+            {
+                return VerifyResult.Indeterminate(movedDuringRecheck, elapsedMs(), next.Value.Frame.Method);
+            }
+
             // One diff budget per round, not per verification: the budget bounds one scan from capture to
             // decision, and a scan sharing its clock with earlier rounds would answer Indeterminate immediately.
             result = Compare(RoundBefore(), next.Value.Frame, next.Value.Judged, new Stopwatch(), elapsedMs);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Why a window may not be compared against its before-frame: it moved, resized, closed or was replaced.
+    /// Null when the identity is unchanged (including when the window cannot be identified, as in a test stub).
+    /// </summary>
+    private static string? Moved(nint handle, WindowIdentity? before)
+    {
+        var now = WindowEnumerator.IdentityOf(handle);
+        return before == now
+            ? null
+            : "窗口在验证期间发生变化（移动、缩放、关闭或被替换）：前后两帧不是同一个矩形，无法据此判断效果";
     }
 
     /// <summary>

@@ -32,7 +32,7 @@ Lets the model see windows, press controls, type and launch programs. Off by def
 - Observation returns controls and their click points; actions target an `elementId` instead of having the model guess coordinates.
 - When a control supports a UI Automation pattern (buttons, list items, checkboxes), the pattern is invoked directly, without bringing the window to the front.
 - After an action, a fresh screenshot of the window is attached by default (`feedback=auto`; also `on-failure`, `off`).
-- Chromium / Electron apps started through `desktop_launch` get a debugging port, so buttons inside the page show up as controls too.
+- Chromium / Electron page controls usually show up through UI Automation without a debugging port; starting them through `desktop_launch` additionally opens one, which makes background input and page nodes more complete.
 
 ## Approval levels
 
@@ -41,10 +41,10 @@ Switch them from the drop-down in the chat input area; they apply immediately:
 | Level | Desktop actions |
 |---|---|
 | No approval | Never asks |
-| Approve risky actions | Asks only for running commands, launching programs and writing the clipboard |
+| Approve risky actions | Asks for running commands, launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) |
 | Approve everything (default) | Asks for every UI action; observing and screenshots never ask |
 
-The approval prompt appears just above the chat input; no answer means denied. Under "Approve everything", one approval lets the same window continue for 10 more steps (within 10 minutes); commands, launches and clipboard writes still ask every time.
+The approval prompt appears just above the chat input; no answer means denied. Under "Approve everything", one approval lets the same window continue for 10 more steps (within 10 minutes); commands, launches, clipboard writes and system shortcuts still ask every time, and a system shortcut does not spend the lease.
 
 ## Guardrails
 
@@ -54,7 +54,13 @@ All guardrails run before any input is injected:
 - Coordinates must fall inside the target window and the virtual desktop; out-of-range points are refused, not clamped.
 - If another window covers the point, the target is brought to the front first; if that fails, the action is refused and the covering window is named.
 - Minimized windows cannot be captured or clicked; focus them first to restore.
-- Results name the target window and report "input injected" and "did the screen change" as two separate facts.
+- Results name the target window and report "posted" and "did the screen change" as two separate facts. The first line is `{"code","delivery","retry"}`: a guard refusal is `not_delivered`+`safe`, and a posted action whose effect was not confirmed is `posted_unverified`+`unsafe`.
+- Password fields (UI Automation `IsPassword`, or a page input with `type=password` / `autocomplete` containing password) never report a value; after a write the state compares only empty/filled.
+- System shortcuts ask separately: any Win combination, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc. Approving one does not grant a task lease.
+- A key press or typing aimed at an `elementId` first calls SetFocus and confirms `HasKeyboardFocus`; if the caret is elsewhere the action is refused and the current focus is named.
+- Controls in one window that share an identity are marked `ambiguous`; acting on one by `elementId` returns `AMBIGUOUS_TARGET` and asks for coordinates or a narrower observation.
+- A window capture checks handle, process start time and rectangle before and after; a frame from a window that moved or was replaced is discarded.
+- A hung window is probed with `SendMessageTimeout(WM_NULL, 2s)` first and reported as `APP_UNRESPONSIVE` without entering UI Automation.
 
 ## Background input
 
@@ -68,9 +74,17 @@ All guardrails run before any input is injected:
 
 There are only two background channels: the page debugging protocol (only for browsers / Electron started by `desktop_launch`) and UI Automation patterns. Programs you already had open have no debugging port.
 
+## UIA client
+
+- Uses the UI Automation COM API (`CUIAutomation8`) on a dedicated MTA thread, with a 2-second connection timeout and a 5-second transaction timeout. Waiting for a Chromium tree to settle happens on the caller, not the UIA queue.
+- A provider in another process is read through a `CacheRequest` (`AutomationElementMode_Full`) that fetches every property the walk needs; a provider in this process is walked without caching (on this machine a 21-node fixture took 48.4ms cached vs 27.6ms uncached). The default `None` mode is wrong: on an Edge page it returned 63 of 129 nodes.
+- Measured on this machine: Notepad 43/43, Explorer 7/7, a Chromium window 87/87 and an Edge page 127/127 nodes (COM vs managed client); single-window observe p50 was 6.9ms (Explorer), 61.7ms (Chromium, at the 40-control cap) and 327.0ms (Edge page).
+- The ledger and reproduction commands are in `probes/windows/FINDINGS.md`.
+
 ## Known limits
 
 - The debugging port has no authentication and listens on loopback, so other local processes can reach it. It is only opened when `desktop_launch` starts the program.
 - No OCR. Interfaces UI Automation cannot see are left to a vision model reading screenshots.
-- Only verified on a single 100% DPI screen; multi-monitor and high DPI are untested.
+- Measured here: one 2560×1440 screen at 96 DPI (100%), virtual-desktop origin (0,0). Dual monitors, a secondary screen with negative coordinates, and 125%/150% scaling are untested; `probes/windows/run.ps1 -Command monitors` prints screen identity and DPI. Compare handle + bounds + primary flag + scale together, and do not assert Per-Monitor V2 from a `GetProcessDpiAwareness` read-back.
+- The "first Chromium read is incomplete, then settles" behaviour was not reproduced here; the code still re-reads at 250ms until the count stops growing.
 - The page-control path has not been verified on real Electron apps (such as a music client).

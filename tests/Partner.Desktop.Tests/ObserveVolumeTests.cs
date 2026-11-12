@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
@@ -18,7 +17,7 @@ public sealed class ObserveVolumeTests
                 ? Element(windowId, i, "Button", $"按钮 {i}")
                 : Element(windowId, i, "Edit", $"输入 {i}", new string('长', 500)))
             .ToList(),
-            Array.Empty<AutomationElement>(),
+            Array.Empty<IUiNode>(),
             WalkStopReason.None));
 
     private static async Task<JsonElement> ObserveAsync(DesktopAutomation automation, string arguments)
@@ -43,7 +42,23 @@ public sealed class ObserveVolumeTests
         {
             Assert.Equal(10, window.GetProperty("elements").GetArrayLength());
             Assert.Equal(50, window.GetProperty("elementsMore").GetInt32());
+            Assert.Equal(50, window.GetProperty("hidden").GetInt32());
+            Assert.True(window.GetProperty("elementsComplete").GetBoolean());
+            Assert.False(window.TryGetProperty("elementsTruncated", out _));
         }
+    }
+
+    [Fact]
+    public async Task A_window_whose_walk_failed_says_incomplete_and_names_the_reason()
+    {
+        using var automation = new DesktopAutomation(walk: (_, windowId) =>
+            (Array.Empty<UiElement>(), Array.Empty<IUiNode>(), WalkStopReason.Unresponsive));
+
+        var answer = await ObserveAsync(automation, """{"all":true}""");
+
+        var window = answer.GetProperty("entities")[0];
+        Assert.False(window.TryGetProperty("elementsComplete", out _));
+        Assert.Equal("Unresponsive", window.GetProperty("elementsTruncated").GetString());
     }
 
     [Fact]

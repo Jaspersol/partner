@@ -69,6 +69,17 @@ public sealed class GdiScreenCapture : IScreenCapture
 
     private static CaptureResult CaptureWindow(nint handle)
     {
+        var probe = WindowProbe.Check(handle);
+        if (!probe.Ok)
+        {
+            return CaptureResult.Failed("gdi.probe", probe.Detail ?? "window is not responding");
+        }
+
+        // Before and after: a window that moved, resized or was replaced during the render produces a frame
+        // whose pixels belong to a rectangle that no longer exists. Returning it would silently misplace every
+        // coordinate taken from it.
+        var before = WindowEnumerator.IdentityOf(handle);
+
         var bounds = WindowEnumerator.GetBounds(handle);
         if (bounds.Width <= 0 || bounds.Height <= 0)
         {
@@ -91,16 +102,29 @@ public sealed class GdiScreenCapture : IScreenCapture
         // grid and marks must be drawn in the rectangle the window occupies now, not the observed one.
         var screenRect = new PixelRect(bounds.Left, bounds.Top, bounds.Width, bounds.Height);
 
+        CaptureResult frame;
         if (printed.Ok)
         {
-            return Crop(printed, bounds.Left - outer.Left, bounds.Top - outer.Top, bounds.Width, bounds.Height)
+            frame = Crop(printed, bounds.Left - outer.Left, bounds.Top - outer.Top, bounds.Width, bounds.Height)
                 with
             { ScreenRect = screenRect };
         }
+        else
+        {
+            // Fallback: copy the window's on-screen region (fails for fully occluded windows). Already aligned —
+            // the region *is* the visible frame.
+            frame = CaptureRegion(bounds.Left, bounds.Top, bounds.Width, bounds.Height) with { ScreenRect = screenRect };
+        }
 
-        // Fallback: copy the window's on-screen region (fails for fully occluded windows). Already aligned —
-        // the region *is* the visible frame.
-        return CaptureRegion(bounds.Left, bounds.Top, bounds.Width, bounds.Height) with { ScreenRect = screenRect };
+        var after = WindowEnumerator.IdentityOf(handle);
+        if (before != after)
+        {
+            return CaptureResult.Failed(
+                frame.Method,
+                "窗口在截图期间发生变化（移动、缩放、关闭或被替换）：这张图与窗口位置对不上，已丢弃");
+        }
+
+        return frame;
     }
 
     /// <summary>

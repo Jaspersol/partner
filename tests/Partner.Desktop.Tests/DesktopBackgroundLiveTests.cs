@@ -179,7 +179,7 @@ public sealed class DesktopBackgroundLiveTests
 
             var click = await ActAsync(ActionKind.LeftClick, new ActionParams { X = target.X, Y = target.Y });
             Assert.True(click.GuardPassed, click.GuardReason);
-            Assert.True(click.Injection!.Ok, click.Injection.Detail);
+            Assert.True(click.Injection!.Posted, click.Injection.Detail);
             Assert.StartsWith("cdp.click-at", click.Injection.Detail, StringComparison.Ordinal);
             Assert.False(click.Raised);
 
@@ -201,17 +201,17 @@ public sealed class DesktopBackgroundLiveTests
                 $"the click landed ({offsetX:0.##}, {offsetY:0.##}) CSS px from the centre of the button");
 
             var onToolbar = await ActAsync(ActionKind.LeftClick, new ActionParams { X = target.X, Y = window.Y + 5 });
-            Assert.False(onToolbar.Injection!.Ok);
+            Assert.False(onToolbar.Injection!.Posted);
             Assert.Contains("不在页面内容上", onToolbar.Injection.Detail, StringComparison.Ordinal);
 
             await source.EvaluateAsync(port, "document.getElementById('field').focus()", null, CancellationToken.None);
 
             var typed = await ActAsync(ActionKind.TypeText, new ActionParams { Text = "你好abc" });
-            Assert.True(typed.Injection!.Ok, typed.Injection.Detail);
+            Assert.True(typed.Injection!.Posted, typed.Injection.Detail);
             Assert.Equal("你好abc", await ValueOf(source, port, "field"));
 
             var backspace = await ActAsync(ActionKind.KeyPress, new ActionParams { VirtualKey = 0x08 });
-            Assert.True(backspace.Injection!.Ok, backspace.Injection.Detail);
+            Assert.True(backspace.Injection!.Posted, backspace.Injection.Detail);
             Assert.Equal("你好ab", await ValueOf(source, port, "field"));
 
             // A shortcut selects and does not type its letter over the selection.
@@ -220,12 +220,12 @@ public sealed class DesktopBackgroundLiveTests
                 VirtualKey = 0x41,
                 Modifiers = new ushort[] { InputInjector.VirtualControl },
             });
-            Assert.True(selectAll.Injection!.Ok, selectAll.Injection.Detail);
+            Assert.True(selectAll.Injection!.Posted, selectAll.Injection.Detail);
             await ActAsync(ActionKind.TypeText, new ActionParams { Text = "X" });
             Assert.Equal("X", await ValueOf(source, port, "field"));
 
             var scrolled = await ActAsync(ActionKind.Scroll, new ActionParams { X = target.X, Y = target.Y, ScrollDelta = -3 });
-            Assert.True(scrolled.Injection!.Ok, scrolled.Injection.Detail);
+            Assert.True(scrolled.Injection!.Posted, scrolled.Injection.Detail);
             await WaitUntilAsync(
                 async () => double.Parse(await source.EvaluateAsync(port, "window.scrollY", null, CancellationToken.None) ?? "0", System.Globalization.CultureInfo.InvariantCulture) > 100,
                 "the page did not scroll down");
@@ -234,7 +234,7 @@ public sealed class DesktopBackgroundLiveTests
             Assert.True(NativeMethods.IsIconic(window.Handle));
 
             var focus = await ActAsync(ActionKind.Focus, new ActionParams());
-            Assert.True(focus.Injection!.Ok, focus.Injection.Detail);
+            Assert.True(focus.Injection!.Posted, focus.Injection.Detail);
             Assert.False(NativeMethods.IsIconic(window.Handle), "the window was not restored");
             Assert.NotEqual(window.Handle, NativeMethods.GetForegroundWindow());
 

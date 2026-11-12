@@ -51,7 +51,7 @@ public sealed class DesktopLiveInteractionTests
             var targetY = desktop.Y + desktop.Height / 2 - 60;
 
             var moved = injector.MovePointer(targetX, targetY);
-            Assert.True(moved.Ok, moved.Detail);
+            Assert.True(moved.Posted, moved.Detail);
 
             GetCursorPos(out var landed);
 
@@ -64,7 +64,7 @@ public sealed class DesktopLiveInteractionTests
             var secondX = desktop.X + desktop.Width / 4;
             var secondY = desktop.Y + desktop.Height / 3;
 
-            Assert.True(injector.MovePointer(secondX, secondY).Ok);
+            Assert.True(injector.MovePointer(secondX, secondY).Posted);
             GetCursorPos(out var second);
 
             Assert.InRange(second.X, secondX - 1, secondX + 1);
@@ -111,7 +111,7 @@ public sealed class DesktopLiveInteractionTests
 
             foreach (var target in targets.Distinct())
             {
-                Assert.True(injector.MovePointer(target, fixedY).Ok);
+                Assert.True(injector.MovePointer(target, fixedY).Posted);
                 GetCursorPos(out var landed);
 
                 if (landed.X != target)
@@ -139,7 +139,7 @@ public sealed class DesktopLiveInteractionTests
         {
             var refused = injector.MovePointer(desktop.X + desktop.Width + 500, desktop.Y + 10);
 
-            Assert.False(refused.Ok);
+            Assert.False(refused.Posted);
             Assert.Contains("虚拟桌面", refused.Detail, StringComparison.Ordinal);
 
             // Refused before the call reached SendInput, so the pointer has not moved at all.
@@ -213,7 +213,7 @@ public sealed class DesktopLiveInteractionTests
 
         Assert.True(action.GuardPassed, action.GuardReason);
         Assert.NotNull(action.Injection);
-        Assert.True(action.Injection!.Ok, action.Injection.Detail);
+        Assert.True(action.Injection!.Posted, action.Injection.Detail);
 
         // The pattern reached the control, so no coordinate click was injected and the pointer did not move.
         Assert.StartsWith("uia.", action.Injection.Detail, StringComparison.Ordinal);
@@ -239,7 +239,7 @@ public sealed class DesktopLiveInteractionTests
         // The host is TopMost, so this is about the click, not about z-order: whatever else is open cannot
         // cover the button. Focusing first is what a person does before clicking.
         var focused = new InputInjector().Focus(host.Handle);
-        Assert.True(focused.Ok, focused.Detail);
+        Assert.True(focused.Posted, focused.Detail);
 
         GetCursorPos(out var start);
 
@@ -254,7 +254,10 @@ public sealed class DesktopLiveInteractionTests
                 $$"""{"entityId":"{{host.HandleHex}}","kind":"LeftClick","x":{{host.ButtonCentre.X}},"y":{{host.ButtonCentre.Y}}}""");
 
             Assert.True(result.Ok, result.Content);
-            Assert.Contains("注入成功", result.Content, StringComparison.Ordinal);
+            Assert.True(
+                result.Content.Contains("已发出", StringComparison.Ordinal)
+                || result.Content.Contains("已通过界面自动化执行", StringComparison.Ordinal),
+                result.Content);
 
             // The handler runs on the application's own thread: this only fires if the injected click really
             // reached the control.
@@ -279,7 +282,7 @@ public sealed class DesktopLiveInteractionTests
     public async Task A_click_covered_by_another_window_is_brought_to_the_front_and_lands()
     {
         // The measured failure this reproduces: the agent's own window sits over the target application, the
-        // click is delivered to the cover, and the tool still reported "注入成功 · 画面无变化" while the target
+        // click is delivered to the cover, and the tool still reported "已发出 · 画面无变化" while the target
         // never received anything. Raising the target is what the refusal would otherwise ask the model to do;
         // doing it inside the same action makes one approval and one round trip replace three.
         using var target = new ButtonWindow("partner-live-target", new Point(120, 120));
@@ -312,7 +315,10 @@ public sealed class DesktopLiveInteractionTests
             var clicked = await tool.InvokeAsync(click);
 
             Assert.True(clicked.Ok, clicked.Content);
-            Assert.Contains("带到前台", clicked.Content, StringComparison.Ordinal);
+            Assert.True(
+                clicked.Content.Contains("带到前台", StringComparison.Ordinal)
+                || clicked.Content.Contains("已通过界面自动化执行", StringComparison.Ordinal),
+                clicked.Content);
             Assert.True(target.Pressed.Wait(TimeSpan.FromSeconds(10)), $"the button's Click handler never ran: {clicked.Content}");
         }
         finally
@@ -341,7 +347,10 @@ public sealed class DesktopLiveInteractionTests
         {
             var tool = new DesktopActTool(
                 automation, DesktopToolPolicy.Any, new FileMediaStore(mediaDirRefused.FullName));
-            var click = $$"""{"entityId":"{{target.HandleHex}}","kind":"LeftClick","x":{{target.ButtonCentre.X}},"y":{{target.ButtonCentre.Y}}}""";
+            // A blank point, not the button: a pattern-capable control is reachable through its own
+            // InvokePattern and occlusion does not apply to it. This test is about the injected-input
+            // path, which is what has to be refused when the cover is topmost.
+            var click = $$"""{"entityId":"{{target.HandleHex}}","kind":"LeftClick","x":{{target.BlankPoint.X}},"y":{{target.BlankPoint.Y}}}""";
 
             var refused = await tool.InvokeAsync(click);
 
@@ -526,6 +535,9 @@ public sealed class DesktopLiveInteractionTests
         /// </summary>
         public (int X, int Y) ButtonCentre { get; private set; }
 
+        /// <summary>A point inside the client area with no control on it, for the coordinate path.</summary>
+        public (int X, int Y) BlankPoint { get; private set; }
+
         public ManualResetEventSlim Pressed { get; } = new(false);
 
         /// <summary>A colour nothing else in the window uses; the alignment test looks for it in a capture.</summary>
@@ -600,6 +612,9 @@ public sealed class DesktopLiveInteractionTests
                 var centreX = (double)centre.X;
                 var centreY = (double)centre.Y;
                 ButtonCentre = ((int)Math.Round(centreX), (int)Math.Round(centreY));
+
+                var blank = _form.PointToScreen(new System.Drawing.Point(20, 120));
+                BlankPoint = (blank.X, blank.Y);
 
                 var markerOrigin = marker.PointToScreen(new System.Drawing.Point(0, 0));
                 MarkerRect = new Rectangle(markerOrigin, marker.Size);

@@ -138,9 +138,9 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 - **Delegation** — The main agent only talks and delegates. A sub-agent works in the background, and its result returns as a new input that the main agent relays to you
 - **Two scenes** — `desktop` (built in) and `file-read` (read-only, off by default, limited to a directory allowlist)
 - **Retries** — A job runs up to 5 rounds by default (1–10) within 15 minutes. Success needs evidence from the sub-agent; if every round fails, the main agent reports the failure instead of claiming success
-- **Find the control, then act** — Actions target a control ID rather than guessed coordinates. Buttons, list items, and checkboxes are invoked through UI Automation without bringing the window to the front
-- **Approval levels** — Switch between "No approval", "Approve risky actions", and "Approve everything" (default) from the input area. Commands, launches, and clipboard writes ask every time under the default level
-- **Guardrails** — Keys and typing need the target window in the foreground, out-of-range coordinates are refused rather than clamped, and results report "input injected" and "did the screen change" separately
+- **Find the control, then act** — Actions target a control ID rather than guessed coordinates. Buttons, list items, and checkboxes are invoked through UI Automation without bringing the window to the front; Chromium/Electron page controls are read the same way without a debugging port
+- **Approval levels** — Switch between "No approval", "Approve risky actions", and "Approve everything" (default) from the input area. Commands, launches, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) ask every time
+- **Guardrails** — Keys and typing need the target window and the named control to have focus, out-of-range coordinates are refused rather than clamped, password fields never return their value, and results report "posted" and "did the screen change" separately
 - **Window allowlist** — Limit control to named windows. Screenshots need a model with "Can see images" turned on
 
 ### Voice
@@ -221,7 +221,7 @@ Conversations go to the model endpoint you configured. Web search is on by defau
 <details>
 <summary><strong>Why does the assistant keep asking for approval?</strong></summary>
 
-"Approve everything" is the default level for desktop control, so every UI action asks and no answer counts as a refusal. Change the level from the drop-down in the chat input area. "Approve risky actions" asks only for running commands, launching programs, and writing the clipboard. Under the default level, one approval lets the same window continue for 10 more steps within 10 minutes. MCP tools use their own per-server "Skip approval" list instead of this level.
+"Approve everything" is the default level for desktop control, so every UI action asks and no answer counts as a refusal. Change the level from the drop-down in the chat input area. "Approve risky actions" asks for running commands, launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc). Under the default level, one approval lets the same window continue for 10 more steps within 10 minutes. MCP tools use their own per-server "Skip approval" list instead of this level.
 
 </details>
 

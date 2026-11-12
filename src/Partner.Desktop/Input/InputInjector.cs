@@ -70,6 +70,12 @@ public sealed record ActionParams
     /// </summary>
     public string? ElementId { get; init; }
 
+    /// <summary>
+    /// The control's identity as the observation saw it. A pattern action that has to re-walk checks this
+    /// before acting, because an index into a changed tree can name a different control.
+    /// </summary>
+    public string? ElementIdentity { get; init; }
+
     /// <summary>Virtual-key code for <see cref="ActionKind.KeyPress"/>.</summary>
     public ushort VirtualKey { get; init; }
 
@@ -98,7 +104,20 @@ public sealed record ActionParams
                     : $"({X},{Y})";
 }
 
-public sealed record InjectionResult(bool Ok, uint ErrorCode, string Detail);
+/// <param name="Posted">
+/// Whether Windows accepted the whole batch. Not delivery evidence: UIPI silently drops an input aimed at a
+/// higher-integrity window while <c>SendInput</c> still reports it as inserted, so verification is separate.
+/// </param>
+/// <param name="ReleasePosted">Whether a partial batch was followed by key/button-up events.</param>
+/// <param name="ReleaseConfirmed">Whether those releases were observed to have taken effect (nothing remains down).</param>
+public sealed record InjectionResult(
+    bool Posted,
+    uint ErrorCode,
+    string Detail,
+    bool ReleasePosted = false,
+    bool ReleaseConfirmed = false,
+    int Delivered = 0,
+    int Expected = 0);
 
 /// <summary>
 /// Input injection via <c>SendInput</c>. Every call reports whether Windows accepted the event: a silently
@@ -116,9 +135,32 @@ public sealed class InputInjector
         | NativeMethods.MouseeventfAbsolute;
 
     private readonly Func<VirtualDesktop> _desktop;
+    private readonly Func<NativeMethods.Input[], uint> _send;
+    private readonly Func<int, bool> _keyDown;
 
     /// <param name="desktop">Overridable so the coordinate math can be exercised without a real display.</param>
-    public InputInjector(Func<VirtualDesktop>? desktop = null) => _desktop = desktop ?? VirtualDesktop.Current;
+    /// <param name="send">
+    /// Overridable so a partial delivery — the case that leaves a modifier held — can be simulated without
+    /// touching the user's keyboard.
+    /// </param>
+    /// <param name="keyDown">Overridable alongside <paramref name="send"/>, so the release guard can be
+    /// asserted against the state the fake send left behind.</param>
+    public InputInjector(Func<VirtualDesktop>? desktop = null)
+        : this(desktop, null, null)
+    {
+    }
+
+    /// <summary>Test seam: a send that inserts only part of a batch, and the key state it left behind.</summary>
+    internal InputInjector(
+        Func<VirtualDesktop>? desktop,
+        Func<NativeMethods.Input[], uint>? send,
+        Func<int, bool>? keyDown)
+    {
+        _desktop = desktop ?? VirtualDesktop.Current;
+        _send = send ?? (inputs => NativeMethods.SendInput(
+            (uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>()));
+        _keyDown = keyDown ?? (virtualKey => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0);
+    }
 
     /// <summary>
     /// Screen point to the 0..65535 pair <c>SendInput</c> wants, or the reason it cannot be delivered. A point
@@ -384,7 +426,7 @@ public sealed class InputInjector
         if (HoverUnsettled(x, y))
         {
             var positioned = Send([move], $"move to ({x},{y})");
-            if (!positioned.Ok)
+            if (!positioned.Posted)
             {
                 return positioned;
             }
@@ -400,7 +442,7 @@ public sealed class InputInjector
             // Two real sends with a real sleep between them: SendInput queues events back to back, so the
             // double click's spacing must be actual wall time.
             var first = Send([press, release], detail);
-            if (!first.Ok)
+            if (!first.Posted)
             {
                 return first;
             }
@@ -693,13 +735,180 @@ public sealed class InputInjector
     /// <summary>Size of one <c>INPUT</c> record as Windows expects it.</summary>
     public static int InputSize => Marshal.SizeOf<NativeMethods.Input>();
 
-    private static InjectionResult Send(NativeMethods.Input[] inputs, string detail)
+    private InjectionResult Send(NativeMethods.Input[] inputs, string detail)
     {
-        var sent = NativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<NativeMethods.Input>());
+        var sent = _send(inputs);
         var error = (uint)Marshal.GetLastWin32Error();
 
-        return sent == inputs.Length
-            ? new InjectionResult(true, 0, detail)
-            : new InjectionResult(false, error, $"{detail}: SendInput delivered {sent}/{inputs.Length}");
+        if (sent == inputs.Length)
+        {
+            return new InjectionResult(true, 0, detail, Delivered: inputs.Length, Expected: inputs.Length);
+        }
+
+        // Nothing was inserted, so nothing of this batch is down. A stuck modifier from an earlier action is
+        // not this call's to diagnose.
+        if (sent == 0)
+        {
+            return new InjectionResult(
+                false, error, $"{detail}: SendInput delivered 0/{inputs.Length}",
+                Delivered: 0, Expected: inputs.Length);
+        }
+
+        // A prefix of a batch can leave a modifier held or a mouse button pressed. Releasing what is actually
+        // down is the difference between "the action failed" and "the user's keyboard is broken".
+        var release = ReleaseHeld(inputs, sent);
+        var note = release.Posted
+            ? release.Confirmed
+                ? "；已补发释放并确认"
+                : "；已补发释放，但未能确认（按键可能仍处于按下状态）"
+            : "；没有需要释放的按键或鼠标键";
+
+        return new InjectionResult(
+            false,
+            error,
+            $"{detail}: SendInput delivered {sent}/{inputs.Length}{note}",
+            release.Posted,
+            release.Confirmed,
+            Delivered: (int)sent,
+            Expected: inputs.Length);
+    }
+
+    /// <summary>
+    /// Releases whatever the partial batch left down, then checks the state again. Only keys and buttons this
+    /// batch itself pressed are released: releasing a modifier the user was already holding would be a second
+    /// intrusive act on top of the failed one. The state check is what makes the confirmation honest — a
+    /// record posted is not the same as a key coming up.
+    /// </summary>
+    private (bool Posted, bool Confirmed) ReleaseHeld(NativeMethods.Input[] inputs, uint sent)
+    {
+        var delivered = inputs.Take((int)Math.Min(sent, inputs.Length)).ToList();
+        var release = new List<NativeMethods.Input>(4);
+        var watched = new List<int>(4);
+
+        // What this batch pressed down. A key that appears in the delivered prefix without its up event is
+        // exactly the stuck key; a key already down before the call is not ours to release.
+        var pressedKeys = new HashSet<ushort>();
+        var unicodeDowns = new List<NativeMethods.Input>();
+        var mouseDowns = new HashSet<uint>();
+
+        foreach (var input in delivered)
+        {
+            if (input.Type == NativeMethods.InputKeyboard)
+            {
+                if ((input.Union.Keyboard.Flags & NativeMethods.KeyeventfKeyup) != 0)
+                {
+                    continue;
+                }
+
+                if (input.Union.Keyboard.VirtualKey != 0)
+                {
+                    pressedKeys.Add(input.Union.Keyboard.VirtualKey);
+                }
+                else if ((input.Union.Keyboard.Flags & NativeMethods.KeyeventfUnicode) != 0)
+                {
+                    unicodeDowns.Add(input);
+                }
+
+                continue;
+            }
+
+            if (input.Type != NativeMethods.InputMouse)
+            {
+                continue;
+            }
+
+            var flags = input.Union.Mouse.Flags;
+            if ((flags & NativeMethods.MouseeventfLeftdown) != 0)
+            {
+                mouseDowns.Add(NativeMethods.MouseeventfLeftdown);
+            }
+
+            if ((flags & NativeMethods.MouseeventfRightdown) != 0)
+            {
+                mouseDowns.Add(NativeMethods.MouseeventfRightdown);
+            }
+
+            if ((flags & NativeMethods.MouseeventfMiddledown) != 0)
+            {
+                mouseDowns.Add(NativeMethods.MouseeventfMiddledown);
+            }
+        }
+
+        foreach (var key in pressedKeys)
+        {
+            if (!_keyDown(key))
+            {
+                continue;
+            }
+
+            release.Add(Key(key, keyUp: true));
+            watched.Add(key);
+        }
+
+        foreach (var down in unicodeDowns)
+        {
+            // Unicode text carries the character in ScanCode. The up event is the same record with KEYUP set,
+            // which is the only way to release that character.
+            release.Add(new NativeMethods.Input
+            {
+                Type = NativeMethods.InputKeyboard,
+                Union = new NativeMethods.InputUnion
+                {
+                    Keyboard = new NativeMethods.KeyboardInput
+                    {
+                        ScanCode = down.Union.Keyboard.ScanCode,
+                        Flags = down.Union.Keyboard.Flags | NativeMethods.KeyeventfKeyup,
+                    },
+                },
+            });
+        }
+
+        // The last delivered mouse event carries the normalized position, so a release does not jump the
+        // pointer to the screen corner by sending absolute (0,0).
+        NativeMethods.Input? lastMouse = null;
+        foreach (var input in delivered)
+        {
+            if (input.Type == NativeMethods.InputMouse
+                && (input.Union.Mouse.Flags & NativeMethods.MouseeventfMove) != 0)
+            {
+                lastMouse = input;
+            }
+        }
+
+        foreach (var (downFlag, virtualKey, upFlag) in new[]
+                 {
+                     (NativeMethods.MouseeventfLeftdown, NativeMethods.VkLeftButton, NativeMethods.MouseeventfLeftup),
+                     (NativeMethods.MouseeventfRightdown, NativeMethods.VkRightButton, NativeMethods.MouseeventfRightup),
+                     (NativeMethods.MouseeventfMiddledown, NativeMethods.VkMiddleButton, NativeMethods.MouseeventfMiddleup),
+                 })
+        {
+            if (!mouseDowns.Contains(downFlag) || !_keyDown(virtualKey))
+            {
+                continue;
+            }
+
+            release.Add(lastMouse is { } at
+                ? MouseAt(at.Union.Mouse.Dx, at.Union.Mouse.Dy, PositionalFlags | upFlag)
+                : new NativeMethods.Input
+                {
+                    Type = NativeMethods.InputMouse,
+                    Union = new NativeMethods.InputUnion
+                    {
+                        Mouse = new NativeMethods.MouseInput { Flags = upFlag },
+                    },
+                });
+            watched.Add(virtualKey);
+        }
+
+        if (release.Count == 0)
+        {
+            return (false, true);
+        }
+
+        var releaseSent = _send(release.ToArray());
+        var posted = releaseSent > 0;
+        var confirmed = releaseSent == release.Count && watched.All(key => !_keyDown(key));
+
+        return (posted, confirmed);
     }
 }

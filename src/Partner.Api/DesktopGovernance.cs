@@ -116,6 +116,21 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
 
         if (toolName == "desktop_act")
         {
+            // A system combination leaves the window the human approved. It asks under every gear except none,
+            // and deliberately never reaches TaskLeaseStore: continuing work on one window is not permission to
+            // open a run dialog or lock the session.
+            if (SystemShortcutGuard.DescribeBlocked(argumentsJson) is { } blocked)
+            {
+                var shortcutDecision = gear == ApprovalGears.None
+                    ? new GovernanceDecision(ToolDecision.Allow,
+                        $"{blocked}：当前挡位不审批（{gear}），但这次动作不会获得任务租约")
+                    : new GovernanceDecision(ToolDecision.Ask,
+                        $"{blocked}：系统快捷键会离开当前窗口，需要单独批准（挡位：{gear}；批准不会授予任务租约）");
+
+                RecordLease(shortcutDecision, argumentsJson);
+                return shortcutDecision;
+            }
+
             var decision = SwitchOnTaskLease(toolName, argumentsJson, needsApproval, gear);
             RecordLease(decision, argumentsJson);
             return decision;

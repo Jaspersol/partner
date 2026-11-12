@@ -32,7 +32,8 @@ public sealed record CdpElementRecord(
     double Width,
     double Height,
     string? Value = null,
-    bool Offscreen = false);
+    bool Offscreen = false,
+    bool Secret = false);
 
 /// <summary>
 /// The DOM of a page, as a set of controls the same shape as the ones UI Automation returns.
@@ -126,15 +127,26 @@ public sealed class CdpDomSource
             return true;
           };
 
-          const nameOf = (el) => (
+          // A password input's value is never a name. Using it as a fallback put the plaintext into the
+          // observation under a field that had no label, which is the one place it must not appear.
+          const nameOf = (el, secret) => (
             el.getAttribute('aria-label')
             || el.getAttribute('title')
             || el.getAttribute('placeholder')
             || (el.labels && el.labels[0] ? el.labels[0].innerText : '')
             || (el.innerText || '').trim()
-            || (el.value || '').trim()
+            || (secret ? '' : (el.value || '').trim())
             || ''
           ).replace(/\s+/g, ' ').slice(0, 120);
+
+          const isSecret = (el) => {
+            if (el.tagName.toLowerCase() !== 'input') return false;
+            const type = (el.getAttribute('type') || 'text').toLowerCase();
+            if (type === 'password') return true;
+            const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+            return autocomplete.split(/\s+/).some((token) =>
+              token === 'current-password' || token === 'new-password' || token.includes('password'));
+          };
 
           const found = [];
           const seen = new Set();
@@ -153,15 +165,17 @@ public sealed class CdpDomSource
 
               const left = c.ox + rect.left;
               const top = c.oy + rect.top;
+              const secret = isSecret(el);
               found.push({
                 marker: String(found.length),
-                name: nameOf(el),
+                name: nameOf(el, secret),
                 role: roleOf(el),
                 x: left + window.scrollX,
                 y: top + window.scrollY,
                 width: rect.width,
                 height: rect.height,
-                value: typeof el.value === 'string' ? el.value.slice(0, 200) : null,
+                value: !secret && typeof el.value === 'string' ? el.value.slice(0, 200) : null,
+                secret,
                 offscreen: top + rect.height < 0 || left + rect.width < 0
                   || top > window.innerHeight || left > window.innerWidth
               });
@@ -280,8 +294,9 @@ public sealed class CdpDomSource
             Role: role,
             Rect: rect,
             IdentityDigest: DesktopObservation.ElementIdentity(windowId, record.Name, role),
-            Value: record.Value,
-            IsOffscreen: record.Offscreen);
+            Value: record.Secret ? null : record.Value,
+            IsOffscreen: record.Offscreen,
+            Secret: record.Secret);
     }
 
     /// <summary>What one page reported: its geometry context and its elements.</summary>
@@ -396,7 +411,8 @@ public sealed class CdpDomSource
                     item.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String
                         ? value.GetString()
                         : null,
-                    item.TryGetProperty("offscreen", out var offscreen) && offscreen.GetBoolean()));
+                    item.TryGetProperty("offscreen", out var offscreen) && offscreen.GetBoolean(),
+                    item.TryGetProperty("secret", out var secret) && secret.GetBoolean()));
             }
 
             return new CdpDomSnapshot(

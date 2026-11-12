@@ -46,6 +46,8 @@ public static class AgentPrompts
         + "## 工作方式：看、做、看\n"
         + "- 先 desktop_observe 看清有哪些窗口和控件再动手；每个动作之后看校验结果，确认生效再做下一步。\n"
         + "- 有 elementId 就用 elementId，不要凭空猜坐标；控件看不到（网页画布、游戏、自绘界面）时才用 desktop_screenshot。\n"
+        + "- desktop_act 结果第一行是 {\"code\",\"delivery\",\"retry\"}：只有 retry=safe 才可以直接重试同一个动作；"
+        + "posted_unverified、delivery_uncertain 都是 unsafe，先重新观察确认，不要重复点击。标了 ambiguous 的控件不能按 elementId 操作，改用坐标或缩小范围。\n"
         + "- 窗口切换、页面跳转、弹窗出现之后，旧的 elementId 可能已经失效：重新观察，不要沿用。\n"
         + "- 页面还在加载或有动画时，用 desktop_wait 等条件成立，不要反复观察或连续重试同一个动作。\n"
         + "- 要操作的程序不在窗口列表里，说明它没在运行：先 desktop_launch，不要对别的窗口动手。\n"

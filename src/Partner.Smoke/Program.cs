@@ -2568,7 +2568,7 @@ internal static class Program
                     var barePoint = allResults.LastOrDefault(r => r.StartsWith("MovePointer", StringComparison.Ordinal));
 
                     Check("desktop: a point with no window id resolves to the window that covers it",
-                        barePoint is not null && barePoint.Contains("注入成功", StringComparison.Ordinal),
+                        barePoint is not null && barePoint.Contains("已发出", StringComparison.Ordinal),
                         $"result={barePoint ?? "(none)"} | every result=["
                             + string.Join(" | ", allResults.Select(body => body[..Math.Min(70, body.Length)]))
                             + $"] | timeline=[{timeline}]");
@@ -3554,7 +3554,7 @@ internal static class Program
                         var restored = shotAutomation.Observe().Find(stale.EntityId);
 
                         Check("desktop: focusing a minimized window restores it instead of only lighting up the taskbar",
-                            focused.Injection?.Ok == true && restored is { IsMinimized: false } && restored.Rect.Y > -32000,
+                            focused.Injection?.Posted == true && restored is { IsMinimized: false } && restored.Rect.Y > -32000,
                             $"injection={focused.Injection?.Detail} win32={focused.Injection?.ErrorCode} minimized={restored?.IsMinimized} rect={restored?.Rect.X},{restored?.Rect.Y}");
 
                         // The picture must not be refused from the observation taken *before* the focus: a

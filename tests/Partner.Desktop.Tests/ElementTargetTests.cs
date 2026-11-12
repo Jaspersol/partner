@@ -1,4 +1,3 @@
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
@@ -14,7 +13,7 @@ public sealed class ElementTargetTests
     {
         using var automation = new DesktopAutomation(walk: (_, windowId) =>
             (controls.Select((c, i) => Element(windowId, i, c.Role, c.Name)).ToList(),
-                Array.Empty<AutomationElement>(),
+                Array.Empty<IUiNode>(),
                 WalkStopReason.None));
         return automation.Observe(walkWindow: window => window.IsForeground) is { Elements.Count: > 0 } narrowed
             ? narrowed

@@ -1,7 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Windows.Automation;
+using Interop.UIAutomationClient;
 using Partner.Desktop.Input;
+using Partner.Desktop.Windows;
 
 namespace Partner.Desktop.Perception;
 
@@ -16,13 +17,17 @@ namespace Partner.Desktop.Perception;
 /// <param name="IdentityDigest">Identity digest (window, name, role), deliberately not the value and not the
 /// rectangle: typing into a field must not make it a different element, and neither must a layout shift. The
 /// click point is recomputed from the fresh rectangle at act time.</param>
-/// <param name="Value">What a text field holds, when UIA exposes it.</param>
+/// <param name="Value">What a text field holds, when UIA exposes it. Null for a password field.</param>
 /// <param name="IsOffscreen">
 /// Whether the control is outside the window's visible area (below the fold of a list, collapsed into a tree).
 /// Kept in the answer rather than filtered out, which is what makes <c>scrollIntoView</c> possible: an element
 /// the walk had thrown away could never be scrolled to. Its click point is outside the window, so an action on
 /// one is refused until it has been scrolled to.
 /// </param>
+/// <param name="Secret">Whether this is a password field. Its value is never read into the answer, telemetry or
+/// a verification message; a write into it is reported by empty/filled state only.</param>
+/// <param name="Ambiguous">Whether another control in the same window has the same identity. Such an element may
+/// not be acted on by id: the id could name either twin.</param>
 public sealed record UiElement(
     string ElementId,
     string WindowId,
@@ -31,7 +36,9 @@ public sealed record UiElement(
     PixelRect Rect,
     string IdentityDigest,
     string? Value = null,
-    bool IsOffscreen = false)
+    bool IsOffscreen = false,
+    bool Secret = false,
+    bool Ambiguous = false)
 {
     /// <summary>Where a click on this element should land.</summary>
     public (int X, int Y) Centre => (Rect.X + Rect.Width / 2, Rect.Y + Rect.Height / 2);
@@ -49,167 +56,13 @@ public sealed record UiElement(
 public sealed record UiaInvocation(bool Ok, string Method, string Detail);
 
 /// <summary>
-/// What a UI Automation control can be asked to do to itself, with no pointer and no scrolling guess. These are
-/// the platform's own answers to "make this reachable"; recomputing either here would be a guess about someone
-/// else's layout.
-/// </summary>
-public static class UiaScroll
-{
-    /// <summary>
-    /// Brings a control into view through <c>ScrollItemPattern</c>, falling back to <c>ScrollPattern</c> for a
-    /// container that scrolls as a whole. Null when the control offers neither; the only thing left then is
-    /// scrolling a container by coordinates, which is the guess this exists to avoid.
-    /// </summary>
-    public static UiaInvocation? ScrollIntoView(AutomationElement node)
-    {
-        try
-        {
-            if (node.TryGetCurrentPattern(ScrollItemPattern.Pattern, out var item) && item is ScrollItemPattern scrollItem)
-            {
-                scrollItem.ScrollIntoView();
-                return new UiaInvocation(true, "uia.scrollintoview", "已用 ScrollItemPattern 把该控件滚入视野");
-            }
-
-            if (node.TryGetCurrentPattern(ScrollPattern.Pattern, out var pattern) && pattern is ScrollPattern scroll)
-            {
-                scroll.Scroll(ScrollAmount.NoAmount, ScrollAmount.LargeIncrement);
-                return new UiaInvocation(true, "uia.scroll", "已用 ScrollPattern 滚动容器");
-            }
-
-            return null;
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.scrollintoview", $"滚动入视野失败：{error.GetType().Name}");
-        }
-    }
-
-    /// <summary>How many ancestors are searched for something that scrolls. A scrollable list is a few levels up
-    /// from a row; a search that climbs to the desktop would scroll something the model did not name.</summary>
-    private const int MaxAncestors = 8;
-
-    /// <summary>One wheel notch, in the small steps <c>ScrollPattern</c> offers (Windows' own default is three lines).</summary>
-    private const int StepsPerNotch = 3;
-
-    /// <summary>The most small steps one call makes. Each is a cross-process call, and a runaway delta is a typo.</summary>
-    private const int MaxSteps = 60;
-
-    /// <summary>
-    /// Scrolls the control, or the nearest scrollable container above it, by wheel notches (positive is up). The
-    /// pattern call reaches the container itself, so it needs neither the foreground nor the pointer over it.
-    /// Null when nothing in reach scrolls: a reason to try another channel, not a failure.
-    /// </summary>
-    public static UiaInvocation? ScrollBy(AutomationElement node, int notches)
-    {
-        if (notches == 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            var walker = TreeWalker.ControlViewWalker;
-            var current = node;
-
-            for (var depth = 0; depth <= MaxAncestors && current is not null; depth++)
-            {
-                if (current.TryGetCurrentPattern(ScrollPattern.Pattern, out var found)
-                    && found is ScrollPattern scroll
-                    && scroll.Current.VerticallyScrollable)
-                {
-                    var amount = notches > 0 ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement;
-                    var steps = Math.Min(MaxSteps, Math.Abs(notches) * StepsPerNotch);
-
-                    for (var step = 0; step < steps; step++)
-                    {
-                        scroll.Scroll(ScrollAmount.NoAmount, amount);
-                    }
-
-                    return new UiaInvocation(
-                        true,
-                        "uia.scrollby",
-                        $"已用 ScrollPattern 滚动{(depth == 0 ? "该控件" : "它上层的可滚动容器")}（后台：不需要前台，也不动用户的指针）");
-                }
-
-                current = walker.GetParent(current);
-            }
-
-            return null;
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.scrollby", $"滚动失败：{error.GetType().Name}");
-        }
-    }
-
-    /// <summary>
-    /// Types into a field by writing its value, for a field that offers a value pattern.
-    /// <c>ValuePattern.SetValue</c> replaces everything, and typing must not wipe a half-filled form, so what is
-    /// written is the existing text plus the new text. The pattern cannot say where the caret is, so this is
-    /// "type at the end" and the result says so. Null for a field with no value pattern or a read-only one; the
-    /// caller then tries another channel.
-    /// </summary>
-    public static UiaInvocation? AppendText(AutomationElement node, string? text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return null;
-        }
-
-        try
-        {
-            if (!node.TryGetCurrentPattern(ValuePattern.Pattern, out var found)
-                || found is not ValuePattern value
-                || value.Current.IsReadOnly)
-            {
-                return null;
-            }
-
-            var existing = value.Current.Value ?? string.Empty;
-            value.SetValue(existing + text);
-
-            return new UiaInvocation(
-                true,
-                "uia.value",
-                existing.Length == 0
-                    ? $"已用 ValuePattern 写入 {text.Length} 个字符（字段原本为空；后台：不需要前台）"
-                    : $"已用 ValuePattern 把 {text.Length} 个字符追加到原有 {existing.Length} 个字符之后"
-                      + "（后台下无法知道光标在哪，所以只能加在末尾）");
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.value", $"ValuePattern 写入失败：{error.GetType().Name}");
-        }
-    }
-
-    /// <summary>Expands a collapsed node — a tree item, a disclosure — so its children can be seen at all.
-    public static UiaInvocation? Expand(AutomationElement node)
-    {
-        try
-        {
-            if (!node.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var pattern)
-                || pattern is not ExpandCollapsePattern expand)
-            {
-                return null;
-            }
-
-            expand.Expand();
-            return new UiaInvocation(true, "uia.expand", "已用 ExpandCollapsePattern 展开该控件");
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.expand", $"展开失败：{error.GetType().Name}");
-        }
-    }
-}
-
-/// <summary>
-/// Reads the UI Automation tree, which is what makes "click the play button" possible: the model addresses a
-/// control by what it is instead of guessing screen coordinates.
+/// Reads the UI Automation tree through the COM client, which is what makes "click the play button" possible:
+/// the model addresses a control by what it is instead of guessing screen coordinates.
 /// <para>
-/// UIA is per-process RPC, so the walk is bounded on purpose: depth, controls per window, nodes visited and a
-/// per-window time budget; see <see cref="WalkBudget"/>. An app that is blind or slow (Chromium, games, canvases)
-/// yields nothing and the window-level path still works.
+/// The walk is bounded on purpose: depth, controls per window, nodes visited and a per-window time budget; see
+/// <see cref="WalkBudget"/>. The client itself runs on a dedicated MTA thread with connection and transaction
+/// timeouts (see <see cref="UiaSession"/>), so a busy provider fails one call instead of stalling the whole
+/// observation.
 /// </para>
 /// </summary>
 public static class UiaTree
@@ -231,10 +84,8 @@ public static class UiaTree
     };
 
     /// <summary>
-    /// Roles whose text is worth reading. The value is one cross-process RPC per control, and
-    /// <c>TextPattern.DocumentRange.GetText</c> pulls a document range to answer, while only text the user typed
-    /// is meaningful. Static <c>Text</c> controls are the most numerous elements, so reading all of them was the
-    /// single largest cost in an observation.
+    /// Roles whose text is worth reading. The value is one cross-process RPC per control, and a document range
+    /// answers only after pulling its content, while static <c>Text</c> controls are the most numerous elements.
     /// </summary>
     private static readonly HashSet<string> ValueBearing = new(StringComparer.Ordinal)
     {
@@ -247,8 +98,41 @@ public static class UiaTree
     internal static bool ReadsValue(string role) => ValueBearing.Contains(role);
 
     /// <summary>
-    /// Interactive elements of one window, by native handle. Returns an empty list when UIA has nothing to say
-    /// about it; never throws, since a window that cannot be inspected is a window the coordinate path is for.
+    /// A Chromium renderer exposes an anonymous wrapper for each frame and viewport. Counting those as levels
+    /// would spend the depth budget on browser chrome before reaching the page. The wrapper is identified by
+    /// having no name, no automation id and no action beyond scrolling.
+    /// </summary>
+    private static bool IsChromiumWrapper(UiNodeInfo info) =>
+        info.Role is "Group" or "Custom" or "Pane"
+        && info.Name.Length == 0
+        && info.AutomationId.Length == 0
+        && !info.InvokeAvailable
+        && !info.SelectionItemAvailable
+        && !info.ToggleAvailable
+        && !info.ValueAvailable
+        && !info.ExpandCollapseAvailable
+        && !info.ScrollAvailable;
+
+    /// <summary>Whether the window is a Chromium-family surface, whose first read is often incomplete.</summary>
+    private static bool IsChromium(IUiNode root) =>
+        root.Info.ClassName.Contains("Chrome_WidgetWin_", StringComparison.OrdinalIgnoreCase)
+        || root.Info.ClassName.Contains("ApplicationFrameWindow", StringComparison.OrdinalIgnoreCase)
+           && root.Info.ProviderDescription.Contains("Chromium", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Raw depth cap for Chromium wrappers, which do not consume logical depth.</summary>
+    private const int MaxRawDepth = 50;
+
+    /// <summary>How long a Chromium window's tree is given to settle before its first answer is accepted.</summary>
+    private static readonly TimeSpan ChromiumSettleBudget = TimeSpan.FromSeconds(3);
+
+    /// <summary>Between two reads while waiting for a Chromium tree to settle.</summary>
+    private static readonly TimeSpan ChromiumSettleStep = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>A window whose first read has fewer controls than this is re-read until it settles.</summary>
+    /// <summary>
+    /// Interactive elements of one window, by native handle. Returns an empty list when UI Automation has nothing
+    /// to say about it; never throws, since a window that cannot be inspected is a window the coordinate path is
+    /// for.
     /// </summary>
     public static IReadOnlyList<UiElement> Read(nint handle, string windowId) => WalkWindow(handle, windowId).Elements;
 
@@ -263,14 +147,11 @@ public static class UiaTree
 
     /// <summary>
     /// The same walk, keeping the live controls behind the numbered elements. An action needs both halves: the
-    /// numbering says which control the model meant, and the <see cref="AutomationElement"/> is what a pattern is
-    /// invoked on. Returning them together avoids a second walk, which is the expensive half of pressing a
-    /// control by id because UI Automation is a cross-process RPC per node.
+    /// numbering says which control the model meant, and the <see cref="IUiNode"/> is what a pattern is invoked
+    /// on. Returning them together avoids a second walk.
     /// </summary>
-    internal static (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes, WalkStopReason Stopped)
-        ReadNumberedWithNodes(
-            nint handle,
-            string windowId)
+    internal static (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)
+        ReadNumberedWithNodes(nint handle, string windowId)
     {
         var (elements, nodes, stopped) = WalkWindow(handle, windowId, WalkBudget.Default);
         return (Number(elements, windowId), nodes, stopped);
@@ -289,54 +170,125 @@ public static class UiaTree
     }
 
     /// <summary>
-    /// One walk of a window's control view, in two lockstep lists: what the model was shown, and the live
-    /// <see cref="AutomationElement"/> behind each entry. An id is an index into this list, so re-walking
-    /// recovers the control that index pointed at, with no name search that could match another element.
+    /// One walk of a window's control view, in two lockstep lists: what the model was shown, and the live node
+    /// behind each entry. An id is an index into this list, so re-walking recovers the control that index
+    /// pointed at, with no name search that could match another element.
     /// </summary>
-    private static (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes, WalkStopReason Stopped)
-        WalkWindow(
-            nint handle,
-            string windowId,
-            WalkBudget? budget = null)
+    private static (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)
+        WalkWindow(nint handle, string windowId, WalkBudget? budget = null, CancellationToken ct = default)
     {
-        var elements = new List<UiElement>();
-        var nodes = new List<AutomationElement>();
-        var state = new WalkState(budget ?? WalkBudget.Default, Stopwatch.StartNew());
+        var probe = WindowProbe.Check(handle);
+        if (!probe.Ok)
+        {
+            return (Array.Empty<UiElement>(), Array.Empty<IUiNode>(),
+                probe.Status == WindowProbeStatus.Gone ? WalkStopReason.Gone : WalkStopReason.Unresponsive);
+        }
 
         try
         {
-            var root = AutomationElement.FromHandle(handle);
-            if (root is null)
+            return WalkWithSettling(handle, windowId, budget ?? WalkBudget.Default, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            return (Array.Empty<UiElement>(), Array.Empty<IUiNode>(), UiaErrors.Classify(error));
+        }
+    }
+
+    private static (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)
+        WalkWithSettling(nint handle, string windowId, WalkBudget budget, CancellationToken ct)
+    {
+        var deadline = Stopwatch.StartNew();
+        IReadOnlyList<UiElement>? previousElements = null;
+
+        while (true)
+        {
+            // Each read is one queued UIA transaction; the wait between reads is on this thread, so the
+            // single MTA thread is not sleeping through another window's observation.
+            var attempt = UiaSession.Run(uia => WalkOnce(uia, handle, windowId, budget), ct);
+
+            if (!attempt.Chromium
+                || attempt.Stopped is WalkStopReason.Fault or WalkStopReason.Refused
+                    or WalkStopReason.Unresponsive or WalkStopReason.Gone)
             {
-                return (elements, nodes, WalkStopReason.None);
+                return (attempt.Elements, attempt.Nodes, attempt.Stopped);
             }
 
-            Walk(root, windowId, depth: 0, elements, nodes, state);
+            // The first read of a Chromium tree often reports only the browser shell. Two equal counts in a row
+            // mean it stopped growing; the budget stops a page that keeps animating. The count threshold is
+            // deliberately not used: a shell alone can already have more than eight controls.
+            if (previousElements is not null && previousElements.Count == attempt.Elements.Count)
+            {
+                return (attempt.Elements, attempt.Nodes, attempt.Stopped);
+            }
+
+            previousElements = attempt.Elements;
+
+            if (deadline.Elapsed >= ChromiumSettleBudget)
+            {
+                return (attempt.Elements, attempt.Nodes, attempt.Stopped);
+            }
+
+            // Wait on this thread, not the UIA queue; cancellation ends the wait immediately.
+            if (ct.WaitHandle.WaitOne(ChromiumSettleStep))
+            {
+                throw new OperationCanceledException(ct);
+            }
         }
-        catch (ElementNotAvailableException)
+    }
+
+    private sealed record WalkAttempt(
+        IReadOnlyList<UiElement> Elements,
+        IReadOnlyList<IUiNode> Nodes,
+        WalkStopReason Stopped,
+        bool Chromium);
+
+    private static WalkAttempt WalkOnce(IUIAutomation uia, nint handle, string windowId, WalkBudget budget)
+    {
+        var elements = new List<UiElement>();
+        var nodes = new List<IUiNode>();
+        var state = new WalkState(budget, Stopwatch.StartNew());
+
+        IUiNode? root;
+        try
         {
-            // The window closed between enumerating it and reading it.
+            root = UiaClient.Root(uia, handle);
         }
-        catch (COMException)
+        catch (Exception error)
         {
-            // A window that refuses inspection (elevated process, protected surface).
-        }
-        catch (TimeoutException)
-        {
-            // A busy app: its elements are not worth blocking the observation for. The per-window budget above
-            // is the deliberate version of this: it stops the walk where we choose rather than wherever the
-            // provider's internal timeout lands.
+            return new WalkAttempt(elements, nodes, UiaErrors.Classify(error), Chromium: false);
         }
 
-        return (elements, nodes, state.Stopped);
+        if (root is null)
+        {
+            return new WalkAttempt(elements, nodes, WalkStopReason.Gone, Chromium: false);
+        }
+
+        var chromium = IsChromium(root);
+
+        try
+        {
+            Walk(root, windowId, depth: 0, rawDepth: 0, chromium, elements, nodes, state);
+        }
+        catch (Exception error)
+        {
+            state.Fail(UiaErrors.Classify(error));
+        }
+
+        return new WalkAttempt(elements, nodes, state.Stopped, chromium);
     }
 
     private static void Walk(
-        AutomationElement node,
+        IUiNode node,
         string windowId,
         int depth,
+        int rawDepth,
+        bool chromium,
         List<UiElement> elements,
-        List<AutomationElement> nodes,
+        List<IUiNode> nodes,
         WalkState state)
     {
         if (!state.Allows(depth, elements.Count))
@@ -344,21 +296,27 @@ public static class UiaTree
             return;
         }
 
-        AutomationElement? child;
+        if (rawDepth > MaxRawDepth)
+        {
+            state.Fail(WalkStopReason.Depth);
+            return;
+        }
+
+        IUiNode? child;
         try
         {
-            child = TreeWalker.ControlViewWalker.GetFirstChild(node);
+            child = node.FirstChild();
         }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException)
+        catch (Exception error)
         {
+            state.Fail(UiaErrors.Classify(error));
             return;
         }
 
         while (child is not null)
         {
             // Checked per node rather than per produced element: a produced-only cap is never reached by a
-            // window made entirely of skipped controls, so such a window would be walked to its last node,
-            // which is exactly the shape a Chromium window has.
+            // window made entirely of skipped controls, so such a window would be walked to its last node.
             if (!state.Allows(depth, elements.Count))
             {
                 return;
@@ -373,99 +331,39 @@ public static class UiaTree
                 nodes.Add(child);
             }
 
-            Walk(child, windowId, depth + 1, elements, nodes, state);
+            var wrapper = chromium && IsChromiumWrapper(child.Info);
+            Walk(child, windowId, wrapper ? depth : depth + 1, rawDepth + 1, chromium, elements, nodes, state);
 
             try
             {
-                child = TreeWalker.ControlViewWalker.GetNextSibling(child);
+                child = child.NextSibling();
             }
-            catch (Exception error) when (error is ElementNotAvailableException or COMException)
+            catch (Exception error)
             {
+                state.Fail(UiaErrors.Classify(error));
                 return;
             }
         }
     }
 
     /// <summary>
-    /// A text field's content, when it exposes one. The value is reported but never part of the identity digest:
-    /// a field whose text changed is the same field.
+    /// The element as the model sees it, or null when it is not something to act on. A password field keeps its
+    /// role and name but never its value.
     /// </summary>
-    /// <param name="node">The control to read.</param>
-    /// <param name="role">
-    /// Its control type, and the reason this is not called for every control: the read is a cross-process RPC
-    /// and <c>TextPattern.DocumentRange.GetText</c> pulls a whole document range to answer it.
-    /// </param>
-    private static string? ReadValue(AutomationElement node, string role)
+    private static UiElement? Describe(IUiNode node, string windowId)
     {
-        if (!ReadsValue(role))
-        {
-            return null;
-        }
-
+        UiNodeInfo info;
         try
         {
-            if (node.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) && pattern is ValuePattern value)
-            {
-                return value.Current.Value;
-            }
-
-            // Editors (RichEdit, and anything document-shaped) expose their text through TextPattern instead.
-            if (node.TryGetCurrentPattern(TextPattern.Pattern, out var text) && text is TextPattern document)
-            {
-                var content = document.DocumentRange.GetText(MaxValueChars);
-                return content.Length == 0 ? null : content;
-            }
-
-            return null;
+            info = node.Info;
         }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// What distinguishes this control from every other one of the same name and kind: its automation id, class
-    /// and runtime id. The runtime id is unique among live controls and lasts as long as the control does, which
-    /// is the span between an observation and the action on it. Null when none can be read.
-    /// </summary>
-    private static string? StableKey(AutomationElement node, AutomationElement.AutomationElementInformation current)
-    {
-        string runtime;
-        try
-        {
-            runtime = string.Join('.', node.GetRuntimeId());
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            runtime = string.Empty;
-        }
-
-        var automationId = current.AutomationId ?? string.Empty;
-        var className = current.ClassName ?? string.Empty;
-
-        return automationId.Length == 0 && className.Length == 0 && runtime.Length == 0
-            ? null
-            : $"{automationId}|{className}|{runtime}";
-    }
-
-    /// <summary>The element as the model sees it, or null when it is not something to act on.</summary>
-    private static UiElement? Describe(AutomationElement node, string windowId)
-    {
-        AutomationElement.AutomationElementInformation current;
-        try
-        {
-            current = node.Current;
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException)
+        catch (Exception error) when (UiaErrors.IsPatternMissing(error))
         {
             return null;
         }
 
-        var role = current.ControlType?.ProgrammaticName.Replace("ControlType.", string.Empty, StringComparison.Ordinal)
-            ?? "Unknown";
-
-        var name = current.Name ?? string.Empty;
+        var role = info.Role;
+        var name = info.Name;
 
         // An unnamed element is only worth reporting when it is a thing you can press; a nameless pane is
         // layout, and layout is noise.
@@ -475,25 +373,31 @@ public static class UiaTree
             return null;
         }
 
-        // A disabled control is dropped: there is no action that means "press the greyed-out button", and
-        // offering one would only produce a refusal after a round trip. An offscreen one is kept — that is the
-        // difference between an element something can scroll to and one that never appears at all.
-        if (!current.IsEnabled)
+        // A disabled control is dropped: there is no action that means "press the greyed-out button". An
+        // offscreen one is kept — that is what makes scrolling to it possible.
+        if (!info.IsEnabled)
         {
             return null;
         }
 
-        var bounds = current.BoundingRectangle;
-        if (bounds.IsEmpty || bounds.Width < 2 || bounds.Height < 2)
+        var rect = info.Rect;
+        if (rect.IsEmpty || rect.Width < 2 || rect.Height < 2)
         {
             return null;
         }
 
-        var rect = new PixelRect(
-            (int)Math.Round(bounds.X),
-            (int)Math.Round(bounds.Y),
-            (int)Math.Round(bounds.Width),
-            (int)Math.Round(bounds.Height));
+        string? value = null;
+        if (!info.IsPassword && ReadsValue(role))
+        {
+            try
+            {
+                value = node.ReadValue();
+            }
+            catch (Exception error) when (UiaErrors.IsPatternMissing(error))
+            {
+                value = null;
+            }
+        }
 
         return new UiElement(
             ElementId: string.Empty, // assigned by the observation, which knows the window's position in it
@@ -501,19 +405,34 @@ public static class UiaTree
             Name: name,
             Role: role,
             Rect: rect,
-            IdentityDigest: DesktopObservation.ElementIdentity(windowId, name, role, StableKey(node, current)),
-            Value: ReadValue(node, role),
-            IsOffscreen: current.IsOffscreen);
+            IdentityDigest: DesktopObservation.ElementIdentity(windowId, name, role, info.StableKey),
+            Value: value,
+            IsOffscreen: info.IsOffscreen,
+            Secret: info.IsPassword);
     }
 
     /// <summary>The live control behind an element id, when the walk that numbered it is still the one in hand.</summary>
-    public static AutomationElement? NodeOf(
+    public static IUiNode? NodeOf(
         string windowId,
         string elementId,
-        (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes) known)
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes) known)
     {
         var index = ParseIndex(windowId, elementId);
         return index >= 0 && index < known.Nodes.Count ? known.Nodes[index] : null;
+    }
+
+    /// <summary>
+    /// Whether the live node still has the identity the observation gave the element at that index. Exposed
+    /// so the rule can be asserted without a window.
+    /// </summary>
+    internal static bool MatchesIdentity(string windowId, IUiNode node, string expectedIdentity) =>
+        string.Equals(IdentityOf(windowId, node), expectedIdentity, StringComparison.Ordinal);
+
+    /// <summary>The identity digest of a live node, computed the same way the observation computed it.</summary>
+    internal static string IdentityOf(string windowId, IUiNode node)
+    {
+        var info = node.Info;
+        return DesktopObservation.ElementIdentity(windowId, info.Name, info.Role, info.StableKey);
     }
 
     /// <summary>Index of an element id inside its window's element list, or -1 when it is not one.</summary>
@@ -528,49 +447,94 @@ public static class UiaTree
     }
 
     /// <summary>
-    /// Acts on a named control through a UI Automation pattern instead of a coordinate click, when the control
-    /// supports one.
-    /// <para>
-    /// A pattern call reaches the control itself. It needs no foreground window, so it cannot land in whatever
-    /// the user is looking at, and it is unaffected by the control moving since the observation. It is also the
-    /// only way to press an obscured control.
-    /// </para>
-    /// Returns null when this does not apply: the control is gone, it exposes none of the patterns that mean
-    /// "click", or the action is one only a real input device can perform. The caller then injects input at the
-    /// element's centre.
+    /// Gives the control the keyboard focus, and confirms it actually has it. Returns null on success or the
+    /// refusal to carry: the window being foreground is not the same as the right control having the caret.
     /// </summary>
-    /// <param name="kind">
-    /// Pattern-shaped: <see cref="ActionKind.LeftClick"/> and <see cref="ActionKind.Focus"/> press a control,
-    /// <see cref="ActionKind.ScrollIntoView"/> makes it reachable. <c>TypeText</c> is excluded by default:
-    /// <c>ValuePattern.SetValue</c> replaces a field's entire contents, and silently wiping a half-filled form is
-    /// not what "type this" means. A double click is excluded too: there is no pattern for "press twice in time",
-    /// and sending <c>Invoke</c> twice is not it. With <paramref name="background"/>, <c>TypeText</c> becomes an
-    /// append and <see cref="ActionKind.Scroll"/> becomes a <c>ScrollPattern</c> call.
-    /// </param>
-    /// <param name="parameters">The action's amounts and text; needed only by the two background kinds.</param>
-    /// <param name="background">Whether the caller has agreed to patterns standing in for wheel and typing.</param>
-    /// <param name="known">
-    /// The walk this action was decided on, when the caller already has it. Re-walking is what turns an id back
-    /// into a live control and doubles as an "is it still there" check; the caller's re-observation is fresher,
-    /// so passing it saves a second traversal.
-    /// <para>
-    /// The two lists must be the lockstep pair one walk produced. A mismatched pair would name a different
-    /// control than the one its number was assigned to, which is the whole reason an id is an index.
-    /// </para>
-    /// </param>
+    public static string? EnsureKeyboardFocus(
+        nint handle,
+        string windowId,
+        string elementId,
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes)? known,
+        string? expectedIdentity = null,
+        CancellationToken ct = default)
+    {
+        IReadOnlyList<IUiNode> nodes;
+        if (known is { } pair)
+        {
+            nodes = pair.Nodes;
+        }
+        else
+        {
+            nodes = WalkWindow(handle, windowId, ct: ct).Nodes;
+        }
+
+        if (Index(windowId, elementId, nodes.Count) is not { } index)
+        {
+            return $"未知控件 '{elementId}'：重新 desktop_observe";
+        }
+
+        // A re-walk can shift the index: an inserted control or a newly expanded list moves every later
+        // control by one. Acting on whatever now sits at that index is the wrong-control click this check
+        // exists to prevent.
+        if (expectedIdentity is not null && !MatchesIdentity(windowId, nodes[index], expectedIdentity))
+        {
+            return $"控件 '{elementId}' 在重新遍历后已经不在这个位置（STALE_REF）：重新 desktop_observe 再决定";
+        }
+
+        var node = nodes[index];
+        var focused = node.SetFocus();
+        if (focused is null)
+        {
+            return $"'{elementId}' 不支持 SetFocus，无法确认键盘焦点在它身上：先 desktop_observe 换一个控件，或改用坐标点击";
+        }
+
+        if (!focused.Ok)
+        {
+            return focused.Detail + "：键盘输入会打到当前焦点所在的控件，已拒绝";
+        }
+
+        // Pattern calls are asynchronous, and a focus change may wait for the window's input queue.
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            if (node.HasKeyboardFocus())
+            {
+                return null;
+            }
+
+            Thread.Sleep(40);
+        }
+
+        var current = UiaSession.FocusedNode();
+        var where = current is null
+            ? "当前焦点读不到"
+            : $"当前焦点在 '{current.Info.Name}' [{current.Info.Role}]";
+
+        return $"控件 '{elementId}' 没有拿到键盘焦点（{where}）：输入会打到错的地方，已拒绝";
+    }
+
+    private static int? Index(string windowId, string elementId, int count)
+    {
+        var index = ParseIndex(windowId, elementId);
+        return index >= 0 && index < count ? index : null;
+    }
+
+    /// <summary>
+    /// Acts on a named control through a UI Automation pattern instead of a coordinate click, when the control
+    /// supports one. Returns null when this does not apply; the caller then injects input at the element centre.
+    /// </summary>
     public static UiaInvocation? TryAct(
         nint handle,
         string windowId,
         string elementId,
         ActionKind kind,
-        (IReadOnlyList<UiElement> Elements, IReadOnlyList<AutomationElement> Nodes)? known = null,
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes)? known = null,
         ActionParams? parameters = null,
-        bool background = false)
+        bool background = false,
+        string? expectedIdentity = null,
+        CancellationToken ct = default)
     {
         // Wheel and typing are patterns only when the caller has agreed to the trade: ScrollPattern moves a
-        // container rather than turning the wheel over it, and ValuePattern appends rather than types. Where
-        // the foreground is available a real wheel and real keystrokes are the more faithful action, so that
-        // stays the default.
+        // container rather than turning the wheel over it, and ValuePattern appends rather than types.
         var backgroundKind = background && kind is ActionKind.Scroll or ActionKind.TypeText;
 
         if (kind is not (ActionKind.LeftClick or ActionKind.Focus or ActionKind.ScrollIntoView) && !backgroundKind)
@@ -584,20 +548,16 @@ public static class UiaTree
             return null;
         }
 
-        // Re-walking is what turns the id back into a live control, and it doubles as a "is it still there"
-        // check: an index past the end means the window's tree shrank since the observation.
-        IReadOnlyList<UiElement> elements;
-        IReadOnlyList<AutomationElement> nodes;
+        // Re-walking turns the id back into a live control and doubles as an "is it still there" check.
+        IReadOnlyList<IUiNode> nodes;
 
         if (known is { } pair)
         {
-            (elements, nodes) = (pair.Elements, pair.Nodes);
+            nodes = pair.Nodes;
         }
         else
         {
-            var found = WalkWindow(handle, windowId);
-            elements = found.Elements;
-            nodes = found.Nodes;
+            nodes = WalkWindow(handle, windowId, ct: ct).Nodes;
         }
 
         if (index >= nodes.Count)
@@ -605,111 +565,95 @@ public static class UiaTree
             return null;
         }
 
+        // The index is only a handle to the walk it came from. A re-walk can insert or remove a control above
+        // it, and then this index names a different control; the identity digest says which one it is now.
+        if (expectedIdentity is not null && !MatchesIdentity(windowId, nodes[index], expectedIdentity))
+        {
+            return new UiaInvocation(
+                false,
+                "uia.stale",
+                "重新遍历后该序号指向了另一个控件（STALE_REF）：重新 desktop_observe 再决定");
+        }
+
         var node = nodes[index];
 
-        if (kind == ActionKind.Focus)
+        return kind switch
         {
-            return TrySetFocus(node);
-        }
+            ActionKind.Focus => node.SetFocus(),
+            ActionKind.Scroll => node.ScrollBy(parameters?.ScrollDelta ?? 0),
+            ActionKind.TypeText => node.AppendText(parameters?.Text ?? string.Empty),
 
-        if (kind == ActionKind.Scroll)
-        {
-            return UiaScroll.ScrollBy(node, parameters?.ScrollDelta ?? 0);
-        }
-
-        if (kind == ActionKind.TypeText)
-        {
-            return UiaScroll.AppendText(node, parameters?.Text);
-        }
-
-        if (kind == ActionKind.ScrollIntoView)
-        {
             // The control knows how far it is from the viewport; scrolling by estimate is the guess this avoids.
-            return UiaScroll.ScrollIntoView(node) ?? UiaScroll.Expand(node);
-        }
+            ActionKind.ScrollIntoView => node.ScrollItemIntoView() ?? node.Expand(),
 
-        // Which pattern means "click" depends on what the control is: pressing a list row selects it rather
-        // than invoking it, and pressing a checkbox flips it. The wrong pattern is a different action.
-        return elements[index].Role switch
-        {
-            "CheckBox" => TryToggle(node) ?? TryInvoke(node),
-            "RadioButton" or "ListItem" or "TabItem" or "DataItem" or "TreeItem" =>
-                TrySelect(node) ?? TryInvoke(node),
-            _ => TryInvoke(node) ?? TrySelect(node),
+            // Which pattern means "click" depends on what the control is: pressing a list row selects it rather
+            // than invoking it, and pressing a checkbox flips it. The wrong pattern is a different action.
+            _ => node.Info.Role switch
+            {
+                "CheckBox" => node.Toggle() ?? node.Invoke(),
+                "RadioButton" or "ListItem" or "TabItem" or "DataItem" or "TreeItem" =>
+                    node.Select() ?? node.Invoke(),
+                _ => node.Invoke() ?? node.Select(),
+            },
         };
     }
+}
 
-    /// <summary>Presses the control. Null when it cannot be pressed this way.</summary>
-    private static UiaInvocation? TryInvoke(AutomationElement node)
+/// <summary>Creates the root node and decides whether this provider is worth caching.</summary>
+internal static class UiaClient
+{
+    internal static IUiNode? Root(IUIAutomation automation, nint handle)
     {
-        try
+        var current = automation.ElementFromHandle(handle);
+        if (current is null)
         {
-            if (!node.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)
-                || pattern is not InvokePattern invoke)
-            {
-                return null;
-            }
+            return null;
+        }
 
-            invoke.Invoke();
-            return new UiaInvocation(true, "uia.invoke", "已用 InvokePattern 触发（不需要前台窗口）");
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.invoke", $"InvokePattern 调用失败：{error.GetType().Name}");
-        }
+        // A provider in this process answers without a cross-process round trip, so a cache request only adds
+        // memory traffic. A provider in another process is exactly the case caching is for.
+        var sameProcess = current.CurrentProcessId == Environment.ProcessId;
+        var cache = sameProcess ? null : BuildCacheRequest(automation);
+        var element = cache is null
+            ? current
+            : automation.ElementFromHandleBuildCache(handle, cache) ?? current;
+
+        return new ComUiNode(automation.ControlViewWalker, cache, element);
     }
 
-    /// <summary>Selects the control — what a click does to a list row, tab or tree item.</summary>
-    private static UiaInvocation? TrySelect(AutomationElement node)
+    private static IUIAutomationCacheRequest BuildCacheRequest(IUIAutomation automation)
     {
-        try
+        var cache = automation.CreateCacheRequest();
+        cache.TreeScope = TreeScope.TreeScope_Element;
+
+        // Full, not None: a cached element in None mode is a property bag that cannot always be used as the
+        // starting point for the next tree-walker step. With None the walk silently returned about half the
+        // controls on an Edge page (63 vs 129).
+        cache.AutomationElementMode = AutomationElementMode.AutomationElementMode_Full;
+
+        foreach (var property in new[]
+                 {
+                     UiaIds.RuntimeId, UiaIds.BoundingRectangle, UiaIds.ProcessId, UiaIds.ControlType,
+                     UiaIds.Name, UiaIds.HasKeyboardFocus, UiaIds.IsEnabled, UiaIds.AutomationId,
+                     UiaIds.ClassName, UiaIds.IsPassword, UiaIds.IsOffscreen,
+                     UiaIds.IsInvokePatternAvailable, UiaIds.IsSelectionItemPatternAvailable,
+                     UiaIds.IsTogglePatternAvailable, UiaIds.IsValuePatternAvailable,
+                     UiaIds.IsExpandCollapsePatternAvailable, UiaIds.IsScrollPatternAvailable,
+                     UiaIds.IsScrollItemPatternAvailable, UiaIds.IsTextPatternAvailable,
+                     UiaIds.ProviderDescription,
+                 })
         {
-            if (!node.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var pattern)
-                || pattern is not SelectionItemPattern select)
+            try
             {
-                return null;
+                cache.AddProperty(property);
             }
-
-            select.Select();
-            return new UiaInvocation(true, "uia.select", "已用 SelectionItemPattern 选中（不需要前台窗口）");
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.select", $"SelectionItemPattern 调用失败：{error.GetType().Name}");
-        }
-    }
-
-    /// <summary>Flips the control — what a click does to a checkbox.</summary>
-    private static UiaInvocation? TryToggle(AutomationElement node)
-    {
-        try
-        {
-            if (!node.TryGetCurrentPattern(TogglePattern.Pattern, out var pattern)
-                || pattern is not TogglePattern toggle)
+            catch (COMException)
             {
-                return null;
+                // A property the provider cannot cache is read on demand; one unsupported property must not
+                // turn the whole walk into a fallback.
             }
+        }
 
-            toggle.Toggle();
-            return new UiaInvocation(true, "uia.toggle", "已用 TogglePattern 切换（不需要前台窗口）");
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.toggle", $"TogglePattern 调用失败：{error.GetType().Name}");
-        }
-    }
-
-    /// <summary>Gives the control keyboard focus without raising the window over the user's work.</summary>
-    private static UiaInvocation? TrySetFocus(AutomationElement node)
-    {
-        try
-        {
-            node.SetFocus();
-            return new UiaInvocation(true, "uia.setfocus", "已用 SetFocus 聚焦该控件");
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return new UiaInvocation(false, "uia.setfocus", $"SetFocus 调用失败：{error.GetType().Name}");
-        }
+        return cache;
     }
 }

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Partner.Desktop;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
@@ -18,11 +19,15 @@ public sealed class WalkTruncationTests
 {
     [Theory]
     [InlineData(WalkStopReason.None, false)]
-    [InlineData(WalkStopReason.Depth, false)]
-    [InlineData(WalkStopReason.Produced, false)]
+    [InlineData(WalkStopReason.Depth, true)]
+    [InlineData(WalkStopReason.Produced, true)]
     [InlineData(WalkStopReason.Visited, true)]
     [InlineData(WalkStopReason.Time, true)]
-    public void Only_running_out_of_budget_counts_as_may_have_missed_something(
+    [InlineData(WalkStopReason.Fault, true)]
+    [InlineData(WalkStopReason.Refused, true)]
+    [InlineData(WalkStopReason.Unresponsive, true)]
+    [InlineData(WalkStopReason.Gone, true)]
+    public void Every_reason_other_than_none_means_the_list_may_be_incomplete(
         WalkStopReason stopped,
         bool expected)
     {
@@ -30,12 +35,71 @@ public sealed class WalkTruncationTests
     }
 
     [Fact]
-    public void Depth_and_the_control_cap_are_ordinary_enough_not_to_be_reported()
+    public void A_fault_is_not_reported_as_an_ordinary_bound()
     {
-        // Every deep tree stops at the depth limit and every control-rich window stops at the cap. Warning on
-        // those would put a caveat on almost every window and teach the model to ignore the caveat.
-        Assert.Null(DesktopAutomation.CutOff(WalkStopReason.Depth));
-        Assert.Null(DesktopAutomation.CutOff(WalkStopReason.Produced));
+        // A provider that failed and a tree that simply ran out look identical if both are dropped. The
+        // reason travels with the window; the tool turns each one into a different next step.
+        Assert.Equal(WalkStopReason.Fault, DesktopAutomation.CutOff(WalkStopReason.Fault));
+        Assert.Equal(WalkStopReason.Unresponsive, DesktopAutomation.CutOff(WalkStopReason.Unresponsive));
+        Assert.Null(DesktopAutomation.CutOff(WalkStopReason.None));
+    }
+
+    [Fact]
+    public void A_hung_provider_is_classified_as_unresponsive_not_as_a_broken_tree()
+    {
+        // The HRESULTs are the only evidence a COM failure carries; mapping them all to "fault" would make
+        // "wait and retry" and "this window will never answer" look the same.
+        Assert.Equal(
+            WalkStopReason.Unresponsive,
+            UiaErrors.Classify(new COMException("timeout", unchecked((int)0x8001011F))));
+        Assert.Equal(
+            WalkStopReason.Refused,
+            UiaErrors.Classify(new UnauthorizedAccessException()));
+        Assert.Equal(
+            WalkStopReason.Gone,
+            UiaErrors.Classify(new COMException("gone", unchecked((int)0x80040201))));
+        Assert.Equal(
+            WalkStopReason.Fault,
+            UiaErrors.Classify(new InvalidOperationException()));
+    }
+
+    [Fact]
+    public void A_walk_that_throws_degrades_to_incomplete_instead_of_failing_the_observation()
+    {
+        using var automation = new DesktopAutomation(walk: (_, _) => throw new TimeoutException());
+
+        var observation = automation.Observe();
+
+        if (observation.Entities.Count == 0)
+        {
+            return; // no interactive desktop in this environment
+        }
+
+        Assert.All(observation.Entities, entity =>
+        {
+            Assert.True(entity.ElementsTruncated);
+            Assert.Equal(WalkStopReason.Unresponsive, entity.ElementsTruncation);
+        });
+    }
+
+    [Fact]
+    public void A_faulting_walk_is_reported_on_the_window()
+    {
+        using var automation = new DesktopAutomation(walk: (_, _) =>
+            (Array.Empty<UiElement>(), Array.Empty<IUiNode>(), WalkStopReason.Fault));
+
+        var observation = automation.Observe();
+
+        if (observation.Entities.Count == 0)
+        {
+            return; // no interactive desktop in this environment
+        }
+
+        Assert.All(observation.Entities, entity =>
+        {
+            Assert.True(entity.ElementsTruncated);
+            Assert.Equal(WalkStopReason.Fault, entity.ElementsTruncation);
+        });
     }
 }
 

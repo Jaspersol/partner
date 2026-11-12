@@ -14,13 +14,47 @@ public class DesktopSessionRegressionTests
 {
 
     [Fact]
-    public void A_window_with_almost_no_elements_gets_the_debug_port_hint()
+    public void A_window_with_almost_no_elements_gets_a_coordinate_fallback_hint()
     {
+        // "Few controls" is not a diagnosis. A native application that exposes little and a Chromium surface
+        // whose tree is deep are different next steps, and the note must not send every one of them to relaunch.
         var observation = ObservationWith(("280012", "网易云音乐"), elements: 1);
         var note = DesktopObserveTool.BlindWindows(observation);
 
         Assert.Contains("网易云音乐", note);
+        Assert.Contains("截图坐标", note);
+        Assert.DoesNotContain("--remote-debugging-port", note);
+    }
+
+    [Fact]
+    public void A_chromium_window_gets_the_debug_port_hint()
+    {
+        var observation = ObservationWith(("280012", "网页应用"), elements: 1, process: "msedge");
+        var note = DesktopObserveTool.BlindWindows(observation);
+
+        Assert.Contains("280012", observation.Entities[0].EntityId);
         Assert.Contains("--remote-debugging-port=9222", note);
+    }
+
+    [Fact]
+    public void An_unresponsive_window_says_so_instead_of_blaming_electron()
+    {
+        var observation = ObservationWith(("280012", "卡住的窗口"), elements: 0) with
+        {
+            Entities = new[]
+            {
+                Entity(id: "280012", title: "卡住的窗口") with
+                {
+                    ElementsTruncated = true,
+                    ElementsTruncation = WalkStopReason.Unresponsive,
+                },
+            },
+        };
+
+        var note = DesktopObserveTool.BlindWindows(observation);
+
+        Assert.Contains("未响应", note);
+        Assert.DoesNotContain("Electron", note);
     }
 
     [Fact]
@@ -132,9 +166,9 @@ public class DesktopSessionRegressionTests
     private static string WindowIdOf(string elementId) =>
         elementId[..elementId.IndexOf(':')];
 
-    private static DesktopObservation ObservationWith((string Id, string Title) window, int elements)
+    private static DesktopObservation ObservationWith((string Id, string Title) window, int elements, string process = "proc")
     {
-        var entity = Entity(0, 0, 800, 600, window.Id, window.Title);
+        var entity = Entity(0, 0, 800, 600, window.Id, window.Title) with { Value = process };
         var list = Enumerable.Range(0, elements)
             .Select(i => NamedElement($"{entity.EntityId}:{i}", $"控件{i}", i * 50, 0))
             .ToList();

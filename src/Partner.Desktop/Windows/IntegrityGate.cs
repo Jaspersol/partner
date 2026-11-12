@@ -9,7 +9,7 @@ namespace Partner.Desktop.Windows;
 /// UIPI (User Interface Privilege Isolation) silently drops input a lower-integrity process sends to a
 /// higher-integrity window: <c>SendInput</c> still reports success — the events entered the input stream —
 /// and the elevated application never sees them. The agent then clicks and nothing happens, with
-/// "注入成功" in the result and nothing in the world to explain it. Reading the target's integrity level
+/// "已发出" in the result and nothing in the world to explain it. Reading the target's integrity level
 /// <i>before</i> injecting turns the silence into a named refusal.
 /// </para>
 /// <para>
