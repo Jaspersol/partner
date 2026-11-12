@@ -14,6 +14,7 @@ The application code is MIT licensed, see [LICENSE](LICENSE). That licence does 
 | Microsoft.Data.Sqlite | MIT | SQLite 绑定；SQLite 本身为 Public Domain |
 | AngleSharp | MIT | HTML 解析 |
 | NAudio | MIT | 音频设备 |
+| Interop.UIAutomationClient | MIT | Windows UI Automation 的 COM 互操作程序集 |
 | WebView2 Runtime | Microsoft 分发条款 | 由 Windows/Tauri 提供，不随包捆绑 |
 | NSIS | zlib/libpng | 安装包生成 |
 

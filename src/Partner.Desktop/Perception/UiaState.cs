@@ -1,6 +1,3 @@
-using System.Runtime.InteropServices;
-using System.Windows.Automation;
-
 namespace Partner.Desktop.Perception;
 
 /// <summary>
@@ -13,51 +10,16 @@ namespace Partner.Desktop.Perception;
 /// </summary>
 public static class UiaState
 {
-    /// <summary>The longest value kept whole; a text box holding a document is compared by its length and ends.</summary>
-    private const int ValueChars = 200;
-
     /// <summary>
     /// The control's readable state as one comparable string, or null when it exposes none of the state patterns
-    /// (or has gone away). Two reads are equal exactly when nothing the control reports has changed.
+    /// (or has gone away). Two reads are equal exactly when nothing the control reports has changed. A password
+    /// field contributes only whether it is empty or filled, never its content.
     /// </summary>
-    public static string? Read(AutomationElement node)
+    public static string? Read(IUiNode node)
     {
         ArgumentNullException.ThrowIfNull(node);
-
-        var parts = new List<string>(4);
-
-        try
-        {
-            if (node.TryGetCurrentPattern(TogglePattern.Pattern, out var toggle) && toggle is TogglePattern t)
-            {
-                parts.Add("开关=" + t.Current.ToggleState);
-            }
-
-            if (node.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var select) && select is SelectionItemPattern s)
-            {
-                parts.Add("选中=" + s.Current.IsSelected);
-            }
-
-            if (node.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expand) && expand is ExpandCollapsePattern e)
-            {
-                parts.Add("展开=" + e.Current.ExpandCollapseState);
-            }
-
-            if (node.TryGetCurrentPattern(ValuePattern.Pattern, out var value) && value is ValuePattern v)
-            {
-                parts.Add("值=" + Shorten(v.Current.Value));
-            }
-        }
-        catch (Exception error) when (error is ElementNotAvailableException or COMException or InvalidOperationException)
-        {
-            return null;
-        }
-
-        return parts.Count == 0 ? null : string.Join("；", parts);
+        return node.ReadState();
     }
-
-    private static string Shorten(string value) =>
-        value.Length <= ValueChars ? value : $"{value[..(ValueChars / 2)]}…（共 {value.Length} 字）…{value[^(ValueChars / 2)..]}";
 
     /// <summary>
     /// Waits (briefly) for the state to differ from <paramref name="before"/>. Controls apply a pattern call

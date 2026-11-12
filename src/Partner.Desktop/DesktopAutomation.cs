@@ -104,7 +104,7 @@ public sealed class DesktopAutomation : IDisposable
     /// One window's UI Automation walk. Overridable so an observation can be driven, with a chosen truncation
     /// reason, without a real desktop.
     /// </summary>
-    private readonly Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)> _walk;
+    private readonly Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)> _walk;
 
     /// <summary>
     /// The DOM side of a Chromium window, and the ports of the ones this agent launched. Null-safe everywhere:
@@ -198,28 +198,25 @@ public sealed class DesktopAutomation : IDisposable
     /// </para>
     /// </summary>
     private sealed record WalkSnapshot(
-        IReadOnlyDictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)> Walks,
+        IReadOnlyDictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes)> Walks,
         IReadOnlyDictionary<string, WalkStopReason> Truncated)
     {
         public static WalkSnapshot Empty { get; } = new(
-            new Dictionary<string, (IReadOnlyList<UiElement>, IReadOnlyList<System.Windows.Automation.AutomationElement>)>(StringComparer.Ordinal),
+            new Dictionary<string, (IReadOnlyList<UiElement>, IReadOnlyList<IUiNode>)>(StringComparer.Ordinal),
             new Dictionary<string, WalkStopReason>(StringComparer.Ordinal));
     }
 
     /// <summary>
-    /// Whether a stop reason means "there may be more controls in this window".
+    /// Whether a stop reason means "this window's control list may be incomplete".
     /// <para>
-    /// Depth and the per-window control cap are ordinary: every deep tree stops at the depth limit, and a
-    /// control-rich window stops at the cap by design, so reporting those would put a warning on almost every
-    /// window. Being cut off on nodes visited or on time is different: the walk ran out of budget with the tree
-    /// unfinished, which is exactly where controls disappear.
+    /// Every reason other than <see cref="WalkStopReason.None"/> means the walk stopped before the tree ran
+    /// out. Depth and the per-window control cap are ordinary bounds; visited/time ran out of budget; fault,
+    /// refused, unresponsive and gone are the provider failing. The model is told which, because "there is no
+    /// such control" and "we stopped looking, here is why" lead to different next steps.
     /// </para>
     /// </summary>
-    internal static WalkStopReason? CutOff(WalkStopReason stopped) => stopped switch
-    {
-        WalkStopReason.Visited or WalkStopReason.Time => stopped,
-        _ => null,
-    };
+    internal static WalkStopReason? CutOff(WalkStopReason stopped) =>
+        stopped == WalkStopReason.None ? null : stopped;
 
     private volatile DesktopObservation? _lastObservation;
     private readonly object _domGate = new();
@@ -240,7 +237,7 @@ public sealed class DesktopAutomation : IDisposable
         DesktopLaunchTool? desktopLaunch = null,
         Func<nint, string?>? integrityRefusal = null,
         ITelemetrySink? telemetry = null,
-        Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes, WalkStopReason Stopped)>? walk = null,
+        Func<nint, string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes, WalkStopReason Stopped)>? walk = null,
         Func<InputMode>? inputMode = null,
         Func<nint, PixelRect?>? clientRect = null)
     {
@@ -419,6 +416,23 @@ public sealed class DesktopAutomation : IDisposable
     public string? RecentWindowId => _recentWindowId;
 
     /// <summary>
+    /// Gives a named control the keyboard focus and confirms it, for a keyboard action that must land in that
+    /// control rather than wherever the caret happens to be. Null on success, otherwise the refusal to return.
+    /// </summary>
+    public string? EnsureElementFocus(
+        string entityId,
+        string elementId,
+        string? expectedIdentity = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(elementId);
+
+        return UiaTree.EnsureKeyboardFocus(
+            ParseHandle(entityId), entityId, elementId, WalkOf(entityId), expectedIdentity, ct);
+    }
+
+    /// <summary>
     /// Looks again at the window an action is about to hit.
     /// <para>
     /// Re-reading a window's whole control tree before every click is most of what a click costs. An action that
@@ -495,7 +509,7 @@ public sealed class DesktopAutomation : IDisposable
         // the dictionaries nor the entries inside them are written in place: a full walk replaces both wholesale,
         // a one-window walk carries the other windows' entries forward untouched, which is the same lockstep pair
         // the previous walk produced and the invariant an element id's meaning rests on.
-        var walks = new Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)>(StringComparer.Ordinal);
+        var walks = new Dictionary<string, (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes)>(StringComparer.Ordinal);
         var truncated = new Dictionary<string, WalkStopReason>(StringComparer.Ordinal);
         if (partial)
         {
@@ -527,15 +541,29 @@ public sealed class DesktopAutomation : IDisposable
             walked.Add(windowId);
 
             // Numbered by the same helper the picture's marks go through, so an id on a mark and the id in this
-            // observation name the same control.
-            var (numbered, nodes, stopped) = _walk(window.Handle, windowId);
+            // observation name the same control. A walk substitute (or a provider that breaks outside its own
+            // catch) must degrade this window to "incomplete, with a reason", not fail the whole observation.
+            IReadOnlyList<UiElement> numbered;
+            IReadOnlyList<IUiNode> nodes;
+            WalkStopReason stopped;
+            try
+            {
+                (numbered, nodes, stopped) = _walk(window.Handle, windowId);
+            }
+            catch (Exception error)
+            {
+                numbered = Array.Empty<UiElement>();
+                nodes = Array.Empty<IUiNode>();
+                stopped = UiaErrors.Classify(error);
+            }
+
             elements.AddRange(numbered);
 
             walks[windowId] = (numbered, nodes);
 
-            // A walk cut off on nodes or time has not seen the whole window, and the model has to be able to
-            // tell that from a window that simply has few controls. Otherwise a control that exists goes
-            // missing with nothing in the answer to say why.
+            // A walk that stopped before the tree ran out has not seen the whole window, and the model has to
+            // be able to tell that from a window that simply has few controls. Otherwise a control that exists
+            // goes missing with nothing in the answer to say why.
             if (CutOff(stopped) is { } reason)
             {
                 truncated[windowId] = reason;
@@ -557,6 +585,8 @@ public sealed class DesktopAutomation : IDisposable
             // is holding — and a screenshot of one of them must still find its marks.
             elements.AddRange(_lastObservation.Elements.Where(element => !walked.Contains(element.WindowId)));
         }
+
+        elements = MarkAmbiguous(elements);
 
         watch.Stop();
         _leases.ObservedRoundTripMs = watch.Elapsed.TotalMilliseconds;
@@ -609,7 +639,7 @@ public sealed class DesktopAutomation : IDisposable
             ObsId = obsId,
             TargetKey = "desktop",
             Timestamp = now,
-            Sources = new[] { "win32.enumwindows", "uia.controlview" },
+            Sources = new[] { "win32.enumwindows", "uia3.com" },
             Entities = entities,
             Elements = elements,
             WalkedWindows = partial ? walked : null,
@@ -666,7 +696,7 @@ public sealed class DesktopAutomation : IDisposable
     private InjectionResult ScrollIn(ActionParams parameters)
     {
         var moved = _injector.MovePointer(parameters.X, parameters.Y);
-        return moved.Ok ? _injector.Scroll(parameters.ScrollDelta) : moved;
+        return moved.Posted ? _injector.Scroll(parameters.ScrollDelta) : moved;
     }
 
     /// <summary>
@@ -715,6 +745,20 @@ public sealed class DesktopAutomation : IDisposable
 
         var handle = ParseHandle(entityId);
 
+        // A hung window would make every RPC or capture in this action wait out its own timeout. The probe
+        // answers the same question first, in about two seconds, and names the reason.
+        var probe = WindowProbe.Check(handle);
+        if (!probe.Ok)
+        {
+            return Refused(
+                actionId,
+                observation.ObsId,
+                entityId,
+                kind,
+                parameters,
+                probe.Status == WindowProbeStatus.Gone ? "window_gone" : "app_unresponsive");
+        }
+
         // Focus/aim kinds change where the next action goes, not what the window paints, so there is no
         // before-frame to keep and nothing to verify against. Diffing them anyway reports "no change" on actions
         // that never promised a visual effect, which reads as the click having failed.
@@ -723,7 +767,7 @@ public sealed class DesktopAutomation : IDisposable
         // A control that reports its own state (checked, selected, expanded, its value) is verified by asking it,
         // which is exact where a pixel diff over a small control is not, and needs no before-frame at all, so a
         // whole window capture is saved too. Only for the two kinds a pattern carries.
-        (System.Windows.Automation.AutomationElement Node, string State)? watched = null;
+        (IUiNode Node, string State)? watched = null;
         if (verifiesAfterwards
             && kind is ActionKind.LeftClick or ActionKind.TypeText
             && parameters.ElementId is { Length: > 0 } watchedId
@@ -758,8 +802,16 @@ public sealed class DesktopAutomation : IDisposable
         var injection = parameters.ElementId is { Length: > 0 } domElementId
             ? await TryActDomAsync(handle, entityId, domElementId, kind, ct).ConfigureAwait(false) is { } dom
                 ? new InjectionResult(dom.Ok, 0, $"{dom.Method}：{dom.Detail}")
-                : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId), background)
-            : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId), background);
+                : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId), background, ct)
+            : ElementPattern(handle, entityId, kind, parameters, WalkOf(entityId), background, ct);
+
+        // The pattern layer refused because the index no longer names the observed control. A coordinate
+        // fallback would click whatever moved into that place, which is the wrong action.
+        if (injection?.Detail.StartsWith("uia.stale", StringComparison.Ordinal) == true)
+        {
+            return Refused(actionId, observation.ObsId, entityId, kind, parameters, "stale_element");
+        }
+
         var raised = false;
 
         // The channels that leave the user's screen alone, before the one that takes it over. Null means none
@@ -889,7 +941,7 @@ public sealed class DesktopAutomation : IDisposable
     /// rather than read as "nothing happened".
     /// </summary>
     internal static async Task<VerifyResult> VerifyByStateAsync(
-        System.Windows.Automation.AutomationElement node,
+        IUiNode node,
         string before,
         InjectionResult injection,
         CancellationToken ct)
@@ -943,7 +995,7 @@ public sealed class DesktopAutomation : IDisposable
     /// The last walk of one window, when this process has one, so a pattern call can use it instead of walking
     /// the same tree again. Null when the window was never walked here, and then the act walks it.
     /// </summary>
-    private (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? WalkOf(
+    private (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes)? WalkOf(
         string entityId) => _walkState.Walks.TryGetValue(entityId, out var walk) ? walk : null;
 
     /// <summary>
@@ -1046,10 +1098,11 @@ public sealed class DesktopAutomation : IDisposable
                     break;
                 }
 
-                observation.Elements = observation.Elements
-                    .Where(existing => !IsDomElementOf(existing, entity.EntityId))
-                    .Concat(elements)
-                    .ToList();
+                observation.Elements = MarkAmbiguous(
+                    observation.Elements
+                        .Where(existing => !IsDomElementOf(existing, entity.EntityId))
+                        .Concat(elements)
+                        .ToList());
             }
 
             added += elements.Count;
@@ -1062,6 +1115,28 @@ public sealed class DesktopAutomation : IDisposable
     internal static bool IsDomElementOf(UiElement element, string windowId) =>
         string.Equals(element.WindowId, windowId, StringComparison.Ordinal)
         && element.ElementId.Contains(DomMarker, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Marks every control whose identity is shared with another control in the same window. Identity is name,
+    /// role and whatever stable key the provider offered; two identical "删除" buttons with no runtime id or
+    /// automation id are the case where an element id cannot say which one the model meant. Marking both is
+    /// honest; acting on either would be a guess between two destructive controls.
+    /// </summary>
+    internal static List<UiElement> MarkAmbiguous(IReadOnlyList<UiElement> elements)
+    {
+        var counts = new Dictionary<(string WindowId, string Digest), int>();
+        foreach (var element in elements)
+        {
+            var key = (element.WindowId, element.IdentityDigest);
+            counts[key] = counts.GetValueOrDefault(key) + 1;
+        }
+
+        return elements
+            .Select(element => counts[(element.WindowId, element.IdentityDigest)] > 1
+                ? element with { Ambiguous = true }
+                : element)
+            .ToList();
+    }
 
     /// <summary>The part of a DOM element's id that is the page-side handle.</summary>
     private const string DomMarker = "#cdp:";
@@ -1120,15 +1195,17 @@ public sealed class DesktopAutomation : IDisposable
         string entityId,
         ActionKind kind,
         ActionParams parameters,
-        (IReadOnlyList<UiElement> Elements, IReadOnlyList<System.Windows.Automation.AutomationElement> Nodes)? known,
-        bool background = false)
+        (IReadOnlyList<UiElement> Elements, IReadOnlyList<IUiNode> Nodes)? known,
+        bool background = false,
+        CancellationToken ct = default)
     {
         if (parameters.ElementId is not { Length: > 0 } elementId)
         {
             return null;
         }
 
-        var invocation = UiaTree.TryAct(handle, entityId, elementId, kind, known, parameters, background);
+        var invocation = UiaTree.TryAct(
+            handle, entityId, elementId, kind, known, parameters, background, parameters.ElementIdentity, ct);
 
         return invocation is null
             ? null
@@ -1225,7 +1302,7 @@ public sealed class DesktopAutomation : IDisposable
                 // A minimized window is restored first (without being activated); the page is then told to
                 // behave as the focused one, which is what lets key input reach it from the background.
                 var restored = NativeMethods.IsIconic(handle) ? _injector.FocusInBackground(handle) : null;
-                if (restored is { Ok: false })
+                if (restored is { Posted: false })
                 {
                     return restored;
                 }
@@ -1418,7 +1495,7 @@ public sealed class DesktopAutomation : IDisposable
     private string? TryRaise(ActionKind kind, ActionParams parameters, nint handle, string covered)
     {
         var focused = _injector.Focus(handle);
-        if (!focused.Ok)
+        if (!focused.Posted)
         {
             return $"{covered}（尝试把它带到前台失败：{focused.Detail}）";
         }

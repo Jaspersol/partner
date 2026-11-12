@@ -12,6 +12,12 @@
     <ProjectReference Include="../Partner.Core/Partner.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- UI Automation's COM API. The managed System.Windows.Automation wrapper offers neither
+         ConnectionTimeout/TransactionTimeout nor a cache request on the tree walker, and a hung provider
+         would block an observation for as long as its own internal timeout allows. -->
+    <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- The INPUT records are the contract: the flags and the normalized coordinates are what was silently
          wrong before, and a test has to be able to read them without moving the user's mouse. -->
     <InternalsVisibleTo Include="Partner.Desktop.Tests" />

@@ -26,28 +26,52 @@ public sealed class StateVerificationLiveTests
 
     private sealed class CheckBoxWindow : IDisposable
     {
-        private readonly System.Windows.Forms.Form _form;
+        private readonly ManualResetEventSlim _ready = new(false);
+        private readonly ManualResetEventSlim _closed = new(false);
+        private readonly Thread _thread;
+        private System.Windows.Forms.Form? _form;
 
         public CheckBoxWindow()
+        {
+            _thread = new Thread(Run) { IsBackground = true };
+            _thread.SetApartmentState(ApartmentState.STA);
+            _thread.Start();
+            Assert.True(_ready.Wait(TimeSpan.FromSeconds(15)), "the check-box window never came up");
+        }
+
+        public System.Windows.Forms.CheckBox Box { get; private set; } = null!;
+
+        public string HandleHex { get; private set; } = string.Empty;
+
+        public void Dispose()
+        {
+            try
+            {
+                _form?.BeginInvoke(new Action(() => _form.Close()));
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            _closed.Wait(TimeSpan.FromSeconds(5));
+            _ready.Dispose();
+        }
+
+        private void Run()
         {
             _form = new System.Windows.Forms.Form { Text = "partner-state-probe", Width = 500, Height = 400 };
             Box = new System.Windows.Forms.CheckBox { Text = "记住我", Left = 40, Top = 40, Width = 200 };
             _form.Controls.Add(Box);
-            _form.Show();
 
-            for (var attempt = 0; attempt < 100 && _form.Handle == nint.Zero; attempt++)
+            _form.Shown += (_, _) =>
             {
-                Thread.Sleep(20);
-            }
+                HandleHex = _form.Handle.ToString("x");
+                _ready.Set();
+            };
 
-            HandleHex = _form.Handle.ToString("x");
+            _form.FormClosed += (_, _) => _closed.Set();
+            System.Windows.Forms.Application.Run(_form);
         }
-
-        public System.Windows.Forms.CheckBox Box { get; }
-
-        public string HandleHex { get; }
-
-        public void Dispose() => _form.Dispose();
     }
 
     [LiveDesktopFact]

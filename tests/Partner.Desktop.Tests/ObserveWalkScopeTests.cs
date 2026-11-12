@@ -1,4 +1,3 @@
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
@@ -31,7 +30,7 @@ public sealed class ObserveWalkScopeTests
             Automation = new DesktopAutomation(walk: (_, windowId) =>
             {
                 Interlocked.Increment(ref _walks);
-                return (new[] { Element(windowId) }, Array.Empty<AutomationElement>(), WalkStopReason.None);
+                return (new[] { Element(windowId) }, Array.Empty<IUiNode>(), WalkStopReason.None);
             });
         }
 

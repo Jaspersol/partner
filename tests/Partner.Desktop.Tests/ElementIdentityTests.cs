@@ -1,4 +1,3 @@
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
@@ -17,7 +16,7 @@ public sealed class ElementIdentityTests
     {
         var round = 0;
         using var automation = new DesktopAutomation(walk: (_, windowId) =>
-            ((round == 0 ? first : second)(windowId), Array.Empty<AutomationElement>(), WalkStopReason.None));
+            ((round == 0 ? first : second)(windowId), Array.Empty<IUiNode>(), WalkStopReason.None));
 
         var before = automation.Observe();
         var window = before.Entities.FirstOrDefault()?.EntityId ?? string.Empty;
@@ -93,5 +92,58 @@ public sealed class ElementIdentityTests
 
         Assert.Same(seen, found);
         Assert.NotNull(DesktopActTool.RevalidateElement(found, after));
+    }
+
+    [Fact]
+    public void A_rewalk_that_inserted_a_control_before_the_target_is_refused()
+    {
+        // The observation's index pointed at "删除". A re-walk after an insertion now has "播放" at that
+        // index; acting on it would be a different control with the same position.
+        var expected = DesktopObservation.ElementIdentity("w", "删除", "Button", "r2");
+        var shifted = new FakeNode("Button", "播放", "rNEW");
+        var same = new FakeNode("Button", "删除", "r2");
+
+        Assert.False(UiaTree.MatchesIdentity("w", shifted, expected));
+        Assert.True(UiaTree.MatchesIdentity("w", same, expected));
+    }
+
+    /// <summary>A node whose only meaningful surface for these tests is the identity the walk reports.</summary>
+    private sealed class FakeNode(string role, string name, string stable) : IUiNode
+    {
+        public UiNodeInfo Info { get; } = new(
+            role, name, new PixelRect(0, 0, 10, 10), IsEnabled: true, IsOffscreen: false, IsPassword: false,
+            StableKey: stable, ClassName: string.Empty, AutomationId: string.Empty, ProcessId: 0,
+            ProviderDescription: string.Empty,
+            InvokeAvailable: false, SelectionItemAvailable: false, ToggleAvailable: false,
+            ValueAvailable: false, ExpandCollapseAvailable: false, ScrollAvailable: false,
+            ScrollItemAvailable: false, TextAvailable: false);
+
+        public IUiNode? FirstChild() => throw new NotSupportedException();
+
+        public IUiNode? NextSibling() => throw new NotSupportedException();
+
+        public IUiNode? Parent() => throw new NotSupportedException();
+
+        public string? ReadValue() => throw new NotSupportedException();
+
+        public string? ReadState() => throw new NotSupportedException();
+
+        public bool HasKeyboardFocus() => throw new NotSupportedException();
+
+        public UiaInvocation? Invoke() => throw new NotSupportedException();
+
+        public UiaInvocation? Select() => throw new NotSupportedException();
+
+        public UiaInvocation? Toggle() => throw new NotSupportedException();
+
+        public UiaInvocation? SetFocus() => throw new NotSupportedException();
+
+        public UiaInvocation? ScrollItemIntoView() => throw new NotSupportedException();
+
+        public UiaInvocation? ScrollBy(int notches) => throw new NotSupportedException();
+
+        public UiaInvocation? AppendText(string text) => throw new NotSupportedException();
+
+        public UiaInvocation? Expand() => throw new NotSupportedException();
     }
 }

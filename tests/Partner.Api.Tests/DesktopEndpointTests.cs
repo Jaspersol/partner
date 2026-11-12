@@ -241,6 +241,81 @@ public sealed partial class ViewEndpointsTests
     }
 
     [Fact]
+    public async Task A_system_shortcut_asks_even_inside_a_task_lease_and_does_not_spend_it()
+    {
+        // A lease is "continue working in this window". Win+R opens a run dialog, which is not that window;
+        // it must ask on its own and must not consume the steps the human granted for GUI work.
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            desktop = new { enabled = true, approval = "dangerous", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        try
+        {
+            var governance = new Partner.Api.DesktopGovernance(_context);
+            const string shortcut = """{"entityId":"ff","kind":"KeyPress","virtualKey":82,"modifiers":["win"]}""";
+            const string ordinary = """{"entityId":"ff","kind":"KeyPress","virtualKey":67,"modifiers":["ctrl"]}""";
+
+            _context.TaskLeases.Grant("ff", shortcut);
+            var granted = _context.TaskLeases.Snapshot().Single(lease => lease.EntityId == "ff").RemainingSteps;
+
+            Assert.Equal(
+                Partner.Core.Agent.Tools.ToolDecision.Ask,
+                governance.Decide("desktop_act", shortcut).Decision);
+
+            // The refused-then-approved shortcut did not spend a step: the grant is still whole.
+            Assert.Equal(
+                granted,
+                _context.TaskLeases.Snapshot().Single(lease => lease.EntityId == "ff").RemainingSteps);
+
+            // Ctrl+C is ordinary GUI work and is still answered by the lease.
+            Assert.Equal(
+                Partner.Core.Agent.Tools.ToolDecision.Allow,
+                governance.Decide("desktop_act", ordinary).Decision);
+        }
+        finally
+        {
+            await _http.PutAsJsonAsync("/api/settings", new
+            {
+                desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+        }
+    }
+
+    [Fact]
+    public async Task System_shortcuts_ask_under_the_all_gear_too()
+    {
+        await _http.PutAsJsonAsync("/api/settings", new
+        {
+            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        try
+        {
+            var governance = new Partner.Api.DesktopGovernance(_context);
+            var decision = governance.Decide(
+                "desktop_act",
+                """{"entityId":"ff","kind":"KeyPress","virtualKey":115,"modifiers":["alt"]}""");
+
+            Assert.Equal(Partner.Core.Agent.Tools.ToolDecision.Ask, decision.Decision);
+            Assert.Contains("系统快捷键", decision.Reason, StringComparison.Ordinal);
+
+            // The tool accepts PascalCase JSON; governance must see the same call, not a plain key press.
+            var upper = governance.Decide(
+                "desktop_act",
+                """{"EntityId":"ff","Kind":"KeyPress","VirtualKey":82,"Modifiers":["win"]}""");
+            Assert.Equal(Partner.Core.Agent.Tools.ToolDecision.Ask, upper.Decision);
+        }
+        finally
+        {
+            await _http.PutAsJsonAsync("/api/settings", new
+            {
+                desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+        }
+    }
+
+    [Fact]
     public async Task An_empty_approval_queue_is_reported_rather_than_hidden()
     {
         // The UI has to distinguish "nothing is waiting" from "we could not ask", so the shape is always there.

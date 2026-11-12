@@ -133,9 +133,12 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                 process = entity.Value,
                 foreground = entity.IsForeground,
                 minimized = entity.IsMinimized ? true : (bool?)null,
-                // A window cut off mid-walk has not been fully seen, and saying so is the difference between
-                // "there is no such control" and "we stopped looking".
-                elementsIncomplete = entity.ElementsTruncated ? true : (bool?)null,
+                // A window cut off mid-walk has not been fully seen, and saying so — with the reason — is the
+                // difference between "there is no such control" and "we stopped looking".
+                elementsComplete = entity.ElementsTruncated ? (bool?)null : true,
+                elementsTruncated = entity.ElementsTruncation == WalkStopReason.None
+                    ? null
+                    : entity.ElementsTruncation.ToString(),
                 rect = new
                 {
                     x = entity.Rect.X,
@@ -146,8 +149,11 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                 // A window that was not looked into says so, instead of looking like a window with no controls.
                 elementsOmitted = observation.WalkedWindows is { } walked && !walked.Contains(entity.EntityId) ? true : (bool?)null,
                 // How many matching controls the cap left out, so a short list is not mistaken for a whole one.
-                elementsMore = Matching(observation, entity.EntityId, filter).Count is var total && total > filter.Skip + filter.Limit
+                hidden = Matching(observation, entity.EntityId, filter).Count is var total && total > filter.Skip + filter.Limit
                     ? total - filter.Skip - filter.Limit
+                    : (int?)null,
+                elementsMore = Matching(observation, entity.EntityId, filter).Count is var moreTotal && moreTotal > filter.Skip + filter.Limit
+                    ? moreTotal - filter.Skip - filter.Limit
                     : (int?)null,
                 // Where to continue: pass this as offset to read the next page of this window.
                 nextOffset = Matching(observation, entity.EntityId, filter).Count > filter.Skip + filter.Limit
@@ -161,7 +167,11 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
                         elementId = element.ElementId,
                         name = element.Name,
                         role = element.Role,
+                        // Null for a password field by construction; said out loud so the model knows the
+                        // empty value is a refusal to report, not an empty field.
                         value = Clip(element.Value),
+                        secret = element.Secret ? true : (bool?)null,
+                        ambiguous = element.Ambiguous ? true : (bool?)null,
                         // Its click point is outside the window, so it is not somewhere to click yet — it is
                         // somewhere to scroll to first.
                         offscreen = element.IsOffscreen ? true : (bool?)null,
@@ -195,30 +205,72 @@ public sealed class DesktopObserveTool(DesktopAutomation automation, DesktopTool
         value is null || value.Length <= DesktopObserveFilter.ValueChars ? value : value[..DesktopObserveFilter.ValueChars] + "…";
 
     /// <summary>
-    /// A window whose UIA walk came back almost empty is usually a Chromium/Electron surface: the one
-    /// element it exposes is the webview's document plane. The model standing in front of it can only read
-    /// coordinates off screenshots. The escape hatch exists and the model just has to know it: relaunch with
-    /// a debug port and the page's nodes become addressable controls. Said once per window, only when this
-    /// process launched the app at least once before (a port nobody recorded would not answer, so the hint
-    /// would promise what it cannot keep).
+    /// What an incomplete or nearly empty window means, said in terms of the next step rather than a guess.
+    /// A hung window, a window that refused inspection and a Chromium surface whose tree is simply deep are
+    /// three different problems; folding them into "Electron" taught the model to relaunch the wrong thing.
     /// </summary>
     internal static string BlindWindows(DesktopObservation observation)
     {
-        var blind = observation.Entities
-            .Where(entity => !entity.IsMinimized)
-            .Where(entity => observation.Elements.Count(element =>
-                    string.Equals(element.WindowId, entity.EntityId, StringComparison.Ordinal))
-                < 2)
-            .Select(entity => $"'{entity.Label}'")
-            .Take(3)
-            .ToList();
+        var notes = new List<string>(3);
 
-        return blind.Count == 0
-            ? string.Empty
-            : $"\n（{string.Join("、", blind)} 只露出了极少控件——多半是 UIA 看不见的应用（Electron/网页内嵌界面），"
-                + "操作它只能靠截图上的坐标。若这个程序是用 desktop_launch 启动过的，重启时在 arguments 里带上 "
-                + "--remote-debugging-port=9222，页面里的按钮、链接就能作为控件出现在观察里，直接按名字点。）";
+        foreach (var entity in observation.Entities
+                     .Where(entity => !entity.IsMinimized)
+                     .Where(entity => observation.WalkedWindows is not { } walked || walked.Contains(entity.EntityId))
+                     .Take(6))
+        {
+            var count = observation.Elements.Count(element =>
+                string.Equals(element.WindowId, entity.EntityId, StringComparison.Ordinal));
+
+            switch (entity.ElementsTruncation)
+            {
+                case WalkStopReason.Unresponsive:
+                    notes.Add($"'{entity.Label}' 未响应：UI 线程可能被阻塞，先 desktop_wait 或等它恢复，不要反复观察");
+                    continue;
+
+                case WalkStopReason.Refused:
+                    notes.Add($"'{entity.Label}' 拒绝了 UI Automation 检查（权限或 UIPI）：只能走截图坐标路径");
+                    continue;
+
+                case WalkStopReason.Gone:
+                    notes.Add($"'{entity.Label}' 在观察期间关闭了：重新观察后再决定");
+                    continue;
+
+                case WalkStopReason.Fault:
+                    notes.Add($"'{entity.Label}' 的控件遍历中断（provider 故障）：列表可能不完整，可重试 observe");
+                    continue;
+
+                case WalkStopReason.Visited or WalkStopReason.Time:
+                    notes.Add($"'{entity.Label}' 的控件很多，遍历到了预算上限：用 nameContains / roles / offset 缩小范围，不要当作全部");
+                    continue;
+
+                case WalkStopReason.Produced:
+                    notes.Add($"'{entity.Label}' 达到了每窗口控件上限：用 nameContains / roles / offset 缩小范围，不要当作全部");
+                    continue;
+
+                case WalkStopReason.Depth:
+                    notes.Add($"'{entity.Label}' 还有更深的控件没有展开：可在应用里展开目标区域后再观察");
+                    continue;
+            }
+
+            if (count >= 2)
+            {
+                continue;
+            }
+
+            notes.Add(LooksLikeChromium(entity)
+                ? $"'{entity.Label}' 只露出了极少控件——它可能是 Chromium/Electron 界面。若这个程序是用 desktop_launch 启动的，"
+                    + "重启时在 arguments 里带上 --remote-debugging-port=9222，页面里的控件就能直接按名字点；否则用截图坐标。"
+                : $"'{entity.Label}' 只露出了极少控件：可能是应用不暴露 UI Automation，或控件在未展开的容器里；"
+                    + "先尝试 focus / 展开，再用截图坐标兜底");
+        }
+
+        return notes.Count == 0 ? string.Empty : $"\n（{string.Join("；", notes)}）";
     }
+
+    private static bool LooksLikeChromium(UiEntity entity) =>
+        entity.Value is { Length: > 0 } process
+        && new[] { "chrome", "chromium", "msedge", "webview", "electron", "code", "discord", "slack", "teams", "spotify", "brave", "opera", "vivaldi" }
+            .Any(name => process.Contains(name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Which windows this observation is about.
@@ -398,19 +450,19 @@ public sealed class DesktopActTool(
         var arguments = Json.Deserialize<DesktopActArguments>(argumentsJson);
         if (arguments is null)
         {
-            return new ToolResult(false, "参数不是合法 JSON");
+            return DesktopResultContract.Refuse(DesktopResultContract.InvalidArgs, "参数不是合法 JSON");
         }
 
         if (!Enum.TryParse<ActionKind>(arguments.Kind, ignoreCase: true, out var kind))
         {
-            return new ToolResult(false, $"未知动作 '{arguments.Kind}'；可用：{string.Join(", ", Enum.GetNames<ActionKind>())}");
+            return DesktopResultContract.Refuse(DesktopResultContract.InvalidArgs, $"未知动作 '{arguments.Kind}'；可用：{string.Join(", ", Enum.GetNames<ActionKind>())}");
         }
 
         // What the model decided on, before looking again.
         var before = automation.LastObservation;
         if (before is null)
         {
-            return new ToolResult(false, "还没有观察过：先调用 desktop_observe");
+            return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, "还没有观察过：先调用 desktop_observe");
         }
 
         // A control named instead of numbered. Exactly one match is the control; none or several is a refusal
@@ -420,7 +472,11 @@ public sealed class DesktopActTool(
             var found = ResolveByName(before, arguments.EntityId, wanted);
             if (found.Error is not null)
             {
-                return new ToolResult(false, found.Error);
+                return DesktopResultContract.Refuse(
+                    found.Error.Contains("不止一个", StringComparison.Ordinal)
+                        ? DesktopResultContract.AmbiguousTarget
+                        : DesktopResultContract.NotFound,
+                    found.Error);
             }
 
             arguments = arguments with { ElementId = found.Element!.ElementId };
@@ -430,7 +486,7 @@ public sealed class DesktopActTool(
         var snapped = false;
         if (arguments.ElementId is { Length: > 0 } && seenElement is null)
         {
-            return new ToolResult(false, $"未知控件 '{arguments.ElementId}'：先调用 desktop_observe");
+            return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, $"未知控件 '{arguments.ElementId}'：先调用 desktop_observe");
         }
 
         var point = arguments.X is { } x && arguments.Y is { } y ? (x, y) : ((int X, int Y)?)null;
@@ -446,13 +502,14 @@ public sealed class DesktopActTool(
         {
             if (arguments.MediaId is not { Length: > 0 } mediaId)
             {
-                return new ToolResult(false, "px/py 需要 mediaId（哪张图上的像素）：desktop_screenshot 的结果里带它");
+                return DesktopResultContract.Refuse(DesktopResultContract.InvalidArgs, "px/py 需要 mediaId（哪张图上的像素）：desktop_screenshot 的结果里带它");
             }
 
             picture = automation.PictureOf(arguments.MediaId);
             if (picture is null)
             {
-                return new ToolResult(false,
+                return DesktopResultContract.Refuse(
+                    DesktopResultContract.NotFound,
                     $"媒体 '{arguments.MediaId}' 不在记录里（可能已过期）：重新 desktop_screenshot，再用新结果里的 mediaId");
             }
         }
@@ -460,12 +517,12 @@ public sealed class DesktopActTool(
         var entityId = seenElement?.WindowId ?? arguments.EntityId ?? picture?.EntityId;
         if (picture is not null && arguments.EntityId is { Length: > 0 } named && !named.Equals(picture.EntityId, StringComparison.Ordinal))
         {
-            return new ToolResult(false, $"媒体 '{arguments.MediaId}' 是窗口 '{picture.EntityId}' 的，entityId 却是 '{named}'：两者指同一个窗口，或分开调用");
+            return DesktopResultContract.Refuse(DesktopResultContract.InvalidArgs, $"媒体 '{arguments.MediaId}' 是窗口 '{picture.EntityId}' 的，entityId 却是 '{named}'：两者指同一个窗口，或分开调用");
         }
 
         if (point is not null && picturePoint is not null)
         {
-            return new ToolResult(false, "x/y 和 px/py 同时给了：留一种（前者是屏幕坐标，后者是某张截图上的像素）");
+            return DesktopResultContract.Refuse(DesktopResultContract.InvalidArgs, "x/y 和 px/py 同时给了：留一种（前者是屏幕坐标，后者是某张截图上的像素）");
         }
 
         // A picture of the whole desktop carries no window identity: its pixel maps to a screen coordinate,
@@ -477,7 +534,8 @@ public sealed class DesktopActTool(
         {
             if (seenElement is not null || arguments.EntityId is { Length: > 0 })
             {
-                return new ToolResult(false,
+                return DesktopResultContract.Refuse(
+                    DesktopResultContract.InvalidArgs,
                     "这张媒体是桌面全景（scope=desktop），不对应单一窗口：要么给 x/y 屏幕坐标，"
                     + "要么用 desktop_observe 拿某个窗口的 entityId，或用全屏图上的窗口编号标记中的 id");
             }
@@ -498,19 +556,19 @@ public sealed class DesktopActTool(
                 : automation.LastShownEntityId)?.EntityId;
             if (entityId is null)
             {
-                return new ToolResult(false, DescribeRefusal(before, point));
+                return DesktopResultContract.Refuse(DesktopResultContract.NotFound, DescribeRefusal(before, point));
             }
         }
 
         var seenWindow = before.Find(entityId);
         if (seenWindow is null)
         {
-            return new ToolResult(false, $"未知窗口 '{entityId}'：先调用 desktop_observe");
+            return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, $"未知窗口 '{entityId}'：先调用 desktop_observe");
         }
 
         if (!policy.Allows(seenWindow.Label))
         {
-            return new ToolResult(false, $"窗口 '{seenWindow.Label}' 不在允许列表内（设置里的桌面段）");
+            return DesktopResultContract.Refuse(DesktopResultContract.PermDenied, $"窗口 '{seenWindow.Label}' 不在允许列表内（设置里的桌面段）");
         }
 
         // Approval can outlive the lease by minutes. Looking again keeps the guarantee the lease was for —
@@ -527,12 +585,14 @@ public sealed class DesktopActTool(
         }
         catch (Exception error)
         {
-            return new ToolResult(false, $"重新观察失败：{error.Message}");
+            return DesktopResultContract.Refuse(
+                error is TimeoutException ? DesktopResultContract.Timeout : DesktopResultContract.AppUnresponsive,
+                $"重新观察失败：{error.Message}");
         }
 
         if (Revalidate(seenWindow, fresh) is { } stale)
         {
-            return new ToolResult(false, stale);
+            return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, stale);
         }
 
         // The page's own controls, re-read for the same reason the UI Automation tree was: the element the
@@ -561,7 +621,7 @@ public sealed class DesktopActTool(
         // remapped somewhere it was not taken.
         if (picture is not null && StalePicture(target.Rect, picture) is { } stalePicture)
         {
-            return new ToolResult(false, stalePicture);
+            return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, stalePicture);
         }
 
         if (point is null && picturePoint is { } pp && picture is not null)
@@ -590,10 +650,53 @@ public sealed class DesktopActTool(
 
         if (seenElement is not null && RevalidateElement(seenElement, fresh) is { } staleElement)
         {
-            return new ToolResult(false, staleElement);
+            return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, staleElement);
+        }
+
+        // Two controls that report the same name, role and stable key are indistinguishable by id: the id is
+        // an index, and the index now names one of two equally plausible controls. Acting would be a coin
+        // flip, so the refusal asks for a coordinate or a narrower observation instead.
+        if (seenElement is { Ambiguous: true } ambiguous)
+        {
+            return new ToolResult(
+                false,
+                $"AMBIGUOUS_TARGET：'{ambiguous.Name}' [{ambiguous.Role}] 在这个窗口里不止一个，控件身份相同，"
+                + "elementId 无法说明是哪一个。改用 x/y 坐标点选，或先用 nameContains / roles / offset 观察后再决定");
         }
 
         var element = seenElement is null ? null : fresh.FindElement(seenElement.ElementId);
+
+        var background = automation.DeliversInBackground(entityId);
+
+        // Being in front is necessary before SetFocus, not just before typing: focusing a control in a
+        // background window can raise that window, and then the keystroke lands in a window the user was not
+        // looking at. Refuse while it is still background; the model can focus the window as its own step.
+        if (!background
+            && element is not null
+            && kind is (ActionKind.KeyPress or ActionKind.TypeText)
+            && !target.IsForeground)
+        {
+            return DesktopResultContract.Refuse(
+                DesktopResultContract.PermDenied,
+                $"'{target.Label}' 不在前台，输入会打到别的窗口：先对它执行 focus，再重试"
+                + (element is null ? string.Empty : $" · 目标 '{element.Name}' [{element.Role}]")
+                + (snapped ? " · px/py 卷到了控件邻域，已按控件中心点执行" : string.Empty));
+        }
+
+        // The window being in front is not the same as the named control having the caret. Typing into a form
+        // whose focus sits in the previous field writes into that field, reports success and leaves the model
+        // to discover the misplaced text later. Give the control the focus first, confirm it took it, or refuse
+        // with the control that has it now.
+        if (!background
+            && element is not null
+            && kind is (ActionKind.KeyPress or ActionKind.TypeText)
+            && !DesktopAutomation.IsDomElementOf(element, entityId))
+        {
+            if (automation.EnsureElementFocus(entityId, element.ElementId, element.IdentityDigest, ct) is { } focusRefusal)
+            {
+                return DesktopResultContract.Refuse(DesktopResultContract.CodeForRefusal(focusRefusal), focusRefusal);
+            }
+        }
 
         // Not a refusal: the window is the same window, it just moved or retitled. Reported so the model knows
         // its picture is stale — without spending a step re-observing to find out.
@@ -619,13 +722,13 @@ public sealed class DesktopActTool(
         {
             if (fresh.FindElement(toId) is not { } destination)
             {
-                return new ToolResult(false, $"未知的终点控件 '{toId}'：先 desktop_observe");
+                return DesktopResultContract.Refuse(DesktopResultContract.StaleRef, $"未知的终点控件 '{toId}'：先 desktop_observe");
             }
 
             arguments = arguments with { ToX = destination.Centre.X, ToY = destination.Centre.Y };
         }
 
-        if (Guard(kind, target, resolved, arguments, automation.DeliversInBackground(entityId)) is { } blocked)
+        if (Guard(kind, target, resolved, arguments, background) is { } blocked)
         {
             // The refusal names the control that was resolved, when one was: the model's next decision
             // turns on whether it was aiming at that control — snap or named — not at the window overall.
@@ -635,10 +738,12 @@ public sealed class DesktopActTool(
                 ? NearestControl(fresh, entityId, resolved.Value)
                 : null;
 
-            return new ToolResult(false, element is null
-                ? near is null ? blocked : $"{blocked}\n离这个点最近的控件：'{near.Value.Element.Name}' [{near.Value.Element.Role}] "
-                    + $"elementId {near.Value.Element.ElementId}，点击点 ({near.Value.Element.Centre.X},{near.Value.Element.Centre.Y})"
-                : $"{blocked} · 目标 '{element.Name}' [{element.Role}]");
+            return DesktopResultContract.Refuse(
+                DesktopResultContract.CodeForRefusal(blocked),
+                element is null
+                    ? near is null ? blocked : $"{blocked}\n离这个点最近的控件：'{near.Value.Element.Name}' [{near.Value.Element.Role}] "
+                        + $"elementId {near.Value.Element.ElementId}，点击点 ({near.Value.Element.Centre.X},{near.Value.Element.Centre.Y})"
+                    : $"{blocked} · 目标 '{element.Name}' [{element.Role}]");
         }
 
         // A control that is below the fold has a click point outside the window, so every containment check
@@ -660,6 +765,7 @@ public sealed class DesktopActTool(
             Within = arguments.Offset is { } offset && element is not null ? offset : null,
             ClickCount = arguments.ClickCount ?? 1,
             ElementId = seenElement?.ElementId,
+            ElementIdentity = seenElement?.IdentityDigest,
             VirtualKey = arguments.VirtualKey ?? 0,
             Text = arguments.Text,
             Modifiers = Modifiers(arguments.Modifiers),
@@ -692,9 +798,14 @@ public sealed class DesktopActTool(
 
         RecordAct(action, kind, target, element, snapped, post is null ? null : (post.Width, post.Height), actWatch.Elapsed.TotalMilliseconds);
 
+        var contract = DesktopResultContract.Classify(action);
+        var header = DesktopResultContract.Header(contract.Code, contract.Delivery, contract.Retry);
+
         if (post is null)
         {
-            return new ToolResult(action.GuardPassed, drift is null ? described : $"{described} · {drift}");
+            return new ToolResult(
+                action.GuardPassed,
+                header + "\n" + (drift is null ? described : $"{described} · {drift}"));
         }
 
         var withPicture = described
@@ -706,7 +817,7 @@ public sealed class DesktopActTool(
                 : "，图上无标记（该窗口无可寻址控件），坐标沿网格读");
         return new ToolResult(
             action.GuardPassed,
-            drift is null ? withPicture : $"{withPicture} · {drift}",
+            header + "\n" + (drift is null ? withPicture : $"{withPicture} · {drift}"),
             new[] { post.DataUri });
     }
 
@@ -736,7 +847,7 @@ public sealed class DesktopActTool(
                 "desktop_act",
                 Kind: kind.ToString(),
                 Target: element?.Name ?? target.Label,
-                Ok: action.GuardPassed && action.Injection?.Ok == true,
+                Ok: action.GuardPassed && action.Injection?.Posted == true,
                 Snapped: snapped ? true : (bool?)null,
                 Verify: action.PostVerify?.Decision.ToString(),
                 MediaWidth: picture?.Width,
@@ -1181,9 +1292,9 @@ public sealed class DesktopActTool(
         // and the difference is the one the user cares about: nothing of theirs was touched.
         var viaBackground = action.Injection?.Detail.StartsWith("cdp.", StringComparison.Ordinal) == true
             || action.Injection?.Detail.StartsWith("bg.", StringComparison.Ordinal) == true;
-        var injected = action.Injection?.Ok == true
-            ? viaPattern ? "已通过界面自动化执行" : viaBackground ? "已在后台执行（没有动你的前台窗口和指针）" : "注入成功"
-            : $"{(viaPattern ? "自动化调用失败" : viaBackground ? "后台执行失败" : "注入失败")}（{action.Injection?.Detail}）";
+        var injected = action.Injection?.Posted == true
+            ? viaPattern ? "已通过界面自动化执行" : viaBackground ? "已在后台执行（没有动你的前台窗口和指针）" : "已发出（Windows 已接收输入，投递结果以下面的校验为准）"
+            : $"{(viaPattern ? "自动化调用未能完成" : viaBackground ? "后台执行失败" : "未能发出")}（{action.Injection?.Detail}）";
 
         // The user's foreground window moved, so it is said out loud rather than left for them to notice.
         var raised = action.Raised ? " · 目标原来被挡住，已把它带到前台" : string.Empty;

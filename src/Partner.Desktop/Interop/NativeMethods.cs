@@ -102,6 +102,55 @@ internal static class NativeMethods
 
     internal const int DwmwaExtendedFrameBounds = 9;
 
+    /// <summary>Whether the window is cloaked (another virtual desktop, a suspended UWP app).</summary>
+    internal const int DwmwaCloaked = 14;
+
+    [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+    internal static extern int DwmGetWindowAttributeInt(nint hWnd, int attribute, out int value, int size);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetClassNameW(nint hWnd, [Out] char[] text, int maxCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern nint GetWindow(nint hWnd, uint command);
+
+    internal const uint GwOwner = 4;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    internal static extern nint GetWindowLongPtr(nint hWnd, int index);
+
+    internal const int GwlExstyle = -20;
+    internal const int WsExToolwindow = 0x00000080;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern nint FindWindowExW(nint parent, nint after, string? className, string? windowName);
+
+    /// <summary>
+    /// Posts a message only to find out whether the target's message loop answers. <c>SMTO_ABORTIFHUNG</c>
+    /// returns zero immediately for a hung window instead of waiting out the timeout, which is what makes the
+    /// probe a probe rather than another way to block on the target.
+    /// </summary>
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern nint SendMessageTimeoutW(
+        nint hWnd,
+        uint message,
+        nint wParam,
+        nint lParam,
+        uint flags,
+        uint timeoutMs,
+        out nint result);
+
+    internal const uint WmNull = 0;
+    internal const uint SmtoAbortIfHung = 0x0002;
+
+    [DllImport("ole32.dll")]
+    internal static extern int CoInitializeEx(nint reserved, uint coInit);
+
+    internal const uint CoinitMultithreaded = 0x0;
+
+    [DllImport("ole32.dll")]
+    internal static extern void CoUninitialize();
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct Rect
     {
@@ -256,6 +305,22 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(uint count, [In] Input[] inputs, int size);
 
+    /// <summary>
+    /// Whether a virtual key is down now. The high bit means down; the low bit is "pressed since the last
+    /// call" and is deliberately ignored. Used to decide what to release after a partial SendInput.
+    /// </summary>
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
+
+    internal const int VkLeftButton = 0x01;
+    internal const int VkRightButton = 0x02;
+    internal const int VkMiddleButton = 0x04;
+    internal const int VkShift = 0x10;
+    internal const int VkControl = 0x11;
+    internal const int VkMenu = 0x12;
+    internal const int VkLeftWin = 0x5B;
+    internal const int VkRightWin = 0x5C;
+
     internal const uint InputMouse = 0;
     internal const uint InputKeyboard = 1;
 
@@ -264,6 +329,8 @@ internal static class NativeMethods
     internal const uint MouseeventfLeftup = 0x0004;
     internal const uint MouseeventfRightdown = 0x0008;
     internal const uint MouseeventfRightup = 0x0010;
+    internal const uint MouseeventfMiddledown = 0x0020;
+    internal const uint MouseeventfMiddleup = 0x0040;
     internal const uint MouseeventfWheel = 0x0800;
     internal const uint MouseeventfVirtualdesk = 0x4000;
 

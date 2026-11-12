@@ -228,12 +228,16 @@ public static class DesktopEndpoints
                     ct)
                 .ConfigureAwait(false);
 
+            var contract = Partner.Desktop.Tools.DesktopResultContract.Classify(action);
             return Results.Ok(new
             {
                 actionId = action.ActionId,
+                code = contract.Code,
+                delivery = contract.Delivery,
+                retry = contract.Retry,
                 guardPassed = action.GuardPassed,
                 guardReason = action.GuardReason,
-                injected = action.Injection?.Ok,
+                injected = action.Injection?.Posted,
                 injectionDetail = action.Injection?.Detail,
                 verified = action.PostVerify?.Decision.ToString(),
             });

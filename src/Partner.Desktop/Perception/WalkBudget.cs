@@ -19,6 +19,18 @@ public enum WalkStopReason
 
     /// <summary>The window took longer than one window may take.</summary>
     Time,
+
+    /// <summary>The provider failed in a way that is not any of the classified cases. The list may be partial.</summary>
+    Fault,
+
+    /// <summary>The window refused inspection (elevated process, protected surface, UIPI).</summary>
+    Refused,
+
+    /// <summary>The window's UI thread did not answer within the probe timeout.</summary>
+    Unresponsive,
+
+    /// <summary>The window or the control went away during the walk.</summary>
+    Gone,
 }
 
 /// <summary>
@@ -111,6 +123,18 @@ internal sealed class WalkState(WalkBudget budget, Stopwatch clock)
 
         Stopped = Budget.Stop(depth, produced, Visited, Clock.Elapsed.TotalMilliseconds);
         return Stopped == WalkStopReason.None;
+    }
+
+    /// <summary>
+    /// Stops the walk because something broke, keeping a bound reason if one was already recorded: "we hit the
+    /// time budget" is a more useful answer than "a call failed afterwards".
+    /// </summary>
+    public void Fail(WalkStopReason reason)
+    {
+        if (Stopped == WalkStopReason.None)
+        {
+            Stopped = reason;
+        }
     }
 
     private Stopwatch Clock { get; } = clock;

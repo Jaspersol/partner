@@ -34,7 +34,7 @@ public sealed class DesktopOcclusionTests
     public void Another_window_on_the_point_is_refused_by_name()
     {
         // The measured case: the click went to the agent's own window, which covered the point, and the
-        // result still said "注入成功 · 画面无变化" three times.
+        // result still said "已发出 · 画面无变化" three times.
         var reason = DesktopAutomation.Occlusion(
             ActionKind.LeftClick, Params(742, 948), Target, At(0x9999, 7, "Partner"));
 

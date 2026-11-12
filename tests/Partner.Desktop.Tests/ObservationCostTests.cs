@@ -78,12 +78,46 @@ public sealed class ObservationCostTests
             $"observing an ordinary window took {watch.Elapsed.TotalMilliseconds:0}ms");
     }
 
-    /// <summary>A shown window with one named button and <paramref name="skipped"/> controls it does not need.</summary>
+    /// <summary>
+    /// A shown window with one named button and <paramref name="skipped"/> controls it does not need.
+    /// <para>
+    /// Its own STA thread with a running message loop: the UIA probe asks whether the window answers, and a form
+    /// created on the test thread without a pump is indistinguishable from a hung application.
+    /// </para>
+    /// </summary>
     private sealed class WideWindow : IDisposable
     {
-        private readonly System.Windows.Forms.Form _form;
+        private readonly ManualResetEventSlim _ready = new(false);
+        private readonly ManualResetEventSlim _closed = new(false);
+        private readonly Thread _thread;
+        private System.Windows.Forms.Form? _form;
 
         public WideWindow(int skipped)
+        {
+            _thread = new Thread(() => Run(skipped)) { IsBackground = true };
+            _thread.SetApartmentState(ApartmentState.STA);
+            _thread.Start();
+
+            Assert.True(_ready.Wait(TimeSpan.FromSeconds(20)), "the observation-cost window never came up");
+        }
+
+        public string HandleHex { get; private set; } = string.Empty;
+
+        public void Dispose()
+        {
+            try
+            {
+                _form?.BeginInvoke(new Action(() => _form.Close()));
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            _closed.Wait(TimeSpan.FromSeconds(5));
+            _ready.Dispose();
+        }
+
+        private void Run(int skipped)
         {
             _form = new System.Windows.Forms.Form
             {
@@ -107,19 +141,14 @@ public sealed class ObservationCostTests
                 });
             }
 
-            _form.Show();
-
-            // A handle exists only once the window is shown, and the walk needs one.
-            for (var attempt = 0; attempt < 100 && _form.Handle == nint.Zero; attempt++)
+            _form.Shown += (_, _) =>
             {
-                Thread.Sleep(20);
-            }
+                HandleHex = _form.Handle.ToString("x");
+                _ready.Set();
+            };
 
-            HandleHex = _form.Handle.ToString("x");
+            _form.FormClosed += (_, _) => _closed.Set();
+            System.Windows.Forms.Application.Run(_form);
         }
-
-        public string HandleHex { get; }
-
-        public void Dispose() => _form.Dispose();
     }
 }

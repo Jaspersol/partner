@@ -182,7 +182,7 @@ internal static class BackgroundLaunch
                 taken = true;
                 if (before.Foreground != 0 && NativeMethods.IsWindow(before.Foreground))
                 {
-                    restored = new InputInjector().Focus(before.Foreground).Ok;
+                    restored = new InputInjector().Focus(before.Foreground).Posted;
                 }
             }
 

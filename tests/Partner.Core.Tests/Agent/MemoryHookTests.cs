@@ -167,7 +167,7 @@ public sealed class MemoryHookTests : IDisposable
             Body = "播放器里点一下播放",
         });
 
-        const string actResult = "LeftClick · 注入成功 · 校验：画面已变化 · 目标 '播放' [button] @ 播放器";
+        const string actResult = "LeftClick · 已发出 · 校验：画面已变化 · 目标 '播放' [button] @ 播放器";
         await session.AppendAsync(new SessionEvent
         {
             Kind = SessionEventKind.ToolResult,

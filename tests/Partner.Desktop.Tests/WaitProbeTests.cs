@@ -1,4 +1,3 @@
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 using Partner.Desktop.Tools;
 
@@ -14,7 +13,7 @@ public sealed class WaitProbeTests
         using var automation = new DesktopAutomation(walk: (_, windowId) =>
         {
             Interlocked.Increment(ref walks);
-            return (Array.Empty<UiElement>(), Array.Empty<AutomationElement>(), WalkStopReason.None);
+            return (Array.Empty<UiElement>(), Array.Empty<IUiNode>(), WalkStopReason.None);
         });
 
         var first = automation.Observe();
@@ -45,7 +44,7 @@ public sealed class WaitProbeTests
             Interlocked.Increment(ref walks);
             return (
                 new[] { new UiElement($"{windowId}:0", windowId, "按钮", "Button", new PixelRect(0, 0, 10, 10), "d") },
-                Array.Empty<AutomationElement>(),
+                Array.Empty<IUiNode>(),
                 WalkStopReason.None);
         });
 

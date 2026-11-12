@@ -44,9 +44,42 @@ public sealed record DesktopWindow
     public override string ToString() => $"{Title} [{ProcessName ?? ProcessId.ToString()}] {Width}x{Height}";
 }
 
+/// <summary>
+/// What a window was, at one instant: handle, process, process start time and visible rectangle. Two reads
+/// that differ mean a capture or comparison spans a change that would misalign its pixels.
+/// </summary>
+public readonly record struct WindowIdentity(
+    nint Handle,
+    int ProcessId,
+    long? ProcessStartTicks,
+    int X,
+    int Y,
+    int Width,
+    int Height);
+
 /// <summary>Enumerates visible top-level windows. Read-only; safe to call at any time.</summary>
 public static class WindowEnumerator
 {
+    /// <summary>The window's identity now, or null when it no longer exists.</summary>
+    public static WindowIdentity? IdentityOf(nint handle)
+    {
+        if (handle == 0 || !NativeMethods.IsWindow(handle))
+        {
+            return null;
+        }
+
+        NativeMethods.GetWindowThreadProcessId(handle, out var processId);
+        var bounds = GetBounds(handle);
+
+        return new WindowIdentity(
+            handle,
+            (int)processId,
+            TryGetProcessStartTicks(processId),
+            bounds.Left,
+            bounds.Top,
+            bounds.Width,
+            bounds.Height);
+    }
     public static IReadOnlyList<DesktopWindow> List()
     {
         var foreground = NativeMethods.GetForegroundWindow();
@@ -59,7 +92,16 @@ public static class WindowEnumerator
 
         NativeMethods.EnumWindows((handle, _) =>
         {
-            if (!NativeMethods.IsWindowVisible(handle))
+            if (!NativeMethods.IsWindowVisible(handle) || IsCloaked(handle))
+            {
+                // Cloaked windows belong to another virtual desktop, or to a UWP app that is suspended. They
+                // are not on the screen the model is looking at and cannot be clicked.
+                return true;
+            }
+
+            // A tool window with an owner is a palette or a find bar that belongs to an application already in
+            // the list; one without an owner is a floating tool of its own and is not a target.
+            if (IsUnownedToolWindow(handle))
             {
                 return true;
             }
@@ -78,6 +120,23 @@ public static class WindowEnumerator
             }
 
             NativeMethods.GetWindowThreadProcessId(handle, out var processId);
+
+            // A UWP app is hosted in ApplicationFrameHost.exe: the frame is the window on screen, but the
+            // process the model needs is the app inside it. Otherwise "设置" is reported as the host and a
+            // debug port or an elevation check is aimed at the wrong process.
+            if (string.Equals(GetClass(handle), "ApplicationFrameWindow", StringComparison.Ordinal))
+            {
+                var hosted = NativeMethods.FindWindowExW(handle, 0, "Windows.UI.Core.CoreWindow", null);
+                if (hosted != 0)
+                {
+                    NativeMethods.GetWindowThreadProcessId(hosted, out var hostedProcess);
+                    if (hostedProcess != 0)
+                    {
+                        processId = hostedProcess;
+                    }
+                }
+            }
+
             windows.Add(new DesktopWindow
             {
                 Handle = handle,
@@ -138,6 +197,25 @@ public static class WindowEnumerator
     {
         NativeMethods.GetWindowRect(handle, out var rect);
         return rect;
+    }
+
+    private static bool IsCloaked(nint handle) =>
+        NativeMethods.DwmGetWindowAttributeInt(
+            handle,
+            NativeMethods.DwmwaCloaked,
+            out var cloaked,
+            sizeof(int)) == 0
+        && cloaked != 0;
+
+    private static bool IsUnownedToolWindow(nint handle) =>
+        (NativeMethods.GetWindowLongPtr(handle, NativeMethods.GwlExstyle) & NativeMethods.WsExToolwindow) != 0
+        && NativeMethods.GetWindow(handle, NativeMethods.GwOwner) == 0;
+
+    internal static string GetClass(nint handle)
+    {
+        var buffer = new char[256];
+        var copied = NativeMethods.GetClassNameW(handle, buffer, buffer.Length);
+        return copied <= 0 ? string.Empty : new string(buffer, 0, copied);
     }
 
     internal static string GetTitle(nint handle)

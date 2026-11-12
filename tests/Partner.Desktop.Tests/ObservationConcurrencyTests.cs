@@ -1,4 +1,3 @@
-using System.Windows.Automation;
 using Partner.Desktop.Perception;
 
 namespace Partner.Desktop.Tests;
@@ -59,10 +58,10 @@ public sealed class ObservationConcurrencyTests
                 // full walk's later choice cannot leak into it.
                 SlowWalkGate.Entered.TrySetResult();
                 SlowWalkGate.Release.Task.GetAwaiter().GetResult();
-                return (new[] { Element(windowId, 0) }, Array.Empty<AutomationElement>(), WalkStopReason.None);
+                return (new[] { Element(windowId, 0) }, Array.Empty<IUiNode>(), WalkStopReason.None);
             }
 
-            return (new[] { Element(windowId, 0) }, Array.Empty<AutomationElement>(),
+            return (new[] { Element(windowId, 0) }, Array.Empty<IUiNode>(),
                 cutOff ? WalkStopReason.Visited : WalkStopReason.None);
         });
 
@@ -104,7 +103,7 @@ public sealed class ObservationConcurrencyTests
         // Every window of the first walk is cut off; the second walk is clean.
         var cutOff = true;
         using var automation = new DesktopAutomation(walk: (handle, windowId) =>
-            (new[] { Element(windowId, 0) }, Array.Empty<AutomationElement>(),
+            (new[] { Element(windowId, 0) }, Array.Empty<IUiNode>(),
                 cutOff ? WalkStopReason.Visited : WalkStopReason.None));
 
         var full = automation.Observe();
