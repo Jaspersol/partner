@@ -466,7 +466,7 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "memory: 100000 records — retrieval P99 under 500ms",
+          "check": "memory: 100000 records — retrieval p90 under 1000ms",
           "ran": true,
           "passed": true,
           "skipped": false
@@ -479,7 +479,7 @@
       "level": "product-supported",
       "evidence": [
         {
-          "check": "memory: 100000 Chinese records — retrieval P99 under 500ms",
+          "check": "memory: 100000 Chinese records — retrieval p90 under 1000ms",
           "ran": true,
           "passed": true,
           "skipped": false

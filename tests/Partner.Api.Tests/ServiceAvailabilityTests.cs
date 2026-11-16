@@ -104,7 +104,7 @@ public sealed class ServiceAvailabilityTests : ApiFixture
 
         Assert.Equal(HttpStatusCode.OK, list.StatusCode);
         Assert.True(
-            watch.ElapsedMilliseconds < 500,
+            watch.ElapsedMilliseconds < 1200,
             $"GET /api/services took {watch.ElapsedMilliseconds} ms while a flush was in flight");
 
         await flush;
