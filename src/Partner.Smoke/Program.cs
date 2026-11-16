@@ -2517,7 +2517,10 @@ internal static class Program
                         await Task.Delay(25);
                     }
 
-                    var shown = leaseLlm.Requests
+                    // One snapshot for the assertion below: the property hands back a copy for exactly this
+                    // reason, and taking it once keeps the two reads from describing different turns.
+                    var leaseRequests = leaseLlm.Requests;
+                    var shown = leaseRequests
                         .SelectMany(request => request.Messages)
                         .Where(message => message.Images is { Count: > 0 })
                         .ToList();
@@ -4194,7 +4197,20 @@ internal static class Program
     {
         private readonly List<LlmRequest> _requests = new();
 
-        public IReadOnlyList<LlmRequest> Requests => _requests;
+        /// <summary>
+        /// A snapshot, taken under the model's own gate: the turn keeps calling back while the check reads, and
+        /// enumerating the live list is what threw "Collection was modified" through the run.
+        /// </summary>
+        public IReadOnlyList<LlmRequest> Requests
+        {
+            get
+            {
+                lock (_requests)
+                {
+                    return _requests.ToList();
+                }
+            }
+        }
 
         /// <summary>
         /// The ReAct shape, driven by what is already in the conversation: look, act on what was seen, then
@@ -4204,7 +4220,12 @@ internal static class Program
         /// </summary>
         public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
         {
-            _requests.Add(request);
+            List<LlmRequest> seen;
+            lock (_requests)
+            {
+                _requests.Add(request);
+                seen = _requests.ToList();
+            }
 
             var toolResults = request.Messages.Count(message => message.Role == "tool");
 
@@ -4221,18 +4242,18 @@ internal static class Program
                         new LlmToolCall(
                             "c2",
                             "desktop_act",
-                            $"{{ \"entityId\": \"{PickTarget()}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}"),
+                            $"{{ \"entityId\": \"{PickTargetOf(seen, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}"),
                     },
                     "tool_calls"),
                 2 => new LlmResponse(
                     null,
-                    new[] { new LlmToolCall("c3", "desktop_screenshot", $"{{ \"entityId\": \"{PickTarget()}\" }}") },
+                    new[] { new LlmToolCall("c3", "desktop_screenshot", $"{{ \"entityId\": \"{PickTargetOf(seen, targetTitle)}\" }}") },
                     "tool_calls"),
                 // What models actually do after looking: click the coordinates, with no window id. A pointer move
                 // rather than a click, so the check never presses anything on the user's desktop.
                 3 => new LlmResponse(
                     null,
-                    new[] { new LlmToolCall("c4", "desktop_act", $"{{ \"kind\": \"MovePointer\", \"x\": {PickCentre().X}, \"y\": {PickCentre().Y} }}") },
+                    new[] { new LlmToolCall("c4", "desktop_act", $"{{ \"kind\": \"MovePointer\", \"x\": {PickCentreOf(seen, targetTitle).X}, \"y\": {PickCentreOf(seen, targetTitle).Y} }}") },
                     "tool_calls"),
                 // A point no window covers: the refusal has to say which windows exist, or the model can only
                 // repeat the same call — which is exactly what it did, until the turn hit the step limit.
@@ -4243,12 +4264,6 @@ internal static class Program
                 _ => new LlmResponse("好吧。", Array.Empty<LlmToolCall>(), "stop"),
             });
         }
-
-        /// <summary>The centre of the picked window, in screen coordinates, as desktop_observe reports them.</summary>
-        private (int X, int Y) PickCentre() => PickCentreOf(_requests, targetTitle);
-
-        /// <summary>The window this run owns, which the observation lists and which is not in front.</summary>
-        private string PickTarget() => PickTargetOf(_requests, targetTitle);
 
         public Task<LlmResponse> StreamAsync(LlmRequest request, Action<string> onText, CancellationToken ct = default) =>
             CompleteAsync(request, ct);
@@ -4357,11 +4372,26 @@ internal static class Program
     {
         private readonly List<LlmRequest> _requests = new();
 
-        public IReadOnlyList<LlmRequest> Requests => _requests;
+        /// <summary>A snapshot, taken under the model's own gate, for the same reason as the observe model.</summary>
+        public IReadOnlyList<LlmRequest> Requests
+        {
+            get
+            {
+                lock (_requests)
+                {
+                    return _requests.ToList();
+                }
+            }
+        }
 
         public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
         {
-            _requests.Add(request);
+            List<LlmRequest> seen;
+            lock (_requests)
+            {
+                _requests.Add(request);
+                seen = _requests.ToList();
+            }
 
             var toolResults = request.Messages.Count(message => message.Role == "tool");
 
@@ -4373,13 +4403,13 @@ internal static class Program
                     "tool_calls"),
                 1 => new LlmResponse(
                     null,
-                    new[] { new LlmToolCall("c2", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
+                    new[] { new LlmToolCall("c2", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(seen, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
                     "tool_calls"),
                 // ■ The lease probe: same window, same kind. Approved once above, so this runs without
                 // approval — that is exactly what the check reads back from the server state.
                 2 => new LlmResponse(
                     null,
-                    new[] { new LlmToolCall("c3", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
+                    new[] { new LlmToolCall("c3", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(seen, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
                     "tool_calls"),
                 // What a grant must never cover: a command that leaves the GUI asks every time.
                 3 => new LlmResponse(
