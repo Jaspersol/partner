@@ -726,6 +726,11 @@ export interface AgentJobView {
   rounds: string[]
 }
 
+/** Memory recall. Embeddings are the local hashing provider; off means lexical + full-text scoring only. */
+export interface MemorySettings {
+  embeddings: boolean
+}
+
 export interface RuntimeSettings {
   input: InputSettings
   output: OutputSettings
@@ -740,6 +745,7 @@ export interface RuntimeSettings {
   agents: AgentsSettings
   files: FilesSettings
   web: WebSettings
+  memory: MemorySettings
   pet: PetSettings
 }
 
@@ -757,6 +763,7 @@ export interface SettingsView {
   agents: AgentsSettingsView
   files: FilesSettings
   web: WebSettings
+  memory: MemorySettings
   pet: PetSettings
 }
 

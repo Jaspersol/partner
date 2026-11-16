@@ -147,6 +147,7 @@ const SETTINGS_FIXTURE: SettingsView = {
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+  memory: { embeddings: false },
   pet: PET_FIXTURE,
 };
 
@@ -1349,6 +1350,21 @@ describe('memory view', () => {
   const pickTier = (wrapper: ReturnType<typeof mount>, value: string) =>
     wrapper.find(`[data-test="memory-tier"] button[data-value="${value}"]`).trigger('click')
 
+  it('switches local vector search from the page, saving it without touching the rest of the settings', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(MemoryView, { props: { api: stub } })
+    await flushPromises()
+
+    const toggle = wrapper.find<HTMLInputElement>('[data-test="memory-embeddings"]')
+    expect(toggle.element.checked).toBe(false)
+
+    await toggle.setValue(true)
+    await flushPromises()
+    expect(calls.saves).toHaveLength(1)
+    expect(calls.saves[0]?.memory.embeddings).toBe(true)
+    expect(calls.saves[0]?.model.model).toBe(SETTINGS_FIXTURE.model.model)
+  })
+
   it('marks validity and switches the list to recall hits', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(MemoryView, { props: { api: stub } })
@@ -1943,7 +1959,7 @@ describe('settings view', () => {
     await flushPromises()
 
     const nav = wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())
-    expect(nav).toEqual(['通用', '对话模型', '语音输入', '语音输出', '电脑操控', '桌宠', '文件访问', '联网搜索', '本地引擎', '外观'])
+    expect(nav).toEqual(['通用', '外观', '对话模型', '语音输入', '语音输出', '技能', 'MCP', 'agent', '电脑操控', '文件访问', '联网搜索', '本地引擎'])
 
     // Every field is in the document whichever category is showing (the others are only hidden), so a change on
     // one category is never lost by looking at another.
@@ -2407,6 +2423,7 @@ describe('settings view', () => {
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+      memory: { embeddings: false },
       pet: PET_FIXTURE,
       })),
     })
@@ -2436,6 +2453,7 @@ describe('settings view', () => {
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+      memory: { embeddings: false },
       pet: PET_FIXTURE,
       })),
     })
@@ -2586,6 +2604,7 @@ describe('settings view', () => {
         agents: { main: { prompt: null }, subAgents: [] },
         files: { enabled: false, roots: [] },
         web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+        memory: { embeddings: false },
         pet: PET_FIXTURE,
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
@@ -2682,6 +2701,7 @@ describe('settings view', () => {
             agents: { main: { prompt: null }, subAgents: [] },
             files: { enabled: false, roots: [] },
             web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+            memory: { embeddings: false },
             pet: PET_FIXTURE,
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
@@ -2817,6 +2837,7 @@ describe('settings view', () => {
         },
         files: { enabled: true, roots: ['D:/资料', 'E:/扫描'] },
         web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+        memory: { embeddings: false },
         pet: PET_FIXTURE,
       })),
     })
@@ -2949,7 +2970,10 @@ describe('settings view', () => {
     expect(warning.text()).toContain('还需要启用「桌面操控」子 agent')
 
     await wrapper.find('[data-test="desktop-agent-fix"]').trigger('click')
-    expect(wrapper.emitted('navigate')?.[0]).toEqual(['prompts'])
+    // The agent page is a category of this page now, so "去启用" opens it here instead of leaving.
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+    expect(wrapper.find('[data-test="settings-embedded-agents"]').exists()).toBe(true)
+    window.localStorage.removeItem('partner.settings.section')
   })
 
   it('offers how far the assistant may go to reach a window, defaulting to the old behaviour', async () => {
@@ -2971,6 +2995,54 @@ describe('settings view', () => {
     await flushPromises()
     expect(calls.saves[0]?.desktop.inputMode).toBe('auto')
   })
+  it('mounts skills, MCP and agent inside the page, one at a time, and hides its own Save bar for them', async () => {
+    window.localStorage.removeItem('partner.settings.section')
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="settings-embedded-mcp"]').exists()).toBe(false)
+    // The Save bar only shows for unsaved edits, so make one on this page's own form.
+    await wrapper.find('[data-test="files-enabled"]').setValue(true)
+    expect(wrapper.find('[data-test="settings-savebar"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="settings-nav-mcp"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="mcp-enabled"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="settings-savebar"]').exists()).toBe(false)
+
+    await wrapper.find('[data-test="settings-nav-input"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="mcp-enabled"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="settings-savebar"]').exists()).toBe(true)
+    window.localStorage.removeItem('partner.settings.section')
+  })
+
+  it('carries the memory setting through a save made here, so it cannot be reset', async () => {
+    window.localStorage.removeItem('partner.settings.section')
+    const { stub, calls } = createStub({
+      settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, memory: { embeddings: true } })),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="files-enabled"]').setValue(true)
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.memory.embeddings).toBe(true)
+    window.localStorage.removeItem('partner.settings.section')
+  })
+
+  it('shows only the pet category, with no category nav, as the pet page', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub, page: 'pet' } })
+    await flushPromises()
+
+    expect(wrapper.find('.settings-nav').exists()).toBe(false)
+    expect((wrapper.find('[data-test="settings-section-pet"]').attributes('style') ?? '').includes('display: none')).toBe(false)
+    expect((wrapper.find('[data-test="settings-section-model"]').attributes('style') ?? '').includes('display: none')).toBe(true)
+  })
+
 })
 
 describe('pet section', () => {
@@ -3463,15 +3535,17 @@ describe('interface language', () => {
       await wrapper.findAll('[data-test="settings-language"] button')[2]?.trigger('click')
       expect(wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())).toEqual([
         'General',
+        'Appearance',
         'Chat model',
         'Voice input',
         'Voice output',
+        'Skills',
+        'MCP',
+        'Agent',
         'Computer control',
-        'Desktop pet',
         'File access',
         'Web search',
         'Local engines',
-        'Appearance',
       ])
 
       await wrapper.findAll('[data-test="settings-language"] button')[1]?.trigger('click')

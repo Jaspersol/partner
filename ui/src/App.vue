@@ -15,6 +15,7 @@ import {
 } from './api'
 import { resolveConnection } from './config'
 import { t } from './i18n'
+import { petSupported } from './shellPrefs'
 import { useRailOnlyMode } from './narrow'
 import { isPageHidden } from './pageVisibility'
 import { applyReducedTransparency, applyTheme, nextTheme, readReducedTransparency, readTheme, type Theme } from './theme'
@@ -25,11 +26,8 @@ import ToastHost from './components/ToastHost.vue'
 import TopBar from './components/TopBar.vue'
 import MemoryView from './views/MemoryView.vue'
 import SessionView from './views/SessionView.vue'
-import McpView from './views/McpView.vue'
 import ServicesView from './views/ServicesView.vue'
 import SchedulesView from './views/SchedulesView.vue'
-import SkillsView from './views/SkillsView.vue'
-import PromptsView from './views/PromptsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import { version } from '../package.json'
 
@@ -44,15 +42,10 @@ const NAV = computed<NavItem[]>(() => [
   // Right under the conversation: a timed task's output lands there.
   { key: 'schedules', label: t('nav.schedules'), testId: '定时', icon: 'clock' },
   { key: 'memory', label: t('nav.memory'), testId: '记忆', icon: 'memory' },
-
-  // Two capability pages of their own rather than cards inside settings: both are lists a person reads and
-  // changes, and need the room a settings card does not give.
-  { key: 'mcp', label: 'MCP', testId: 'MCP', icon: 'mcp' },
+  // Only in a shell built with the pet: a distributed build compiles it out, and a tab for it would be empty.
+  ...(petSupported() ? [{ key: 'pet', label: t('nav.pet'), testId: '桌宠', icon: 'pet' } as const] : []),
   { key: 'services', label: t('nav.services'), testId: '服务', icon: 'services' },
-  { key: 'skills', label: t('nav.skills'), testId: '技能', icon: 'skill' },
-
-  // What the agents are told, and who they may hand work to.
-  { key: 'prompts', label: 'agent', testId: 'agent', icon: 'prompt' },
+  // Skills, MCP and agent are categories of the settings page.
   { key: 'settings', label: t('nav.settings'), testId: '设置', icon: 'settings' },
 ])
 
@@ -490,25 +483,6 @@ onUnmounted(() => {
             :api="api"
             @changed="refreshSummary"
           />
-          <McpView
-            v-else-if="active === 'mcp'"
-            ref="activeView"
-            :api="api"
-            @changed="refreshSummary"
-          />
-          <SkillsView
-            v-else-if="active === 'skills'"
-            ref="activeView"
-            :api="api"
-            @changed="refreshSummary"
-          />
-          <PromptsView
-            v-else-if="active === 'prompts'"
-            ref="activeView"
-            :api="api"
-            @changed="refreshSummary"
-            @navigate="select"
-          />
           <ServicesView
             v-else-if="active === 'services'"
             ref="activeView"
@@ -517,12 +491,26 @@ onUnmounted(() => {
             @navigate="select"
           />
           <SettingsView
+            v-else-if="active === 'pet'"
+            key="pet"
+            ref="activeView"
+            page="pet"
+            :api="api"
+            :theme="theme"
+            @set-theme="setTheme"
+            @saved="refreshGears"
+            @changed="refreshSummary"
+            @navigate="select"
+          />
+          <SettingsView
             v-else
+            key="settings"
             ref="activeView"
             :api="api"
             :theme="theme"
             @set-theme="setTheme"
             @saved="refreshGears"
+            @changed="refreshSummary"
             @navigate="select"
           />
         </template>

@@ -51,6 +51,8 @@ const part4: Record<string, string> = {
   '上游服务里真实的模型名，转发时会替换请求里的 model。': 'The real model name at the upstream; it replaces "model" in forwarded requests.',
   'Anthropic 协议要求每个请求都带 max_tokens，调用方没带时用这个值补上。留空表示沿用主模型。': 'The Anthropic API requires max_tokens on every request; this value is filled in when the caller leaves it out. Leave empty to use the main model\'s.',
   '等上游开始回复的最长时间，超时返回 504。开始回复之后不再限时。留空表示沿用主模型。': 'How long to wait for the upstream to start answering; past it the call returns 504. Once it starts there is no limit. Leave empty to use the main model\'s.',
+  '本地向量检索': 'Local vector search',
+  '开启后，召回记忆时除了关键词，还用本机算出的字符向量打分。全程在本机计算，不联网。默认关闭；开启后新写入的记忆会带上向量，召回排序会和现在略有不同。': 'When recalling memories, also score them with character vectors computed on this machine, in addition to keywords. Nothing leaves the computer. Off by default; once on, newly written memories carry vectors and recall ranking differs slightly from now.',
 }
 
 export default part4
