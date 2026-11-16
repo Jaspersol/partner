@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pet",
+  "description": "The pet window renders a Live2D model and talks to the shell through app commands only; it needs no window or autostart permissions of its own.",
+  "windows": [
+    "pet"
+  ],
+  "permissions": [
+    "core:event:default"
+  ]
+}

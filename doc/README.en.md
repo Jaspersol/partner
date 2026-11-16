@@ -22,6 +22,7 @@ Back to the [project home](../README.md).
 | [MCP](./mcp.en.md) | Connect stdio MCP servers and choose which ones skip approval |
 | [Skills](./skills.en.md) | Give the model routines via `SKILL.md`; upload, create, disable |
 | [Memory Services](./services.en.md) | Connect external agents and plugins: game AI mods, plugins and others use your memory through a local OpenAI/Anthropic endpoint, with summaries written back to main memory |
+| [Desktop pet](./pet.en.md) | A Live2D character on the desktop: install the Cubism Core, import a model, the scenes and the emotion dictionary, and where the Live2D licence stops |
 
 ## Advanced
 

@@ -1,6 +1,19 @@
 import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
+import { LIVE2D_BANNER } from './src/pet/licence'
+
+/**
+ * `VITE_PARTNER_PET=0` builds the shell alone: the Live2D runtime is behind a licence gate, and a build that
+ * excludes it must not so much as emit `pet.html`.
+ */
+const petEnabled = process.env.VITE_PARTNER_PET !== '0'
+
+/** True when a chunk's own modules come from easy-live2d, which is what bundles the Cubism Framework. */
+function carriesLive2d(moduleIds: readonly string[] | undefined): boolean {
+  return (moduleIds ?? []).some((id) => id.includes('easy-live2d'))
+}
+
 export default defineConfig({
   plugins: [vue()],
 
@@ -12,6 +25,20 @@ export default defineConfig({
     emptyOutDir: true,
     // The Tauri shell is the only consumer; source maps make field debugging possible without a rebuild.
     sourcemap: true,
+
+    rollupOptions: {
+      input: petEnabled ? { main: 'index.html', pet: 'pet.html' } : { main: 'index.html' },
+      output: {
+        /**
+         * The bundled Cubism Framework's copyright headers are `/*!` comments in Live2D's own sources, but esbuild
+         * drops them when it bundles, and the Open Software License does not allow that notice to be removed. The
+         * banner therefore follows the framework wherever Rollup puts it: the pet entry, and any chunk that carries
+         * easy-live2d itself (`PetApp` imports it dynamically, so it is split out).
+         */
+        banner: (chunk) =>
+          petEnabled && (chunk.name === 'pet' || carriesLive2d(chunk.moduleIds)) ? LIVE2D_BANNER : '',
+      },
+    },
   },
 
   server: {

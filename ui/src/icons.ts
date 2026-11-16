@@ -61,6 +61,7 @@ export type IconName =
   | 'shield'
   | 'sliders'
   | 'services'
+  | 'pet'
 
 /**
  * Name → path data, in a 24×24 viewBox.
@@ -161,6 +162,15 @@ export const ICONS: Record<IconName, readonly string[]> = {
   sliders: ['M5 8h14M5 16h14', 'M9 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4z', 'M15 14a2 2 0 1 1 0 4 2 2 0 0 1 0-4z'],
 
   services: ['M4 4h16v6H4z', 'M4 14h16v6H4z', 'M8 7h.01', 'M8 17h.01', 'M12 7h4', 'M12 17h4'],
+
+  // A paw print: the pad and four toes, drawn as separate closed outlines so the stroke never crosses itself.
+  pet: [
+    'M12 11.9a5 4.3 0 1 1 0 8.6 5 4.3 0 0 1 0-8.6z',
+    'M8.5 9.4a1.9 1.9 0 1 1-3.8 0 1.9 1.9 0 0 1 3.8 0z',
+    'M12.2 6.9a1.9 1.9 0 1 1-3.8 0 1.9 1.9 0 0 1 3.8 0z',
+    'M15.8 6.9a1.9 1.9 0 1 1-3.8 0 1.9 1.9 0 0 1 3.8 0z',
+    'M19.3 9.4a1.9 1.9 0 1 1-3.8 0 1.9 1.9 0 0 1 3.8 0z',
+  ],
 }
 
 /** The paths for one icon. Exported so a caller can assert a name actually has geometry. */

@@ -17,8 +17,17 @@ The application code is MIT licensed, see [LICENSE](LICENSE). That licence does 
 | Interop.UIAutomationClient | MIT | Windows UI Automation 的 COM 互操作程序集 |
 | WebView2 Runtime | Microsoft 分发条款 | 由 Windows/Tauri 提供，不随包捆绑 |
 | NSIS | zlib/libpng | 安装包生成 |
+| easy-live2d 1.1.0（`ui/`） | MIT | 桌宠窗口的 Live2D 渲染封装；**它打包的 Cubism Framework 不是 MIT**，见下节 |
+| Pixi.js 8（`ui/`） | MIT | 桌宠窗口的 WebGL 渲染器，只进 pet 入口，不进主包 |
+| @pixi/sound 6（`ui/`） | MIT | easy-live2d 的动作音效 |
+| earcut 3.2.4（Pixi 传递依赖） | ISC | 多边形三角化 |
+| tiny-lru 11.4.7（Pixi 传递依赖） | BSD-3-Clause | LRU 缓存 |
+| @xmldom/xmldom 0.8.15（Pixi 传递依赖） | MIT | 纹理图集的 XML 解析 |
+| colord 2.13.0 / eventemitter3 5.0.4 / gifuct-js 2.1.2 / ismobilejs 1.1.1 / parse-svg-path 0.2.0（Pixi 传递依赖） | MIT | 颜色、事件、GIF、设备判断、SVG 路径解析 |
+| @types/earcut 3.0.0 / @webgpu/types 0.1.74（Pixi 传递依赖） | MIT / BSD-3-Clause | 编译期类型，不进运行时代码 |
+| Live2D Cubism Framework（打包在 easy-live2d 的 `dist/index.js` 里） | **Live2D Open Software License** | **不适用 MIT**。版权归 Live2D Inc.，使用和分发受 Live2D 两份协议约束，见下节 |
 
-直接依赖见上表；完整清单是 `src-tauri/Cargo.lock`、`ui/package-lock.json` 和 `src/*/*.csproj`。
+直接依赖见上表；完整清单是 `src-tauri/Cargo.lock`、`ui/package-lock.json` 和 `src/*/*.csproj`。上表的版本号与许可取自 `ui/package-lock.json`，逐个核对过。
 
 ## 引擎包 / The engine packs
 
@@ -45,6 +54,20 @@ The application code is MIT licensed, see [LICENSE](LICENSE). That licence does 
 
 `third-party/` 保存这些许可的原文，打包脚本把整目录复制进每个包的 `NOTICE/LICENSES/`。第三方 wheel 的许可清单由打包脚本从各包 `*.dist-info/METADATA` 生成，写入 `NOTICE/THIRD-PARTY-LICENSES-<包名>.txt`。四个包都会解压进同一个 `engines/` 目录，所以每包的 `MODEL_CARD` 与清单带包名后缀，脚本会检查 `NOTICE/` 下没有重名文件。
 
+## Live2D / Live2D
+
+桌宠（`ui/pet.html`）用 Live2D 显示角色。这一节的许可与上面所有内容都不同，也**不适用 MIT**。
+
+The desktop pet uses Live2D. This section's licensing differs from everything above and is **not MIT**.
+
+- **Cubism Core 不分发**：`live2dcubismcore.min.js` 由用户从 Live2D 官网自行下载、自己在本地同意协议，导入后只留在 `%LOCALAPPDATA%\Partner\pet\core\`。仓库、安装包和 release 资产都不含它，也不提供镜像。适用范围是 **Live2D Proprietary Software License**。
+- **模型不分发**：仓库和安装包都不含任何 `.moc3` / `.model3.json`。模型由用户自行导入，只留在本机；版权属于每个模型的作者，不由本项目转授任何权利。
+- **Cubism Framework 随包分发**：easy-live2d 的 `dist/index.js` 打包了 Framework（源码里有 13 处 `Copyright(c) Live2D Inc.`）。构建时给 pet chunk 加 banner 保留该版权声明与协议 URL，因为压缩器会丢掉不是 `/*!` 形式的注释，而 Open Software License 明确禁止移除版权声明。
+- **协议文本**：原文在 `third-party/`（`Live2D-Open-Software-License.txt`、MIT 三份），打包时复制到安装包的 `notices/licenses/`；应用内「设置 → 桌宠」底部也列了署名和两份协议链接。
+- **发布门槛**：允许导入任意模型属于两份协议 §1.5 的「Expandable Application」，需要 Live2D 事先审核并签出版许可；把 Framework 编进安装包分发同样需要出版许可。书面答复到达之前，release 构建用 `VITE_PARTNER_PET=0` 不构建桌宠，安装包里没有这个功能。解读不是法律意见，最终以 Live2D 的书面答复为准。
+
+The Core and the models are not distributed: the user downloads the Core from Live2D's site under the Live2D Proprietary Software License, and model copyright stays with each model's author. The Framework bundled inside easy-live2d is distributed with the app under the Live2D Open Software License; its copyright notice is preserved in the built pet chunk by a build banner. Licence texts live in `third-party/` and are copied into `notices/licenses/` in the installer. Until Live2D answers the Expandable Application review in writing, release builds set `VITE_PARTNER_PET=0` and ship without the pet.
+
 ## 义务与落实 / Obligations and where they are met
 
 | 条款 | 要求 | 落实 |
@@ -56,6 +79,9 @@ The application code is MIT licensed, see [LICENSE](LICENSE). That licence does 
 | MIT（Silero VAD、Qwen3-TTS-GGUF、本项目脚本） | 版权声明 + 许可文本 | `NOTICE/LICENSES/` |
 | PSF-2.0 | Python 许可随运行时 | `NOTICE/LICENSES/PSF-Python-3.13.txt` |
 | PyInstaller GPL-2.0 + Exception | 分发打包产物时保留其许可与例外说明 | `NOTICE/LICENSES/PyInstaller-COPYING.txt` |
+| Live2D Open Software License §5.1 / §5.2.2 | 不得移除或修改 Live2D 的版权声明；分发时附协议文本 | 构建时给 pet chunk 加 banner，保留 `Copyright(c) Live2D Inc.` 与协议 URL（压缩器会丢掉普通注释）；`third-party/Live2D-Open-Software-License.txt` 由 `tauri.conf.json` 的 `bundle.resources` 复制进 `notices/licenses/` |
+| Live2D Open Software License §2.2.1 / §2.3 | 把 Framework 编进作品分发给最终用户需另签出版许可；允许导入任意模型属于 Expandable Application，须事先经 Live2D 审核 | 书面答复之前 release 构建 `VITE_PARTNER_PET=0`，安装包不含桌宠；获批后再打开并在应用内展示 Expandable Application 标识（申请入口 <https://www.live2d.jp/eng/application-publication-license/>） |
+| Live2D Proprietary Software License（Core） | 再分发需另行授权，因此不分发 | Core 只由用户从官网下载并本地接受协议，仓库与安装包不含 `live2dcubismcore*.js`；`.gitignore` 与 release 工作流的 `git ls-files` 检查为防线 |
 
 ## 检查结论 / Review notes
 

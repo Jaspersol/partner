@@ -8,14 +8,22 @@ namespace Partner.Api.Settings;
 /// Rejects configurations that would fail later, in a place where the failure is unattributable: a bad base
 /// URL only surfaces as a turn that never completes, and a zero sample rate only as silence.
 /// </summary>
-public static class SettingsValidation
+public static partial class SettingsValidation
 {
     /// <param name="settings">The settings about to be stored.</param>
     /// <param name="stored">
     /// What is stored now. A rule that depends on the machine (a directory that must exist) is held against what is
     /// <i>new</i>: otherwise an unplugged drive would make every unrelated save fail until the path was edited out.
     /// </param>
-    public static IReadOnlyList<string> Validate(RuntimeSettings settings, RuntimeSettings? stored = null, int apiPort = 0)
+    /// <param name="petModelIds">
+    /// The imported model ids, or <see langword="null"/> to skip the model check: without the list every non-empty
+    /// id would be a false rejection.
+    /// </param>
+    public static IReadOnlyList<string> Validate(
+        RuntimeSettings settings,
+        RuntimeSettings? stored = null,
+        int apiPort = 0,
+        IReadOnlyCollection<string>? petModelIds = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -144,6 +152,7 @@ public static class SettingsValidation
         }
 
         ValidateWeb(settings.Web, errors);
+        ValidatePet(settings.Pet, petModelIds, errors);
 
         errors.AddRange(AgentsValidation.Validate(settings, stored));
         errors.AddRange(ServicesValidation.Validate(settings, apiPort));
@@ -224,4 +233,108 @@ public static class SettingsValidation
             errors.Add($"{section}.readyTimeoutSeconds 必须为正");
         }
     }
+
+    /// <summary>The pet section's bounds.</summary>
+    private static void ValidatePet(PetSettings pet, IReadOnlyCollection<string>? modelIds, List<string> errors)
+    {
+        ArgumentNullException.ThrowIfNull(pet);
+
+        if (pet.Scale is < 0.5 or > 2)
+        {
+            errors.Add("pet.scale 必须在 0.5–2");
+        }
+
+        if (pet.IdleMinSeconds < 5 || pet.IdleMinSeconds > pet.IdleMaxSeconds || pet.IdleMaxSeconds > 3600)
+        {
+            errors.Add("pet.idleMinSeconds 必须在 5–3600 且不大于 pet.idleMaxSeconds");
+        }
+
+        if (pet.SleepAfterMinutes < 0 || pet.SleepAfterMinutes > 1440)
+        {
+            errors.Add("pet.sleepAfterMinutes 必须在 0–1440");
+        }
+
+        if (pet.EmotionCooldownSeconds < 0 || pet.EmotionCooldownSeconds > 600)
+        {
+            errors.Add("pet.emotionCooldownSeconds 必须在 0–600");
+        }
+
+        if (pet.ExpressionHoldSeconds < 1 || pet.ExpressionHoldSeconds > 120)
+        {
+            errors.Add("pet.expressionHoldSeconds 必须在 1–120");
+        }
+
+        if (pet.FastDragPxPerSecond < 100 || pet.FastDragPxPerSecond > 20000)
+        {
+            errors.Add("pet.fastDragPxPerSecond 必须在 100–20000");
+        }
+
+        var greetingTimes = pet.GreetingTimes ?? [];
+        if (greetingTimes.Count > 12)
+        {
+            errors.Add("pet.greetingTimes 最多 12 个");
+        }
+
+        if (greetingTimes.Any(time => !GreetingTime().IsMatch(time)))
+        {
+            errors.Add("pet.greetingTimes 的每一项都必须是 HH:mm");
+        }
+
+        if (modelIds is not null
+            && !string.IsNullOrEmpty(pet.ActiveModelId)
+            && !modelIds.Contains(pet.ActiveModelId, StringComparer.Ordinal))
+        {
+            errors.Add($"pet.activeModelId 不是已导入的模型：{pet.ActiveModelId}");
+        }
+
+        ValidateEmotions(pet.Emotions ?? new PetEmotionDictionary(), errors);
+    }
+
+    /// <summary>
+    /// The dictionary's own limits. <c>NegationPrefixes</c> may be empty (negation off) but never contain a blank.
+    /// </summary>
+    private static void ValidateEmotions(PetEmotionDictionary emotions, List<string> errors)
+    {
+        if (emotions.MinWeight is < 1 or > 10)
+        {
+            errors.Add("pet.emotions.minWeight 必须在 1–10");
+        }
+
+        var prefixes = emotions.NegationPrefixes ?? [];
+        if (prefixes.Count > 32)
+        {
+            errors.Add("pet.emotions.negationPrefixes 最多 32 个");
+        }
+
+        if (prefixes.Any(prefix => string.IsNullOrWhiteSpace(prefix) || prefix.Length > 8))
+        {
+            errors.Add("pet.emotions.negationPrefixes 的每一项都必须非空且不超过 8 个字");
+        }
+
+        foreach (var (emotion, keywords) in emotions.Keywords ?? new Dictionary<string, IReadOnlyList<PetKeyword>>())
+        {
+            if (keywords is null || keywords.Count > 200)
+            {
+                errors.Add($"pet.emotions.{emotion} 最多 200 个关键词");
+                continue;
+            }
+
+            foreach (var keyword in keywords)
+            {
+                var text = keyword.Text?.Trim() ?? string.Empty;
+                if (text.Length == 0 || text.Length > 32)
+                {
+                    errors.Add($"pet.emotions.{emotion} 的关键词必须非空且不超过 32 个字");
+                }
+
+                if (keyword.Weight is < 1 or > 10)
+                {
+                    errors.Add($"pet.emotions.{emotion}.{text} 的 weight 必须在 1–10");
+                }
+            }
+        }
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^([01]\d|2[0-3]):[0-5]\d$")]
+    private static partial System.Text.RegularExpressions.Regex GreetingTime();
 }

@@ -47,6 +47,9 @@ const EXEMPT = new Map([
   ['bad.md', 'skill-upload fixture name in SkillEndpointsTests.cs and ui/tests/views.test.ts'],
   ['taken.md', 'skill-upload fixture name in tests/Partner.Api.Tests/SkillEndpointsTests.cs'],
   ['more.md', 'skill-upload fixture name in ui/tests/views.test.ts'],
+  // A file inside the user-supplied Live2D SDK archive (extracted next to the Core), not a repo document. It is
+  // named in PetAssetStore.cs as a destination file name, which is why the citation has no path to qualify it.
+  ['LICENSE.md', 'licence file inside the Live2D SDK zip, extracted beside the Core: never a repo file'],
 ])
 
 /** Heading shapes a numbered section can take: `## 8.` / `### 5.1` — and the circled region markers. */

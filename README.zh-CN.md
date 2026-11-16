@@ -164,6 +164,10 @@ export PARTNER_LLM_PROTOCOL=openai   # 可选：openai / anthropic
 - **写回** — 按设定的间隔把调用方的要求和回复总结成一句话，以 `[对外服务:<名称>]` 开头写进主记忆。记忆页按来源筛选，删除服务时可一并删除它写入的记忆
 - **边界** — 调用方必须和 Partner 在同一台电脑上；服务协议必须与上游一致，不做格式转换；每个服务有独立令牌。外部文字会进入主记忆，只把令牌交给可信的程序
 
+### 桌宠
+
+- **Live2D 角色** — 一个透明、置顶的小窗口，按关键词字典匹配已定稿的助手回复并播放固定场景；Cubism Core 和模型都由你自己确认下载，拿到 Live2D 对 Expandable Application 的书面答复之前，release 构建不含这个功能
+
 ### 系统与平台
 
 - **模型协议** — 支持 OpenAI 兼容和 Anthropic Messages 端点，API Key 只写不读

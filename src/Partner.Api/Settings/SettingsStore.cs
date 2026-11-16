@@ -21,15 +21,30 @@ public sealed class SettingsStore
 
     private readonly string _path;
     private readonly int _apiPort;
+    private readonly Func<IReadOnlyCollection<string>>? _petModelIds;
+    private int _revision = 1;
 
-    public SettingsStore(string path, int apiPort = 0)
+    /// <param name="path">Where <c>runtime.json</c> lives.</param>
+    /// <param name="apiPort">The port the services listen on, which a token may be bound to.</param>
+    /// <param name="petModelIds">
+    /// The model ids currently imported, asked on every save so <c>pet.activeModelId</c> cannot name a model that is
+    /// not there. A delegate because imports and deletes happen while the store is alive.
+    /// </param>
+    public SettingsStore(string path, int apiPort = 0, Func<IReadOnlyCollection<string>>? petModelIds = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         _path = path;
         _apiPort = apiPort;
+        _petModelIds = petModelIds;
     }
 
     public string Path => _path;
+
+    /// <summary>
+    /// Bumped after every successful <see cref="Save"/>. The pet window polls for settings changes and cannot
+    /// diff the whole document on every tick, so this counter is what tells it "read the new settings".
+    /// </summary>
+    public int Revision => Volatile.Read(ref _revision);
 
     public RuntimeSettings Load()
     {
@@ -64,6 +79,7 @@ public sealed class SettingsStore
         Web = loaded.Web ?? new WebSettings(),
         Tts = LocalTtsMigrated(loaded),
         Output = SplitCharsMigrated(loaded.Output ?? new OutputSettings(), raw),
+        Pet = loaded.Pet ?? new PetSettings(),
     };
 
     /// <summary>
@@ -145,16 +161,42 @@ public sealed class SettingsStore
                 ReasoningGears = gears,
                 ReasoningLabels = NormalizeLabels(incoming.Model.ReasoningLabels, gears),
             },
+
+            Pet = incoming.Pet with { Emotions = KnownEmotions(incoming.Pet.Emotions) },
         };
 
-        var errors = SettingsValidation.Validate(merged, stored, _apiPort);
+        var errors = SettingsValidation.Validate(merged, stored, _apiPort, _petModelIds?.Invoke());
         if (errors.Count > 0)
         {
             throw new SettingsValidationException(errors);
         }
 
         Write(merged);
+
+        // Only after the write succeeded: a rejected save must not look like "settings changed" to a poller.
+        Interlocked.Increment(ref _revision);
         return merged;
+    }
+
+    /// <summary>
+    /// Drops dictionary keys this build does not know. A file written by a later build carries an emotion this
+    /// one has no columns for; refusing the save would brick the page, and keeping it would round-trip a value
+    /// nothing can edit.
+    /// </summary>
+    private static PetEmotionDictionary KnownEmotions(PetEmotionDictionary emotions)
+    {
+        var unknown = emotions.Keywords.Keys.Where(key => !PetEmotions.Values.Contains(key, StringComparer.Ordinal)).ToList();
+        if (unknown.Count == 0)
+        {
+            return emotions;
+        }
+
+        return emotions with
+        {
+            Keywords = emotions.Keywords
+                .Where(entry => PetEmotions.Values.Contains(entry.Key, StringComparer.Ordinal))
+                .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal),
+        };
     }
 
     /// <summary>

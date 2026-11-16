@@ -1,3 +1,4 @@
+using Partner.Api.Pet;
 using Partner.Api.Settings;
 using Partner.Core.Agent.Tools;
 using Partner.Core.Media;
@@ -24,6 +25,7 @@ public sealed class ApiContext : IAsyncDisposable
         IInputQueue queue,
         IMemoryStore memory,
         SettingsStore settings,
+        PetAssetStore pet,
         IMediaStore media,
         IScheduler scheduler,
         DesktopAutomation desktop,
@@ -39,6 +41,7 @@ public sealed class ApiContext : IAsyncDisposable
         Queue = queue;
         Memory = memory;
         Settings = settings;
+        Pet = pet;
         Media = media;
         Scheduler = scheduler;
         Desktop = desktop;
@@ -66,6 +69,13 @@ public sealed class ApiContext : IAsyncDisposable
     public IMemoryStore Memory { get; }
 
     public SettingsStore Settings { get; }
+
+    /// <summary>
+    /// The pet's Core and models, under <c>%LOCALAPPDATA%</c> rather than the workspace: they are licensed
+    /// binaries the user supplied, and keeping them out of the workspace keeps them out of anything the
+    /// workspace is copied to.
+    /// </summary>
+    public PetAssetStore Pet { get; }
 
     /// <summary>Attachments live here, not in the log: the bytes are files, the events carry only their ids.</summary>
     public IMediaStore Media { get; }
@@ -152,10 +162,13 @@ public sealed class ApiContext : IAsyncDisposable
         var (session, _) = JsonlSessionStore.Open(workspace, clock);
         var queue = new JsonlInputQueue(workspace, capacity: 1024, clock: clock);
 
+        var pet = new PetAssetStore();
+
         // Read once, here: the store is built with its embedding provider fixed, so turning the switch on takes
         // effect at the next process start. Changing it live would mean re-embedding or silently diverging between
         // old and new records on the vector arm of the scorer.
-        var settings = new SettingsStore(Path.Combine(workspace, "settings", "runtime.json"), apiPort);
+        var settings = new SettingsStore(
+            Path.Combine(workspace, "settings", "runtime.json"), apiPort, pet.ModelIds);
         var memoryOptions = new MemoryStoreOptions { MinScore = 0.3 };
         if (settings.Load().Memory.Embeddings)
         {
@@ -210,6 +223,7 @@ public sealed class ApiContext : IAsyncDisposable
             queue,
             memory,
             settings,
+            pet,
             media,
             scheduler,
             desktop,

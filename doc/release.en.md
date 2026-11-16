@@ -79,10 +79,12 @@ node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \
   -o src/Partner.Api/bin/Release/net10.0/win-x64/publish
-npm --prefix ui exec tauri build
+npm --prefix ui exec tauri build -- --config src-tauri/tauri.release.conf.json
 ```
 
 The installer ends up in `src-tauri/target/release/bundle/nsis/`.
+
+A release build must carry `VITE_PARTNER_PET=0 PARTNER_PET=0` and `--config src-tauri/tauri.release.conf.json` (that is what CI runs): the variables take the pet out of the binary and out of the frontend output, and the overlay merges away the asset protocol and the `asset.localhost` CSP entry that only the pet page uses. Building without `--config` produces a developer configuration, and the installer would then carry an asset protocol scope nothing serves.
 
 ## Known limitations
 

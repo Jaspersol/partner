@@ -12,7 +12,13 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; connect-src http://127.0.0.1:*; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; script-src 'self' http://asset.localhost 'wasm-unsafe-eval'; connect-src http://127.0.0.1:* http://asset.localhost ipc: http://ipc.localhost; img-src 'self' data: blob: http://asset.localhost; media-src 'self' blob: http://asset.localhost; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$LOCALDATA/Partner/pet/**"
+        ]
+      }
     }
   },
   "bundle": {
@@ -27,7 +33,11 @@
       "../src/Partner.Api/bin/Release/net10.0/win-x64/publish": "api/",
       "../engines/tts/tts-server.py": "engines/tts/tts-server.py",
       "../engines/kws-asr/asr-server.py": "engines/kws-asr/asr-server.py",
-      "../THIRD-PARTY-NOTICES.md": "notices/THIRD-PARTY-NOTICES.md"
+      "../THIRD-PARTY-NOTICES.md": "notices/THIRD-PARTY-NOTICES.md",
+      "../third-party/MIT-easy-live2d.txt": "notices/licenses/MIT-easy-live2d.txt",
+      "../third-party/MIT-pixi.js.txt": "notices/licenses/MIT-pixi.js.txt",
+      "../third-party/MIT-pixi-sound.txt": "notices/licenses/MIT-pixi-sound.txt",
+      "../third-party/Live2D-Open-Software-License.txt": "notices/licenses/Live2D-Open-Software-License.txt"
     },
     "windows": {
       "nsis": {

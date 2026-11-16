@@ -40,3 +40,12 @@ engines/tts/test-output.wav
 engines/kws-asr/models/
 engines/kws-asr/sherpa-onnx/
 
+# Live2D assets: the Core is user-supplied under the Live2D Proprietary Software License and a model is the
+# author's copyright, so neither may be committed (see THIRD-PARTY-NOTICES.md). The pet reads both from
+# %LOCALAPPDATA%\Partner\pet\ through the import page; these patterns catch a stray copy dropped under ui/public/.
+*.moc3
+**/live2dcubismcore*.js
+ui/public/Core/
+ui/public/Resources/
+*.model3.json
+

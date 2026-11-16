@@ -68,6 +68,20 @@ jobs:
       - name: Frontend dependencies
         run: npm --prefix ui ci
 
+      # Live2D's Core and any model are user-supplied: the Core is under the Proprietary Software License, a
+      # model is its author's copyright, and neither may enter the tree. `.gitignore` is the habit; this is
+      # the guarantee — a tracked `.moc3`, Core script or `model3.json` fails the build before the frontend
+      # is packaged, so a licence the project cannot grant never ships.
+      - name: Live2D assets are untracked
+        shell: bash
+        run: |
+          tracked=$(git ls-files '*.moc3' '*live2dcubismcore*' '*.model3.json')
+          if [ -n "$tracked" ]; then
+            echo "Live2D binaries must not be tracked:" >&2
+            echo "$tracked" >&2
+            exit 1
+          fi
+
       - name: Version from the tag
         if: startsWith(github.ref, 'refs/tags/')
         run: node scripts/set-version.mjs "${{ github.ref_name }}"
@@ -87,8 +101,25 @@ jobs:
       - name: Publish the API sidecar
         run: dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true -o src/Partner.Api/bin/Release/net10.0/win-x64/publish -v q --nologo
 
+      # Release builds ship without the pet until Live2D approves the Expandable Application review: the pet
+      # bundle carries their Framework, and distributing it needs a publication licence (see THIRD-PARTY-NOTICES.md
+      # and doc/pet.md). `tauri build` runs `beforeBuildCommand` with this environment, so `VITE_PARTNER_PET=0`
+      # makes Vite build `index.html` only, and `PARTNER_PET=0` makes `src-tauri/build.rs` compile the pet window
+      # and its commands out of the shell. The overlay drops the asset protocol, which only the pet page uses; the
+      # CLI resolves the `--config` path from the repository root, not beside the base config.
       - name: Build the installer
-        run: npm --prefix ui exec tauri build
+        env:
+          VITE_PARTNER_PET: '0'
+          PARTNER_PET: '0'
+        run: npm --prefix ui exec tauri build -- --config src-tauri/tauri.release.conf.json
+
+      # The licence notice is an obligation on the shipped JavaScript, so it is checked on what the build emitted,
+      # not on the source: every chunk that bundles the Cubism Framework must carry Live2D's copyright line, and a
+      # consumer build must contain neither the Framework nor `pet.html`. A source-only test cannot see chunking.
+      - name: Live2D notice in the built bundle
+        env:
+          VITE_PARTNER_PET: '0'
+        run: node scripts/check-live2d-bundle.mjs
 
       - uses: actions/upload-artifact@v4
         with:

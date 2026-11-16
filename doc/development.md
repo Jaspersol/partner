@@ -38,6 +38,7 @@ npm --prefix ui run build
 node scripts/check-docs.mjs                               # 文档引用是否还能解析
 node scripts/check-css-names.mjs                          # scoped 类名检查
 node scripts/check-engine-pins.mjs                        # 引擎地址与哈希是否仍等于已发布资产，需 gh 登录
+node scripts/check-live2d-bundle.mjs                      # 构建产物是否带 Live2D 版权声明、发布构建是否混入 pet（须先 build）
 node scripts/e2e-shell.mjs                                # 壳 e2e，需要桌面会话，不在 CI
 
 cargo build --manifest-path src-tauri/Cargo.toml          # 只编译壳

@@ -1355,6 +1355,18 @@ internal static class Program
                     $"expected=({centreX},{centreY}) ok={resolved.Ok} "
                         + resolved.Content[..Math.Min(100, resolved.Content.Length)]);
             }
+            else
+            {
+                // A clean desktop, or one whose only window is in front, has no point to resolve on. Verify the
+                // same arithmetic on a synthetic picture rather than letting the capability drop out of the gate
+                // because of the machine it ran on.
+                var synthetic = new ShownPicture("desktop", new PixelRect(0, 0, 2560, 1440), 1280, 720, "obs-synthetic");
+                var mappedPoint = DesktopActTool.MapPicturePoint(synthetic, 640, 360);
+
+                Check("desktop: px/py on the desktop picture resolves to the point it was taken from",
+                    mappedPoint == (1280, 720),
+                    $"expected=(1280,720) got=({mappedPoint.X},{mappedPoint.Y})");
+            }
         }
 
         // px/py snap fallback: the proof path is safe because a key aimed at a background window is refused
@@ -1367,12 +1379,14 @@ internal static class Program
             var observation = snapAutomation.Observe();
             var target = observation.Entities.FirstOrDefault(entity =>
                 !entity.IsForeground && !entity.IsMinimized && entity.Rect.Width > 100);
-            var element = observation.Elements.FirstOrDefault(candidate =>
-                candidate.WindowId == target!.EntityId
-                && !candidate.IsOffscreen
-                && candidate.Role == "Button"
-                && !string.IsNullOrEmpty(candidate.Name)
-                && candidate.Rect.Width > 10);
+            var element = target is null
+                ? null
+                : observation.Elements.FirstOrDefault(candidate =>
+                    candidate.WindowId == target.EntityId
+                    && !candidate.IsOffscreen
+                    && candidate.Role == "Button"
+                    && !string.IsNullOrEmpty(candidate.Name)
+                    && candidate.Rect.Width > 10);
             if (target is not null && element is not null)
             {
                 var shotTool = new DesktopScreenshotTool(snapAutomation, new FileMediaStore(workspace));

@@ -22,6 +22,7 @@
 | [MCP](./mcp.md) | 接入 stdio MCP 服务器，控制哪些工具免审批 |
 | [Skills](./skills.md) | 用 `SKILL.md` 给模型补充做法，上传、新建、停用 |
 | [对外服务](./services.md) | 对接外部 agent 和插件：游戏 AI mod、插件等通过本地 OpenAI/Anthropic 端点用上你的记忆，交互总结写回主记忆 |
+| [桌宠](./pet.md) | 桌面上的 Live2D 角色：装 Cubism Core、导入模型、场景与情绪字典，以及 Live2D 的许可边界 |
 
 ## 进阶
 
