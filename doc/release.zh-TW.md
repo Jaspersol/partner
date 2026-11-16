@@ -81,12 +81,12 @@ node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \
   -o src/Partner.Api/bin/Release/net10.0/win-x64/publish
-npm --prefix ui exec tauri build -- --config src-tauri/tauri.release.conf.json
+npm --prefix ui exec tauri build
 ```
 
 產出的安裝包在 `src-tauri/target/release/bundle/nsis/`。
 
-發布建置必須帶 `VITE_PARTNER_PET=0 PARTNER_PET=0` 和 `--config src-tauri/tauri.release.conf.json`（CI 就是這樣跑的）：前者把桌寵從二進位檔和前端產物裡去掉，後者合併掉只給桌寵頁面用的 asset protocol 與 `asset.localhost` CSP。不帶 `--config` 建置出來的是開發設定，安裝包裡會有一個用不上的 asset protocol scope。
+建置就是上面這一條，不帶任何環境變數與 `--config`：`pet.html` 和 `cfg(partner_pet)` 都依預設打開，桌寵頁面需要的 asset protocol 與 `asset.localhost` CSP 也來自基礎設定。`scripts/check-live2d-bundle.mjs` 會核對產物裡每個含 Cubism Framework 的 chunk 都帶 Live2D 的版權行。
 
 ## 已知
 

@@ -166,7 +166,7 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 
 ### 桌寵
 
-- **Live2D 角色** — 一個透明、置頂的小視窗，依關鍵詞字典比對已定稿的助手回覆並播放固定場景；Cubism Core 和模型都由你自己選擇下載，拿到 Live2D 對 Expandable Application 的書面回覆之前，release 建置不含這個功能
+- **Live2D 角色** — 一個透明、置頂的小視窗，依關鍵詞字典比對已定稿的助手回覆並播放固定場景；Cubism Core 和模型都由你自己選擇下載
 
 ### 系統與平台
 
