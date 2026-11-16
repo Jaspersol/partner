@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The pet window renders a user-supplied Cubism Core and a user-supplied model, which the shell serves over
+      the `asset` protocol as http://asset.localhost/<encoded path>. Both are outside this origin, so script-src and
+      img-src have to name that origin; connect-src does too because Live2D's own fetch paths run through it.
+
+      `wasm-unsafe-eval` is what lets Cubism Core instantiate its WASM without opening up `Function` to everyone;
+      it is narrower than `'unsafe-eval'`, which stays out (src/pet/main.ts imports Pixi's no-eval shim for this).
+
+      There is no remote origin beyond the asset protocol and the local API: the model is on this machine.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' http://asset.localhost 'wasm-unsafe-eval'; connect-src http://127.0.0.1:* http://asset.localhost ipc: http://ipc.localhost; img-src 'self' data: blob: http://asset.localhost; media-src 'self' blob: http://asset.localhost; style-src 'self' 'unsafe-inline'"
+    />
+    <title>Partner</title>
+    <style>
+      /* The window is the sprite: no page background, no margins, no scrollbars around the model. */
+      html,
+      body {
+        background: transparent;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      #pet {
+        width: 100vw;
+        height: 100vh;
+      }
+
+      #pet canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pet"></div>
+    <script type="module" src="/src/pet/main.ts"></script>
+  </body>
+</html>

@@ -66,6 +66,24 @@ const SETTINGS = {
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+  // Off with nothing imported: a fresh install. The pet window is not part of this fake.
+  pet: {
+    enabled: false,
+    alwaysOnTop: true,
+    clickThroughTransparent: true,
+    motionSound: false,
+    scale: 1,
+    activeModelId: null,
+    idleMinSeconds: 25,
+    idleMaxSeconds: 60,
+    sleepAfterMinutes: 10,
+    greetingTimes: ['09:00', '14:00'],
+    emotionCooldownSeconds: 8,
+    expressionHoldSeconds: 6,
+    fastDragPxPerSecond: 1500,
+    emotions: { keywords: { smile: [], angry: [], cry: [], shy: [] }, negationPrefixes: [], minWeight: 1 },
+    profiles: {},
+  },
 }
 
 // The settings page reads this alongside its own form: which engines are there, and which are paused.

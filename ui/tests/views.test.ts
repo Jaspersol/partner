@@ -18,6 +18,11 @@ import type {
   WebView,
   ServiceListItem,
   ServiceWrite,
+  PetCoreStatus,
+  PetFeed,
+  PetImportResult,
+  PetModelInfo,
+  PetSettings,
 } from '../src/api'
 import { version as packageVersion } from '../package.json'
 import MemoryView from '../src/views/MemoryView.vue'
@@ -50,6 +55,57 @@ interface Calls {
   creates: { body: string; tier?: string; scope?: string }[]
   probes: string[]
   agentSaves: AgentsSettings[]
+}
+
+/**
+ * The pet section a stubbed API reports: the built-in dictionary trimmed to two emotions, and a mapping table
+ * with one explicit motion for the imported model.
+ */
+const PET_FIXTURE: PetSettings = {
+  enabled: false,
+  alwaysOnTop: true,
+  clickThroughTransparent: true,
+  motionSound: false,
+  scale: 1,
+  activeModelId: 'cat-1a2b3c4d',
+  idleMinSeconds: 25,
+  idleMaxSeconds: 60,
+  sleepAfterMinutes: 10,
+  greetingTimes: ['09:00', '14:00'],
+  emotionCooldownSeconds: 8,
+  expressionHoldSeconds: 6,
+  fastDragPxPerSecond: 1500,
+  emotions: {
+    keywords: {
+      smile: [{ text: '哈哈', weight: 3 }, { text: '太好了', weight: 4 }],
+      shy: [{ text: '害羞', weight: 4 }],
+    },
+    negationPrefixes: ['不', '没'],
+    minWeight: 1,
+  },
+  profiles: {
+    'cat-1a2b3c4d': {
+      motions: { greet: { kind: 'motion', group: 'CAT_motion', no: 1 } },
+      expressions: { smile: { kind: 'auto' } },
+      headBottom: 0.35,
+      faceBottom: 0.55,
+      defaultExpression: null,
+    },
+  },
+}
+
+/** One imported model, in the shape the models endpoint reports. */
+const PET_MODEL_FIXTURE: PetModelInfo = {
+  id: 'cat-1a2b3c4d',
+  name: 'cat',
+  model3: 'C:/Users/x/AppData/Local/Partner/pet/models/cat-1a2b3c4d/cat.model3.json',
+  motions: [
+    { group: 'Idle', no: 0, name: 'idle' },
+    { group: 'CAT_motion', no: 1, name: 'greet' },
+  ],
+  expressions: ['live2d_expression0.exp3.json', 'live2d_expression1.exp3.json'],
+  hasHitAreas: false,
+  bytes: 24 * 1024 * 1024,
 }
 
 /**
@@ -91,6 +147,7 @@ const SETTINGS_FIXTURE: SettingsView = {
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+  pet: PET_FIXTURE,
 };
 
 /**
@@ -366,6 +423,23 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     deleteService: vi.fn(async () => ({ deletedMemories: 0 })),
     flushService: vi.fn(async () => ({ memoryId: null as string | null })),
     rotateServiceToken: vi.fn(async () => ({ token: 'tk' })),
+    // A Core installed and one model present: the state the panel exists to describe. The hash is shortened by
+    // the page, so the stub hands over the whole one.
+    petCore: vi.fn(async (): Promise<PetCoreStatus> => ({
+      installed: true,
+      sdk: '5-r.5',
+      sha256: '67064a7fb1812cf502f5c4a03bfe12cc638c75a621bb4acf06bb28763df06ba0',
+    })),
+    importPetCore: vi.fn(async (): Promise<PetCoreStatus> => ({
+      installed: true,
+      sdk: '5-r.5',
+      sha256: '67064a7fb1812cf502f5c4a03bfe12cc638c75a621bb4acf06bb28763df06ba0',
+    })),
+    petModels: vi.fn(async (): Promise<PetModelInfo[]> => [PET_MODEL_FIXTURE]),
+    importPetModel: vi.fn(async (): Promise<PetImportResult> => ({ imported: PET_MODEL_FIXTURE, candidates: [] })),
+    previewPetAction: vi.fn(async () => ({ seq: 1 })),
+    deletePetModel: vi.fn(async () => ({ deleted: true })),
+    petFeed: vi.fn(async (): Promise<PetFeed> => ({ speaking: false, settingsRevision: 1, replies: [], lastError: null, lastSeq: 0, preview: null })),
     ...overrides,
   }
 
@@ -1869,7 +1943,7 @@ describe('settings view', () => {
     await flushPromises()
 
     const nav = wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())
-    expect(nav).toEqual(['通用', '对话模型', '语音输入', '语音输出', '电脑操控', '文件访问', '联网搜索', '本地引擎', '外观'])
+    expect(nav).toEqual(['通用', '对话模型', '语音输入', '语音输出', '电脑操控', '桌宠', '文件访问', '联网搜索', '本地引擎', '外观'])
 
     // Every field is in the document whichever category is showing (the others are only hidden), so a change on
     // one category is never lost by looking at another.
@@ -2333,6 +2407,7 @@ describe('settings view', () => {
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+      pet: PET_FIXTURE,
       })),
     })
 
@@ -2361,6 +2436,7 @@ describe('settings view', () => {
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+      pet: PET_FIXTURE,
       })),
     })
 
@@ -2510,6 +2586,7 @@ describe('settings view', () => {
         agents: { main: { prompt: null }, subAgents: [] },
         files: { enabled: false, roots: [] },
         web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+        pet: PET_FIXTURE,
       })),
       devices: vi.fn(async () => ({ inputs: ['麦克风 (USB)'], outputs: [] })),
     })
@@ -2605,6 +2682,7 @@ describe('settings view', () => {
             agents: { main: { prompt: null }, subAgents: [] },
             files: { enabled: false, roots: [] },
             web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+            pet: PET_FIXTURE,
           },
           consumer: { running: true, reason: '运行中（设置）', model: 'm', stats: { completed: 0, failed: 0, canceled: 0, skipped: 0, handled: 0 }, tools: [], },
           voice: { input: { running: false, reason: '未启用', device: null, count: 0, rms: 0, ambientRms: 0, thresholdMisconfigured: false, awake: false }, output: { running: false, reason: '未启用', device: null, count: 0 } },
@@ -2739,6 +2817,7 @@ describe('settings view', () => {
         },
         files: { enabled: true, roots: ['D:/资料', 'E:/扫描'] },
         web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+        pet: PET_FIXTURE,
       })),
     })
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
@@ -2891,6 +2970,276 @@ describe('settings view', () => {
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
     expect(calls.saves[0]?.desktop.inputMode).toBe('auto')
+  })
+})
+
+describe('pet section', () => {
+  /** The shell's stand-in: records what the page asked it to do. */
+  function fakeShell(answers: { petEnabled?: boolean } = {}) {
+    const invoke = vi.fn(async (command: string) => (command === 'get_pet_enabled' ? answers.petEnabled === true : undefined))
+    const globals = window as unknown as { __TAURI_INTERNALS__?: { invoke: typeof invoke } }
+    globals.__TAURI_INTERNALS__ = { invoke }
+    return { invoke, restore: () => delete globals.__TAURI_INTERNALS__ }
+  }
+
+  it('shows the installed Core release with a short hash, and the licence links', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="pet-core-state"]').text()).toContain('5-r.5')
+    expect(wrapper.find('[data-test="pet-core-state"]').text()).toContain('67064a7f')
+    expect(wrapper.find('[data-test="pet-license-open"]').text()).toContain('live2d-open-software-license')
+    expect(wrapper.find('[data-test="pet-license-proprietary"]').text()).toContain('live2d-proprietary-software-license')
+  })
+
+  it('keeps the Core import unusable until the licence is accepted, and reports a bad zip inline', async () => {
+    const importPetCore = vi.fn(async () => {
+      throw new Error('整包哈希不符')
+    })
+    const { stub } = createStub({ importPetCore })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="pet-core-path"]').setValue('D:/Downloads/CubismSdkForWeb-5-r.5.zip')
+    expect(wrapper.find<HTMLButtonElement>('[data-test="pet-core-import"]').element.disabled).toBe(true)
+
+    await wrapper.find('[data-test="pet-core-consent"]').setValue(true)
+    expect(wrapper.find<HTMLButtonElement>('[data-test="pet-core-import"]').element.disabled).toBe(false)
+
+    await wrapper.find('[data-test="pet-core-import"]').trigger('click')
+    await flushPromises()
+
+    expect(importPetCore).toHaveBeenCalledWith('D:/Downloads/CubismSdkForWeb-5-r.5.zip')
+    expect(wrapper.find('[data-test="pet-core-error"]').text()).toContain('整包哈希不符')
+  })
+
+  it('bounds the scale to 50–200% and shows the percentage it would save', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const scale = wrapper.find<HTMLInputElement>('[data-test="pet-scale"]')
+    expect(scale.attributes('min')).toBe('50')
+    expect(scale.attributes('max')).toBe('200')
+    expect(wrapper.find('[data-test="pet-scale-readout"]').text()).toBe('100%')
+
+    await scale.setValue('150')
+    expect(wrapper.find('[data-test="pet-scale-readout"]').text()).toBe('150%')
+
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.pet.scale).toBe(1.5)
+  })
+
+  it('asks which model3.json to use when a package holds several, then posts the choice', async () => {
+    const candidates = ['bongocat/bongocat.model3.json', 'other/other.model3.json']
+    const importPetModel = vi.fn(async (_path: string, model3?: string): Promise<PetImportResult> =>
+      model3 === undefined ? { imported: null, candidates } : { imported: PET_MODEL_FIXTURE, candidates: [] },
+    )
+    const { stub } = createStub({ importPetModel })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="pet-model-path"]').setValue('D:/models/pack.zip')
+    await wrapper.find('[data-test="pet-model-import"]').trigger('click')
+    await flushPromises()
+
+    expect(importPetModel).toHaveBeenCalledWith('D:/models/pack.zip', undefined)
+    const picker = wrapper.find<HTMLSelectElement>('[data-test="pet-model-candidate"]')
+    expect(picker.findAll('option').map((option) => option.text())).toEqual(candidates)
+
+    await picker.setValue(candidates[1])
+    await wrapper.find('[data-test="pet-model-candidate-confirm"]').trigger('click')
+    await flushPromises()
+
+    // The second post names the file and the archive it came from; the model list is then re-read.
+    expect(importPetModel).toHaveBeenLastCalledWith('D:/models/pack.zip', candidates[1])
+    expect(wrapper.find('[data-test="pet-model-candidates"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="pet-models"]').text()).toContain('cat')
+  })
+
+  it('reports the winning emotion for a line in the trial box, scored by the pet own function', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="pet-trial-input"]').setValue('哈哈，这个太好笑了，不过被你夸得有点害羞')
+    await flushPromises()
+
+    // 害羞(4) beats 哈哈(3): the fixture's dictionary holds only these two, so the winner is unambiguous.
+    expect(wrapper.find('[data-test="pet-trial-winner"]').text()).toContain('害羞')
+    expect(wrapper.find('[data-test="pet-trial-score-shy"]').text()).toContain('4 / 4')
+    expect(wrapper.find('[data-test="pet-trial-score-smile"]').text()).toContain('3 / 3')
+    expect(wrapper.find('[data-test="pet-trial-hits"]').text()).toContain('害羞')
+  })
+
+  it('adds a keyword row without saving until the form is saved', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    await wrapper.find('[data-test="pet-keyword-add-smile"]').trigger('click')
+    const rows = wrapper.findAll('[data-test="pet-keyword-smile"]')
+    expect(rows).toHaveLength(3)
+
+    await rows[2]?.setValue('   ')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    // A blank row is not a keyword: it is a row somebody abandoned, and the server would refuse the save.
+    expect(calls.saves[0]?.pet.emotions.keywords.smile).toEqual([
+      { text: '哈哈', weight: 3 },
+      { text: '太好了', weight: 4 },
+    ])
+  })
+
+  it('writes the mapping into the current model profile and keeps a kind this page does not know', async () => {
+    const { stub, calls } = createStub({
+      settings: vi.fn(async () => ({
+        ...SETTINGS_FIXTURE,
+        pet: {
+          ...PET_FIXTURE,
+          profiles: {
+            'cat-1a2b3c4d': {
+              motions: { greet: { kind: 'motion', group: 'CAT_motion', no: 1 }, wave: { kind: 'something-new' } },
+              expressions: {},
+              headBottom: 0.35,
+              faceBottom: 0.55,
+              defaultExpression: null,
+            },
+          },
+        },
+      })),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    const greet = wrapper.find<HTMLSelectElement>('[data-test="pet-action-select-greet"]')
+    expect(greet.element.value).toBe('motion:CAT_motion#1')
+    await greet.setValue('motion:Idle#0')
+
+    // A kind written by a newer build survives a save made here, rather than collapsing to 自动.
+    expect(wrapper.find<HTMLSelectElement>('[data-test="pet-action-select-wave"]').element.value).toBe('kind:something-new')
+
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    const profile = calls.saves[0]?.pet.profiles['cat-1a2b3c4d']
+    expect(profile?.motions.greet).toEqual({ kind: 'motion', group: 'Idle', no: 0 })
+    // Untouched rows are written back exactly as they arrived, unknown kind and all: normalising them here
+    // would be this page inventing a mapping for a model it does not understand.
+    expect(profile?.motions.wave).toEqual({ kind: 'something-new' })
+  })
+
+  it('tells the shell the pet switch moved, after the settings were saved', async () => {
+    const shell = fakeShell({ petEnabled: false })
+    try {
+      const { stub, calls } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      // The stored section says off and the shell says off: nothing has moved yet.
+      expect(shell.invoke).toHaveBeenCalledWith('get_pet_enabled')
+      expect(wrapper.find<HTMLInputElement>('[data-test="pet-enabled"]').element.checked).toBe(false)
+
+      await wrapper.find('[data-test="pet-enabled"]').setValue(true)
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+      await flushPromises()
+
+      expect(calls.saves).toHaveLength(1)
+      expect(calls.saves[0]?.pet.enabled).toBe(true)
+      expect(shell.invoke).toHaveBeenCalledWith('set_pet_enabled', { enabled: true })
+    } finally {
+      shell.restore()
+    }
+  })
+
+  it('does not touch the shell when the switch did not move', async () => {
+    const shell = fakeShell({ petEnabled: true })
+    try {
+      const { stub } = createStub({
+        settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, pet: { ...PET_FIXTURE, enabled: true } })),
+      })
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      await wrapper.find('[data-test="pet-always-on-top"]').setValue(false)
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+      await flushPromises()
+
+      // The switch still reads what the shell said, so there is nothing to tell it.
+      expect(shell.invoke.mock.calls.map((call) => call[0])).not.toContain('set_pet_enabled')
+    } finally {
+      shell.restore()
+    }
+  })
+
+  it('resets the window position through the shell, and only when the shell is there', async () => {
+    const shell = fakeShell()
+    try {
+      const { stub } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      await wrapper.find('[data-test="pet-reset-position"]').trigger('click')
+      await flushPromises()
+
+      expect(shell.invoke).toHaveBeenCalledWith('pet_reset_position')
+    } finally {
+      shell.restore()
+    }
+
+    // Outside the shell there is no button at all rather than a control that cannot act.
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="pet-reset-position"]').exists()).toBe(false)
+  })
+
+  it('hides the pet tab when the shell flag says the build has no pet', async () => {
+    // A release shell compiles the pet commands out and says so up front; the tab must disappear without the page
+    // calling a command that does not exist.
+    const invoke = vi.fn(async (_command: string) => true)
+    const globals = window as unknown as { __TAURI_INTERNALS__?: { invoke: typeof invoke }; __PARTNER_PET__?: boolean }
+    globals.__TAURI_INTERNALS__ = { invoke }
+    globals.__PARTNER_PET__ = false
+
+    try {
+      const { stub } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+
+      expect(wrapper.find('[data-test="settings-nav-pet"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="settings-section-pet"]').exists()).toBe(false)
+      expect(invoke.mock.calls.map((call) => call[0])).not.toContain('get_pet_enabled')
+    } finally {
+      delete globals.__TAURI_INTERNALS__
+      delete globals.__PARTNER_PET__
+    }
+  })
+
+  it('treats a server without a pet section as the defaults, and saves them back', async () => {
+    // An older server sends no `pet`. The panel must still be usable, and a save must write what the switches
+    // show rather than an empty section the server would then refuse.
+    const { stub, calls } = createStub({
+      settings: vi.fn(async () => {
+        const { pet: _dropped, ...rest } = SETTINGS_FIXTURE
+        return rest as SettingsView
+      }),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+
+    expect(wrapper.find<HTMLInputElement>('[data-test="pet-enabled"]').element.checked).toBe(false)
+    expect(wrapper.find<HTMLInputElement>('[data-test="pet-sleep-minutes"]').element.value).toBe('10')
+
+    await wrapper.find('[data-test="pet-enabled"]').setValue(true)
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+
+    expect(calls.saves[0]?.pet.enabled).toBe(true)
+    expect(calls.saves[0]?.pet.greetingTimes).toEqual(['09:00', '14:00'])
   })
 })
 
@@ -3118,6 +3467,7 @@ describe('interface language', () => {
         'Voice input',
         'Voice output',
         'Computer control',
+        'Desktop pet',
         'File access',
         'Web search',
         'Local engines',

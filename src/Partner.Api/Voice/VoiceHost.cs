@@ -266,6 +266,20 @@ public sealed class VoiceHost : IAsyncDisposable
 
     public VoiceState State => new(_inputState, _outputState);
 
+    /// <summary>
+    /// Whether the speaker is currently producing sound, counting everything already queued. The pet window polls
+    /// this to hold its idle animation: a model that starts waving while the pet is mid-sentence looks broken.
+    /// </summary>
+    public bool IsSpeaking
+    {
+        get
+        {
+            var output = _output;
+            return output is not null
+                && (output.IsPlaying || output.PendingAudio || output.TtsBusy || output.IsStreaming);
+        }
+    }
+
     /// <summary>Device names as the host's components see them; empty when enumeration is unavailable.</summary>
     public IReadOnlyList<string> InputDevices => _components.ListInputDevices();
 
@@ -763,20 +777,15 @@ public sealed class VoiceHost : IAsyncDisposable
     /// </summary>
     private void TrackQuiet()
     {
-        var output = _output;
-        if (output is null)
-        {
-            return;
-        }
-
-        var speaking = output.IsPlaying || output.PendingAudio || output.TtsBusy || output.IsStreaming;
-        if (speaking)
+        if (IsSpeaking)
         {
             _wasSpeaking = true;
             return;
         }
 
-        if (!_wasSpeaking)
+        // Both conditions matter: without an output half there is nothing to have gone quiet from, and without a
+        // previous "speaking" tick there is no transition to record.
+        if (_output is null || !_wasSpeaking)
         {
             return;
         }

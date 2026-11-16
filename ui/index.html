@@ -7,7 +7,9 @@
          the light/dark choice styles.css makes, instead of flashing a light frame around a dark app. -->
     <meta name="color-scheme" content="light dark" />
     <!--
-      No remote origins: the UI talks to the local API only.
+      No remote origins: the UI talks to the local API only. Tauri's own IPC endpoint (ipc.localhost, a loopback
+      custom protocol) is named in connect-src as well: without it every invoke is refused by the policy and the
+      shell silently falls back to postMessage, which is slower and logs a warning nobody reads.
 
       `blob:` is in img-src because an attachment preview is a blob URL and nothing else. The bytes cannot come
       from the API URL — `<img>` carries no Authorization header, and putting the token in a query string would
@@ -18,7 +20,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; connect-src http://127.0.0.1:* ws://127.0.0.1:* ipc: http://ipc.localhost; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'"
     />
     <title>Partner</title>
   </head>

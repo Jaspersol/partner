@@ -465,6 +465,131 @@ export interface WebSettings {
   disabledEngines: string[]
 }
 
+export interface PetKeyword {
+  text: string
+  /** 1–10. A reply's emotion is the highest weight it matched, not the sum. */
+  weight: number
+}
+
+/**
+ * The keyword dictionary. Keyed by plain string rather than the four known emotions: an entry written by a later
+ * build survives a load here instead of being dropped on the next save.
+ */
+export interface PetEmotionDictionary {
+  keywords: Record<string, PetKeyword[]>
+  /** Words that invert a hit when they sit within two characters before it (`不开心` is not `开心`). */
+  negationPrefixes: string[]
+  /** A hit below this weight does not trigger the emotion. */
+  minWeight: number
+}
+
+/**
+ * How one abstract action resolves for one model: `auto` (match by name, then procedural tracks), `procedural`
+ * (skip the name match), `motion` (an explicit group and index), or `none` (skip the action).
+ */
+export interface PetMotionRef {
+  kind: string
+  group?: string | null
+  no?: number | null
+}
+
+/** How one expression resolves: `auto` by name, `procedural`, an explicit `.exp3` name, or `none`. */
+export interface PetExpressionRef {
+  kind: string
+  name?: string | null
+}
+
+/** A model's mapping table and its click geometry. The proportions are only used without `hitAreas`. */
+export interface PetModelProfile {
+  motions: Record<string, PetMotionRef>
+  expressions: Record<string, PetExpressionRef>
+  /** Below this fraction of the model height is the head. */
+  headBottom: number
+  /** Below this fraction is the face; the rest is the body. */
+  faceBottom: number
+  defaultExpression?: string | null
+}
+
+/**
+ * The pet section. `enabled` is written here so the sidebar and the shell agree; the shell's own preference
+ * (`pet-enabled`) is what the window obeys, and the page keeps the two in step with `set_pet_enabled`.
+ */
+export interface PetSettings {
+  enabled: boolean
+  alwaysOnTop: boolean
+  /** Let clicks pass through pixels the model does not cover. */
+  clickThroughTransparent: boolean
+  /** Play the sound a motion carries. Off by default: a desk pet that beeps is a surprise. */
+  motionSound: boolean
+  /** 0.5–2.0, multiplied by the model canvas size to size the window. */
+  scale: number
+  /** Imported model id; null means none is chosen. */
+  activeModelId: string | null
+  idleMinSeconds: number
+  idleMaxSeconds: number
+  /** No interaction for this long sends the pet to sleep. 0 turns sleeping off. */
+  sleepAfterMinutes: number
+  /** `HH:mm` local times of the daily greeting; each fires once a day. */
+  greetingTimes: string[]
+  emotionCooldownSeconds: number
+  expressionHoldSeconds: number
+  /** Release speed, in physical pixels per second, that counts as "flung". */
+  fastDragPxPerSecond: number
+  emotions: PetEmotionDictionary
+  /** Per-model overrides, keyed by imported model id. */
+  profiles: Record<string, PetModelProfile>
+}
+
+/** GET /api/pet/core: whether the Core is on disk, and which file the hash proved. */
+export interface PetCoreStatus {
+  installed: boolean
+  /** Always `5-r.5`: the only SDK release easy-live2d 1.x runs against. */
+  sdk: string
+  sha256: string | null
+}
+
+/** One motion group entry, as the model's `model3.json` declares it. */
+export interface PetMotion {
+  group: string
+  no: number
+  name: string
+}
+
+/** One imported model, with what the settings page lists and the mapping table offers. */
+export interface PetModelInfo {
+  id: string
+  /** The model folder's name, for a human to read. */
+  name: string
+  /** Absolute path to the `model3.json` the pet window may load. */
+  model3: string
+  motions: PetMotion[]
+  expressions: string[]
+  hasHitAreas: boolean
+  bytes: number
+}
+
+/**
+ * What an import took, or asked. `imported` is null when the source holds several `model3.json` files; the page
+ * then shows `candidates` and posts the chosen relative path again.
+ */
+export interface PetImportResult {
+  imported: PetModelInfo | null
+  candidates: string[]
+}
+
+/** What the pet window reads to react: the newest finalized replies, and whether the voice is speaking. */
+export interface PetFeed {
+  speaking: boolean
+  /** `SettingsStore.Revision` — the pet reloads when this advances. */
+  settingsRevision: number
+  replies: { seq: number; body: string }[]
+  lastError: string | null
+  /** The highest session sequence the server looked at, so the client's next poll starts after it. */
+  lastSeq: number
+  /** A pending 「预览」 request from the settings page, idempotent per `seq`. */
+  preview: { seq: number; action: string; expression: string } | null
+}
+
 /** One engine with its current runtime state: circuit-broken or normal. */
 export interface WebEngineView {
   id: string
@@ -615,6 +740,7 @@ export interface RuntimeSettings {
   agents: AgentsSettings
   files: FilesSettings
   web: WebSettings
+  pet: PetSettings
 }
 
 export interface SettingsView {
@@ -631,6 +757,7 @@ export interface SettingsView {
   agents: AgentsSettingsView
   files: FilesSettings
   web: WebSettings
+  pet: PetSettings
 }
 
 /**
@@ -1119,6 +1246,19 @@ export interface PartnerApiSurface {
   flushService(id: string): Promise<{ memoryId: string | null }>
   /** Rotates the bearer token. The plaintext is returned only in this response. */
   rotateServiceToken(id: string): Promise<{ token: string }>
+  /** Whether the Cubism Core is on disk. Read-only: the import endpoint replaces it. */
+  petCore(): Promise<PetCoreStatus>
+  /** Rejects with an `ApiError` carrying the reason when the zip is the wrong SDK release or a bad hash. */
+  importPetCore(path: string): Promise<PetCoreStatus>
+  petModels(): Promise<PetModelInfo[]>
+  /** Answers `candidates` instead of importing when the folder or zip holds several `model3.json` files. */
+  importPetModel(path: string, model3?: string): Promise<PetImportResult>
+  /** False when the model was already gone — nothing to delete, not an error. */
+  deletePetModel(id: string): Promise<{ deleted: boolean }>
+  /** What the pet window reads each poll: new replies, whether the voice is speaking, and the settings revision. */
+  petFeed(after: number): Promise<PetFeed>
+  /** 「预览」 in the mapping rows: queues a one-shot motion or face for the pet window's next poll. */
+  previewPetAction(action: string, expression: string): Promise<{ seq: number }>
 }
 
 export class PartnerApi implements PartnerApiSurface {
@@ -1452,6 +1592,43 @@ export class PartnerApi implements PartnerApiSurface {
 
   rotateServiceToken(id: string): Promise<{ token: string }> {
     return this.request<{ token: string }>('POST', `/api/services/${encodeURIComponent(id)}/token`)
+  }
+
+
+  petCore(): Promise<PetCoreStatus> {
+    return this.request<PetCoreStatus>('GET', '/api/pet/core')
+  }
+
+  importPetCore(path: string): Promise<PetCoreStatus> {
+    return this.request<PetCoreStatus>('POST', '/api/pet/core/import', { path })
+  }
+
+  petModels(): Promise<PetModelInfo[]> {
+    return this.request<PetModelInfo[]>('GET', '/api/pet/models')
+  }
+
+  async importPetModel(path: string, model3?: string): Promise<PetImportResult> {
+    // Omitted rather than sent as null: the server distinguishes "no choice yet" from "this one", and an explicit
+    // null would read as the second.
+    const body = model3 === undefined ? { path } : { path, model3 }
+    const answer = await this.request<{ imported?: PetModelInfo | null; candidates?: string[] }>(
+      'POST',
+      '/api/pet/models/import',
+      body,
+    )
+    return { imported: answer.imported ?? null, candidates: answer.candidates ?? [] }
+  }
+
+  deletePetModel(id: string): Promise<{ deleted: boolean }> {
+    return this.request<{ deleted: boolean }>('DELETE', `/api/pet/models/${encodeURIComponent(id)}`)
+  }
+
+  petFeed(after: number): Promise<PetFeed> {
+    return this.request<PetFeed>('GET', `/api/pet/feed?after=${after}`)
+  }
+
+  previewPetAction(action: string, expression: string): Promise<{ seq: number }> {
+    return this.request<{ seq: number }>('POST', '/api/pet/preview', { action, expression })
   }
 
 

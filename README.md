@@ -164,6 +164,10 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 - **Write-back** — On a set interval, what callers asked and what came back is summarized into one sentence starting with `[对外服务:<name>]` and written to the main memory. The Memory page filters by origin, and deleting a service can delete the memories it wrote
 - **Boundaries** — The caller must run on the same computer as Partner; a service's protocol must match its upstream's, with no format conversion; each service has its own token. External text reaches the main memory, so give tokens only to programs you trust
 
+### Desktop pet
+
+- **Live2D character** — A transparent, always-on-top window that reacts to finished assistant replies by matching a keyword dictionary and playing fixed scenes; you choose to download the Cubism Core and the model yourself, and release builds ship without it until Live2D approves the Expandable Application review
+
 ### System & Platform
 
 - **Model protocols** — OpenAI-compatible and Anthropic Messages endpoints, with the API key stored write-only

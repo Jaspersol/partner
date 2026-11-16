@@ -22,6 +22,7 @@
 | [MCP](./mcp.zh-TW.md) | 接入 stdio MCP 伺服器，控制哪些工具免審批 |
 | [Skills](./skills.zh-TW.md) | 用 `SKILL.md` 給模型補充做法，上傳、新建、停用 |
 | [對外服務](./services.zh-TW.md) | 對接外部 agent 和外掛：遊戲 AI mod、外掛等透過本機 OpenAI/Anthropic 端點用上你的記憶，互動總結寫回主記憶 |
+| [桌寵](./pet.zh-TW.md) | 桌面上的 Live2D 角色：裝 Cubism Core、匯入模型、場景與情緒字典，以及 Live2D 的授權邊界 |
 
 ## 進階
 

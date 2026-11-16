@@ -81,10 +81,12 @@ node scripts/set-version.mjs v0.2.0
 dotnet build Partner.sln -c Release
 dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true \
   -o src/Partner.Api/bin/Release/net10.0/win-x64/publish
-npm --prefix ui exec tauri build
+npm --prefix ui exec tauri build -- --config src-tauri/tauri.release.conf.json
 ```
 
 產出的安裝包在 `src-tauri/target/release/bundle/nsis/`。
+
+發布建置必須帶 `VITE_PARTNER_PET=0 PARTNER_PET=0` 和 `--config src-tauri/tauri.release.conf.json`（CI 就是這樣跑的）：前者把桌寵從二進位檔和前端產物裡去掉，後者合併掉只給桌寵頁面用的 asset protocol 與 `asset.localhost` CSP。不帶 `--config` 建置出來的是開發設定，安裝包裡會有一個用不上的 asset protocol scope。
 
 ## 已知
 

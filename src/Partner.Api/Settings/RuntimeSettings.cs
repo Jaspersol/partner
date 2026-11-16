@@ -78,6 +78,9 @@ public sealed record RuntimeSettings
     /// <summary>Whether the web tools exist, how long they may take, and which engines are switched off.</summary>
     public WebSettings Web { get; init; } = new();
 
+    /// <summary>The desktop pet: window switches, model choice, idle timing and the emotion dictionary.</summary>
+    public PetSettings Pet { get; init; } = new();
+
     public static RuntimeSettings Default { get; } = new();
 }
 
@@ -663,6 +666,8 @@ public sealed record SettingsView
 
     public WebSettings Web { get; init; } = new();
 
+    public PetSettings Pet { get; init; } = new();
+
     public static SettingsView From(RuntimeSettings settings) => new()
     {
         Input = settings.Input,
@@ -719,5 +724,9 @@ public sealed record SettingsView
         // Same reason as the two above: absent from the response means the UI writes the default back on its
         // next save, which would silently re-enable an engine somebody switched off and drop the proxy.
         Web = settings.Web,
+
+        // And again: the pet page refills its form from this response, so a missing section would flip its
+        // switches back off and wipe the dictionary the moment anything else is saved.
+        Pet = settings.Pet,
     };
 }

@@ -15,18 +15,30 @@ import { isPageHidden } from '../pageVisibility'
 import { readReducedTransparency, applyReducedTransparency, themeLabel, type Theme } from '../theme'
 import {
   getAutostart,
+  getPetEnabled,
   getTrayEnabled,
   hasShellPrefs,
   installUpdate as launchInstaller,
+  petSupported,
+  resetPetPosition,
   setAutostart,
+  setPetEnabled,
   setTrayEnabled,
+  watchPetShowing,
 } from '../shellPrefs'
+import { DEFAULT_DICTIONARY, matchEmotion, type EmotionMatch } from '../pet/emotion'
+import { showToast } from '../toast'
 import type { IconName } from '../icons'
 import type {
   ConsumerState,
   DeviceList,
   EnginePackageStatus,
   PartnerApiSurface,
+  PetCoreStatus,
+  PetKeyword,
+  PetModelInfo,
+  PetModelProfile,
+  PetSettings,
   RuntimeSettings,
   UpdateCheck,
   UpdateDownload,
@@ -94,6 +106,10 @@ const form = reactive<RuntimeSettings>({
   // default is deliberate (not an oversight): the search is useless if nobody ever finds the switch, and the
   // section says in as many words where the queries go.
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] as string[] },
+
+  // The dictionary starts empty and is replaced by the server's copy: the built-in table lives in C# and in the
+  // pet frontend, and a third copy here would be one more to keep in step.
+  pet: petFallback(),
 })
 
 /** The key is write-only: it is never read back, so the field starts empty and tracks whether it was edited. */
@@ -131,6 +147,7 @@ function fingerprint(): string {
     desktop: form.desktop,
     files: form.files,
     web: form.web,
+    pet: form.pet,
     // The key is write-only: it is either the draft or nothing, and it is the one field a fingerprint would
     // otherwise get wrong in both directions.
     apiKey: apiKeyEdited.value ? apiKeyDraft.value : null,
@@ -389,6 +406,13 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     disabledEngines: [...(settings.web?.disabledEngines ?? [])],
   }
 
+  form.pet = normalizePet(settings.pet)
+  // Inside the shell the window is the authority on whether the pet is showing: it decides at start-up from its
+  // own preference, and the settings file follows it rather than the other way round.
+  if (shellPrefs) {
+    form.pet.enabled = petSpawned.value
+  }
+
   apiKeySet.value = 'apiKeySet' in settings.model ? Boolean(settings.model.apiKeySet) : false
   apiKeyDraft.value = ''
   apiKeyEdited.value = false
@@ -409,6 +433,8 @@ async function refresh() {
 
   await refreshWeb()
   await refreshEnginePackage()
+  await refreshPetCore()
+  await refreshPetModels()
 }
 
 /**
@@ -739,6 +765,7 @@ async function persist() {
       reasoningGears: form.model.reasoningGears.filter((gear) => normalizeGear(gear) !== ''),
       reasoningLabels: form.model.reasoningLabels ?? {},
     },
+    pet: petPayload(),
   }
 
   // Only an edited key is sent: an untouched field must not clear what is stored.
@@ -746,9 +773,25 @@ async function persist() {
     payload.model.apiKey = apiKeyDraft.value
   }
 
+  // What the shell was told last, so the shell command runs only when the switch actually moved.
+  const wasSpawned = petSpawned.value
+
   try {
     // The API is the source of truth: show what it stored, not what was typed.
     const saved = await props.api.saveSettings(payload)
+
+    // Runs before `apply()`, which reads `petSpawned` to decide what the switch shows; syncing after it would
+    // leave the form dirty again. Only after a successful save: a refused save must not leave the pet showing
+    // while the settings say it is off.
+    if (shellPrefs && payload.pet.enabled !== wasSpawned) {
+      try {
+        await setPetEnabled(payload.pet.enabled)
+        petSpawned.value = payload.pet.enabled
+      } catch (shellFailure) {
+        shellPrefError.value = t('settings.general.petFailed', { error: failureText(shellFailure) })
+      }
+    }
+
     apply(saved.settings as RuntimeSettings & { model: { apiKeySet: boolean } })
     consumer.value = saved.consumer
     voice.value = saved.voice
@@ -803,6 +846,7 @@ const SECTIONS: Section[] = [
   { key: 'input', label: 'settings.section.input', icon: 'mic' },
   { key: 'output', label: 'settings.section.output', icon: 'speaker' },
   { key: 'desktop', label: 'settings.section.desktop', icon: 'crosshair' },
+  { key: 'pet', label: 'settings.section.pet', icon: 'pet' },
   { key: 'files', label: 'settings.section.files', icon: 'folder' },
   { key: 'web', label: 'settings.section.web', icon: 'search' },
   { key: 'engines', label: 'settings.section.engines', icon: 'terminal' },
@@ -839,6 +883,11 @@ const section = ref('model')
  * people do not need them. The model section has none: its three limits sit in the connection card.
  */
 const advanced = ref<Record<string, boolean>>({})
+
+/** A stored section that no longer exists (the pet tab in a build without it) falls back to the model page. */
+function resolveSection(key: string): string {
+  return visibleSections.value.some((item) => item.key === key) ? key : 'model'
+}
 
 function choose(key: string): void {
   section.value = key
@@ -887,12 +936,524 @@ async function onTrayEnabled(value: boolean): Promise<void> {
 
 async function loadShellPrefs(): Promise<void> {
   if (!shellPrefs) return
+  petAvailable.value = petSupported()
+
   try {
     autostart.value = await getAutostart()
     trayEnabled.value = await getTrayEnabled()
+    if (petAvailable.value) petSpawned.value = await getPetEnabled()
   } catch {
     // Leave both off; toggling reports the real error.
   }
+}
+
+// ---- Desktop pet ---------------------------------------------------------------------------------------------
+// The Core and the models are user-supplied and live under %LOCALAPPDATA%\Partner\pet; neither is in the
+// repository or the installer. So this section has two halves: what is on disk (read and imported at once,
+// not part of the form) and how the pet behaves (part of the form, saved with everything else).
+
+/** Where the person gets the Core. The shell opens nothing outside itself, so the URL is also copyable. */
+const PET_CORE_URL = 'https://www.live2d.com/en/sdk/download/web'
+const PET_LICENSE_URLS = {
+  open: 'https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html',
+  proprietary: 'https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html',
+} as const
+
+/** The four emotions both the dictionary editor and the trial box work in. */
+const PET_EMOTIONS = ['smile', 'angry', 'cry', 'shy'] as const
+type PetEmotion = (typeof PET_EMOTIONS)[number]
+
+/**
+ * The abstract actions the runtime plays, in the order the mapping table offers them. A model that cannot
+ * resolve one falls back to the procedural parameter tracks, so an unmapped row is not a broken row.
+ */
+const PET_ACTIONS = ['blink', 'stretch', 'greet', 'wave', 'headTurn', 'headShake', 'bodyTurn', 'bodyShake', 'nod', 'shake', 'tilt', 'pat', 'shrink', 'surprise', 'puff', 'sob', 'sleep', 'wake'] as const
+
+/** The section's own default, used until the server answers and when it answers without a `pet` section. */
+function petFallback(): PetSettings {
+  return {
+    enabled: false,
+    alwaysOnTop: true,
+    clickThroughTransparent: true,
+    motionSound: false,
+    scale: 1,
+    activeModelId: null,
+    idleMinSeconds: 25,
+    idleMaxSeconds: 60,
+    sleepAfterMinutes: 10,
+    greetingTimes: ['09:00', '14:00'],
+    emotionCooldownSeconds: 8,
+    expressionHoldSeconds: 6,
+    fastDragPxPerSecond: 1500,
+    emotions: { keywords: {}, negationPrefixes: ['不', '没', '别', '不太', '并不', 'not', 'no', 'never'], minWeight: 1 },
+    profiles: {},
+  }
+}
+
+/** Deep copy: the form is edited in place, and the response it was built from must not change underneath it. */
+function copyProfile(profile: PetModelProfile): PetModelProfile {
+  return {
+    motions: Object.fromEntries(Object.entries(profile.motions ?? {}).map(([key, ref]) => [key, { ...ref }])),
+    expressions: Object.fromEntries(Object.entries(profile.expressions ?? {}).map(([key, ref]) => [key, { ...ref }])),
+    headBottom: profile.headBottom ?? 0.35,
+    faceBottom: profile.faceBottom ?? 0.55,
+    defaultExpression: profile.defaultExpression ?? null,
+  }
+}
+
+/** An older server sends no `pet` at all; the fallback keeps the section saveable rather than blank. */
+function normalizePet(pet: PetSettings | undefined): PetSettings {
+  const fallback = petFallback()
+  if (pet === undefined) return fallback
+
+  return {
+    enabled: pet.enabled ?? fallback.enabled,
+    alwaysOnTop: pet.alwaysOnTop ?? fallback.alwaysOnTop,
+    clickThroughTransparent: pet.clickThroughTransparent ?? fallback.clickThroughTransparent,
+    motionSound: pet.motionSound ?? fallback.motionSound,
+    scale: pet.scale ?? fallback.scale,
+    activeModelId: pet.activeModelId ?? null,
+    idleMinSeconds: pet.idleMinSeconds ?? fallback.idleMinSeconds,
+    idleMaxSeconds: pet.idleMaxSeconds ?? fallback.idleMaxSeconds,
+    sleepAfterMinutes: pet.sleepAfterMinutes ?? fallback.sleepAfterMinutes,
+    greetingTimes: [...(pet.greetingTimes ?? fallback.greetingTimes)],
+    emotionCooldownSeconds: pet.emotionCooldownSeconds ?? fallback.emotionCooldownSeconds,
+    expressionHoldSeconds: pet.expressionHoldSeconds ?? fallback.expressionHoldSeconds,
+    fastDragPxPerSecond: pet.fastDragPxPerSecond ?? fallback.fastDragPxPerSecond,
+    // The dictionary is kept as keyed, including emotions a later build added: dropping them here would let a
+    // save made on this page delete another build's table.
+    emotions: {
+      keywords: Object.fromEntries(
+        Object.entries(pet.emotions?.keywords ?? fallback.emotions.keywords).map(([key, list]) => [key, list.map((entry) => ({ ...entry }))]),
+      ),
+      negationPrefixes: [...(pet.emotions?.negationPrefixes ?? fallback.emotions.negationPrefixes)],
+      minWeight: pet.emotions?.minWeight ?? fallback.emotions.minWeight,
+    },
+    profiles: Object.fromEntries(Object.entries(pet.profiles ?? {}).map(([key, profile]) => [key, copyProfile(profile)])),
+  }
+}
+
+/** The shell's answer to 「桌宠是不是开着」, which is what the window itself obeys. */
+const petSpawned = ref(false)
+
+/** Unsubscribes the `partner:pet` listener. */
+let stopPetWatch: (() => void) | null = null
+
+/** Whether to offer the pet tab: false only in a shell built without the pet (see `petSupported`). */
+const petAvailable = ref(true)
+
+/** The sections actually offered: the pet tab only exists where the shell can honour it. */
+const visibleSections = computed(() => SECTIONS.filter((item) => item.key !== 'pet' || petAvailable.value))
+
+const petCore = ref<PetCoreStatus | null>(null)
+const petCorePath = ref('')
+const petCoreConsent = ref(false)
+const petCoreError = ref('')
+const petCoreBusy = ref(false)
+
+const petModels = ref<PetModelInfo[]>([])
+const petModelsError = ref('')
+const petModelPath = ref('')
+const petImportError = ref('')
+const petImportBusy = ref(false)
+/** The path a candidate list came from, so the second post names the file and not the archive. */
+const petCandidatePath = ref('')
+const petCandidates = ref<string[]>([])
+const petCandidateChoice = ref('')
+/** The model whose delete is armed: the first press arms, the second deletes — same as the skills list. */
+const petArmedModel = ref<string | null>(null)
+
+const petTrialText = ref('')
+
+const EMOTION_LABELS: Record<PetEmotion, string> = {
+  smile: tr('笑'),
+  angry: tr('怒'),
+  cry: tr('哭'),
+  shy: tr('害羞'),
+}
+
+const ACTION_LABELS: Record<(typeof PET_ACTIONS)[number], string> = {
+  blink: tr('眨眼'),
+  stretch: tr('伸懒腰'),
+  greet: tr('打招呼'),
+  wave: tr('挥手'),
+  headTurn: tr('转头'),
+  headShake: tr('摇头'),
+  bodyTurn: tr('扭身'),
+  bodyShake: tr('晃身'),
+  nod: tr('点头'),
+  shake: tr('抖一下'),
+  tilt: tr('歪头'),
+  pat: tr('摸头'),
+  shrink: tr('缩身'),
+  surprise: tr('惊讶'),
+  puff: tr('鼓脸'),
+  sob: tr('抽泣'),
+  sleep: tr('入睡'),
+  wake: tr('醒来'),
+}
+
+function emotionLabel(emotion: string): string {
+  return emotion in EMOTION_LABELS ? t(EMOTION_LABELS[emotion as PetEmotion]) : emotion
+}
+
+function actionLabel(action: string): string {
+  return action in ACTION_LABELS ? t(ACTION_LABELS[action as keyof typeof ACTION_LABELS]) : action
+}
+
+/** An older server has no pet endpoints; the section then shows nothing installed rather than an error that
+ * reads like a failure of the zip the person is holding. */
+async function refreshPetCore(): Promise<void> {
+  try {
+    const status = await props.api.petCore()
+    petCore.value = typeof status === 'object' && status !== null && typeof status.installed === 'boolean' ? status : null
+  } catch {
+    petCore.value = null
+  }
+}
+
+async function refreshPetModels(): Promise<void> {
+  petModelsError.value = ''
+  try {
+    const list = await props.api.petModels()
+    // A server without this endpoint answers `{}`; iterating that as the model list breaks the whole panel.
+    petModels.value = Array.isArray(list) ? list : []
+  } catch (failure) {
+    petModels.value = []
+    petModelsError.value = describeFailure(failure)
+  }
+}
+
+/** The Core's first eight hex characters are what the page shows: enough to tell two builds apart, and short. */
+const petCoreHash = computed(() => (petCore.value?.sha256 ?? '').slice(0, 8))
+
+async function importPetCore(): Promise<void> {
+  if (!petCoreConsent.value || petCorePath.value.trim() === '') return
+
+  petCoreBusy.value = true
+  petCoreError.value = ''
+  try {
+    petCore.value = await props.api.importPetCore(petCorePath.value.trim())
+    petCorePath.value = ''
+    petCoreConsent.value = false
+    showToast(t('已导入 Cubism Core'))
+  } catch (failure) {
+    petCoreError.value = describeFailure(failure)
+  } finally {
+    petCoreBusy.value = false
+  }
+}
+
+async function copyText(text: string, message: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast(message)
+  } catch {
+    showToast(t('复制失败'), 'error')
+  }
+}
+
+/**
+ * Sends a 「预览」 to the pet window. It is not saved first: the mapping being previewed is the one in the form,
+ * and the question the button answers is "does this motion look right", not "should this be persisted".
+ */
+async function previewAction(action: string): Promise<void> {
+  await sendPreview(action, '')
+}
+
+async function previewExpression(emotion: string): Promise<void> {
+  await sendPreview('', emotion)
+}
+
+async function sendPreview(action: string, expression: string): Promise<void> {
+  try {
+    await props.api.previewPetAction(action, expression)
+    // The window polls once a second at most, so a preview is not instant; saying so avoids a second click.
+    showToast(t('已发送预览，桌宠会在下一次轮询时播放'))
+  } catch (failure) {
+    showToast(t('预览失败：{error}', { error: describeFailure(failure) }), 'error')
+  }
+}
+
+/** Imports a folder or a zip. Both posts go through here: the second call names the `model3.json` the person
+ * picked, and answers with the model instead of a candidate list.
+ */
+async function importPetModel(model3?: string): Promise<void> {
+  const path = model3 === undefined ? petModelPath.value.trim() : petCandidatePath.value
+  if (path === '') return
+
+  petImportBusy.value = true
+  petImportError.value = ''
+  try {
+    const result = await props.api.importPetModel(path, model3)
+    if (result.candidates.length > 0) {
+      petCandidates.value = result.candidates
+      petCandidatePath.value = path
+      petCandidateChoice.value = result.candidates[0] ?? ''
+      return
+    }
+
+    petCandidates.value = []
+    await refreshPetModels()
+    if (result.imported !== null) {
+      petModelPath.value = ''
+      // The first model imported becomes the current one: otherwise the pet would stay invisible with the
+      // model sitting there, and "it imported but shows nothing" is the confusing state to avoid.
+      if (form.pet.activeModelId === null || form.pet.activeModelId === '') {
+        form.pet.activeModelId = result.imported.id
+      }
+      showToast(t('已导入模型「{name}」', { name: result.imported.name }))
+    }
+  } catch (failure) {
+    petImportError.value = describeFailure(failure)
+  } finally {
+    petImportBusy.value = false
+  }
+}
+
+async function deletePetModel(id: string): Promise<void> {
+  if (petArmedModel.value !== id) {
+    petArmedModel.value = id
+    return
+  }
+
+  petArmedModel.value = null
+  petModelsError.value = ''
+  try {
+    await props.api.deletePetModel(id)
+    if (form.pet.activeModelId === id) {
+      form.pet.activeModelId = null
+    }
+    // The model's mapping table is gone with it; keeping it would be a row for a model that no longer exists.
+    const { [id]: _removed, ...rest } = form.pet.profiles
+    form.pet.profiles = rest
+    await refreshPetModels()
+  } catch (failure) {
+    petModelsError.value = describeFailure(failure)
+  }
+}
+
+const activePetModel = computed(() => petModels.value.find((model) => model.id === form.pet.activeModelId) ?? null)
+
+function blankProfile(): PetModelProfile {
+  return { motions: {}, expressions: {}, headBottom: 0.35, faceBottom: 0.55, defaultExpression: null }
+}
+
+/**
+ * The section as it is written. A blank keyword or greeting row is one a person abandoned, not an entry; sending
+ * it would have the server refuse the whole save over an empty string.
+ */
+function petPayload(): PetSettings {
+  const keywords: Record<string, PetKeyword[]> = {}
+  for (const [emotion, list] of Object.entries(form.pet.emotions.keywords)) {
+    keywords[emotion] = list
+      .map((entry) => ({ text: entry.text.trim(), weight: Math.min(10, Math.max(1, Math.round(entry.weight))) }))
+      .filter((entry) => entry.text !== '')
+  }
+
+  return {
+    enabled: form.pet.enabled,
+    alwaysOnTop: form.pet.alwaysOnTop,
+    clickThroughTransparent: form.pet.clickThroughTransparent,
+    motionSound: form.pet.motionSound,
+    scale: form.pet.scale,
+    activeModelId: form.pet.activeModelId,
+    idleMinSeconds: form.pet.idleMinSeconds,
+    idleMaxSeconds: form.pet.idleMaxSeconds,
+    sleepAfterMinutes: form.pet.sleepAfterMinutes,
+    greetingTimes: form.pet.greetingTimes.map((time) => time.trim()).filter((time) => time !== ''),
+    emotionCooldownSeconds: form.pet.emotionCooldownSeconds,
+    expressionHoldSeconds: form.pet.expressionHoldSeconds,
+    fastDragPxPerSecond: form.pet.fastDragPxPerSecond,
+    emotions: {
+      keywords,
+      negationPrefixes: form.pet.emotions.negationPrefixes.map((prefix) => prefix.trim()).filter((prefix) => prefix !== ''),
+      minWeight: form.pet.emotions.minWeight,
+    },
+    profiles: Object.fromEntries(Object.entries(form.pet.profiles).map(([key, profile]) => [key, copyProfile(profile)])),
+  }
+}
+
+/** The profile the mapping table edits: the stored one, or the defaults the runtime would use. */
+const activeProfile = computed<PetModelProfile>(() => {
+  const id = form.pet.activeModelId
+  const stored = id === null ? undefined : form.pet.profiles[id]
+  return stored === undefined ? blankProfile() : copyProfile(stored)
+})
+
+/** Every mapping edit writes one whole profile back, keyed by the active model; nothing partial is merged. */
+function editProfile(change: (profile: PetModelProfile) => PetModelProfile): void {
+  const id = form.pet.activeModelId
+  if (id === null || id === '') return
+
+  const current = form.pet.profiles[id] ?? blankProfile()
+  form.pet.profiles = { ...form.pet.profiles, [id]: change(copyProfile(current)) }
+}
+
+/**
+ * One motion row's `<select>` value. A `kind` this page does not know is carried as `kind:<value>` and written
+ * back unchanged: a newer build's mapping must survive a save made here.
+ */
+function motionValue(ref: { kind: string; group?: string | null; no?: number | null } | undefined): string {
+  if (ref === undefined) return 'auto'
+  if (ref.kind === 'motion') {
+    return ref.group === null || ref.group === undefined || ref.no === null || ref.no === undefined ? 'auto' : `motion:${ref.group}#${ref.no}`
+  }
+  return ref.kind === 'auto' || ref.kind === 'procedural' || ref.kind === 'none' ? ref.kind : `kind:${ref.kind}`
+}
+
+function motionRef(value: string): { kind: string; group: string | null; no: number | null } {
+  if (value.startsWith('motion:')) {
+    const [group, no] = value.slice('motion:'.length).split('#')
+    const index = Number(no)
+    return { kind: 'motion', group: group ?? '', no: Number.isInteger(index) ? index : 0 }
+  }
+  if (value.startsWith('kind:')) return { kind: value.slice('kind:'.length), group: null, no: null }
+  return { kind: value, group: null, no: null }
+}
+
+function expressionValue(ref: { kind: string; name?: string | null } | undefined): string {
+  if (ref === undefined) return 'auto'
+  if (ref.kind === 'expression') return ref.name === null || ref.name === undefined || ref.name === '' ? 'auto' : `expression:${ref.name}`
+  return ref.kind === 'auto' || ref.kind === 'procedural' || ref.kind === 'none' ? ref.kind : `kind:${ref.kind}`
+}
+
+function expressionRef(value: string): { kind: string; name: string | null } {
+  if (value.startsWith('expression:')) return { kind: 'expression', name: value.slice('expression:'.length) }
+  if (value.startsWith('kind:')) return { kind: value.slice('kind:'.length), name: null }
+  return { kind: value, name: null }
+}
+
+function setMotion(action: string, value: string): void {
+  editProfile((profile) => ({ ...profile, motions: { ...profile.motions, [action]: motionRef(value) } }))
+}
+
+function setExpression(name: string, value: string): void {
+  editProfile((profile) => ({ ...profile, expressions: { ...profile.expressions, [name]: expressionRef(value) } }))
+}
+
+function setHeadBottom(event: Event): void {
+  const percent = Number((event.target as HTMLInputElement).value)
+  if (!Number.isFinite(percent)) return
+  editProfile((profile) => ({ ...profile, headBottom: Math.min(percent / 100, profile.faceBottom) }))
+}
+
+function setFaceBottom(event: Event): void {
+  const percent = Number((event.target as HTMLInputElement).value)
+  if (!Number.isFinite(percent)) return
+  editProfile((profile) => ({ ...profile, faceBottom: Math.max(percent / 100, profile.headBottom) }))
+}
+
+function motionOptions(): { value: string; label: string }[] {
+  const model = activePetModel.value
+  const options = [
+    { value: 'auto', label: t('自动') },
+    { value: 'procedural', label: t('程序化') },
+    ...(model?.motions ?? []).map((motion) => ({
+      value: `motion:${motion.group}#${motion.no}`,
+      label: `${motion.group}#${motion.no}${motion.name === '' ? '' : ` · ${motion.name}`}`,
+    })),
+    { value: 'none', label: t('不用') },
+  ]
+  return options
+}
+
+function expressionOptions(): { value: string; label: string }[] {
+  const model = activePetModel.value
+  return [
+    { value: 'auto', label: t('自动') },
+    { value: 'procedural', label: t('程序化') },
+    ...(model?.expressions ?? []).map((name) => ({ value: `expression:${name}`, label: name })),
+    { value: 'none', label: t('不用') },
+  ]
+}
+
+/** Adds the row's stored value when the current options do not contain it, so the select never shows a blank. */
+function withOption(options: { value: string; label: string }[], value: string): { value: string; label: string }[] {
+  return options.some((option) => option.value === value) ? options : [...options, { value, label: value.replace(/^kind:/, '') }]
+}
+
+const petScalePercent = computed(() => Math.round(form.pet.scale * 100))
+
+function setScale(event: Event): void {
+  const percent = Number((event.target as HTMLInputElement).value)
+  if (!Number.isFinite(percent)) return
+  form.pet.scale = percent / 100
+}
+
+function setGreetingTimes(event: Event): void {
+  form.pet.greetingTimes = parseKeywords((event.target as HTMLInputElement).value)
+}
+
+async function resetPetWindow(): Promise<void> {
+  shellPrefError.value = ''
+  try {
+    await resetPetPosition()
+  } catch (error) {
+    shellPrefError.value = t('重置位置失败：{error}', { error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+function keywordsOf(emotion: PetEmotion): PetKeyword[] {
+  return form.pet.emotions.keywords[emotion] ?? []
+}
+
+function editKeywords(emotion: PetEmotion, change: (list: PetKeyword[]) => PetKeyword[]): void {
+  form.pet.emotions = {
+    ...form.pet.emotions,
+    keywords: { ...form.pet.emotions.keywords, [emotion]: change(keywordsOf(emotion).map((entry) => ({ ...entry }))) },
+  }
+}
+
+function addKeyword(emotion: PetEmotion): void {
+  editKeywords(emotion, (list) => [...list, { text: '', weight: 3 }])
+}
+
+function setKeywordText(emotion: PetEmotion, at: number, event: Event): void {
+  const text = (event.target as HTMLInputElement).value
+  editKeywords(emotion, (list) => list.map((entry, index) => (index === at ? { ...entry, text } : entry)))
+}
+
+function setKeywordWeight(emotion: PetEmotion, at: number, event: Event): void {
+  const weight = Number((event.target as HTMLInputElement).value)
+  editKeywords(emotion, (list) => list.map((entry, index) => (index === at ? { ...entry, weight: Number.isFinite(weight) ? weight : 1 } : entry)))
+}
+
+function removeKeyword(emotion: PetEmotion, at: number): void {
+  editKeywords(emotion, (list) => list.filter((_, index) => index !== at))
+}
+
+function setNegationPrefixes(event: Event): void {
+  form.pet.emotions = { ...form.pet.emotions, negationPrefixes: parseKeywords((event.target as HTMLInputElement).value) }
+}
+
+function setMinWeight(event: Event): void {
+  const weight = Number((event.target as HTMLInputElement).value)
+  form.pet.emotions = { ...form.pet.emotions, minWeight: Number.isFinite(weight) ? weight : 1 }
+}
+
+/** The built-in table lives in the pet frontend, which is also what scores a reply — one table, not two. */
+function restoreDefaultDictionary(): void {
+  form.pet.emotions = {
+    keywords: Object.fromEntries(
+      Object.entries(DEFAULT_DICTIONARY.keywords).map(([emotion, list]) => [emotion, list.map((entry) => ({ ...entry }))]),
+    ),
+    negationPrefixes: [...DEFAULT_DICTIONARY.negationPrefixes],
+    minWeight: DEFAULT_DICTIONARY.minWeight,
+  }
+}
+
+/**
+ * The trial box runs the very function the pet window runs, so its answer is the pet's answer. It reads the
+ * dictionary on screen, not the saved one: that is what makes it useful while editing.
+ */
+const petTrial = computed<EmotionMatch | null>(() =>
+  petTrialText.value.trim() === '' ? null : matchEmotion(petTrialText.value, form.pet.emotions),
+)
+
+/** The winner's primary score is the highest weight among its hits; `matchEmotion` reports the hits, not the max. */
+function primaryScore(match: EmotionMatch, emotion: PetEmotion): number {
+  return match.hits.reduce((best, hit) => (hit.emotion === emotion ? Math.max(best, hit.weight) : best), 0)
 }
 
 // ---- Updates -------------------------------------------------------------------------------------------------
@@ -1055,8 +1616,27 @@ const testStale = (kind: string) => testedWith.value[kind] !== undefined && test
 onMounted(() => {
   section.value = readStored(SECTION_KEY, 'model', (value): value is string => typeof value === 'string' && SECTIONS.some((item) => item.key === value))
   advanced.value = readStored(ADVANCED_KEY, {} as Record<string, boolean>, (value): value is Record<string, boolean> => typeof value === 'object' && value !== null)
-  void refresh()
-  void loadShellPrefs()
+  stopPetWatch = watchPetShowing((enabled) => {
+    // The tray switch and a close of the pet window are not edits made on this page. A clean form adopts the new
+    // value as its baseline too, so `dirty` does not light up for a change nobody typed; unsaved edits are left
+    // alone.
+    const wasClean = !dirty.value
+    petSpawned.value = enabled
+    form.pet.enabled = enabled
+    if (wasClean && stored.value !== null) stored.value = fingerprint()
+  })
+  // The shell's pet preference is read first, and refresh waits for it: `apply()` reads it to decide what the
+  // pet switch shows, and running the two in parallel would show the stored field instead half the time.
+  void loadShellPrefs().then(() => {
+      // The stored section may be the pet tab in a shell that lacks it.
+      section.value = resolveSection(section.value)
+      return refresh()
+    })
+})
+
+onUnmounted(() => {
+  stopPetWatch?.()
+  stopPetWatch = null
 })
 
 /** Asked by the shell before it switches away: the views are `v-if`, so leaving discards every edit. */
@@ -1073,7 +1653,7 @@ defineExpose({ refresh, hasUnsavedChanges })
       <div class="settings">
         <nav class="settings-nav" :aria-label="t('设置分类')">
           <button
-            v-for="item in SECTIONS"
+            v-for="item in visibleSections"
             :key="item.key"
             class="nav-item"
             :class="{ active: section === item.key }"
@@ -1631,6 +2211,371 @@ defineExpose({ refresh, hasUnsavedChanges })
                 </template>
                 <input type="number" min="1000" v-model.number="form.desktop.leaseTtlMs" data-test="desktop-lease-ttl" />
               </SettingRow>
+            </div>
+          </section>
+
+          <section v-if="petAvailable" v-show="section === 'pet'" class="panel" data-test="settings-section-pet">
+            <header class="panel-head">
+              <h2>{{ t('settings.section.pet') }}</h2>
+              <span class="g-chip" :class="form.pet.enabled ? 'is-ok' : ''" data-test="pet-effect">
+                {{ form.pet.enabled ? t('已开启') : t('已关闭') }}
+              </span>
+              <HintTip align="end">
+                {{ t('桌宠只读取会话里已经定稿的助手回复，按关键词判断情绪，不参与对话，也不会额外请求模型。') }}
+              </HintTip>
+            </header>
+
+            <div class="g-card">
+              <SettingRow :label="t('启用桌宠')">
+                <template #hint>
+                  {{ t('开启后，桌面上会出现一个 Live2D 角色。它只读取会话日志里已经定稿的回复，不参与对话，也不额外请求模型。') }}
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.enabled" data-test="pet-enabled" />
+              </SettingRow>
+              <SettingRow :label="t('置顶')" :hint="t('开启后桌宠始终在其他窗口之上；关掉它可以被别的窗口盖住。')">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.alwaysOnTop" data-test="pet-always-on-top" />
+              </SettingRow>
+              <SettingRow :label="t('透明区域鼠标穿透')">
+                <template #hint>{{ t('开启后，点击角色没画到的透明部分会落到后面的窗口上；关闭则整块窗口都吃点击。') }}</template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.clickThroughTransparent" data-test="pet-click-through" />
+              </SettingRow>
+              <SettingRow :label="t('播放动作音效')" :hint="t('动作自带音效时播放。默认关闭，免得桌宠突然出声。')">
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.motionSound" data-test="pet-motion-sound" />
+              </SettingRow>
+            </div>
+
+            <div class="g-card" data-test="pet-core">
+              <div class="g-card-head">
+                <h3>
+                  Cubism Core
+                  <HintTip>
+                    {{ t('Live2D 的运行时，不随应用分发：需要你自己从 Live2D 官网下载 Cubism 5 SDK for Web R5，并同意它的协议。只接受 CubismSdkForWeb-5-r.5.zip，整包哈希会逐字节校验。') }}
+                  </HintTip>
+                </h3>
+                <span class="g-chip" :class="petCore?.installed ? 'is-ok' : 'is-warn'" data-test="pet-core-state">
+                  <template v-if="petCore?.installed">{{ t('已安装 R{sdk} · {hash}', { sdk: petCore.sdk, hash: petCoreHash }) }}</template>
+                  <template v-else>{{ t('未安装') }}</template>
+                </span>
+              </div>
+
+              <SettingRow :label="t('下载地址')" :hint="t('在浏览器里打开，下载 R5 的 zip。导入之后它只留在本机，仓库和安装包都不含它。')">
+                <code class="pkg-root" data-test="pet-core-url">{{ PET_CORE_URL }}</code>
+                <button class="ghost" type="button" data-test="pet-core-copy" @click="copyText(PET_CORE_URL, t('已复制下载地址'))">{{ t('复制') }}</button>
+              </SettingRow>
+
+              <SettingRow :label="t('我已从 Live2D 官网下载并同意其协议')">
+                <template #hint>{{ t('这是导入的前提：Core 只由你自己下载，本应用不分发、不镜像。') }}</template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="petCoreConsent" data-test="pet-core-consent" />
+              </SettingRow>
+
+              <SettingRow :label="t('Core 压缩包')" :hint="t('填 CubismSdkForWeb-5-r.5.zip 的完整路径，然后点导入。')">
+                <div class="pkg-actions">
+                  <input
+                    type="text"
+                    v-model="petCorePath"
+                    :placeholder="t('例如 D:/Downloads/CubismSdkForWeb-5-r.5.zip')"
+                    data-test="pet-core-path"
+                    @keydown.enter.prevent="importPetCore"
+                  />
+                  <button class="primary" type="button" data-test="pet-core-import" :disabled="!petCoreConsent || petCoreBusy || petCorePath.trim() === ''" @click="importPetCore">
+                    {{ petCoreBusy ? t('导入中…') : t('导入') }}
+                  </button>
+                </div>
+              </SettingRow>
+              <p v-if="petCoreError" class="warn-line" role="alert" data-test="pet-core-error">{{ petCoreError }}</p>
+            </div>
+
+            <div class="g-card" data-test="pet-models">
+              <div class="g-card-head">
+                <h3>{{ t('模型') }}</h3>
+                <button class="ghost icon-only" type="button" :title="t('重新读取')" :aria-label="t('重新读取模型列表')" data-test="pet-models-refresh" @click="refreshPetModels">
+                  <Icon name="refresh" :size="14" /><span class="sr-only">{{ t('刷新') }}</span>
+                </button>
+              </div>
+
+              <!-- Said in a sentence rather than behind an ⓘ: whether the app carries models at all is not a
+                   footnote, and "it did not work" reads very differently depending on the answer. -->
+              <p class="callout" data-test="pet-models-notice">
+                {{ t('模型不随应用分发，版权属于各自的作者。仓库和安装包都不含任何模型，你自己导入的只留在本机。') }}
+              </p>
+
+              <p v-if="petModels.length === 0" class="muted" data-test="pet-models-empty">{{ t('还没有导入模型。') }}</p>
+              <div v-for="model in petModels" :key="model.id" class="pet-model-row" :data-test="`pet-model-${model.id}`">
+                <span class="pet-model-name" :title="model.name">
+                  {{ model.name }}
+                  <span v-if="model.id === form.pet.activeModelId" class="engine-tag">{{ t('当前') }}</span>
+                </span>
+                <span class="pet-model-meta" data-test="pet-model-meta">
+                  {{ t('{count} 个动作 · {expressions} 个表情 · {size}', { count: model.motions.length, expressions: model.expressions.length, size: formatBytes(model.bytes) }) }}
+                  · {{ model.hasHitAreas ? t('有点击区域') : t('没有点击区域') }}
+                </span>
+                <button
+                  class="ghost"
+                  type="button"
+                  :disabled="model.id === form.pet.activeModelId"
+                  :data-test="`pet-model-current-${model.id}`"
+                  @click="form.pet.activeModelId = model.id"
+                >{{ t('设为当前') }}</button>
+                <button class="ghost" type="button" :data-test="`pet-model-delete-${model.id}`" @click="deletePetModel(model.id)">
+                  <Icon name="trash" :size="14" /> {{ petArmedModel === model.id ? t('确认删除') : t('删除') }}
+                </button>
+              </div>
+              <p v-if="petModelsError" class="warn-line" role="alert" data-test="pet-models-error">{{ petModelsError }}</p>
+
+              <SettingRow :label="t('导入模型')" :hint="t('填模型所在的文件夹，或者一个 zip 的完整路径。只复制 model3.json 引用到的文件。')">
+                <div class="pkg-actions">
+                  <input
+                    type="text"
+                    v-model="petModelPath"
+                    :placeholder="t('例如 D:/Live2D/猫猫 或 D:/models/cat.zip')"
+                    data-test="pet-model-path"
+                    @keydown.enter.prevent="importPetModel()"
+                  />
+                  <button class="primary" type="button" data-test="pet-model-import" :disabled="petImportBusy || petModelPath.trim() === ''" @click="importPetModel()">
+                    {{ petImportBusy ? t('导入中…') : t('导入') }}
+                  </button>
+                </div>
+              </SettingRow>
+
+              <!-- Several model3.json in one archive: the server reports the relative paths and imports nothing
+                   until one is named. -->
+              <div v-if="petCandidates.length > 0" class="pet-candidates" data-test="pet-model-candidates">
+                <p class="row-note">{{ t('这个包里有一个以上的 model3.json，选一个要导入的：') }}</p>
+                <SettingRow :label="t('model3.json')">
+                  <select v-model="petCandidateChoice" data-test="pet-model-candidate">
+                    <option v-for="candidate in petCandidates" :key="candidate" :value="candidate">{{ candidate }}</option>
+                  </select>
+                  <button class="primary" type="button" data-test="pet-model-candidate-confirm" @click="importPetModel(petCandidateChoice)">{{ t('导入这个') }}</button>
+                </SettingRow>
+              </div>
+              <p v-if="petImportError" class="warn-line" role="alert" data-test="pet-model-error">{{ petImportError }}</p>
+            </div>
+
+            <div class="g-card" data-test="pet-appearance">
+              <div class="g-card-head"><h3>{{ t('外观') }}</h3></div>
+              <SettingRow :label="t('缩放')" unit="%">
+                <template #hint>{{ t('50%–200%，乘以模型的画布尺寸得到窗口大小，保存后立即生效。') }}</template>
+                <input
+                  type="range"
+                  min="50"
+                  max="200"
+                  step="5"
+                  :value="petScalePercent"
+                  :aria-label="t('缩放')"
+                  data-test="pet-scale"
+                  @input="setScale"
+                />
+                <span class="pet-readout" data-test="pet-scale-readout">{{ petScalePercent }}%</span>
+              </SettingRow>
+              <!-- Immediate, like the other shell commands: where the window sits is not a setting in
+                   runtime.json, so there is nothing here for SaveBar to save. -->
+              <SettingRow v-if="shellPrefs" :label="t('重置位置')">
+                <template #hint>{{ t('把桌宠放回第一次打开时的位置。拖动过之后想归位就点它。') }}</template>
+                <button class="ghost" type="button" data-test="pet-reset-position" @click="resetPetWindow">{{ t('重置位置') }}</button>
+              </SettingRow>
+            </div>
+
+            <div class="g-card" data-test="pet-mapping">
+              <div class="g-card-head">
+                <h3>
+                  {{ t('动作映射') }}
+                  <HintTip>
+                    {{ t('每个动作先按这张表找模型的 motion，找不到就用程序化参数轨道，参数也不存在就跳过。改的是当前模型，换模型各记各的。') }}
+                  </HintTip>
+                </h3>
+                <span v-if="activePetModel" class="g-chip" data-test="pet-mapping-model">{{ activePetModel.name }}</span>
+              </div>
+
+              <p v-if="activePetModel === null" class="muted" data-test="pet-mapping-nomodel">
+                {{ t('还没有选当前模型。导入一个模型并「设为当前」之后，这里才会列出它的动作和表情。') }}
+              </p>
+
+              <template v-else>
+                <SettingRow v-for="action in PET_ACTIONS" :key="action" :label="actionLabel(action)" :data-test="`pet-action-${action}`">
+                  <select
+                    :value="motionValue(activeProfile.motions[action])"
+                    :aria-label="actionLabel(action)"
+                    :data-test="`pet-action-select-${action}`"
+                    @change="setMotion(action, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="option in withOption(motionOptions(), motionValue(activeProfile.motions[action]))" :key="option.value" :value="option.value">
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <button
+                    class="g-btn"
+                    type="button"
+                    :disabled="!petSpawned"
+                    :title="petSpawned ? undefined : t('桌宠没有打开，先在「通用」里启用')"
+                    :data-test="`pet-action-preview-${action}`"
+                    @click="previewAction(action)"
+                  >
+                    {{ t('预览') }}
+                  </button>
+                </SettingRow>
+
+                <SettingRow v-for="emotion in PET_EMOTIONS" :key="`expression-${emotion}`" :label="t('表情：{emotion}', { emotion: emotionLabel(emotion) })">
+                  <select
+                    :value="expressionValue(activeProfile.expressions[emotion])"
+                    :aria-label="t('表情：{emotion}', { emotion: emotionLabel(emotion) })"
+                    :data-test="`pet-expression-select-${emotion}`"
+                    @change="setExpression(emotion, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="option in withOption(expressionOptions(), expressionValue(activeProfile.expressions[emotion]))" :key="option.value" :value="option.value">
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <button
+                    class="g-btn"
+                    type="button"
+                    :disabled="!petSpawned"
+                    :title="petSpawned ? undefined : t('桌宠没有打开，先在「通用」里启用')"
+                    :data-test="`pet-expression-preview-${emotion}`"
+                    @click="previewExpression(emotion)"
+                  >
+                    {{ t('预览') }}
+                  </button>
+                </SettingRow>
+
+                <!-- Only meaningful without the model's own hit areas: with them the model says where its head
+                     and face are, and these percentages would be a second opinion nobody asked for. -->
+                <template v-if="activePetModel.hasHitAreas === false">
+                  <SettingRow :label="t('头部下沿')" unit="%">
+                    <template #hint>{{ t('没有点击区域时，按模型高度的这个比例切分头部。默认 35%。') }}</template>
+                    <input type="range" min="0" max="100" step="1" :value="Math.round(activeProfile.headBottom * 100)" data-test="pet-head-bottom" @input="setHeadBottom" />
+                    <span class="pet-readout" data-test="pet-head-bottom-readout">{{ Math.round(activeProfile.headBottom * 100) }}%</span>
+                  </SettingRow>
+                  <SettingRow :label="t('面部下沿')" unit="%">
+                    <template #hint>{{ t('这个比例以下是面部，其余是身体。默认 55%，必须不小于头部下沿。') }}</template>
+                    <input type="range" min="0" max="100" step="1" :value="Math.round(activeProfile.faceBottom * 100)" data-test="pet-face-bottom" @input="setFaceBottom" />
+                    <span class="pet-readout" data-test="pet-face-bottom-readout">{{ Math.round(activeProfile.faceBottom * 100) }}%</span>
+                  </SettingRow>
+                </template>
+              </template>
+            </div>
+
+            <div class="g-card" data-test="pet-behaviour">
+              <div class="g-card-head"><h3>{{ t('行为') }}</h3></div>
+              <SettingRow :label="t('待机动作间隔')" :unit="t('秒')">
+                <template #hint>{{ t('安静这么久之后随机做一个待机动作。下限 5 秒，上限不超过 3600 秒，且不能小于下限。') }}</template>
+                <span class="pet-range">
+                  <input type="number" min="5" max="3600" v-model.number="form.pet.idleMinSeconds" :aria-label="t('待机动作最短间隔')" data-test="pet-idle-min" />
+                  <span class="pet-range-sep">–</span>
+                  <input type="number" min="5" max="3600" v-model.number="form.pet.idleMaxSeconds" :aria-label="t('待机动作最长间隔')" data-test="pet-idle-max" />
+                </span>
+              </SettingRow>
+              <SettingRow :label="t('多久没互动就睡觉')" :unit="t('分钟')" :hint="t('0 表示不睡。睡着后点一下就会醒。最多 1440 分钟。')">
+                <input type="number" min="0" max="1440" v-model.number="form.pet.sleepAfterMinutes" data-test="pet-sleep-minutes" />
+              </SettingRow>
+              <SettingRow :label="t('问候时间')">
+                <template #hint>{{ t('用逗号分隔的 HH:mm，一天各触发一次，最多 12 个。留空则不主动打招呼。') }}</template>
+                <input
+                  type="text"
+                  :value="form.pet.greetingTimes.join(',')"
+                  :placeholder="t('09:00, 14:00')"
+                  data-test="pet-greeting-times"
+                  @input="setGreetingTimes"
+                />
+              </SettingRow>
+              <SettingRow :label="t('情绪冷却')" :unit="t('秒')" :hint="t('同一个情绪在这段时间内不会重复触发，免得连续几句都播同一个动作。0–600 秒。')">
+                <input type="number" min="0" max="600" v-model.number="form.pet.emotionCooldownSeconds" data-test="pet-emotion-cooldown" />
+              </SettingRow>
+              <SettingRow :label="t('表情保持')" :unit="t('秒')" :hint="t('表情在这么多秒后回到默认。1–120 秒。')">
+                <input type="number" min="1" max="120" v-model.number="form.pet.expressionHoldSeconds" data-test="pet-expression-hold" />
+              </SettingRow>
+              <SettingRow :label="t('快速拖拽阈值')" unit="px/s">
+                <template #hint>{{ t('松手速度超过这个值算「甩出去」，会播惊讶和回弹。100–20000 物理像素每秒。') }}</template>
+                <input type="number" min="100" max="20000" v-model.number="form.pet.fastDragPxPerSecond" data-test="pet-fast-drag" />
+              </SettingRow>
+            </div>
+
+            <div class="g-card" data-test="pet-emotions">
+              <div class="g-card-head">
+                <h3>
+                  {{ t('情绪字典') }}
+                  <HintTip>
+                    {{ t('桌宠按这张表给每条回复打分：每种情绪取命中关键词里的最高权重作为主分，主分最高的胜出。同一个函数也给下面的试算打分，所以试算结果就是真实结果。') }}
+                  </HintTip>
+                </h3>
+                <button class="ghost" type="button" data-test="pet-emotions-restore" @click="restoreDefaultDictionary">{{ t('恢复默认') }}</button>
+              </div>
+
+              <div v-for="emotion in PET_EMOTIONS" :key="`dict-${emotion}`" class="pet-dict">
+                <h4 class="pet-dict-head">{{ emotionLabel(emotion) }}</h4>
+                <div v-for="(entry, index) in keywordsOf(emotion)" :key="index" class="pet-keyword-row">
+                  <input
+                    type="text"
+                    :value="entry.text"
+                    maxlength="32"
+                    :aria-label="t('第 {v} 个关键词', { v: index + 1 })"
+                    :data-test="`pet-keyword-${emotion}`"
+                    @input="setKeywordText(emotion, index, $event)"
+                  />
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    :value="entry.weight"
+                    :aria-label="t('第 {v} 个关键词的权重', { v: index + 1 })"
+                    :data-test="`pet-keyword-weight-${emotion}`"
+                    @input="setKeywordWeight(emotion, index, $event)"
+                  />
+                  <button class="ghost icon-only" type="button" :title="t('移除')" :aria-label="t('移除第 {v} 个关键词', { v: index + 1 })" :data-test="`pet-keyword-remove-${emotion}`" @click="removeKeyword(emotion, index)">
+                    <Icon name="x" :size="14" /><span class="sr-only">{{ t('移除') }}</span>
+                  </button>
+                </div>
+                <button class="ghost add" type="button" :data-test="`pet-keyword-add-${emotion}`" @click="addKeyword(emotion)">
+                  <Icon name="plus" :size="14" /> {{ t('添加关键词') }}
+                </button>
+              </div>
+
+              <SettingRow :label="t('否定前缀')">
+                <template #hint>{{ t('命中位置前两个字符内出现这些词，这次命中作废，所以「不开心」不算开心。逗号分隔，最多 32 个，每个不超过 8 个字符。') }}</template>
+                <input type="text" :value="form.pet.emotions.negationPrefixes.join(',')" :placeholder="t('不, 没, 别, not')" data-test="pet-negations" @input="setNegationPrefixes" />
+              </SettingRow>
+              <SettingRow :label="t('最低权重')" :hint="t('命中权重要达到这个值才算数，1–10。默认 1：只要有命中就触发。')">
+                <input type="number" min="1" max="10" :value="form.pet.emotions.minWeight" data-test="pet-min-weight" @input="setMinWeight" />
+              </SettingRow>
+
+              <SettingRow :label="t('试算')" stack :hint="t('粘贴一段回复，用上面这张表实时打分。不会保存，也不会发给桌宠。')">
+                <textarea v-model="petTrialText" rows="2" :placeholder="t('例如：哈哈，这个太好笑了，不过被你夸得有点害羞')" data-test="pet-trial-input" />
+                <div class="pet-trial" data-test="pet-trial-result">
+                  <template v-if="petTrial === null">
+                    <span class="muted">{{ t('输入一段文字就能看到结果。') }}</span>
+                  </template>
+                  <template v-else>
+                    <span class="g-chip" :class="petTrial.emotion === null ? '' : 'is-ok'" data-test="pet-trial-winner">
+                      {{ petTrial.emotion === null ? t('没有命中任何情绪') : t('胜出：{emotion}', { emotion: emotionLabel(petTrial.emotion) }) }}
+                    </span>
+                    <span v-for="emotion in PET_EMOTIONS" :key="`trial-${emotion}`" class="pet-trial-score" :data-test="`pet-trial-score-${emotion}`">
+                      {{ emotionLabel(emotion) }} {{ primaryScore(petTrial, emotion) }} / {{ petTrial.totals[emotion] }}
+                    </span>
+                    <span v-if="petTrial.hits.length > 0" class="pet-trial-hits" data-test="pet-trial-hits">
+                      {{ t('命中：{hits}', { hits: petTrial.hits.map((hit) => `${hit.text}@${hit.at}`).join(t('、')) }) }}
+                    </span>
+                  </template>
+                </div>
+              </SettingRow>
+            </div>
+
+            <div class="g-card" data-test="pet-notices">
+              <div class="g-card-head"><h3>{{ t('声明') }}</h3></div>
+              <p class="row-note" data-test="pet-notice-attribution">
+                {{ t('桌宠使用 Live2D Cubism。Cubism Core 的版权归 Live2D Inc.，由你自行下载并同意其协议；Cubism Framework 随桌宠前端分发，适用 Live2D Open Software License。') }}
+              </p>
+              <p class="row-note">
+                <span class="pet-link-label">{{ t('Open Software License') }}</span>
+                <code class="pkg-root" data-test="pet-license-open">{{ PET_LICENSE_URLS.open }}</code>
+                <button class="ghost" type="button" data-test="pet-license-open-copy" @click="copyText(PET_LICENSE_URLS.open, t('已复制链接'))">{{ t('复制') }}</button>
+              </p>
+              <p class="row-note">
+                <span class="pet-link-label">{{ t('Proprietary Software License') }}</span>
+                <code class="pkg-root" data-test="pet-license-proprietary">{{ PET_LICENSE_URLS.proprietary }}</code>
+                <button class="ghost" type="button" data-test="pet-license-proprietary-copy" @click="copyText(PET_LICENSE_URLS.proprietary, t('已复制链接'))">{{ t('复制') }}</button>
+              </p>
+              <p class="row-note" data-test="pet-notice-third-party">
+                {{ t('其他第三方组件与完整许可清单见安装目录下的 THIRD-PARTY-NOTICES.md（notices/THIRD-PARTY-NOTICES.md）。') }}
+              </p>
             </div>
           </section>
 
@@ -2321,6 +3266,123 @@ defineExpose({ refresh, hasUnsavedChanges })
   margin: var(--space-2) 0 0;
   color: var(--text-2);
   overflow-wrap: anywhere;
+}
+
+/* One imported model on a line: name, what it offers, and the two verbs that act on it. The metadata is the
+   part that decides whether a model is worth using, so it sits between them rather than in a tooltip. */
+.pet-model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding-block: var(--space-1);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.pet-model-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  max-inline-size: 12rem;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pet-model-meta {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.pet-candidates {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block-end: var(--space-2);
+}
+
+/* A percentage that changes as the slider moves: tabular figures keep it from jittering. */
+.pet-readout {
+  flex: none;
+  min-inline-size: 3.5rem;
+  text-align: end;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-meta);
+}
+
+.pet-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pet-range input {
+  inline-size: 6rem;
+}
+
+.pet-range-sep {
+  color: var(--text-3);
+}
+
+.pet-dict {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block: var(--space-3) var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.pet-dict-head {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.pet-keyword-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pet-keyword-row input[type='text'] {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.pet-keyword-row input[type='number'] {
+  flex: none;
+  inline-size: 5rem;
+}
+
+.pet-trial {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block-start: var(--space-2);
+}
+
+.pet-trial-score {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.pet-trial-hits {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
+.pet-link-label {
+  min-inline-size: 11rem;
+  color: var(--text-2);
+  font-size: var(--fs-meta);
 }
 
 @container body (max-width: 52rem) {

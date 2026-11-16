@@ -10,13 +10,21 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# `protocol-asset` lets the pet webview load the user's model and Cubism Core through asset.localhost; the scope
+# in tauri.conf.json limits it to %LOCALAPPDATA%\Partner\pet. It is unconditional rather than a feature of this
+# crate because `tauri_build` refuses to build when `tauri.conf.json` enables the asset protocol and the
+# dependency does not: a config-only build fails at the build script, not at runtime.
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-autostart = "2"
 rand = "0.8"
+serde = { version = "1", features = ["derive"] }
 
 [features]
-# Without this, a release binary still points at devUrl and shows ERR_CONNECTION_REFUSED because no dev
-# server is running. `tauri dev` builds with --no-default-features, which is what selects the dev server.
+# Without `custom-protocol`, a release binary still points at devUrl and shows ERR_CONNECTION_REFUSED because
+# no dev server is running. `tauri dev` builds with --no-default-features, which is what selects the dev server.
+#
+# The pet's licence gate is not a feature here but the `cfg(partner_pet)` that build.rs derives from `PARTNER_PET`;
+# see the comment there.
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 

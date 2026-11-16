@@ -82,6 +82,7 @@ public static class ApiHost
         // would abandon the remaining flushes; above it a wedged stop would hold the process open.
         builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(30));
         builder.Services.AddSingleton(context);
+        builder.Services.AddSingleton(context.Pet);
         builder.Services.AddSingleton(consumer);
         builder.Services.AddSingleton(voice);
         builder.Services.AddSingleton(localEngines);
@@ -122,6 +123,7 @@ public static class ApiHost
         // separate from /api/consumer.
         app.MapGet("/api/tools/failures", (ConsumerHost host, int? take) => Results.Ok(host.Failures(take ?? 10)));
         ViewEndpoints.Map(app, context, workspace);
+        PetEndpoints.Map(app, context);
         ServiceEndpoints.Map(app);
         EnginePackageEndpoints.Map(app);
         UpdateEndpoints.Map(app);

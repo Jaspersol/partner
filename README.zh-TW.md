@@ -164,6 +164,10 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 - **寫回** — 依設定的間隔把呼叫端的要求和回覆總結成一句話，以 `[对外服务:<名稱>]` 開頭寫進主記憶。記憶頁可依來源篩選，刪除服務時可一併刪除它寫入的記憶
 - **邊界** — 呼叫端必須和 Partner 在同一台電腦上；服務協定必須與上游一致，不做格式轉換；每個服務有獨立權杖。外部文字會進入主記憶，只把權杖交給可信的程式
 
+### 桌寵
+
+- **Live2D 角色** — 一個透明、置頂的小視窗，依關鍵詞字典比對已定稿的助手回覆並播放固定場景；Cubism Core 和模型都由你自己選擇下載，拿到 Live2D 對 Expandable Application 的書面回覆之前，release 建置不含這個功能
+
 ### 系統與平台
 
 - **模型協定** — 支援 OpenAI 相容和 Anthropic Messages 端點，API Key 只寫不讀

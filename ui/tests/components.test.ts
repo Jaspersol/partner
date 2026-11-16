@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import type { ConsumerState, PartnerApiSurface, QueueSummary, RuntimeSettings, UpdateCheck, UpdateDownload, WebView } from '../src/api'
+import type { ConsumerState, PartnerApiSurface, PetSettings, QueueSummary, RuntimeSettings, UpdateCheck, UpdateDownload, WebView } from '../src/api'
 import ApprovalBanner from '../src/components/ApprovalBanner.vue'
 import Composer from '../src/components/Composer.vue'
 import MarkdownBody from '../src/components/MarkdownBody.vue'
@@ -880,6 +880,25 @@ describe('event list', () => {
  * rather than at the app.
  */
 
+/** The pet section: off, with nothing imported, which is the state a fresh install is in. */
+const PET_SETTINGS: PetSettings = {
+  enabled: false,
+  alwaysOnTop: true,
+  clickThroughTransparent: true,
+  motionSound: false,
+  scale: 1,
+  activeModelId: null,
+  idleMinSeconds: 25,
+  idleMaxSeconds: 60,
+  sleepAfterMinutes: 10,
+  greetingTimes: ['09:00', '14:00'],
+  emotionCooldownSeconds: 8,
+  expressionHoldSeconds: 6,
+  fastDragPxPerSecond: 1500,
+  emotions: { keywords: { smile: [], angry: [], cry: [], shy: [] }, negationPrefixes: [], minWeight: 1 },
+  profiles: {},
+}
+
 function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface {
   return {
     session: vi.fn(async () => ({ lastSeq: 0, conversation: { latestFromSeq: null, withdrawn: null }, items: [], context: { usedTokens: 0, budgetTokens: 28672, contextTokens: 32768, maxTokens: 4096, keptItems: 0, foldedItems: 0, fraction: 0 } })),
@@ -945,6 +964,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+      pet: PET_SETTINGS,
     })),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),
     createSkill: vi.fn(async (skill) => ({ skillId: skill.skillId, name: skill.name })),
@@ -1017,6 +1037,13 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     deleteService: vi.fn(),
     flushService: vi.fn(),
     rotateServiceToken: vi.fn(),
+    petCore: vi.fn(async () => ({ installed: false, sdk: '5-r.5', sha256: null })),
+    importPetCore: vi.fn(),
+    petModels: vi.fn(async () => []),
+    importPetModel: vi.fn(async () => ({ imported: null, candidates: [] })),
+    previewPetAction: vi.fn(async () => ({ seq: 1 })),
+    deletePetModel: vi.fn(async () => ({ deleted: true })),
+    petFeed: vi.fn(async () => ({ speaking: false, settingsRevision: 1, replies: [], lastError: null, lastSeq: 0, preview: null })),
     ...overrides,
   }
 }
