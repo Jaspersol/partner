@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import McpView from './McpView.vue'
+import PromptsView from './PromptsView.vue'
+import SkillsView from './SkillsView.vue'
 import HintTip from '../components/HintTip.vue'
 import GearTable from '../components/GearTable.vue'
 import SaveBar from '../components/SaveBar.vue'
@@ -54,8 +57,12 @@ import type {
  * hardcoded copy used as the *saved* value would quietly re-add gears the user removed.
  */
 const DEFAULT_REASONING_GEARS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
-const props = defineProps<{ api: PartnerApiSurface; theme?: Theme | undefined }>()
-const emit = defineEmits<{ saved: []; navigate: [key: string]; 'set-theme': [theme: Theme] }>()
+/**
+ * `page` picks what the view is for. Unset, it is the settings page with its category nav. `pet` is the desktop
+ * pet's own page: the same form and Save bar, but only the pet category, with no nav.
+ */
+const props = defineProps<{ api: PartnerApiSurface; theme?: Theme | undefined; page?: 'pet' | undefined }>()
+const emit = defineEmits<{ saved: []; changed: []; navigate: [key: string]; 'set-theme': [theme: Theme] }>()
 
 /** The form is a projection of the stored settings; nothing here is authoritative until it is saved. */
 const form = reactive<RuntimeSettings>({
@@ -96,6 +103,10 @@ const form = reactive<RuntimeSettings>({
   // this page: a server row and a skill row need more room than a card in a settings form gives them.
   mcp: { enabled: false, servers: [], allowedTools: [] },
   skills: { disabled: [] },
+
+  // Carried, not edited here: the memory page owns it. Sent back like every other section, because a save that
+  // left it out would put the server default over whatever was stored.
+  memory: { embeddings: false },
 
   // Also carried, not edited: the prompts page owns the agents section. Dropping it here would reset every
   // prompt and sub-agent the next time anyone saved a voice setting.
@@ -382,17 +393,7 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
     reasoningLabels: { ...(settings.model.reasoningLabels ?? {}) },
   })
 
-  // Replaced, not merged: the response is the whole truth, and holding on to what arrived earlier would
-  // resurrect a server or a deny entry the person has since removed on their own page.
-  form.mcp = { ...settings.mcp, servers: [...(settings.mcp?.servers ?? [])], allowedTools: [...(settings.mcp?.allowedTools ?? [])] }
-  form.skills = { disabled: [...(settings.skills?.disabled ?? [])] }
-
-  // Carried, never edited here. Replaced rather than merged for the same reason: the prompts page is the one
-  // place that writes this section, and this page's only job is to hand it back unchanged.
-  form.agents = {
-    main: { prompt: settings.agents?.main?.prompt ?? null },
-    subAgents: (settings.agents?.subAgents ?? []).map((agent) => ({ ...agent })),
-  }
+  applyCarried(settings)
   form.files = { enabled: settings.files?.enabled ?? false, roots: [...(settings.files?.roots ?? [])] }
 
   // A response from an older build carries no `web` at all; the fallback is the same default the section
@@ -765,6 +766,7 @@ async function persist() {
       reasoningGears: form.model.reasoningGears.filter((gear) => normalizeGear(gear) !== ''),
       reasoningLabels: form.model.reasoningLabels ?? {},
     },
+    memory: { embeddings: form.memory.embeddings },
     pet: petPayload(),
   }
 
@@ -842,15 +844,17 @@ interface Section {
 
 const SECTIONS: Section[] = [
   { key: 'general', label: 'settings.section.general', icon: 'settings' },
+  { key: 'appearance', label: 'settings.section.appearance', icon: 'contrast' },
   { key: 'model', label: 'settings.section.model', icon: 'sparkle' },
   { key: 'input', label: 'settings.section.input', icon: 'mic' },
   { key: 'output', label: 'settings.section.output', icon: 'speaker' },
+  { key: 'skills', label: 'settings.section.skills', icon: 'skill' },
+  { key: 'mcp', label: 'settings.section.mcp', icon: 'mcp' },
+  { key: 'agents', label: 'settings.section.agents', icon: 'prompt' },
   { key: 'desktop', label: 'settings.section.desktop', icon: 'crosshair' },
-  { key: 'pet', label: 'settings.section.pet', icon: 'pet' },
   { key: 'files', label: 'settings.section.files', icon: 'folder' },
   { key: 'web', label: 'settings.section.web', icon: 'search' },
   { key: 'engines', label: 'settings.section.engines', icon: 'terminal' },
-  { key: 'appearance', label: 'settings.section.appearance', icon: 'contrast' },
 ]
 
 const SECTION_KEY = 'partner.settings.section'
@@ -875,7 +879,16 @@ function writeStored(key: string, value: unknown): void {
   }
 }
 
-const section = ref('model')
+const isPet = computed(() => props.page === 'pet')
+const section = ref(props.page === 'pet' ? 'pet' : 'model')
+
+/**
+ * Skills, MCP and agent are whole pages with their own Save bar and their own settings round trip, so they are
+ * mounted here one at a time instead of being fields of this form. While one is showing this page's own Save bar
+ * is hidden: it would save a different thing.
+ */
+const embedded = computed(() => !isPet.value && (section.value === 'skills' || section.value === 'mcp' || section.value === 'agents'))
+const child = ref<{ hasUnsavedChanges?: () => boolean } | null>(null)
 
 /**
  * Which 「更多选项」 are open. Remembered, because the views are `v-if`: without it, opening the options you
@@ -884,14 +897,50 @@ const section = ref('model')
  */
 const advanced = ref<Record<string, boolean>>({})
 
-/** A stored section that no longer exists (the pet tab in a build without it) falls back to the model page. */
+/** A stored section that no longer exists falls back to the model page. */
 function resolveSection(key: string): string {
-  return visibleSections.value.some((item) => item.key === key) ? key : 'model'
+  if (isPet.value) return 'pet'
+  return SECTIONS.some((item) => item.key === key) ? key : 'model'
 }
 
 function choose(key: string): void {
+  if (key === section.value) return
+  // The embedded pages are `v-if`: leaving one destroys it and its edits.
+  if (child.value?.hasUnsavedChanges?.() === true && !window.confirm(t('app.unsavedLeave'))) return
   section.value = key
   writeStored(SECTION_KEY, key)
+}
+
+/**
+ * Mcp, skills and agents are written by the embedded pages, and this form carries them back on its own save.
+ * Re-reading them after each of those saves keeps the carried copy from putting an old list over a new one. They
+ * are not part of the fingerprint, so unsaved edits elsewhere on this page are left alone.
+ */
+function applyCarried(settings: RuntimeSettings) {
+  // Replaced, not merged: the response is the whole truth, and holding on to what arrived earlier would
+  // resurrect a server or a deny entry the person has since removed.
+  form.mcp = { ...settings.mcp, servers: [...(settings.mcp?.servers ?? [])], allowedTools: [...(settings.mcp?.allowedTools ?? [])] }
+  form.skills = { disabled: [...(settings.skills?.disabled ?? [])] }
+  form.agents = {
+    main: { prompt: settings.agents?.main?.prompt ?? null },
+    subAgents: (settings.agents?.subAgents ?? []).map((agent) => ({ ...agent })),
+  }
+  form.memory = { embeddings: settings.memory?.embeddings ?? false }
+}
+
+async function onChildChanged(): Promise<void> {
+  emit('changed')
+  try {
+    applyCarried(await props.api.settings())
+  } catch {
+    // The embedded page shows its own failure; the carried copy is re-read on the next refresh.
+  }
+}
+
+/** The agent page's "go to settings" button points at the capability switches, which are the desktop category. */
+function onChildNavigate(key: string): void {
+  if (key === 'settings') choose('desktop')
+  else emit('navigate', key)
 }
 
 function toggleAdvanced(key: string): void {
@@ -1039,11 +1088,8 @@ const petSpawned = ref(false)
 /** Unsubscribes the `partner:pet` listener. */
 let stopPetWatch: (() => void) | null = null
 
-/** Whether to offer the pet tab: false only in a shell built without the pet (see `petSupported`). */
+/** Whether to offer the pet page: false only in a shell built without the pet (see `petSupported`). */
 const petAvailable = ref(true)
-
-/** The sections actually offered: the pet tab only exists where the shell can honour it. */
-const visibleSections = computed(() => SECTIONS.filter((item) => item.key !== 'pet' || petAvailable.value))
 
 const petCore = ref<PetCoreStatus | null>(null)
 const petCorePath = ref('')
@@ -1614,7 +1660,7 @@ function blockPrint(kind: string): string {
 const testStale = (kind: string) => testedWith.value[kind] !== undefined && testedWith.value[kind] !== blockPrint(kind)
 
 onMounted(() => {
-  section.value = readStored(SECTION_KEY, 'model', (value): value is string => typeof value === 'string' && SECTIONS.some((item) => item.key === value))
+  if (!isPet.value) section.value = readStored(SECTION_KEY, 'model', (value): value is string => typeof value === 'string' && SECTIONS.some((item) => item.key === value))
   advanced.value = readStored(ADVANCED_KEY, {} as Record<string, boolean>, (value): value is Record<string, boolean> => typeof value === 'object' && value !== null)
   stopPetWatch = watchPetShowing((enabled) => {
     // The tray switch and a close of the pet window are not edits made on this page. A clean form adopts the new
@@ -1641,7 +1687,7 @@ onUnmounted(() => {
 
 /** Asked by the shell before it switches away: the views are `v-if`, so leaving discards every edit. */
 function hasUnsavedChanges(): boolean {
-  return dirty.value
+  return dirty.value || child.value?.hasUnsavedChanges?.() === true
 }
 
 defineExpose({ refresh, hasUnsavedChanges })
@@ -1650,10 +1696,10 @@ defineExpose({ refresh, hasUnsavedChanges })
 <template>
   <div class="view">
     <div class="scroll settings-scroll">
-      <div class="settings">
-        <nav class="settings-nav" :aria-label="t('设置分类')">
+      <div class="settings" :class="{ 'is-single': isPet }">
+        <nav v-if="!isPet" class="settings-nav" :aria-label="t('设置分类')">
           <button
-            v-for="item in visibleSections"
+            v-for="item in SECTIONS"
             :key="item.key"
             class="nav-item"
             :class="{ active: section === item.key }"
@@ -2175,7 +2221,7 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
               <p v-if="desktopAgentOff" class="warn-line" data-test="desktop-agent-warning">
                 {{ t('还需要启用「桌面操控」子 agent，助手才能使用这个能力。') }}
-                <button class="ghost" data-test="desktop-agent-fix" @click="emit('navigate', 'prompts')">{{ t('去启用') }}</button>
+                <button class="ghost" data-test="desktop-agent-fix" @click="choose('agents')">{{ t('去启用') }}</button>
               </p>
               <SettingRow :label="t('只允许操作这些窗口')">
                 <template #hint>
@@ -2864,11 +2910,18 @@ defineExpose({ refresh, hasUnsavedChanges })
               </SettingRow>
             </div>
           </section>
+
+          <div v-if="embedded" class="embedded" :data-test="`settings-embedded-${section}`">
+            <SkillsView v-if="section === 'skills'" ref="child" :api="api" @changed="onChildChanged" />
+            <McpView v-else-if="section === 'mcp'" ref="child" :api="api" @changed="onChildChanged" />
+            <PromptsView v-else ref="child" :api="api" @changed="onChildChanged" @navigate="onChildNavigate" />
+          </div>
         </div>
       </div>
     </div>
 
     <SaveBar
+      v-if="!embedded"
       prefix="settings"
       :dirty="dirty"
       :status="status"
@@ -2884,6 +2937,30 @@ defineExpose({ refresh, hasUnsavedChanges })
 .settings-scroll {
   flex: 1;
   min-block-size: 0;
+}
+
+.settings.is-single {
+  grid-template-columns: minmax(0, var(--column-form));
+}
+
+/* An embedded page brings its own scroll region, top-bar clearance and Save bar. Inside this page the scroll
+   and the clearance already exist, and the Save bar anchors to this view's bottom edge instead of the embedded
+   page's own box. */
+.embedded :deep(.view) {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  block-size: auto;
+}
+
+.embedded :deep(.scroll) {
+  overflow: visible;
+}
+
+.embedded :deep(.g-page) {
+  inline-size: 100%;
+  padding: 0;
 }
 
 /* Two columns: the categories, and one category at a time. The nav sticks under the top bar so switching never

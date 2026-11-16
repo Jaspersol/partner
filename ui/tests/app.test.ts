@@ -66,6 +66,7 @@ const SETTINGS = {
   agents: { main: { prompt: null }, subAgents: [] },
   files: { enabled: false, roots: [] },
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+  memory: { embeddings: false },
   // Off with nothing imported: a fresh install. The pet window is not part of this fake.
   pet: {
     enabled: false,
@@ -234,9 +235,9 @@ describe('app shell', () => {
     await flushPromises()
 
     const tabs = wrapper.findAll('[data-test^=tab-]')
-    // Eight: the queue is the composer's list now, not a page of its own, agent joined the capability pages —
-    // it edits what the agents are told, not the installation — and 定时 sits right under the conversation.
-    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '定时', '记忆', 'MCP', '对外服务', '技能', 'agent', '设置'])
+    // Six: the queue is the composer's list now, not a page of its own. Skills, MCP and agent are categories of
+    // the settings page, and the desktop pet has a page of its own.
+    expect(tabs.map((node) => node.text().replace(/[^\p{L}]/gu, ''))).toEqual(['会话', '定时', '记忆', '桌宠', '对外服务', '设置'])
 
     for (const tab of tabs) {
       await tab.trigger('click')
@@ -340,10 +341,10 @@ describe('app shell', () => {
     const wrapper = mount(App)
     await flushPromises()
 
-    await wrapper.find('[data-test="tab-MCP"]').trigger('click')
+    await wrapper.find('[data-test="tab-设置"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-test="mcp-enabled"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="settings-section-model"]').exists()).toBe(true)
     const event = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, cancelable: true })
     window.dispatchEvent(event)
     await flushPromises()

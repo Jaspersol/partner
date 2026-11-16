@@ -35,7 +35,7 @@ There are two fixed scenes, at most one sub-agent each:
 
 ## Prompts and models
 
-Edit them on the **agent** page in the sidebar:
+Edit them under Settings → Agent:
 
 - The main agent and each sub-agent have editable prompts. Unchanged prompts use the built-in default and pick up new defaults on upgrade.
 - The generated "delegable scenes" and "how to report" sections at the end are not editable.

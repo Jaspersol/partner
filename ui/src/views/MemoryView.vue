@@ -145,6 +145,36 @@ const note = computed(() => {
   return t('已失效 → {supersededBy}', { supersededBy: row.supersededBy })
 })
 
+/**
+ * Local vector search is a stored setting that only memory recall reads, so it lives on this page and applies
+ * as soon as it is flipped. It goes through the same settings round trip as every other save: the current
+ * document is read first, so nothing else in it is touched.
+ */
+const embeddings = ref(false)
+const embeddingsBusy = ref(false)
+
+async function loadEmbeddings() {
+  try {
+    embeddings.value = (await props.api.settings()).memory?.embeddings ?? false
+  } catch {
+    // The list reports its own read failure; the switch stays at its default until the next successful read.
+  }
+}
+
+async function setEmbeddings(value: boolean) {
+  embeddingsBusy.value = true
+  error.value = ''
+  try {
+    const saved = await props.api.saveSettings({ ...(await props.api.settings()), memory: { embeddings: value } })
+    embeddings.value = saved.settings.memory?.embeddings ?? value
+  } catch (failure) {
+    embeddings.value = !value
+    error.value = String(failure)
+  } finally {
+    embeddingsBusy.value = false
+  }
+}
+
 async function refresh() {
   error.value = ''
   try {
@@ -385,6 +415,7 @@ async function create() {
 onMounted(() => {
   void refresh()
   void loadServices()
+  void loadEmbeddings()
 })
 
 /** For Ctrl+K. See SessionView's copy of this — it is the same contract. */
@@ -447,6 +478,19 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           <label class="toggle">
             <input v-model="pinnedOnly" type="checkbox" class="g-switch" role="switch" data-test="memory-pinned-only" />
             {{ t('只看已固定') }}
+          </label>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              class="g-switch"
+              role="switch"
+              :checked="embeddings"
+              :disabled="embeddingsBusy"
+              data-test="memory-embeddings"
+              @change="setEmbeddings(($event.target as HTMLInputElement).checked)"
+            />
+            {{ t('本地向量检索') }}
+            <HintTip align="end">{{ t('开启后，召回记忆时除了关键词，还用本机算出的字符向量打分。全程在本机计算，不联网。默认关闭；开启后新写入的记忆会带上向量，召回排序会和现在略有不同。') }}</HintTip>
           </label>
           <label v-if="hiddenRetired > 0 || showRetired" class="toggle">
             <input v-model="showRetired" type="checkbox" class="g-switch" role="switch" data-test="memory-show-retired" />

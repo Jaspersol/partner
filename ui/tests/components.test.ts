@@ -964,6 +964,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       agents: { main: { prompt: null }, subAgents: [] },
       files: { enabled: false, roots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
+      memory: { embeddings: false },
       pet: PET_SETTINGS,
     })),
     skills: vi.fn(async () => ({ skills: [], warnings: [] })),

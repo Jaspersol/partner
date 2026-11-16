@@ -25,7 +25,7 @@ The steps the assistant should follow go here.
 
 ## Managing them
 
-The **Skills** page in the sidebar:
+The **Skills** category of Settings:
 
 - **Upload**: pick a `SKILL.md`, or zip a skill folder (with `SKILL.md` at the root).
 - **Create**: fill in skill ID, name, description and instructions.

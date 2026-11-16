@@ -8,7 +8,7 @@ Connects stdio MCP servers and hands their tools to the main agent. Off by defau
 
 ## Setup
 
-The **MCP** page in the sidebar:
+The **MCP** category of Settings:
 
 1. Turn on the master switch.
 2. Add a server: name, command, arguments (one per line), optionally a working directory and a call timeout (default 30 seconds). Name and command are required.

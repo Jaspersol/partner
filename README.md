@@ -93,10 +93,10 @@ export PARTNER_LLM_PROTOCOL=openai   # optional: openai / anthropic
 
 - **Memory**: Click "Memory" in the sidebar → browse records, filter by tier, pin, delete, or write one by hand
 - **Schedules**: Click "Schedules" in the sidebar → choose cron, interval, or a one-off time → enter the sentence to send
-- **MCP**: Click "MCP" in the sidebar → turn on the master switch → add a server (name, command, arguments)
-- **Skills**: Click "Skills" in the sidebar → upload a `SKILL.md` (or a zipped skill folder), or create one in the app
+- **MCP**: Click "Settings" in the sidebar → "MCP" → turn on the master switch → add a server (name, command, arguments)
+- **Skills**: Click "Settings" in the sidebar → "Skills" → upload a `SKILL.md` (or a zipped skill folder), or create one in the app
 - **Memory Services**: Click "Memory Services" in the sidebar → add a service (name, port, protocol, exposed model name) → copy the token, which is shown once → enter `http://127.0.0.1:<port>/v1`, the token and the model name in the mod or plugin
-- **Agents**: Click "agent" in the sidebar to edit the prompts of the main agent and each sub-agent, and to give a sub-agent its own model
+- **Agents**: Click "Settings" in the sidebar → "Agent" to edit the prompts of the main agent and each sub-agent, and to give a sub-agent its own model
 
 > **Note**: With no model configured, nothing is lost. Messages from every source wait in the queue until a model is available.
 
