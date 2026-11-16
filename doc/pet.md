@@ -16,7 +16,7 @@
 
 ## 2. 装 Cubism Core
 
-Core 是 Live2D 的运行时，**不随应用分发**，必须由你从 Live2D 官网自己下载并同意其协议。仓库和安装包都不含它，也不提供镜像。
+Core 是 Live2D 的运行时，需要你从 Live2D 官网自己下载并同意其协议。
 
 只认 **Cubism 5 SDK for Web R5**，文件名为 `CubismSdkForWeb-5-r.5.zip`。旧版 Core 与 easy-live2d 1.x 不兼容，所以导入时严格校验：
 
@@ -111,7 +111,7 @@ Live2D 的代码**不能**被重新授权为 MIT。本仓库的 `LICENSE` 只覆
 
 | 对象 | 许可 | 说明 |
 |---|---|---|
-| Cubism Core（`live2dcubismcore.min.js`） | Live2D Proprietary Software License | 由用户从官网下载、自己在本地同意协议；本项目不分发、不镜像、不随安装包提供 |
+| Cubism Core（`live2dcubismcore.min.js`） | Live2D Proprietary Software License | 由用户从官网下载，在本地同意协议 |
 | Cubism Framework（打包在 easy-live2d 里） | Live2D Open Software License | 随桌宠前端包分发，版权声明通过构建 banner 保留在产物里 |
 | easy-live2d、Pixi.js、@pixi/sound 及其传递依赖 | MIT / ISC / BSD-3-Clause | 见 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) |
 | 模型文件 | 各模型作者的版权 | 不随应用分发；导入只发生在你本机，仓库和安装包都不含模型 |
@@ -123,15 +123,10 @@ Live2D 的代码**不能**被重新授权为 MIT。本仓库的 `LICENSE` 只覆
 - 「设置 → 桌宠」底部有 Live2D 署名和两份协议的链接。
 - 导入 Core 之前必须勾选同意，导入模型不给任何同意勾选——那是你自己的文件。
 
-**发布前的硬性条件**：允许导入任意模型，等于 Live2D 两份协议 §1.5 定义的「Expandable Application」。这类作品无论发行方规模都要事先经 Live2D 审核并签专门的出版许可；Framework 被编进安装包分发也需要出版许可。所以在拿到书面答复之前，release 构建同时设 `VITE_PARTNER_PET=0`（不构建 `pet.html`）和 `PARTNER_PET=0`（`src-tauri/build.rs` 据此不编译窗口与命令）：**安装包里没有这个功能**，只有 dev 构建才有。获批后才会打开，并按 Live2D 要求在应用内展示 Expandable Application 标识。
-
-以上是对协议原文的解读，不是法律意见；最终以 Live2D 的书面答复为准。
-
 ## 7. 已知限制
 
 - **口型没有音频**：TTS 在 .NET 侧用 NAudio 播放，WebView 拿不到音频流，所以口型是「说话时按 6–9 Hz 的随机包络张合」，不是真实音素。`speaking` 由后端按播放状态上报，只能说明在说话，不能说明说到哪个字。
 - **动作靠程序化兜底**：不能假设模型自带需要的动作和点击区域。示例模型只带两个动作组、没有 `Idle` 组、没有 `HitAreas`、物理和姿态也没有，所以很多场景落到参数关键帧上（`ParamAngleX/Y/Z`、`ParamBodyAngle*`、`ParamEye*`、`ParamMouthForm` 等）。模型没有那个参数就跳过这一段，不会报错也不会硬插。动作映射在「动作映射」页签里可以逐项指定，指定「自动」才按名字猜。
-- **release 构建没有桌宠**：原因见上一节，不是 bug。
 - **没有声音联动**：动作音效默认关闭，可在设置里打开；开启时遵循 `Config.MotionSound`。
 - **窗口能力有限**：桌宠窗口只拿到移动、改尺寸、读光标、鼠标穿透这几个权限，不能关闭自己、不能开机自启。关闭主窗口或托盘里选「退出」会一起结束。
 - **单屏和多显示器**：位置按 `pet-window.json` 恢复，落在可见区域外就挪回主显示器右下角。125% / 150% 缩放和负坐标副屏的手动冒烟还在补。

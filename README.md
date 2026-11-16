@@ -166,7 +166,7 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 
 ### Desktop pet
 
-- **Live2D character** — A transparent, always-on-top window that reacts to finished assistant replies by matching a keyword dictionary and playing fixed scenes; you choose to download the Cubism Core and the model yourself, and release builds ship without it until Live2D approves the Expandable Application review
+- **Live2D character** — A transparent, always-on-top window that reacts to finished assistant replies by matching a keyword dictionary and playing fixed scenes; you choose to download the Cubism Core and the model yourself
 
 ### System & Platform
 

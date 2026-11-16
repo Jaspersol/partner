@@ -18,7 +18,7 @@ if (!existsSync(dist)) {
   process.exit(1)
 }
 
-/** The pet is compiled out of a distributed build, so its absence is a pass, not a failure. */
+/** A build can set `VITE_PARTNER_PET=0` to leave the pet out, so its absence is a pass, not a failure. */
 const petEnabled = process.env.VITE_PARTNER_PET !== '0'
 
 const assets = join(dist, 'assets')

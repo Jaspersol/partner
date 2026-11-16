@@ -16,7 +16,7 @@ A Live2D character that sits on the desktop. It takes no part in the conversatio
 
 ## 2. Installing the Cubism Core
 
-The Core is Live2D's runtime and is **not distributed with the app**. You download it from Live2D's own site and accept their agreement there. Neither the repository nor the installer carries it, and no mirror is offered.
+The Core is Live2D's runtime. You download it from Live2D's own site and accept their agreement there.
 
 Only **Cubism 5 SDK for Web R5** works, as the file `CubismSdkForWeb-5-r.5.zip`. Older Cores are incompatible with easy-live2d 1.x, so the import is strict:
 
@@ -111,7 +111,7 @@ Live2D's code **cannot** be relicensed as MIT. This repository's `LICENSE` cover
 
 | Object | Licence | Notes |
 |---|---|---|
-| Cubism Core (`live2dcubismcore.min.js`) | Live2D Proprietary Software License | The user downloads it from Live2D and accepts the agreement locally; this project does not distribute, mirror or bundle it |
+| Cubism Core (`live2dcubismcore.min.js`) | Live2D Proprietary Software License | The user downloads it from Live2D and accepts the agreement locally |
 | Cubism Framework (bundled inside easy-live2d) | Live2D Open Software License | Ships inside the pet frontend bundle; the copyright notice is preserved in the built chunk by a build banner |
 | easy-live2d, Pixi.js, @pixi/sound and their transitive dependencies | MIT / ISC / BSD-3-Clause | See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) |
 | Model files | Copyright of each model's author | Not distributed; importing happens on your machine, and neither the repository nor the installer carries a model |
@@ -123,15 +123,10 @@ What we do about it:
 - Settings → Desktop pet ends with the Live2D attribution and links to both agreements.
 - Importing the Core requires ticking the agreement first; importing a model does not, because that file is yours.
 
-**A hard condition before release**: accepting arbitrary models makes this an "Expandable Application" as §1.5 of both Live2D agreements defines it. That category needs Live2D's prior review and a dedicated publication licence regardless of the publisher's size, and shipping the Framework inside the installer needs one as well. Until a written answer arrives, the release build sets both `VITE_PARTNER_PET=0` (no `pet.html` is emitted) and `PARTNER_PET=0` (`src-tauri/build.rs` then compiles the window and its commands out): **the installer does not have this feature**, only dev builds do. After approval it turns on, and the in-app Expandable Application marking Live2D requires gets added.
-
-The above is a reading of the agreements, not legal advice; Live2D's written answer decides.
-
 ## 7. Known limits
 
 - **The mouth has no audio** — TTS plays through NAudio on the .NET side and the WebView never sees the stream, so lip-sync is a 6–9 Hz random envelope while `speaking` is true, not real phonemes. The backend reports speaking state from playback; that says it is talking, not which syllable.
 - **Actions fall back to procedural tracks** — you cannot assume a model carries the motions or hit areas a scene wants. The sample model ships two motion groups, no `Idle` group, no `HitAreas`, and no physics or pose, so most scenes land on parameter keyframes (`ParamAngleX/Y/Z`, `ParamBodyAngle*`, `ParamEye*`, `ParamMouthForm`, …). A parameter the model lacks is skipped rather than forced, and no error is raised. The Action mapping tab lets you pin each entry; leaving it on "auto" is what makes it guess by name.
-- **Release builds have no pet** — see the previous section; that is the licence gate, not a bug.
 - **Sound is opt-in** — motion sound is off by default; when on it follows `Config.MotionSound`.
 - **The window has little power** — it may move, resize, read the cursor and toggle click-through. It cannot close itself or start with Windows. Closing the main window, or Quit in the tray, ends it too.
 - **One screen at a time** — position restores from `pet-window.json`, and a position outside every visible area is moved to the main display's bottom right. Manual smoke at 125% / 150% scaling and on a secondary monitor with negative coordinates is still outstanding.

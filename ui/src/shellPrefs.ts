@@ -48,9 +48,9 @@ export async function getPetEnabled(): Promise<boolean> {
 }
 
 /**
- * Whether this shell was built with the pet. A distributed build compiles the pet commands out for licensing
- * reasons and says so through the injected `__PARTNER_PET__` flag. Outside the shell the answer is yes: the Core
- * and model controls go through the API, so the section still has something real to show.
+ * Whether this shell was built with the pet. A build that sets `PARTNER_PET=0` compiles the pet commands out and
+ * says so through the injected `__PARTNER_PET__` flag. Outside the shell the answer is yes: the Core and model
+ * controls go through the API, so the section still has something real to show.
  */
 export function petSupported(): boolean {
   const flag = Reflect.get(window, '__PARTNER_PET__')

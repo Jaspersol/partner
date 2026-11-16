@@ -1,8 +1,7 @@
 fn main() {
-    // The desktop pet is compiled out of distributed builds until Live2D answers the Expandable Application
-    // review: the pet bundle carries their Cubism Framework, and shipping it needs a publication licence this
-    // project does not hold yet. The release workflow sets `PARTNER_PET=0`; a development build (no variable)
-    // includes it, which is what `tauri dev` relies on.
+    // Whether the desktop pet is compiled in. On by default, which is what `tauri dev` relies on and what the
+    // installer ships; `PARTNER_PET=0` takes the window and its commands out of a shell, for building one that
+    // renders no Live2D at all.
     //
     // This is a build-script cfg rather than a cargo feature on purpose. `tauri dev` builds with
     // `--no-default-features --features <the manifest's default list minus custom-protocol>`, so every feature in

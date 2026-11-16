@@ -217,7 +217,7 @@ fn set_tray_enabled(
 }
 
 // The desktop pet: a second, transparent webview that renders a Live2D model. Everything in this block is behind
-// `cfg(partner_pet)` (see build.rs), because shipping the Live2D runtime needs a Live2D publication licence.
+// `cfg(partner_pet)` (see build.rs), which is on unless a build sets `PARTNER_PET=0`.
 
 /// The pet window's label, and the key every lookup and event filter uses.
 #[cfg(partner_pet)]

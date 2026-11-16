@@ -4,8 +4,8 @@ import vue from '@vitejs/plugin-vue'
 import { LIVE2D_BANNER } from './src/pet/licence'
 
 /**
- * `VITE_PARTNER_PET=0` builds the shell alone: the Live2D runtime is behind a licence gate, and a build that
- * excludes it must not so much as emit `pet.html`.
+ * `VITE_PARTNER_PET=0` builds the shell alone, without the Live2D page: a build that excludes the runtime must not
+ * so much as emit `pet.html`.
  */
 const petEnabled = process.env.VITE_PARTNER_PET !== '0'
 
