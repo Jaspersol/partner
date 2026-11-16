@@ -1340,6 +1340,12 @@ internal static class Program
                 var px = (int)Math.Round((centreX - mapped.ScreenRect.X) * mapped.PictureWidth / (double)mapped.ScreenRect.Width);
                 var py = (int)Math.Round((centreY - mapped.ScreenRect.Y) * mapped.PictureHeight / (double)mapped.ScreenRect.Height);
 
+                // What the server is expected to answer: the window centre pushed through the same mapping the
+                // tool uses. Comparing against the unrounded centre instead would turn a one-pixel rounding
+                // difference into a red build — a full-desktop picture is downscaled, and the round trip lands
+                // on the neighbour pixel as often as not.
+                var expected = DesktopActTool.MapPicturePoint(mapped, px, py);
+
                 var actTool = new DesktopActTool(
                     scopeAutomation, DesktopToolPolicy.Any, new FileMediaStore(workspace));
                 var resolved = await actTool.InvokeAsync(
@@ -1351,8 +1357,8 @@ internal static class Program
                 // (foreground lockup, overlapping windows, policy), so that part is not pinned.
                 Check("desktop: px/py on the desktop picture resolves to the point it was taken from",
                     !resolved.Ok
-                    && resolved.Content.Contains($"({centreX},{centreY})", StringComparison.Ordinal),
-                    $"expected=({centreX},{centreY}) ok={resolved.Ok} "
+                    && resolved.Content.Contains($"({expected.X},{expected.Y})", StringComparison.Ordinal),
+                    $"expected=({expected.X},{expected.Y}) ok={resolved.Ok} "
                         + resolved.Content[..Math.Min(100, resolved.Content.Length)]);
             }
             else
@@ -2412,9 +2418,14 @@ internal static class Program
                     Path.Combine(leaseWorkspace, "settings", "runtime.json"),
                     """{"model":{"supportsImages":true},"desktop":{"enabled":true,"leaseTtlMs":1500,"allowedWindowTitles":[]}}""");
 
+                // The target is a window this run owns, deliberately left in the background: the keystroke it
+                // aims at has to be refused, and which window happens to sit behind the front one is a property
+                // of the machine. A CI runner with a single window has no background window at all.
+                using var leaseWindow = OwnedWindow.Create(LeaseProbeTitle, showWithoutActivating: true);
+
                 var leasePort = FreePort();
                 var leaseToken = TokenAuth.Generate();
-                var leaseLlm = new ObserveThenActLlm();
+                var leaseLlm = new ObserveThenActLlm(LeaseProbeTitle);
 
                 var (leaseApp, leaseContext, leaseConsumer, leaseVoice, _, _) =
                     await ApiHost.BuildAsync(leaseWorkspace, leasePort, leaseToken, clock, new DesktopAgentShim(leaseLlm));
@@ -2630,7 +2641,9 @@ internal static class Program
                     Path.Combine(grantWorkspace, "settings", "runtime.json"),
                     """{"model":{"supportsImages":false},"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
 
-                var grantConsumerLlm = new LeaseThenActLlm();
+                using var grantWindow = OwnedWindow.Create(GrantProbeTitle, showWithoutActivating: true);
+
+                var grantConsumerLlm = new LeaseThenActLlm(GrantProbeTitle);
                 var grantPort = FreePort();
                 var grantToken = TokenAuth.Generate();
                 var grantClock = new OffsetClock(new DateTimeOffset(2026, 9, 27, 9, 30, 0, TimeSpan.Zero));
@@ -2672,7 +2685,7 @@ internal static class Program
 
                     Check("desktop: an approved action opens a continuing grant on its window",
                         granted && shownLease is not null
-                        && shownLease.EntityId == PickTargetOf(grantConsumerLlm.Requests)
+                        && shownLease.EntityId == PickTargetOf(grantConsumerLlm.Requests, GrantProbeTitle)
                         && shownLease.RemainingSteps == Api.Settings.TaskLeaseStore.DefaultSteps,
                         shownLease is null ? "no lease was minted" : $"entity={shownLease.EntityId} steps={shownLease.RemainingSteps}");
 
@@ -3593,6 +3606,16 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Titles of the windows the lease checks own. Two distinct markers, because the two scenarios run one
+    /// after the other and a shared marker would let one scripted model aim at the other's window.
+    /// <para>A prefix of its own, not "Partner smoke": the minimized-window checks find their probe by the
+    /// text "Partner smoke", so a window sharing it would be picked up as their probe and minimized instead.</para>
+    /// </summary>
+    private const string LeaseProbeTitle = "Partner lease probe — smoke";
+
+    private const string GrantProbeTitle = "Partner grant probe — smoke";
+
     private static class WindowProbe
     {
         [DllImport("user32.dll")]
@@ -3638,6 +3661,9 @@ internal static class Program
 
         [DllImport("user32.dll")]
         private static extern bool PostMessage(nint handle, uint message, nint wParam, nint lParam);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(nint handle, int command);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetModuleHandleW")]
         private static extern nint GetModuleHandleW(string? module);
@@ -3703,7 +3729,13 @@ internal static class Program
         /// A visible, ordinary, titled window: big enough that Windows gives it a real placement rather than
         /// the 160×28 taskbar stub, and empty so there is nothing to look at.
         /// </summary>
-        public static OwnedWindow Create(string title)
+        /// <param name="showWithoutActivating">
+        /// True to show the window without ever bringing it to the front. A window created with WS_VISIBLE on the
+        /// active desktop is normally placed in front, which would make the probe the foreground window — the one
+        /// thing the lease checks must not aim at. Shown without activation it is on screen, on the z-order behind
+        /// whatever the user has in front, and never takes the focus away from them.
+        /// </param>
+        public static OwnedWindow Create(string title, bool showWithoutActivating = false)
         {
             var window = new OwnedWindow();
             nint handle = 0;
@@ -3728,14 +3760,33 @@ internal static class Program
                     return;
                 }
 
-                // WS_OVERLAPPEDWINDOW | WS_VISIBLE.
-                const uint style = 0x00CF0000 | 0x10000000;
-                handle = CreateWindowExW(0, ClassName, title, style, 120, 120, 480, 240, 0, 0, instance, 0);
+                // WS_OVERLAPPEDWINDOW | WS_VISIBLE, minus WS_VISIBLE when the caller shows it itself: a window
+                // created visible is activated, and the remaining steps cannot undo that.
+                var style = showWithoutActivating ? 0x00CF0000u : 0x00CF0000u | 0x10000000u;
+                handle = CreateWindowExW(
+                    0,
+                    ClassName,
+                    title,
+                    style,
+                    120,
+                    120,
+                    480,
+                    240,
+                    0,
+                    0,
+                    instance,
+                    0);
                 if (handle == 0)
                 {
                     failure = $"CreateWindowExW failed (win32 {GetLastError()})";
                     window._ready.Set();
                     return;
+                }
+
+                if (showWithoutActivating)
+                {
+                    // SW_SHOWNOACTIVATE: on screen, at its size and position, without taking the focus.
+                    ShowWindow(handle, 4);
                 }
 
                 window._ready.Set();
@@ -4139,7 +4190,7 @@ internal static class Program
     /// so a fixed script cannot name one. It picks a window that is *not* in front, which makes the keystroke a
     /// refusal the guards produce — the test never types into the user's desktop.
     /// </summary>
-    private sealed class ObserveThenActLlm : ILlmClient
+    private sealed class ObserveThenActLlm(string targetTitle) : ILlmClient
     {
         private readonly List<LlmRequest> _requests = new();
 
@@ -4148,8 +4199,8 @@ internal static class Program
         /// <summary>
         /// The ReAct shape, driven by what is already in the conversation: look, act on what was seen, then
         /// answer. The entity id of a real window is machine-specific, so a fixed script cannot name one — and
-        /// the target is chosen to be a window that is *not* in front, which makes the keystroke a refusal the
-        /// guards produce rather than something typed into the user's desktop.
+        /// the target is a window this run created and deliberately left in the background, which makes the
+        /// keystroke a refusal the guards produce rather than something typed into the user's desktop.
         /// </summary>
         public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
         {
@@ -4194,18 +4245,28 @@ internal static class Program
         }
 
         /// <summary>The centre of the picked window, in screen coordinates, as desktop_observe reports them.</summary>
-        private (int X, int Y) PickCentre() => PickCentreOf(_requests);
+        private (int X, int Y) PickCentre() => PickCentreOf(_requests, targetTitle);
 
-        /// <summary>The window the observation listed, preferring one that is not foreground.</summary>
-        private string PickTarget() => PickTargetOf(_requests);
+        /// <summary>The window this run owns, which the observation lists and which is not in front.</summary>
+        private string PickTarget() => PickTargetOf(_requests, targetTitle);
 
         public Task<LlmResponse> StreamAsync(LlmRequest request, Action<string> onText, CancellationToken ct = default) =>
             CompleteAsync(request, ct);
     }
 
-    /// <summary>The window the observation listed, preferring one that is not foreground: the entity id of a
-    /// real window is machine-specific, so any scripted model has to read what it just observed.</summary>
-    private static string PickTargetOf(IEnumerable<LlmRequest> requests)
+    /// <summary>
+    /// The window a scripted model acts on: the one this run created, matched by <paramref name="titleMarker"/>.
+    /// <para>
+    /// The entity id of a real window is machine-specific, so any scripted model has to read what it just
+    /// observed — but reading "whichever window happens to be in the background" makes the result a property of
+    /// the machine rather than of the code. A CI runner with a single window has no background window at all, and
+    /// the old fallback to the first entity then named the window in front: a keystroke aimed there is injected
+    /// into the reader's own desktop instead of being refused, which is the opposite of what these checks exist
+    /// to prove. The window is therefore one this run owns — and when even that is not in the observation, the
+    /// answer is an id that cannot resolve, so the action is refused rather than delivered to a stranger.
+    /// </para>
+    /// </summary>
+    private static string PickTargetOf(IEnumerable<LlmRequest> requests, string? titleMarker = null)
     {
         var observed = requests
             .SelectMany(request => request.Messages)
@@ -4233,6 +4294,20 @@ internal static class Program
             return "1";
         }
 
+        if (titleMarker is not null)
+        {
+            var owned = entities.FirstOrDefault(entity =>
+                entity.TryGetProperty("title", out var title)
+                && (title.GetString() ?? string.Empty).Contains(titleMarker, StringComparison.Ordinal));
+
+            // Only the owned window, ever. Falling back to whichever window is behind the front one would make
+            // the check pass about a stranger's window; an id that resolves to nothing is refused instead, which
+            // is visible as a failure rather than as a false pass.
+            return owned.ValueKind == JsonValueKind.Undefined
+                ? "1"
+                : owned.GetProperty("entityId").GetString() ?? "1";
+        }
+
         var background = entities.FirstOrDefault(entity =>
             !entity.TryGetProperty("foreground", out var flag) || !flag.GetBoolean());
 
@@ -4241,9 +4316,9 @@ internal static class Program
     }
 
     /// <summary>The centre of the picked window, in screen coordinates, as desktop_observe reports them.</summary>
-    private static (int X, int Y) PickCentreOf(IEnumerable<LlmRequest> requests)
+    private static (int X, int Y) PickCentreOf(IEnumerable<LlmRequest> requests, string? titleMarker = null)
     {
-        var target = PickTargetOf(requests);
+        var target = PickTargetOf(requests, titleMarker);
         var observed = requests
             .SelectMany(request => request.Messages)
             .Where(message => message.Role == "tool" && message.Content is not null)
@@ -4272,12 +4347,13 @@ internal static class Program
     /// <summary>
     /// A model whose script is: act, act again on the same window, then try to leave the GUI. The point of
     /// the shape is the second act — a human approved the first, and the <see cref="TaskLeaseStore"/> is
-    /// what decides whether the third parks again or runs. Nothing here presses anything: keystrokes at a
-    /// background window are refusals the guards produce before any input is injected.
+    /// what decides whether the third parks again or runs. Nothing here presses anything: keystrokes at the
+    /// window this run owns, which it deliberately leaves in the background, are refusals the guards produce
+    /// before any input is injected.
     /// <para>The third act is <c>desktop_exec</c>, which cannot ride the grant — approvals are forked by
     /// what leaves the GUI, never by what stays inside a window.</para>
     /// </summary>
-    private sealed class LeaseThenActLlm : ILlmClient
+    private sealed class LeaseThenActLlm(string targetTitle) : ILlmClient
     {
         private readonly List<LlmRequest> _requests = new();
 
@@ -4297,13 +4373,13 @@ internal static class Program
                     "tool_calls"),
                 1 => new LlmResponse(
                     null,
-                    new[] { new LlmToolCall("c2", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
+                    new[] { new LlmToolCall("c2", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
                     "tool_calls"),
                 // ■ The lease probe: same window, same kind. Approved once above, so this runs without
                 // approval — that is exactly what the check reads back from the server state.
                 2 => new LlmResponse(
                     null,
-                    new[] { new LlmToolCall("c3", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
+                    new[] { new LlmToolCall("c3", "desktop_act", $"{{ \"entityId\": \"{PickTargetOf(_requests, targetTitle)}\", \"kind\": \"KeyPress\", \"virtualKey\": 67 }}") },
                     "tool_calls"),
                 // What a grant must never cover: a command that leaves the GUI asks every time.
                 3 => new LlmResponse(
