@@ -363,7 +363,10 @@ public sealed partial class ViewEndpointsTests : ApiFixture
 
         var loaded = new SettingsStore(path).Load();
 
-        Assert.Equal(RuntimeSettings.Default, loaded);
+        // The store publishes a frozen copy of what it read, and record equality ties every collection to the
+        // instance it came from — so the defaults never compare equal to their frozen copy. Compare the document
+        // instead: a corrupt file has to read exactly like the defaults and nothing else.
+        Assert.Equal(JsonSerializer.Serialize(RuntimeSettings.Default), JsonSerializer.Serialize(loaded));
     }
 
 

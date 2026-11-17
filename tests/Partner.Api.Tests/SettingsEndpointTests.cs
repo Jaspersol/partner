@@ -529,11 +529,13 @@ public sealed class SettingsEndpointTests : ApiFixture
 
         await _http.PostAsJsonAsync("/api/input", new { source = "text", payload = "one" });
 
+        // 15s, not the default 5s: the turn has to survive the reconfigure and then fail against a closed port,
+        // and `dotnet test` runs every assembly at once. The 5s budget ran out in CI with nothing else wrong.
         var handled = await Eventually.IsTrueAsync(async () =>
         {
             var state = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
             return state.GetProperty("stats").GetProperty("handled").GetInt32() == 1;
-        });
+        }, attempts: 600);
         Assert.True(handled, "the first item was never handled");
 
         // A restart would reset the counters; editing the voice section must not interrupt a turn in flight.

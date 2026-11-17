@@ -440,7 +440,9 @@ public sealed class ServiceProxyTests : ApiFixture
         using var client = ServiceClient(port, token);
 
         // The state the validator would have refused, reached the way the finding describes: a hand-edited file.
-        // Save() validates, so the JSON is written directly and the running host is reconciled by hand.
+        // Save() validates, so the JSON is written directly and the running host is reconciled by hand —
+        // Reload(), not Load(): the store caches a published snapshot, so only an explicit reload brings a
+        // hand-edited file into the process.
         var path = _context.Settings.Path;
         var document = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
         document["model"] = new JsonObject
@@ -455,7 +457,7 @@ public sealed class ServiceProxyTests : ApiFixture
         await File.WriteAllTextAsync(path, document.ToJsonString());
 
         var host = _app.Services.GetRequiredService<Partner.Api.Services.ServiceHost>();
-        await host.ReconcileAsync(new Partner.Api.Settings.ServicesSettings(), _context.Settings.Load().Services, default);
+        await host.ReconcileAsync(new Partner.Api.Settings.ServicesSettings(), _context.Settings.Reload().Services, default);
 
         var response = await client.PostAsJsonAsync("/v1/chat/completions",
             new { model = "exposed-model", messages = new[] { new { role = "user", content = "hi" } } });
