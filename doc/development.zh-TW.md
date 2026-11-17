@@ -46,6 +46,47 @@ node scripts/e2e-shell.mjs                                # 殼 e2e，需要桌�
 cargo build --manifest-path src-tauri/Cargo.toml          # 只編譯殼
 ```
 
+## 前端依賴稽核與 Live2D 修補
+
+2026-11-17 依更新後的鎖定檔執行 `npm audit`：5 項 moderate，皆為開發依賴鏈；`npm audit --omit=dev` 為 0。先前記錄為 11 項（8 moderate、3 critical）；稽核結果隨資料庫變化，不代表安裝包已證實存在生產環境 RCE。前端開發與 CI 使用 Node 22.12 及以上的 22.x，或 Vitest 5 支援的其他 Node 版本（`^24.0.0 || >=26.0.0`）。
+
+| 依賴鏈 | 處置與剩餘風險 |
+|---|---|
+| `vitest` / `@vitest/mocker` / `tinypool` | 升至 Vitest 與 mocker 5.1.0，新的 Vitest 不再依賴 Tinypool，鎖定檔不再回報先前的 [mock 路徑遍歷](https://github.com/advisories/GHSA-82fw-gwwq-j7x9)、[mock 注入](https://github.com/advisories/GHSA-qxg6-89mg-rqv8)、Tinypool [原型污染](https://github.com/advisories/GHSA-5gmw-xhrv-c9v3)與[選項注入](https://github.com/advisories/GHSA-85c8-ppgw-ccpr)。仍只執行可信儲存庫程式碼，不向不可信網路暴露測試服務。 |
+| `happy-dom` | 升至 21.0.4，鎖定檔不再回報先前的 [VM 逃脫](https://github.com/advisories/GHSA-37j7-fg3j-429f)、[跨來源憑證](https://github.com/advisories/GHSA-w4gp-fjgq-3q4g)、[腳本注入](https://github.com/advisories/GHSA-6q6h-j7hj-3r64)、[SSRF](https://github.com/advisories/GHSA-c8p4-j97h-3vg8)與 [cookie 作用範圍偽造](https://github.com/advisories/GHSA-5fpq-26gf-qwcr)。測試環境仍不是不可信 HTML 或腳本的安全沙箱。 |
+| `vue-tsc` → `@vue/language-core` → `minimatch` | 升至 vue-tsc / language-core 3.3.14，鎖定檔中該鏈不再回報 [minimatch DoS](https://github.com/advisories/GHSA-g3hv-75wg-m249)。 |
+| `@vue/test-utils` 2.6.0 → `js-beautify` 2.0.3 → `editorconfig` 3.0.2 / `glob` 13.0.7 → `minimatch` 10.2.6 | 剩餘 5 項 moderate 是這條鏈及其受影響套件：[minimatch DoS](https://github.com/advisories/GHSA-g3hv-75wg-m249)、[glob 取消遍歷](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)。上游目前版本仍依賴受影響的範圍；不強制覆寫跨主版本的傳遞依賴，避免破壞工具契約。僅在可信工作樹執行，避免不可信的 glob 輸入；後續追蹤 test-utils、js-beautify、editorconfig 與 glob 的相容修正，更新鎖定檔後重跑稽核與測試。 |
+
+升級後的行為相容性仍須通過乾淨的 `npm ci`、型別檢查、前端測試與建置驗證；不要用 `npm audit fix --force` 強行跨主版本。
+
+`easy-live2d` 固定 1.1.0，由 `patch-package --error-on-fail` 套用 `ui/patches/easy-live2d+1.1.0.patch`，不能改用執行階段 monkeypatch。已向上游提交物理前鉤子建議：[Panzer-Jack/easy-live2d#55](https://github.com/Panzer-Jack/easy-live2d/issues/55)；上游尚未合併等價實作。建議的回呼在 motion / expression / effects 之後、pose / physics 之前，提供逐幀參數讀寫與 motion 狀態，支援載入前註冊及傳 null 註銷。
+
+升級該程式庫時檢查 ESM、CJS 與兩套型別宣告的修補；乾淨的 `npm ci` 必須成功套用修補，再執行型別檢查、前端測試、建置及真實物理鏈模型驗證，確認程序化疊加仍在 effects 後、physics 前並驅動物理。只有正式版本提供等價介面並遷移呼叫後，才刪除修補及不再需要的 `patch-package`。
+
+## 工作階段投影基準
+
+`tools/SessionProjectionBenchmark` 產生確定性的 UTF-8 工作階段日誌，並分別量測開啟、首次投影、附加後的投影與行程峰值工作集。每次量測會附加一筆記錄，必須從同一原始資料集複製新目錄，在獨立行程中執行；分別記錄 10 萬與 100 萬筆，重複多次並註明機器、執行階段、磁碟與快取條件。不要在真實使用者工作區執行。
+
+```bash
+dotnet run -c Release --project tools/SessionProjectionBenchmark -- generate /tmp/partner-bench-100k 100000
+dotnet run -c Release --project tools/SessionProjectionBenchmark -- generate /tmp/partner-bench-1m 1000000
+cp -R /tmp/partner-bench-100k /tmp/partner-bench-run
+dotnet run -c Release --project tools/SessionProjectionBenchmark -- measure /tmp/partner-bench-run
+```
+
+比較修改前後時，將同一基準工具複製到基線工作樹，在兩個工作樹中分別執行，並各自使用原始資料集的新副本。啟動耗時包含日誌修復檢查與索引重建，峰值是整個量測行程的工作集，不是單一階段的配置量。
+
+本輪量測（時間單位 ms；峰值為位元組）：
+
+| 版本 | 初始事件數 | 開啟 | 首次投影 | 附加後投影 | 峰值工作集 |
+|---|---:|---:|---:|---:|---:|
+| 最佳化前 | 100000 | 210.95 | 243.22 | 33.71 | 104202240 |
+| 最佳化後 | 100000 | 278.86 | 264.83 | 0.76 | 85458944 |
+| 最佳化前 | 1000000 | 1240.16 | 1182.26 | 250.34 | 532164608 |
+| 最佳化後 | 1000000 | 1173.75 | 1304.74 | 0.67 | 413970432 |
+
+量測環境與產生資料的初始事件數相同，但這些是單次取樣，仍需重複量測以評估波動。結果顯示附加後投影耗時與峰值工作集下降，首次投影耗時上升；開啟耗時在兩個規模下變化方向不同。一般附加會增量建構不可變分塊視圖；編輯、撤回或潛在前向引用仍完整重放，物理刪除重建快取。
+
 ## 只起 API
 
 ```bash
