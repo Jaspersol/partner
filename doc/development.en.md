@@ -46,6 +46,47 @@ node scripts/e2e-shell.mjs                                # shell e2e; needs a d
 cargo build --manifest-path src-tauri/Cargo.toml          # shell only
 ```
 
+## Frontend dependency audit and the Live2D patch
+
+On 2026-11-17 `npm audit` ran against the updated lockfile: 5 moderate findings, all in development dependency chains, and `npm audit --omit=dev` reported 0. The previous record was 11 (8 moderate, 3 critical); audit results follow the advisory database and do not prove the installer has a production RCE. Frontend development and CI use Node 22.12 or later 22.x, or another Node version Vitest 5 supports (`^24.0.0 || >=26.0.0`).
+
+| Dependency chain | Action and residual risk |
+|---|---|
+| `vitest` / `@vitest/mocker` / `tinypool` | Upgraded to Vitest and mocker 5.1.0; the new Vitest no longer depends on Tinypool, and the lockfile no longer reports the earlier [mock path traversal](https://github.com/advisories/GHSA-82fw-gwwq-j7x9), [mock injection](https://github.com/advisories/GHSA-qxg6-89mg-rqv8), Tinypool [prototype pollution](https://github.com/advisories/GHSA-5gmw-xhrv-c9v3) and [option injection](https://github.com/advisories/GHSA-85c8-ppgw-ccpr). We still only run trusted repository code and never expose the test server to untrusted networks. |
+| `happy-dom` | Upgraded to 21.0.4; the lockfile no longer reports the earlier [VM escape](https://github.com/advisories/GHSA-37j7-fg3j-429f), [cross-origin credentials](https://github.com/advisories/GHSA-w4gp-fjgq-3q4g), [script injection](https://github.com/advisories/GHSA-6q6h-j7hj-3r64), [SSRF](https://github.com/advisories/GHSA-c8p4-j97h-3vg8) and [cookie scope forgery](https://github.com/advisories/GHSA-5fpq-26gf-qwcr). The test environment is still not a safe sandbox for untrusted HTML or scripts. |
+| `vue-tsc` → `@vue/language-core` → `minimatch` | Upgraded to vue-tsc / language-core 3.3.14; that chain no longer reports the [minimatch DoS](https://github.com/advisories/GHSA-g3hv-75wg-m249) in the lockfile. |
+| `@vue/test-utils` 2.6.0 → `js-beautify` 2.0.3 → `editorconfig` 3.0.2 / `glob` 13.0.7 → `minimatch` 10.2.6 | The remaining 5 moderate findings are this chain and the packages it touches: [minimatch DoS](https://github.com/advisories/GHSA-g3hv-75wg-m249), [glob traversal cancellation](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4). Current upstream versions still depend on the affected ranges; we do not force overrides of transitive dependencies across majors, which would break tool contracts. Run only in trusted working trees and avoid untrusted glob input; keep tracking compatible fixes in test-utils, js-beautify, editorconfig and glob, and re-run the audit and tests after updating the lockfile. |
+
+Behavioural compatibility after the upgrade still has to be verified with a clean `npm ci`, the type check, the frontend tests and a build; do not use `npm audit fix --force` to force a cross-major upgrade.
+
+`easy-live2d` is pinned at 1.1.0 and patched by `patch-package --error-on-fail`, which applies `ui/patches/easy-live2d+1.1.0.patch`; do not replace it with a runtime monkeypatch. A pre-physics hook has been suggested upstream: [Panzer-Jack/easy-live2d#55](https://github.com/Panzer-Jack/easy-live2d/issues/55); upstream has not merged an equivalent implementation. The suggested callback runs after motion / expression / effects and before pose / physics, exposes per-frame parameter reads and writes plus motion state, and supports registration before load and passing null to unregister.
+
+When upgrading that library, check the patch for ESM, CJS and both sets of type declarations; a clean `npm ci` must apply the patch, then run the type check, the frontend tests, a build and verification with a real physics-chain model to confirm programmatic layering is still after effects and before physics and actually drives physics. Only remove the patch and the now-unneeded `patch-package` once a released version offers an equivalent interface and the callers have migrated to it.
+
+## Session projection benchmark
+
+`tools/SessionProjectionBenchmark` generates a deterministic UTF-8 session log and measures open, first projection, projection after append and the process peak working set separately. Each measurement appends one record, so copy a fresh directory from the same original dataset and run it in its own process; record 100k and 1M separately, repeat several times and note the machine, runtime, disk and cache conditions. Do not run it in a real user workspace.
+
+```bash
+dotnet run -c Release --project tools/SessionProjectionBenchmark -- generate /tmp/partner-bench-100k 100000
+dotnet run -c Release --project tools/SessionProjectionBenchmark -- generate /tmp/partner-bench-1m 1000000
+cp -R /tmp/partner-bench-100k /tmp/partner-bench-run
+dotnet run -c Release --project tools/SessionProjectionBenchmark -- measure /tmp/partner-bench-run
+```
+
+When comparing before and after a change, copy the same benchmark tool into the baseline tree, run it in both trees, and give each run a fresh copy of the original dataset. Open time includes the log repair check and the index rebuild; the peak is the working set of the whole measurement process, not the allocations of a single phase.
+
+Measurements this round (times in ms; peak in bytes):
+
+| Version | Initial events | Open | First projection | Projection after append | Peak working set |
+|---|---:|---:|---:|---:|---:|
+| Before | 100000 | 210.95 | 243.22 | 33.71 | 104202240 |
+| After | 100000 | 278.86 | 264.83 | 0.76 | 85458944 |
+| Before | 1000000 | 1240.16 | 1182.26 | 250.34 | 532164608 |
+| After | 1000000 | 1173.75 | 1304.74 | 0.67 | 413970432 |
+
+The measuring environment and the initial event counts of the generated data were the same, but these are single samples and still need repeating to assess variance. The results show the projection after append and the peak working set going down, the first-projection time going up, and open time moving in different directions at the two sizes. An ordinary append builds the immutable chunk view incrementally; edits, retractions or potential forward references still replay in full, and physical deletion rebuilds the cache.
+
 ## API only
 
 ```bash
