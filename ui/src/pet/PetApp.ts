@@ -126,15 +126,14 @@ class SpriteRuntime implements ActionRuntime {
     // falls through to its procedural track only when this reports the motion was not playable.
     if (!this.motionGroups.has(group)) return false
     try {
-      await this.sprite.startMotion({ group, no, priority })
-      return true
+      // A refusal is not an exception: a motion at the same or a higher priority still playing, or a sprite whose
+      // model is still loading, answers -1 (`InvalidMotionQueueEntryHandleValue`), and the motion never plays. A
+      // started motion's handle is its queue entry object, not a number.
+      const handle: unknown = await this.sprite.startMotion({ group, no, priority })
+      return handle !== -1 && handle !== null && handle !== undefined
     } catch {
       return false
     }
-  }
-
-  setParameter(id: string, value: number, weight?: number): void {
-    this.sprite.setParameterValueById(id, value, weight ?? 1)
   }
 
   parameterRange(id: string): { min: number; max: number } | null {
@@ -417,9 +416,13 @@ class PetApp {
       },
       this.directorSettings(),
     )
+    // The layer writes inside the model's own update, between its effects and its physics, so the procedural
+    // offsets drive physics outputs (hair, smoothed `*2` chains) too. See `ui/patches/easy-live2d+1.1.0.patch`.
+    sprite.onBeforePhysics((parameters) => this.actions?.apply(parameters))
 
     // One ticker callback drives the tracks and then the director, in that order: a scene the director starts this
-    // frame may add a track, but nothing the tracks wrote this frame is discarded.
+    // frame may add a track, but nothing the tracks composed this frame is discarded. The ticker runs before the
+    // render, which is where the model updates and the composed frame is applied.
     this.tickHandler = (ticker: Ticker) => {
       this.actions?.tick(ticker.deltaMS / 1000)
       this.director?.update(performance.now())

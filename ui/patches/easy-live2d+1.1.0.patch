@@ -1,0 +1,224 @@
+diff --git a/node_modules/easy-live2d/dist/index.cjs b/node_modules/easy-live2d/dist/index.cjs
+index 0b6ac15..718b8a7 100644
+--- a/node_modules/easy-live2d/dist/index.cjs
++++ b/node_modules/easy-live2d/dist/index.cjs
+@@ -16932,6 +16932,20 @@ var Live2DModel = class extends CubismUserModel {
+    * 统一应用，确保用户设定值优先级最高且跨帧持久有效。
+    */
+   _parameterOverrides = new ParameterOverrideMap();
++  /**
++   * 每帧在 motion / expression / effects（眨眼、呼吸、口型）之后、pose / physics 之前调用的钩子。
++   * 钩子里写入的参数是物理的输入，且不跨帧保留（下一帧 loadParameters 会还原）。
++   */
++  _beforePhysics = null;
++  _frameParameters = {
++    addParameterValueById: (id, value, weight = 1) => this._model.addParameterValueById(CubismFramework.getIdManager().getId(id), value, weight),
++    setParameterValueById: (id, value, weight = 1) => this._model.setParameterValueById(CubismFramework.getIdManager().getId(id), value, weight),
++    getParameterValueById: (id) => this._model.getParameterValueById(CubismFramework.getIdManager().getId(id)),
++    isMotionFinished: () => this._motionManager.isFinished()
++  };
++  setBeforePhysics(callback) {
++    this._beforePhysics = callback;
++  }
+   motionCtrl;
+   expressionCtrl;
+   effectCtrl;
+@@ -17059,6 +17073,8 @@ var Live2DModel = class extends CubismUserModel {
+       dragY,
+       this._lipsync
+     );
++    if (this._beforePhysics)
++      this._beforePhysics(this._frameParameters, deltaTime);
+     if (this._pose)
+       this._pose.updateParameters(this._model, deltaTime);
+     if (this._physics)
+@@ -17369,6 +17385,7 @@ var Live2DSprite = class extends pixi_js.Sprite {
+   /** @deprecated 保留用于兼容；模型更新跟随 Pixi 渲染，无需传入 ticker。 */
+   ticker = null;
+   _preQueue = /* @__PURE__ */ new Set();
++  _beforePhysics = null;
+   /** Stable Promise that resolves once the sprite is ready. */
+   _readyPromise;
+   /** Resolver captured from the _readyPromise constructor; cleared after resolving. */
+@@ -17533,6 +17550,14 @@ var Live2DSprite = class extends pixi_js.Sprite {
+     }
+     fn();
+   }
++  /**
++   * 注册每帧在 effects 之后、pose / physics 之前调用的回调；传 null 取消。
++   * 回调里写入的参数会进入物理计算，且只对当前帧有效。
++   */
++  onBeforePhysics(callback) {
++    this._beforePhysics = callback;
++    this._model?.setBeforePhysics(callback);
++  }
+   getParameterValueRangeById(id) {
+     return this._model?.getParameterValueRangeById(id) ?? null;
+   }
+@@ -17682,6 +17707,7 @@ var Live2DSprite = class extends pixi_js.Sprite {
+       throw new Error("Cubism R5 requires a Pixi WebGL 2 renderer. WebGL 1 and WebGPU are not supported.");
+     }
+     this._model = new Live2DModel(this._ctx.eventBus);
++    this._model.setBeforePhysics(this._beforePhysics);
+     this._textureLoader = new TextureLoader(this._ctx.webgl);
+     this._modelRenderer = new ModelRenderer(this._ctx.viewTransform);
+     this._modelRenderer.setFrameBuffer(this._ctx.frameBuffer);
+diff --git a/node_modules/easy-live2d/dist/index.d.cts b/node_modules/easy-live2d/dist/index.d.cts
+index 396a614..bd2838d 100644
+--- a/node_modules/easy-live2d/dist/index.d.cts
++++ b/node_modules/easy-live2d/dist/index.d.cts
+@@ -917,6 +917,17 @@ interface MotionInfo {
+ interface ExpressionInfo {
+     name: string;
+ }
++/**
++ * 每帧在 motion / expression / effects 之后、pose / physics 之前访问模型参数。
++ * 写入的值是物理的输入，且只对当前帧有效。
++ */
++interface Live2DFrameParameters {
++    addParameterValueById(id: string, value: number, weight?: number): void;
++    setParameterValueById(id: string, value: number, weight?: number): void;
++    getParameterValueById(id: string): number;
++    /** 当前没有正在播放的 motion 时为 true。 */
++    isMotionFinished(): boolean;
++}
+ 
+ /**
+  * Copyright(c) Live2D Inc. All rights reserved.
+@@ -964,6 +975,7 @@ declare class Live2DSprite extends Sprite {
+     /** Resolver captured from the _readyPromise constructor; cleared after resolving. */
+     private _readyResolve;
+     private _readyReject;
++    private _beforePhysics;
+     get width(): number;
+     set width(value: number);
+     get height(): number;
+@@ -1002,6 +1014,10 @@ declare class Live2DSprite extends Sprite {
+     setParameterValueByIndex(index: number, value: number, weight?: number): void;
+     getParameterValueRangeById(id: string): ParameterValueRange | null;
+     getParameterValueRangeByIndex(index: number): ParameterValueRange | null;
++    /**
++     * 注册每帧在 effects 之后、pose / physics 之前调用的回调；传 null 取消。
++     */
++    onBeforePhysics(callback: ((parameters: Live2DFrameParameters, deltaTime: number) => void) | null): void;
+     onResize(): void;
+     /**
+      * 获取模型原始画布尺寸（像素）
+@@ -1106,4 +1122,4 @@ interface ConfigType {
+ }
+ declare const Config: ConfigType;
+ 
+-export { Config, type ConfigType, CubismSetting, type ExpressionInfo, Live2DSprite, LogLevel, type MotionInfo, type ParameterValueRange, Priority };
++export { Config, type ConfigType, CubismSetting, type ExpressionInfo, type Live2DFrameParameters, Live2DSprite, LogLevel, type MotionInfo, type ParameterValueRange, Priority };
+diff --git a/node_modules/easy-live2d/dist/index.d.ts b/node_modules/easy-live2d/dist/index.d.ts
+index 396a614..bd2838d 100644
+--- a/node_modules/easy-live2d/dist/index.d.ts
++++ b/node_modules/easy-live2d/dist/index.d.ts
+@@ -917,6 +917,17 @@ interface MotionInfo {
+ interface ExpressionInfo {
+     name: string;
+ }
++/**
++ * 每帧在 motion / expression / effects 之后、pose / physics 之前访问模型参数。
++ * 写入的值是物理的输入，且只对当前帧有效。
++ */
++interface Live2DFrameParameters {
++    addParameterValueById(id: string, value: number, weight?: number): void;
++    setParameterValueById(id: string, value: number, weight?: number): void;
++    getParameterValueById(id: string): number;
++    /** 当前没有正在播放的 motion 时为 true。 */
++    isMotionFinished(): boolean;
++}
+ 
+ /**
+  * Copyright(c) Live2D Inc. All rights reserved.
+@@ -964,6 +975,7 @@ declare class Live2DSprite extends Sprite {
+     /** Resolver captured from the _readyPromise constructor; cleared after resolving. */
+     private _readyResolve;
+     private _readyReject;
++    private _beforePhysics;
+     get width(): number;
+     set width(value: number);
+     get height(): number;
+@@ -1002,6 +1014,10 @@ declare class Live2DSprite extends Sprite {
+     setParameterValueByIndex(index: number, value: number, weight?: number): void;
+     getParameterValueRangeById(id: string): ParameterValueRange | null;
+     getParameterValueRangeByIndex(index: number): ParameterValueRange | null;
++    /**
++     * 注册每帧在 effects 之后、pose / physics 之前调用的回调；传 null 取消。
++     */
++    onBeforePhysics(callback: ((parameters: Live2DFrameParameters, deltaTime: number) => void) | null): void;
+     onResize(): void;
+     /**
+      * 获取模型原始画布尺寸（像素）
+@@ -1106,4 +1122,4 @@ interface ConfigType {
+ }
+ declare const Config: ConfigType;
+ 
+-export { Config, type ConfigType, CubismSetting, type ExpressionInfo, Live2DSprite, LogLevel, type MotionInfo, type ParameterValueRange, Priority };
++export { Config, type ConfigType, CubismSetting, type ExpressionInfo, type Live2DFrameParameters, Live2DSprite, LogLevel, type MotionInfo, type ParameterValueRange, Priority };
+diff --git a/node_modules/easy-live2d/dist/index.js b/node_modules/easy-live2d/dist/index.js
+index 9c829af..3b1a05a 100644
+--- a/node_modules/easy-live2d/dist/index.js
++++ b/node_modules/easy-live2d/dist/index.js
+@@ -16930,6 +16930,20 @@ var Live2DModel = class extends CubismUserModel {
+    * 统一应用，确保用户设定值优先级最高且跨帧持久有效。
+    */
+   _parameterOverrides = new ParameterOverrideMap();
++  /**
++   * 每帧在 motion / expression / effects（眨眼、呼吸、口型）之后、pose / physics 之前调用的钩子。
++   * 钩子里写入的参数是物理的输入，且不跨帧保留（下一帧 loadParameters 会还原）。
++   */
++  _beforePhysics = null;
++  _frameParameters = {
++    addParameterValueById: (id, value, weight = 1) => this._model.addParameterValueById(CubismFramework.getIdManager().getId(id), value, weight),
++    setParameterValueById: (id, value, weight = 1) => this._model.setParameterValueById(CubismFramework.getIdManager().getId(id), value, weight),
++    getParameterValueById: (id) => this._model.getParameterValueById(CubismFramework.getIdManager().getId(id)),
++    isMotionFinished: () => this._motionManager.isFinished()
++  };
++  setBeforePhysics(callback) {
++    this._beforePhysics = callback;
++  }
+   motionCtrl;
+   expressionCtrl;
+   effectCtrl;
+@@ -17057,6 +17071,8 @@ var Live2DModel = class extends CubismUserModel {
+       dragY,
+       this._lipsync
+     );
++    if (this._beforePhysics)
++      this._beforePhysics(this._frameParameters, deltaTime);
+     if (this._pose)
+       this._pose.updateParameters(this._model, deltaTime);
+     if (this._physics)
+@@ -17367,6 +17383,7 @@ var Live2DSprite = class extends Sprite {
+   /** @deprecated 保留用于兼容；模型更新跟随 Pixi 渲染，无需传入 ticker。 */
+   ticker = null;
+   _preQueue = /* @__PURE__ */ new Set();
++  _beforePhysics = null;
+   /** Stable Promise that resolves once the sprite is ready. */
+   _readyPromise;
+   /** Resolver captured from the _readyPromise constructor; cleared after resolving. */
+@@ -17531,6 +17548,14 @@ var Live2DSprite = class extends Sprite {
+     }
+     fn();
+   }
++  /**
++   * 注册每帧在 effects 之后、pose / physics 之前调用的回调；传 null 取消。
++   * 回调里写入的参数会进入物理计算，且只对当前帧有效。
++   */
++  onBeforePhysics(callback) {
++    this._beforePhysics = callback;
++    this._model?.setBeforePhysics(callback);
++  }
+   getParameterValueRangeById(id) {
+     return this._model?.getParameterValueRangeById(id) ?? null;
+   }
+@@ -17680,6 +17705,7 @@ var Live2DSprite = class extends Sprite {
+       throw new Error("Cubism R5 requires a Pixi WebGL 2 renderer. WebGL 1 and WebGPU are not supported.");
+     }
+     this._model = new Live2DModel(this._ctx.eventBus);
++    this._model.setBeforePhysics(this._beforePhysics);
+     this._textureLoader = new TextureLoader(this._ctx.webgl);
+     this._modelRenderer = new ModelRenderer(this._ctx.viewTransform);
+     this._modelRenderer.setFrameBuffer(this._ctx.frameBuffer);

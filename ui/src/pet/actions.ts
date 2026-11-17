@@ -6,9 +6,12 @@
  * action resolves in a fixed order: the profile's explicit mapping, then a name match against what the model has,
  * then a procedural track; only when all three fail is the action skipped.
  *
- * Every parameter written here is released with weight 0 when its source ends. In easy-live2d 1.1.0 an override
- * persists across frames (it re-applies after motion, expression, breath and physics), so an unreleased one would
- * freeze that parameter and bury the framework's own breathing and blinking.
+ * Parameters are written inside the model's own update, after motion, expression, eye blink and breath and before
+ * pose and physics (the `onBeforePhysics` hook `ui/patches/` adds to easy-live2d). Writes there are inputs to the
+ * physics, so hair and the smoothed `*2` chains a model binds its mesh to follow them, and they last one frame:
+ * the next update starts from the model's saved parameters again. Tracks, the look and the drag spring therefore
+ * add offsets on top of whatever the model's own motion and breathing set, presets and the mouth set values
+ * outright, and nothing ever has to be released.
  */
 
 export type ActionName =
@@ -75,12 +78,22 @@ export function isExpressionName(value: string): value is ExpressionName {
 }
 
 export interface ActionRuntime {
-  /** False when the group is unknown, so the caller can fall through to the procedural track. */
+  /** False when the motion did not start (unknown group, refused by priority, still loading). */
   playMotion(group: string, no: number, priority: 1 | 2 | 3): Promise<boolean>
-  setParameter(id: string, value: number, weight?: number): void
   parameterRange(id: string): { min: number; max: number } | null
   /** Empty string means "no expression of my own": the model's own default look. */
   setExpression(name: string): void
+}
+
+/**
+ * The model's parameters during one update, between effects and physics: easy-live2d's `Live2DFrameParameters`.
+ * The model clamps every write to the parameter's own range.
+ */
+export interface FrameParameters {
+  addParameterValueById(id: string, value: number, weight?: number): void
+  setParameterValueById(id: string, value: number, weight?: number): void
+  /** True when no model motion is playing. */
+  isMotionFinished(): boolean
 }
 
 interface MotionMapping {
@@ -127,7 +140,7 @@ interface ParameterTrack {
 interface TrackDefinition {
   duration: number
   params: ParameterTrack[]
-  /** Keep the final value instead of releasing (sleeping); only `wake` undoes it. */
+  /** Keep the final offset instead of ending (sleeping); only `wake` or {@link ActionLayer.stopAction} ends it. */
   hold?: boolean
 }
 
@@ -148,18 +161,32 @@ interface FacePreset {
 const EYE_L = 'ParamEyeLOpen'
 const EYE_R = 'ParamEyeROpen'
 
-/** Two open/close keys for both eyes, so a blink and the half-lidded tracks share one shape. */
-function eyeKeys(duration: number, closed: number): ParameterTrack[] {
+/**
+ * Eye-open offsets for both eyes: 0 at the ends, `open - 1` in the middle, so `open` is how far the lids are open
+ * at the deepest point on an eye the framework holds open. A blink and the half-lidded tracks share this shape.
+ */
+function eyeKeys(duration: number, open: number): ParameterTrack[] {
   const mid = duration / 2
   return [
-    { id: EYE_L, keys: [{ at: 0, value: 1 }, { at: mid, value: closed }, { at: duration, value: 1 }] },
-    { id: EYE_R, keys: [{ at: 0, value: 1 }, { at: mid, value: closed }, { at: duration, value: 1 }] },
+    { id: EYE_L, keys: [{ at: 0, value: 0 }, { at: mid, value: open - 1 }, { at: duration, value: 0 }] },
+    { id: EYE_R, keys: [{ at: 0, value: 0 }, { at: mid, value: open - 1 }, { at: duration, value: 0 }] },
   ]
 }
 
+/** The head angles the cursor look moves; a track or motion on any of them makes the look give way. */
+const HEAD_PARAMS: Record<string, true> = { ParamAngleX: true, ParamAngleY: true, ParamAngleZ: true }
+/** The look's head component at most, as a fraction of the parameter's half range (±30° gives ±12°). */
+const LOOK_HEAD_SHARE = 0.4
+/** What is left of the look's head component while a track or a motion drives the head. */
+const LOOK_HEAD_YIELD = 0.2
+/** How long the look takes to give way, and to come back once the head is free again. */
+const LOOK_YIELD_SECONDS = 0.15
+const LOOK_RETURN_SECONDS = 0.3
+
 /**
- * The procedural fallback for each action. Values are model units (degrees for the angle parameters, a fraction for
- * the eye and cheek parameters), and each is clamped to the parameter's range before it is written.
+ * The procedural fallback for each action. Values are offsets added to what the model's motion, blink and breath
+ * already set: degrees for the angle parameters, a fraction for the eye and cheek parameters. The model clamps the
+ * sum to the parameter's range.
  */
 const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
   blink: {
@@ -189,6 +216,8 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
     params: [{ id: 'ParamAngleX', keys: [{ at: 0, value: 0 }, { at: 0.6, value: 22 }, { at: 1.2, value: 0 }] }],
   },
   headShake: {
+    // Every track ends at 0: an offset still non-zero on the last key drops to 0 in one frame when the track ends,
+    // and with the writes feeding physics that one-frame snap whips the hair. The swings decay into rest instead.
     duration: 1.4,
     params: [
       {
@@ -197,8 +226,8 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
           { at: 0, value: 0 },
           { at: 0.35, value: 5 },
           { at: 0.7, value: -5 },
-          { at: 1.05, value: 5 },
-          { at: 1.4, value: -5 },
+          { at: 1.05, value: 3 },
+          { at: 1.4, value: 0 },
         ],
       },
       {
@@ -215,7 +244,12 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
   },
   bodyTurn: {
     duration: 1.4,
-    params: [{ id: 'ParamBodyAngleX', keys: [{ at: 0, value: 0 }, { at: 0.7, value: 8 }, { at: 1.4, value: -8 }] }],
+    params: [
+      {
+        id: 'ParamBodyAngleX',
+        keys: [{ at: 0, value: 0 }, { at: 0.45, value: 8 }, { at: 1, value: -8 }, { at: 1.4, value: 0 }],
+      },
+    ],
   },
   bodyShake: {
     duration: 1.2,
@@ -224,10 +258,11 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
         id: 'ParamBodyAngleZ',
         keys: [
           { at: 0, value: 0 },
-          { at: 0.3, value: 6 },
-          { at: 0.6, value: -6 },
-          { at: 0.9, value: 6 },
-          { at: 1.2, value: -6 },
+          { at: 0.25, value: 6 },
+          { at: 0.5, value: -6 },
+          { at: 0.75, value: 4 },
+          { at: 1, value: -2 },
+          { at: 1.2, value: 0 },
         ],
       },
     ],
@@ -254,10 +289,11 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
         id: 'ParamAngleX',
         keys: [
           { at: 0, value: 0 },
-          { at: 0.3, value: 12 },
-          { at: 0.6, value: -12 },
-          { at: 0.9, value: 12 },
-          { at: 1.2, value: -12 },
+          { at: 0.25, value: 12 },
+          { at: 0.5, value: -12 },
+          { at: 0.75, value: 8 },
+          { at: 1, value: -4 },
+          { at: 1.2, value: 0 },
         ],
       },
     ],
@@ -285,8 +321,12 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
     duration: 0.9,
     params: [
       { id: 'ParamAngleY', keys: [{ at: 0, value: 0 }, { at: 0.35, value: 12 }, { at: 0.9, value: 0 }] },
-      { id: EYE_L, keys: [{ at: 0, value: 1 }, { at: 0.35, value: 1.2 }, { at: 0.9, value: 1 }] },
-      { id: EYE_R, keys: [{ at: 0, value: 1 }, { at: 0.35, value: 1.2 }, { at: 0.9, value: 1 }] },
+      // Most models cap an open eye at 1, the value the framework already holds it at, so the widened eyes only show
+      // on a model whose range goes past it; raised brows read as startled on every model that has them.
+      { id: EYE_L, keys: [{ at: 0, value: 0 }, { at: 0.35, value: 0.2 }, { at: 0.9, value: 0 }] },
+      { id: EYE_R, keys: [{ at: 0, value: 0 }, { at: 0.35, value: 0.2 }, { at: 0.9, value: 0 }] },
+      { id: 'ParamBrowLY', keys: [{ at: 0, value: 0 }, { at: 0.35, value: 0.7 }, { at: 0.9, value: 0 }] },
+      { id: 'ParamBrowRY', keys: [{ at: 0, value: 0 }, { at: 0.35, value: 0.7 }, { at: 0.9, value: 0 }] },
     ],
   },
   puff: {
@@ -306,24 +346,25 @@ const TRACKS: Partial<Record<ActionName, TrackDefinition>> = {
           { at: 2.4, value: 0 },
         ],
       },
-      { id: EYE_L, keys: [{ at: 0, value: 1 }, { at: 0.4, value: 0.5 }, { at: 2.4, value: 1 }] },
-      { id: EYE_R, keys: [{ at: 0, value: 1 }, { at: 0.4, value: 0.5 }, { at: 2.4, value: 1 }] },
+      { id: EYE_L, keys: [{ at: 0, value: 0 }, { at: 0.4, value: -0.5 }, { at: 2.4, value: 0 }] },
+      { id: EYE_R, keys: [{ at: 0, value: 0 }, { at: 0.4, value: -0.5 }, { at: 2.4, value: 0 }] },
     ],
   },
   sleep: {
     duration: 2,
     hold: true,
     params: [
-      { id: EYE_L, keys: [{ at: 0, value: 1 }, { at: 2, value: 0 }] },
-      { id: EYE_R, keys: [{ at: 0, value: 1 }, { at: 2, value: 0 }] },
+      // -1 closes the lids whatever the framework's blink is doing underneath.
+      { id: EYE_L, keys: [{ at: 0, value: 0 }, { at: 2, value: -1 }] },
+      { id: EYE_R, keys: [{ at: 0, value: 0 }, { at: 2, value: -1 }] },
       { id: 'ParamAngleY', keys: [{ at: 0, value: 0 }, { at: 2, value: -10 }] },
     ],
   },
   wake: {
     duration: 0.6,
     params: [
-      { id: EYE_L, keys: [{ at: 0, value: 0 }, { at: 0.6, value: 1 }] },
-      { id: EYE_R, keys: [{ at: 0, value: 0 }, { at: 0.6, value: 1 }] },
+      { id: EYE_L, keys: [{ at: 0, value: -1 }, { at: 0.6, value: 0 }] },
+      { id: EYE_R, keys: [{ at: 0, value: -1 }, { at: 0.6, value: 0 }] },
       { id: 'ParamAngleY', keys: [{ at: 0, value: -10 }, { at: 0.6, value: 0 }] },
     ],
   },
@@ -336,7 +377,7 @@ const TRACK_ALIASES: Partial<Record<ActionName, ActionName>> = {
 
 /**
  * Expression presets, used when the model ships no `.exp3` for the expression or the profile forces the parameter
- * path.
+ * path. These are absolute values: a face holds its parameters for as long as it shows.
  */
 const EXPRESSION_PRESETS: Record<Exclude<ExpressionName, 'default'>, FacePreset> = {
   smile: {
@@ -366,7 +407,8 @@ const EXPRESSION_PRESETS: Record<Exclude<ExpressionName, 'default'>, FacePreset>
 
 /**
  * Name fragments that identify an action in a model's own vocabulary. Matched case-insensitively against the
- * motion's group and file name, so `CAT_motion#1` in group `TapBody` still counts as a tap.
+ * motion's group only: the motion list names each entry `{group}_{index}`, not after its file. `idle` is in no
+ * list on purpose: an idle group is the model breathing in place, which is what a skipped action looks like.
  */
 const MOTION_KEYWORDS: Partial<Record<ActionName, string[]>> = {
   greet: ['greet', 'hello', 'wave', 'hi'],
@@ -379,7 +421,7 @@ const MOTION_KEYWORDS: Partial<Record<ActionName, string[]>> = {
   bodyTurn: ['turn'],
   sleep: ['sleep'],
   blink: ['blink'],
-  stretch: ['stretch', 'idle'],
+  stretch: ['stretch'],
 }
 
 /** The same idea for expressions: the name a model author would give each face. */
@@ -417,35 +459,28 @@ function easeInOut(value: number): number {
   return value < 0.5 ? 2 * value * value : 1 - ((-2 * value + 2) ** 2) / 2
 }
 
-/** One frame's parameter writes, composed before anything reaches the model. See {@link ActionLayer.tick}. */
+/**
+ * One parameter's write for one frame, composed before anything reaches the model. `set` takes the parameter
+ * outright (a preset, the mouth); `add` is the sum of the offsets on top of it. See {@link ActionLayer.tick}.
+ */
 interface FrameWrite {
-  value: number
-  weight: number
+  set: number | null
+  add: number
 }
 
 type Frame = Map<string, FrameWrite>
 
-/** Takes the parameter outright: whatever was composed for it this frame is replaced. */
-function set(frame: Frame, id: string, value: number, weight: number): void {
-  // A release (weight 0) still has to be sent, or the parameter stays pinned at its last value; but it must not
-  // displace a real write, which is why it only lands where nothing has been written yet.
-  if (weight === 0 && frame.has(id)) return
-  frame.set(id, { value, weight })
+function setValue(frame: Frame, id: string, value: number): void {
+  const existing = frame.get(id)
+  if (existing === undefined) frame.set(id, { set: value, add: 0 })
+  else existing.set = value
 }
 
-/** Adds to whatever is already composed for the parameter, keeping the strongest weight. Used for offsets. */
-function mix(frame: Frame, id: string, value: number, weight: number): void {
+function addValue(frame: Frame, id: string, value: number): void {
+  if (value === 0) return
   const existing = frame.get(id)
-  if (existing === undefined) {
-    set(frame, id, value, weight)
-    return
-  }
-  if (existing.weight === 0) {
-    // A release followed by a real offset: the offset wins outright, and weight 0 no longer applies.
-    set(frame, id, value, weight)
-    return
-  }
-  frame.set(id, { value: existing.value + value, weight: Math.max(existing.weight, weight) })
+  if (existing === undefined) frame.set(id, { set: null, add: value })
+  else existing.add += value
 }
 
 /** The value a parameter track has at `elapsed`, easing between its neighbouring keys. */
@@ -506,6 +541,13 @@ export class ActionLayer {
   private springVelocityX = 0
   private springVelocityY = 0
   private springVelocityZ = 0
+
+  /** The writes {@link tick} composed, applied by {@link apply} on every model update until the next tick. */
+  private frame: Frame = new Map()
+  /** Whether a model motion was playing at the last {@link apply}; it makes the look give way like a track does. */
+  private motionPlaying = false
+  /** The share of the look's head component currently applied, 1 when nothing else drives the head. */
+  private lookHeadGain = 1
 
   constructor(
     runtime: ActionRuntime,
@@ -628,9 +670,6 @@ export class ActionLayer {
   }
 
   releaseExpression(): void {
-    for (const id of this.presetParams.keys()) {
-      this.runtime.setParameter(id, 0, 0)
-    }
     this.presetParams.clear()
     this.presetReleaseAt = null
     this.runtime.setExpression(this.defaultExpression)
@@ -644,10 +683,7 @@ export class ActionLayer {
 
   mouth(open: boolean): void {
     this.mouthOpen = open
-    if (!open) {
-      this.runtime.setParameter('ParamMouthOpenY', 0, 0)
-      this.mouthValue = 0
-    }
+    if (!open) this.mouthValue = 0
   }
 
   /** Stops one action. A held track (sleeping) never releases on its own, so the caller has to stop it. */
@@ -666,7 +702,6 @@ export class ActionLayer {
       this.springVelocityX = 0
       this.springVelocityY = 0
       this.springVelocityZ = 0
-      this.releaseSpring()
       return
     }
     if (action === 'look') {
@@ -674,16 +709,10 @@ export class ActionLayer {
       return
     }
 
-    const running = this.tracks.get(action)
-    if (running === undefined) return
     this.tracks.delete(action)
-    this.releaseTrack(running)
   }
 
   stopAll(): void {
-    for (const running of this.tracks.values()) {
-      this.releaseTrack(running)
-    }
     this.tracks.clear()
     this.mouth(false)
     this.look(0, 0)
@@ -692,44 +721,50 @@ export class ActionLayer {
   // ------------------------------------------------------------------ ticking
 
   /**
-   * Advances every running track, the expression hold, the spring, the eyes and the mouth.
+   * Advances every running track, the expression hold, the spring, the eyes and the mouth, and composes the frame
+   * {@link apply} writes.
    *
-   * Everything is composed into one map and written once, because an easy-live2d override is a map keyed by
-   * parameter id: two writes to the same id in one frame leave only the last one standing. Precedence is
-   * preset &lt; track &lt; spring &lt; look. A track is an authored motion, so it replaces a preset; the look and the
-   * spring are continuous offsets, so they add to whatever a track already drives.
+   * Each parameter is written once per frame. A preset or the mouth sets it; tracks, the look and the spring add
+   * their offsets on top, so a nod still reads while the eyes follow the cursor and a crying face still blinks.
    */
   tick(dtSeconds: number): void {
     const dt = Math.max(0, Math.min(0.25, dtSeconds))
     const frame: Frame = new Map()
-    const finished: RunningTrack[] = []
 
-    // The expression timer runs first: a preset it releases this frame must not be written back at weight 1 from
-    // `presetParams`. A model's own `.exp3` has no parameters, so the timer is not gated on the map being non-empty.
+    // The expression timer runs first, so a preset it releases this frame is not written once more.
     this.tickExpression(dt)
 
-    for (const [id, value] of this.presetParams) set(frame, id, value, 1)
+    for (const [id, value] of this.presetParams) setValue(frame, id, value)
 
     for (const running of [...this.tracks.values()]) {
       running.elapsed += dt
-
-      const ended = running.elapsed >= running.definition.duration && running.definition.hold !== true
-      if (!ended) {
-        for (const parameter of running.live) {
-          set(frame, parameter.id, sample(parameter.keys, running.elapsed), 1)
-        }
+      if (running.elapsed >= running.definition.duration && running.definition.hold !== true) {
+        // Nothing to release: the next model update simply starts without this track's offsets.
+        this.tracks.delete(running.action)
         continue
       }
-      this.tracks.delete(running.action)
-      finished.push(running)
+      for (const parameter of running.live) addValue(frame, parameter.id, sample(parameter.keys, running.elapsed))
     }
 
     this.tickLook(dt, frame)
     this.tickMouth(dt, frame)
     this.tickSpring(dt, frame)
 
-    for (const [id, write] of frame) this.write(id, write.value, write.weight)
-    for (const running of finished) this.releaseTrack(running, frame)
+    this.frame = frame
+  }
+
+  /**
+   * Writes the composed frame into the model. Called from the model's update, after its motion, blink and breath
+   * and before its physics, so the offsets drive physics outputs too. A model update without a tick in between
+   * (the renderer can outpace the ticker) writes the same frame again, which is correct: writes last one update.
+   */
+  apply(parameters: FrameParameters): void {
+    this.motionPlaying = !parameters.isMotionFinished()
+    for (const [id, write] of this.frame) {
+      if (this.runtime.parameterRange(id) === null) continue
+      if (write.set !== null) parameters.setParameterValueById(id, write.set, 1)
+      if (write.add !== 0) parameters.addParameterValueById(id, write.add, 1)
+    }
   }
 
   private tickExpression(dt: number): void {
@@ -745,31 +780,30 @@ export class ActionLayer {
     this.lookX += (this.lookTargetX - this.lookX) * alpha
     this.lookY += (this.lookTargetY - this.lookY) * alpha
 
-    // At rest the parameters have to be handed back, not merely held at zero: a 0.6 blend re-applied after breath
-    // and physics every frame would damp the framework's own head sway and breathing for as long as the cursor is
-    // away from the pet, which is most of the time. Weight 0 releases without pinning.
-    const atRest =
-      this.lookTargetX === 0 &&
-      this.lookTargetY === 0 &&
-      Math.abs(this.lookX) < 0.01 &&
-      Math.abs(this.lookY) < 0.01
+    // A track or a motion on the head gets the head nearly to itself: the look's head component would otherwise
+    // sit on top of a nod or a stretch and push it into the end of the parameter's range, where it is clipped.
+    const driven =
+      this.motionPlaying ||
+      [...this.tracks.values()].some((running) => running.live.some((parameter) => HEAD_PARAMS[parameter.id] === true))
+    const span = 1 - LOOK_HEAD_YIELD
+    this.lookHeadGain = driven
+      ? Math.max(LOOK_HEAD_YIELD, this.lookHeadGain - (span * dt) / LOOK_YIELD_SECONDS)
+      : Math.min(1, this.lookHeadGain + (span * dt) / LOOK_RETURN_SECONDS)
 
-    // A held `sleep` track *is* the sleeping state: the head is down because that track keeps writing it, and a
-    // cursor-driven head angle would fight it every frame. Only the eyes move while asleep, which is also what a
-    // person does when they are pretending to sleep.
-    const asleep = this.tracks.has('sleep')
-
-    // The eye balls belong to nobody else, so they take the look outright; the head angles are additive, so a nod
-    // or a turn still reads while the eyes follow.
-    if (asleep) {
-      set(frame, 'ParamAngleX', 0, 0)
-      set(frame, 'ParamAngleY', 0, 0)
-    } else {
-      mix(frame, 'ParamAngleX', atRest ? 0 : this.lookX * 30, atRest ? 0 : 0.6)
-      mix(frame, 'ParamAngleY', atRest ? 0 : -this.lookY * 30, atRest ? 0 : 0.6)
+    // A held `sleep` track *is* the sleeping state: only the eyes move while asleep, which is also what a person
+    // does when they are pretending to sleep.
+    if (!this.tracks.has('sleep')) {
+      addValue(frame, 'ParamAngleX', this.lookX * this.lookHeadReach('ParamAngleX') * this.lookHeadGain)
+      addValue(frame, 'ParamAngleY', -this.lookY * this.lookHeadReach('ParamAngleY') * this.lookHeadGain)
     }
-    set(frame, 'ParamEyeBallX', atRest ? 0 : this.lookX, atRest ? 0 : 0.6)
-    set(frame, 'ParamEyeBallY', atRest ? 0 : -this.lookY, atRest ? 0 : 0.6)
+    addValue(frame, 'ParamEyeBallX', this.lookX)
+    addValue(frame, 'ParamEyeBallY', -this.lookY)
+  }
+
+  /** How far the look turns the head at full deflection: a share of the parameter's own half range. */
+  private lookHeadReach(id: string): number {
+    const range = this.runtime.parameterRange(id)
+    return range === null ? 0 : ((range.max - range.min) / 2) * LOOK_HEAD_SHARE
   }
 
   private tickMouth(dt: number, frame: Frame): void {
@@ -782,7 +816,7 @@ export class ActionLayer {
       this.mouthElapsed = 0
       this.mouthValue = Math.random() < 0.15 ? 0 : 0.25 + Math.random() * 0.75
     }
-    set(frame, 'ParamMouthOpenY', this.mouthValue, 1)
+    setValue(frame, 'ParamMouthOpenY', this.mouthValue)
   }
 
   private tickSpring(dt: number, frame: Frame): void {
@@ -840,14 +874,11 @@ export class ActionLayer {
       this.springVelocityZ = 0
     }
 
-    // A zero written with weight 1 pins the body an imperceptible amount crooked forever; a zero with weight 0
-    // hands the parameter back to the framework, which is what "the drag is over" means.
-    const restWeight = this.springX === 0 && this.springY === 0 && this.springZ === 0 ? 0 : 1
-    mix(frame, 'ParamBodyAngleX', this.springX, restWeight)
-    mix(frame, 'ParamBodyAngleY', this.springY, restWeight)
-    mix(frame, 'ParamBodyAngleZ', this.springZ, restWeight)
+    addValue(frame, 'ParamBodyAngleX', this.springX)
+    addValue(frame, 'ParamBodyAngleY', this.springY)
+    addValue(frame, 'ParamBodyAngleZ', this.springZ)
     // 40% of the body's recoil, so the head follows the body without doubling it.
-    mix(frame, 'ParamAngleX', this.springX * 0.4, restWeight)
+    addValue(frame, 'ParamAngleX', this.springX * 0.4)
   }
 
   // ------------------------------------------------------------------ resolution
@@ -861,35 +892,12 @@ export class ActionLayer {
     if (name === 'wake') this.stopAction('sleep')
 
     // Starting a track replaces the running one, so two taps cannot stack into a doubled bend.
-    const existing = this.tracks.get(name)
-    if (existing !== undefined) {
-      this.tracks.delete(name)
-      this.releaseTrack(existing)
-    }
+    this.tracks.delete(name)
 
     const live = definition.params.filter((parameter) => this.runtime.parameterRange(parameter.id) !== null)
     if (live.length === 0) return
 
     this.tracks.set(name, { action: name, definition, elapsed: 0, live })
-  }
-
-  /**
-   * Hands a finished track's parameters back to the framework, except those `frame` already holds: another source
-   * (a preset, the look, the spring) drives them this frame, and releasing them after `tick` sent its value would
-   * drop that value for a frame, which reads as a pop.
-   */
-  private releaseTrack(running: RunningTrack, frame?: Frame): void {
-    for (const parameter of running.live) {
-      if (frame?.has(parameter.id) === true) continue
-      this.runtime.setParameter(parameter.id, sample(parameter.keys, running.elapsed), 0)
-    }
-  }
-
-  /** Writes a parameter, clamped to its own range, and skips parameters the model does not have. */
-  private write(id: string, value: number, weight: number): void {
-    const range = this.runtime.parameterRange(id)
-    if (range === null) return
-    this.runtime.setParameter(id, Math.max(range.min, Math.min(range.max, value)), weight)
   }
 
   private matchMotion(action: ActionName): { group: string; no: number; name: string } | undefined {
@@ -898,8 +906,7 @@ export class ActionLayer {
 
     return this.motions.find((motion) => {
       const group = motion.group.toLowerCase()
-      const name = motion.name.toLowerCase()
-      return keywords.some((keyword) => nameContains(group, keyword) || nameContains(name, keyword))
+      return keywords.some((keyword) => nameContains(group, keyword))
     })
   }
 
@@ -935,9 +942,6 @@ export class ActionLayer {
   }
 
   private applyExpression(name: ExpressionName): void {
-    for (const id of this.presetParams.keys()) {
-      this.runtime.setParameter(id, 0, 0)
-    }
     this.presetParams.clear()
 
     const mapping = this.mapping.expressions[name]
@@ -980,12 +984,5 @@ export class ActionLayer {
       const lower = expression.toLowerCase()
       return keywords.some((keyword) => nameContains(lower, keyword.toLowerCase()))
     })
-  }
-
-  private releaseSpring(): void {
-    this.write('ParamBodyAngleX', 0, 0)
-    this.write('ParamBodyAngleY', 0, 0)
-    this.write('ParamBodyAngleZ', 0, 0)
-    this.write('ParamAngleX', 0, 0)
   }
 }

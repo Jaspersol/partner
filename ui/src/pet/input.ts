@@ -171,15 +171,8 @@ export class PetInput {
     }
 
     if (size.width > 0 && size.height > 0 && report.width > 0 && report.height > 0) {
-      // The model is centred as a sprite, so its own coordinate space is the whole window: map the cursor into
-      // -1..1 around the window's middle and let the action layer low-pass it. No scale factor here: both the
-      // cursor and the window size are physical pixels, so the ratio is already unit-free, and multiplying by the
-      // display scale would make the eyes hit their limit at a fraction of the way to the edge.
-      const centreX = report.width / 2
-      const centreY = report.height / 2
-      const x = (report.cursorX - centreX) / (report.width / 2)
-      const y = (report.cursorY - centreY) / (report.height / 2)
-      this.host.look(clampUnit(x), clampUnit(y))
+      const target = lookTarget(report.cursorX, report.cursorY, report.width, report.height)
+      this.host.look(target.x, target.y)
     }
   }
 
@@ -361,6 +354,25 @@ export class PetInput {
     this.dragging = false
     void this.setPassthrough(this.host.clickThroughEnabled())
   }
+}
+
+/**
+ * Where the eyes aim for a cursor at window-local physical pixels: -1..1 on each axis around the window's middle.
+ * No display scale here: the cursor and the window size are both physical pixels, so the ratio is unit-free.
+ *
+ * Outside the window the direction stays pinned to the edge and the strength falls off with the cursor's distance
+ * from the window, reaching zero one window width away. A cursor on another monitor is not something the pet is
+ * looking at, and a full-strength look there would hold the head at its limit most of the day.
+ */
+export function lookTarget(cursorX: number, cursorY: number, width: number, height: number): { x: number; y: number } {
+  const halfWidth = width / 2
+  const halfHeight = height / 2
+  const x = (cursorX - halfWidth) / halfWidth
+  const y = (cursorY - halfHeight) / halfHeight
+  const outsideX = Math.max(0, Math.abs(x) - 1) * halfWidth
+  const outsideY = Math.max(0, Math.abs(y) - 1) * halfHeight
+  const strength = Math.max(0, 1 - Math.hypot(outsideX, outsideY) / width)
+  return { x: clampUnit(x) * strength, y: clampUnit(y) * strength }
 }
 
 function clampUnit(value: number): number {
