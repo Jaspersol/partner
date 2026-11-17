@@ -94,7 +94,7 @@ public sealed class DiscoveryEndpointTests : ApiFixture
         using var stored = new FakeModelList(FreePort(), """{"data":[{"id":"a"}]}""");
         using var elsewhere = new FakeModelList(FreePort(), """{"data":[{"id":"b"}]}""");
 
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new
             {

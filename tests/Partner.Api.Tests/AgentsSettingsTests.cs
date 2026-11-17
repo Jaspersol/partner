@@ -20,6 +20,73 @@ public sealed class AgentsSettingsTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Concurrent_store_updates_do_not_lose_changes()
+    {
+        var store = new SettingsStore(Path.Combine(_dir, "runtime.json"));
+        var before = store.Snapshot();
+        const int count = 20;
+        await Task.WhenAll(Enumerable.Range(0, count).Select(_ => Task.Run(() =>
+            store.Update(current => current with
+            {
+                Input = current.Input with { UtteranceGapMs = current.Input.UtteranceGapMs + 1 },
+            }))));
+
+        var after = store.Snapshot();
+        Assert.Equal(before.Settings.Input.UtteranceGapMs + count, after.Settings.Input.UtteranceGapMs);
+        Assert.Equal(before.Revision + count, after.Revision);
+        Assert.Equal(after.Settings.Input.UtteranceGapMs, new SettingsStore(store.Path).Load().Input.UtteranceGapMs);
+    }
+
+    [Fact]
+    public void Store_snapshots_and_save_results_do_not_share_mutable_collections()
+    {
+        var store = new SettingsStore(Path.Combine(_dir, "runtime.json"));
+        var roots = new List<string> { "first" };
+        var saved = store.Save(store.Load() with { Files = new FilesSettings { Roots = roots } });
+        roots.Add("caller");
+        Assert.Throws<NotSupportedException>(() => ((IList<string>)saved.Files.Roots).Add("result"));
+        var snapshot = store.Snapshot();
+        Assert.Throws<NotSupportedException>(() => ((IList<string>)snapshot.Settings.Files.Roots).Add("snapshot"));
+        var loaded = store.Load();
+        Assert.Throws<NotSupportedException>(() => ((IList<string>)loaded.Files.Roots).Add("load"));
+
+        Assert.Equal(new[] { "first" }, store.Load().Files.Roots);
+    }
+
+    [Fact]
+    public void Reload_publishes_disk_changes_and_recovers_from_corrupt_json()
+    {
+        var store = new SettingsStore(Path.Combine(_dir, "runtime.json"));
+        store.Save(store.Load() with { Input = new InputSettings { Enabled = false } });
+        var revision = store.Revision;
+        File.WriteAllText(store.Path, "{\"input\":{\"enabled\":true}}");
+        Assert.False(store.Load().Input.Enabled);
+        Assert.True(store.Reload().Input.Enabled);
+        Assert.Equal(revision + 1, store.Revision);
+
+        File.WriteAllText(store.Path, "{invalid");
+        Assert.True(store.Load().Input.Enabled);
+        var fallback = store.Reload();
+        Assert.Equal(RuntimeSettings.Default.Input.Enabled, fallback.Input.Enabled);
+        Assert.Equal(revision + 2, store.Revision);
+    }
+
+    [Fact]
+    public void A_failed_write_does_not_publish_a_new_snapshot_or_revision()
+    {
+        Directory.CreateDirectory(_dir);
+        var parentFile = Path.Combine(_dir, "not-a-directory");
+        File.WriteAllText(parentFile, "occupied");
+        var store = new SettingsStore(Path.Combine(parentFile, "runtime.json"));
+        var before = store.Snapshot();
+
+        Assert.ThrowsAny<IOException>(() => store.Save(before.Settings with { Input = new InputSettings { Enabled = true } }));
+        var after = store.Snapshot();
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(before.Settings.Input.Enabled, after.Settings.Input.Enabled);
+    }
+
     private static SubAgentSettings Reader(bool enabled = true, string? prompt = null) => new()
     {
         Id = "reader",

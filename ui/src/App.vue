@@ -15,7 +15,7 @@ import {
 } from './api'
 import { resolveConnection } from './config'
 import { t } from './i18n'
-import { petSupported } from './shellPrefs'
+import { getSidecarDiagnostic, petSupported, retrySidecar, type SidecarDiagnostic } from './shellPrefs'
 import { useRailOnlyMode } from './narrow'
 import { isPageHidden } from './pageVisibility'
 import { applyReducedTransparency, applyTheme, nextTheme, readReducedTransparency, readTheme, type Theme } from './theme'
@@ -108,6 +108,8 @@ const consumer = ref<ConsumerState | null>(null)
 /** The line the top bar shows in the middle. Only the session view sets it, to name the selected row. */
 const context = ref('')
 const connectionError = ref('')
+const sidecarDiagnostic = ref<SidecarDiagnostic | null>(null)
+const connecting = ref(false)
 const endpoint = ref('')
 const theme = ref<Theme>(readTheme())
 const api = shallowRef<PartnerApiSurface | null>(null)
@@ -185,6 +187,15 @@ async function refreshSummary() {
     // harmless — `cancel` answers 404 and the composer reports 「已完成，无法取消」.
     if (failure instanceof ApiError && failure.status === 401) {
       connectionError.value = t('app.tokenInvalid')
+    }
+    else if (!(failure instanceof ApiError)) {
+      try { sidecarDiagnostic.value = await getSidecarDiagnostic() } catch { /* Not running in the shell. */ }
+      if (sidecarDiagnostic.value?.failures) {
+        connectionError.value = t('app.cannotConnect')
+        api.value = null
+        if (poller !== undefined) clearInterval(poller)
+        if (approvalPoller !== undefined) clearInterval(approvalPoller)
+      }
     }
 
     stale.value = summary.value !== null
@@ -366,17 +377,16 @@ async function waitForApi(client: PartnerApi): Promise<'ok' | 'unauthorized' | '
     if (Date.now() > deadline) {
       return 'unavailable'
     }
+    try { sidecarDiagnostic.value = await getSidecarDiagnostic() } catch { /* Browser or shell unavailable. */ }
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
 }
 
-onMounted(async () => {
-  applyTheme(theme.value)
-  applyReducedTransparency(readReducedTransparency())
+async function connect(): Promise<void> {
+  if (connecting.value) return
+  connecting.value = true
+  try {
 
-  // On the window, not on the shell: a shortcut has to work wherever the caret is, including inside the
-  // composer. `isTyping` keeps the digit keys out of a message.
-  window.addEventListener('keydown', onShortcut)
 
   const resolved = resolveConnection()
   if (!resolved.ok) {
@@ -415,6 +425,21 @@ onMounted(async () => {
       void refreshSummary()
     }
   }, APPROVAL_POLL_MS)
+  } finally {
+    connecting.value = false
+  }
+}
+
+async function retryConnection(): Promise<void> {
+  try { await retrySidecar() } catch { /* A browser has no sidecar. */ }
+  await connect()
+}
+
+onMounted(async () => {
+  applyTheme(theme.value)
+  applyReducedTransparency(readReducedTransparency())
+  window.addEventListener('keydown', onShortcut)
+  await connect()
 })
 
 onUnmounted(() => {
@@ -515,7 +540,15 @@ onUnmounted(() => {
           />
         </template>
 
-        <p v-else class="error empty g-connect" data-test="connection-error">{{ connectionError }}</p>
+        <div v-else class="error empty g-connect" data-test="connection-error">
+          <p>{{ connectionError }}</p>
+          <template v-if="sidecarDiagnostic?.failures">
+            <p>{{ sidecarDiagnostic.error }}</p>
+            <p>{{ t('app.sidecarFailures') }}: {{ sidecarDiagnostic.failures }} · {{ t('app.sidecarExitCode') }}: {{ sidecarDiagnostic.exitCode ?? '—' }}</p>
+            <p>{{ t('app.sidecarLog') }}: {{ sidecarDiagnostic.logPath ?? '—' }}</p>
+          </template>
+          <button v-if="!connecting" type="button" @click="retryConnection">{{ t('app.retry') }}</button>
+        </div>
       </main>
 
       <StatusBar

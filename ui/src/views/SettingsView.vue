@@ -4,13 +4,17 @@ import Icon from '../components/Icon.vue'
 import McpView from './McpView.vue'
 import PromptsView from './PromptsView.vue'
 import SkillsView from './SkillsView.vue'
+import PetSettingsPanel from './PetSettingsPanel.vue'
+import EngineSettingsPanel from './EngineSettingsPanel.vue'
+import VoiceInputSettingsPanel from './VoiceInputSettingsPanel.vue'
+import VoiceOutputSettingsPanel from './VoiceOutputSettingsPanel.vue'
 import HintTip from '../components/HintTip.vue'
 import GearTable from '../components/GearTable.vue'
 import SaveBar from '../components/SaveBar.vue'
 import Segmented from '../components/Segmented.vue'
 import SettingRow from '../components/SettingRow.vue'
 import TestButton from '../components/TestButton.vue'
-import { INPUT_MODES } from '../api'
+import { ApiError, INPUT_MODES } from '../api'
 import { version as appVersion } from '../../package.json'
 import { LOCALES, LOCALE_NAMES, locale, setLocale, t, type Locale, type MessageKey, tr } from '../i18n'
 import { normalizeGear } from '../gears'
@@ -64,8 +68,11 @@ const DEFAULT_REASONING_GEARS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
 const props = defineProps<{ api: PartnerApiSurface; theme?: Theme | undefined; page?: 'pet' | undefined }>()
 const emit = defineEmits<{ saved: []; changed: []; navigate: [key: string]; 'set-theme': [theme: Theme] }>()
 
+// A server-generated guard includes even write-only and service settings omitted from the view.
+const rebaseGuard = ref<string | undefined>()
 /** The form is a projection of the stored settings; nothing here is authoritative until it is saved. */
 const form = reactive<RuntimeSettings>({
+  revision: 0,
   input: {
     enabled: false,
     deviceId: null,
@@ -146,6 +153,7 @@ const apiKeyEdited = ref(false)
  * </para>
  */
 const stored = ref<string | null>(null)
+const settingsBusy = ref(false)
 
 function fingerprint(): string {
   return JSON.stringify({
@@ -338,7 +346,9 @@ const LOCAL_ENGINE_DEFAULTS = {
   kws: { command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103 },
 } as const
 
-function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
+function apply(settings: RuntimeSettings & { rebaseGuard?: string; model: { apiKeySet?: boolean } }) {
+  form.revision = settings.revision
+  rebaseGuard.value = settings.rebaseGuard
   Object.assign(form.input, settings.input)
   Object.assign(form.output, settings.output)
   Object.assign(form.asr, settings.asr)
@@ -423,19 +433,22 @@ function apply(settings: RuntimeSettings & { model: { apiKeySet?: boolean } }) {
 }
 
 async function refresh() {
+  if (settingsBusy.value || cloneBusy.value) return
+  settingsBusy.value = true
   error.value = ''
   try {
     apply(await props.api.settings())
     voice.value = await props.api.voice()
     devices.value = await props.api.devices()
+    await refreshWeb()
+    await refreshEnginePackage()
+    await refreshPetCore()
+    await refreshPetModels()
   } catch (failure) {
     error.value = String(failure)
+  } finally {
+    settingsBusy.value = false
   }
-
-  await refreshWeb()
-  await refreshEnginePackage()
-  await refreshPetCore()
-  await refreshPetModels()
 }
 
 /**
@@ -468,7 +481,6 @@ const engineManualOpen = ref(false)
 const engineManualRoot = ref('')
 let enginePackageTimer: ReturnType<typeof setInterval> | null = null
 
-const ENGINE_NAMES = { tts: tr('朗读引擎'), kws: tr('唤醒与识别引擎') } as const
 
 const downloadRunning = computed(() => {
   const phase = enginePackage.value?.download.phase
@@ -616,7 +628,6 @@ async function refreshEnginePackage() {
   try {
     enginePackage.value = await props.api.enginePackage()
     syncEnginePolling()
-    fillEngineDefaults()
   } catch {
     // When unreadable (for example an older server), treat the module as absent instead of blanking the page.
     enginePackage.value = null
@@ -686,7 +697,6 @@ function engineStateClass(engine: WebEngineView): string {
   return engine.cooling || engine.strikes > 0 ? 'is-warn' : 'is-ok'
 }
 
-const cloneInput = ref<HTMLInputElement | null>(null)
 const cloneBusy = ref(false)
 const cloneError = ref('')
 const cloneName = computed(() => (form.tts.speakerRefPath ?? '').split(/[\/]/).pop() ?? '')
@@ -696,7 +706,7 @@ async function onCloneFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
+  if (!file || settingsBusy.value || cloneBusy.value) return
   cloneBusy.value = true
   cloneError.value = ''
   try {
@@ -714,10 +724,13 @@ function blankToNull(value: string | null | undefined): string | null {
 }
 
 async function persist() {
+  if (settingsBusy.value || cloneBusy.value) return
+  settingsBusy.value = true
   error.value = ''
   status.value = ''
 
   const payload: RuntimeSettings = {
+    revision: form.revision,
     desktop: { ...form.desktop },
     input: { ...form.input },
     output: { ...form.output },
@@ -785,12 +798,15 @@ async function persist() {
     // Runs before `apply()`, which reads `petSpawned` to decide what the switch shows; syncing after it would
     // leave the form dirty again. Only after a successful save: a refused save must not leave the pet showing
     // while the settings say it is off.
+    petShellError.value = ''
+    petRetryTarget.value = null
     if (shellPrefs && payload.pet.enabled !== wasSpawned) {
       try {
         await setPetEnabled(payload.pet.enabled)
         petSpawned.value = payload.pet.enabled
       } catch (shellFailure) {
-        shellPrefError.value = t('settings.general.petFailed', { error: failureText(shellFailure) })
+        petRetryTarget.value = payload.pet.enabled
+        petShellError.value = t('settings.general.petFailed', { error: failureText(shellFailure) })
       }
     }
 
@@ -801,7 +817,7 @@ async function persist() {
     await refreshWeb()
 
     const at = new Date().toLocaleTimeString(locale.value)
-    status.value = saved.compaction
+    status.value = petRetryTarget.value !== null ? '' : saved.compaction
       ? t('已保存 · {at} · {reason}', { at: at, reason: saved.compaction.reason })
       : t('已保存 · {at}', { at: at })
 
@@ -809,7 +825,11 @@ async function persist() {
     // just edited here would not be the ones offered in the session view.
     emit('saved')
   } catch (failure) {
-    error.value = String(failure)
+    error.value = failure instanceof ApiError && failure.status === 409
+      ? t('设置已被其他页面修改。请先记录未保存的更改，再刷新并重新编辑。')
+      : String(failure)
+  } finally {
+    settingsBusy.value = false
   }
 }
 
@@ -931,7 +951,13 @@ function applyCarried(settings: RuntimeSettings) {
 async function onChildChanged(): Promise<void> {
   emit('changed')
   try {
-    applyCarried(await props.api.settings())
+    const latest = await props.api.settings()
+    // Only embedded-page fields may have changed. Never accept a revision merely because the visible form matches:
+    // the guard also covers secrets and services that the settings response deliberately does not expose.
+    if (rebaseGuard.value && latest.rebaseGuard === rebaseGuard.value) {
+      applyCarried(latest)
+      form.revision = latest.revision
+    }
   } catch {
     // The embedded page shows its own failure; the carried copy is re-read on the next refresh.
   }
@@ -960,6 +986,32 @@ const shellPrefs = hasShellPrefs()
 const autostart = ref(false)
 const trayEnabled = ref(false)
 const shellPrefError = ref('')
+const petShellError = ref('')
+const petResetError = ref('')
+const petRetryTarget = ref<boolean | null>(null)
+
+async function retryPetWindow(): Promise<void> {
+  const target = petRetryTarget.value
+  if (target === null || settingsBusy.value) return
+  settingsBusy.value = true
+  petShellError.value = ''
+  try {
+    await setPetEnabled(target)
+    const previous = petSpawned.value
+    petSpawned.value = target
+    if (form.pet.enabled === previous) form.pet.enabled = target
+    if (stored.value !== null) {
+      const baseline = JSON.parse(stored.value)
+      baseline.pet.enabled = target
+      stored.value = JSON.stringify(baseline)
+    }
+    petRetryTarget.value = null
+  } catch (failure) {
+    petShellError.value = t('settings.general.petFailed', { error: failureText(failure) })
+  } finally {
+    settingsBusy.value = false
+  }
+}
 
 async function onAutostart(value: boolean): Promise<void> {
   shellPrefError.value = ''
@@ -1044,6 +1096,12 @@ function copyProfile(profile: PetModelProfile): PetModelProfile {
   return {
     motions: Object.fromEntries(Object.entries(profile.motions ?? {}).map(([key, ref]) => [key, { ...ref }])),
     expressions: Object.fromEntries(Object.entries(profile.expressions ?? {}).map(([key, ref]) => [key, { ...ref }])),
+    parameters: { ...(profile.parameters ?? {}) },
+    amplitude: profile.amplitude ?? 1,
+    procedural: Object.fromEntries(Object.entries(profile.procedural ?? {}).map(([action, config]) => [action, {
+      ...config,
+      extraTracks: (config.extraTracks ?? []).map((track) => ({ ...track, keys: track.keys.map((key) => ({ ...key })) })),
+    }])),
     headBottom: profile.headBottom ?? 0.35,
     faceBottom: profile.faceBottom ?? 0.55,
     defaultExpression: profile.defaultExpression ?? null,
@@ -1432,11 +1490,11 @@ function setGreetingTimes(event: Event): void {
 }
 
 async function resetPetWindow(): Promise<void> {
-  shellPrefError.value = ''
+  petResetError.value = ''
   try {
     await resetPetPosition()
   } catch (error) {
-    shellPrefError.value = t('重置位置失败：{error}', { error: error instanceof Error ? error.message : String(error) })
+    petResetError.value = t('重置位置失败：{error}', { error: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -1713,11 +1771,11 @@ defineExpose({ refresh, hasUnsavedChanges })
           </button>
         </nav>
 
-        <div class="settings-body">
+        <fieldset class="settings-body" data-test="settings-editor" :disabled="settingsBusy || cloneBusy">
           <section v-show="section === 'general'" class="panel" data-test="settings-section-general">
             <header class="panel-head"><h2>{{ t('settings.section.general') }}</h2></header>
             <div class="g-card">
-              <SettingRow :label="t('settings.general.language')" :hint="t('settings.general.languageHint')">
+              <SettingRow :label="t('settings.general.language')" :hint="t('settings.general.languageHint')" group>
                 <Segmented
                   :model-value="locale"
                   :options="LOCALE_OPTIONS"
@@ -1932,276 +1990,23 @@ defineExpose({ refresh, hasUnsavedChanges })
 
           </section>
 
-          <section v-show="section === 'input'" class="panel" data-test="settings-section-input">
-            <header class="panel-head">
-              <h2>{{ t('语音输入') }}</h2>
-              <span v-if="wakeGateOn" class="g-chip is-accent" data-test="wake-mode">
-                {{ t('唤醒模式') }}
-                <HintTip align="end">{{ t('平时只听不转写；叫到唤醒词后的一段话才会转写，说完自动回到待命。') }}</HintTip>
-              </span>
-            </header>
+          <VoiceInputSettingsPanel
+            v-show="section === 'input'"
+            :form="form" :voice="voice" :voice-test="voiceTest" :voice-testing="voiceTesting"
+            :dirty="dirty" :advanced="advanced" :toggle-advanced="toggleAdvanced"
+            :test-stale="testStale" :test-connection="testConnection" :input-options="inputOptions"
+            :wake-gate-on="wakeGateOn" :level-percent="levelPercent" :threshold-percent="thresholdPercent"
+            :keyword-drafts="keywordDrafts" :on-engine-keywords-input="onEngineKeywordsInput"
+          />
 
-            <div class="g-card">
-              <div class="g-card-head"><h3>{{ t('麦克风') }}</h3></div>
-              <SettingRow :label="t('开启语音输入')" :hint="t('关闭后会立刻释放麦克风，其他软件可以使用。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.enabled" data-test="input-enabled" />
-              </SettingRow>
-              <SettingRow :label="t('麦克风')" :hint="t('选你正在用的那个，名称支持模糊匹配。列表为空时可以手动输入。')">
-                <select v-if="inputOptions.length > 0" v-model="form.input.deviceId" data-test="input-device">
-                  <option :value="null">{{ t('（默认设备）') }}</option>
-                  <option v-for="name in inputOptions" :key="name" :value="name">{{ name }}</option>
-                </select>
-                <input v-else type="text" v-model="form.input.deviceId" :placeholder="t('（默认设备）')" data-test="input-device" />
-              </SettingRow>
-
-              <p class="status-line" data-test="input-effect">
-                <template v-if="voice?.input?.running">
-                  {{ t('运行中 · {device} · 已识别 {count} 段', { device: voice.input.device, count: voice.input.count }) }}<template v-if="wakeGateOn"> · {{ voice.input.awake ? t('已唤醒') : t('等唤醒词') }}</template>
-                </template>
-                <template v-else-if="voice?.input">{{ t('未运行 · {reason}', { reason: voice.input.reason }) }}</template>
-                <template v-else>{{ t('保存后可以看到运行状态') }}</template>
-              </p>
-
-              <!--
-                电平条：死麦、安静房间、说话低于阈值三种情况在文字状态上长得一模一样，只有实时电平能分开。
-                阈值刻度画在同一条上，因为「电平够不够得着阈值」正是用户要判断的那件事。
-              -->
-              <div v-if="voice?.input?.running" class="level" data-test="input-level">
-                <div class="level-track">
-                  <div class="level-fill" :style="{ width: levelPercent }"></div>
-                  <div class="level-mark" :style="{ left: thresholdPercent }"></div>
-                </div>
-                <span class="level-readout">
-                  {{ t('音量 {toFixed}', { toFixed: (voice.input.rms ?? 0).toFixed(4) }) }}
-                  <HintTip align="end">
-                    {{ t('竖线是「安静音量线」{silenceThreshold}：音量够不到它，就当作你没在说话。', { silenceThreshold: form.input.silenceThreshold }) }}
-                    <template v-if="voice.input.thresholdMisconfigured">{{ t('环境底噪约 {toFixed}。', { toFixed: (voice.input.ambientRms ?? 0).toFixed(4) }) }}</template>
-                  </HintTip>
-                </span>
-              </div>
-              <p v-if="voice?.input?.thresholdMisconfigured" class="warn-line" data-test="input-threshold-warning">
-                {{ t('安静音量线 {silenceThreshold} 不高于环境底噪 {toFixed}： 一直判断不出你说完了，一段话不会结束，也就不会有转写。', { silenceThreshold: form.input.silenceThreshold, toFixed: (voice.input.ambientRms ?? 0).toFixed(4) }) }}
-              </p>
-            </div>
-
-            <div class="g-card">
-              <div class="g-card-head"><h3>{{ t('唤醒') }}</h3></div>
-              <SettingRow :label="t('唤醒词')" :disabled="!form.local.kws.enabled">
-                <template #hint>
-                  {{ t('用逗号分隔多个，例如「小克小克，小柯小柯」。留空则保留引擎里现有的词。需要先开启「本地引擎」里的唤醒与识别引擎。') }}
-                </template>
-                <input
-                  type="text"
-                  :value="keywordDrafts.kws"
-                  :placeholder="t('小克小克，小柯小柯')"
-                  data-test="local-kws-keywords"
-                  @input="onEngineKeywordsInput('kws', $event)"
-                />
-              </SettingRow>
-              <SettingRow :label="t('唤醒时叮一声')" :hint="t('听到唤醒词时响一下。需要同时开启语音输出。')" data-test="wake-tone">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.wakeTone" />
-              </SettingRow>
-
-              <SettingRow :label="t('说话时打断助手')" :hint="t('助手正在说话时，你开口说一段话（持续约半秒）就让它停下。没有回声消除，外放时助手自己的声音会被麦克风听见而打断自己，建议只在戴耳机时打开。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.bargeIn" data-test="barge-in" />
-              </SettingRow>
-            </div>
-
-            <div class="g-card">
-              <div class="g-card-head">
-                <h3>{{ t('识别服务') }}</h3>
-                <TestButton
-                  kind="asr"
-                  :label="t('测试')"
-                  :testing="voiceTesting.asr === true"
-                  :result="voiceTest.asr"
-                  :stale="testStale('asr')"
-                  :unsaved="dirty"
-                  data-test="asr-test-row"
-                  @test="testConnection('asr')"
-                />
-              </div>
-              <SettingRow :label="t('接口类型')" :hint="t('按你的识别服务支持的方式选，不确定就看它的文档。')">
-                <select v-model="form.asr.protocol" data-test="asr-protocol">
-                  <option value="sensevoice">{{ t('本地') }}</option>
-                  <option value="openai">{{ t('通用标准接口 · audio/transcriptions') }}</option>
-                  <option v-if="form.asr.protocol === 'chat-audio'" value="chat-audio">{{ t('对话接口 · chat/completions（旧）') }}</option>
-                </select>
-              </SettingRow>
-              <SettingRow :label="t('服务地址')" :hint="t('识别服务（ASR）的网址。留空则不会把语音转成文字。')">
-                <input type="text" v-model="form.asr.baseUrl" placeholder="http://127.0.0.1:45101" data-test="asr-base-url" />
-              </SettingRow>
-              <SettingRow :label="t('模型')" :hint="t('识别服务里的模型名。')">
-                <input type="text" v-model="form.asr.model" data-test="asr-model" />
-              </SettingRow>
-            </div>
-
-            <div class="g-card">
-              <div class="g-card-head"><h3>{{ t('断句') }}</h3></div>
-              <SettingRow :label="t('多小声算安静')" :hint="t('音量低于这个值，就当作你没在说话。环境吵就调大，老是收不到你说话就调小。默认 0.003。')">
-                <input type="number" step="0.001" min="0" v-model.number="form.input.silenceThreshold" />
-              </SettingRow>
-              <SettingRow :label="t('停顿多久算说完')" :unit="t('毫秒')" :hint="t('你停顿超过这个时间，就当这句话说完了。默认 1200，即 1.2 秒。')">
-                <input type="number" v-model.number="form.input.utteranceGapMs" data-test="utterance-gap" />
-              </SettingRow>
-            </div>
-
-            <button class="ghost more" :aria-expanded="advanced.input === true" data-test="settings-more-input" @click="toggleAdvanced('input')">
-              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.input === true }" />
-              {{ t('更多选项') }}
-            </button>
-            <div v-show="advanced.input === true" class="g-card">
-              <div class="g-card-head"><h3>{{ t('断句') }}</h3></div>
-              <SettingRow :label="t('唤醒后等你开口')" :unit="t('毫秒')" :hint="t('叫醒助手后，最多等你多久开口；一开口就改按「停顿多久算说完」判断。默认 5000，即 5 秒。')" data-test="wake-timeout">
-                <input type="number" v-model.number="form.input.wakeTimeoutMs" />
-              </SettingRow>
-              <SettingRow :label="t('边说边识别')" :hint="t('开启后一句一句识别，反应更快；关闭则等整段说完再识别。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.input.asrStream" data-test="input-asr-stream" />
-              </SettingRow>
-              <SettingRow :label="t('句内停顿')" :unit="t('毫秒')" :hint="t('只在「边说边识别」开启时有用：停顿超过这个时间，就先识别前面那一句。默认 450。')">
-                <input type="number" v-model.number="form.input.sentenceGapMs" />
-              </SettingRow>
-              <SettingRow :label="t('单次识别最长')" :unit="t('秒')" :hint="t('一次最多把多长的录音送去识别。默认 8 秒。')">
-                <input type="number" v-model.number="form.input.windowSeconds" />
-              </SettingRow>
-              <div class="g-card-head"><h3>{{ t('识别服务') }}</h3></div>
-              <SettingRow :label="t('语言')" :hint="t('告诉模型你说的是什么语言，如 Chinese。可以避免结果前面多出「language:」之类的前缀。')">
-                <input type="text" v-model="form.asr.language" placeholder="Chinese" />
-              </SettingRow>
-              <SettingRow :label="t('连接等待')" :unit="t('毫秒')" :hint="t('连不上服务时，等多久放弃。')">
-                <input type="number" v-model.number="form.asr.connectTimeoutMs" />
-              </SettingRow>
-              <SettingRow :label="t('单次等待')" :unit="t('毫秒')" :hint="t('设得比较短：卡住的那一段会整段重试，等太久会让录音堆积丢失。')">
-                <input type="number" v-model.number="form.asr.readTimeoutMs" />
-              </SettingRow>
-              <SettingRow :label="t('采样率')" unit="Hz" :hint="t('录音的音质参数，一般不用改。默认 16000。')">
-                <input type="number" v-model.number="form.asr.sampleRate" />
-              </SettingRow>
-            </div>
-          </section>
-
-          <section v-show="section === 'output'" class="panel" data-test="settings-section-output">
-            <header class="panel-head"><h2>{{ t('语音输出') }}</h2></header>
-
-            <div class="g-card">
-              <div class="g-card-head"><h3>{{ t('朗读') }}</h3></div>
-              <SettingRow :label="t('开启朗读')" :hint="t('助手的回复会念出来。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.output.enabled" data-test="output-enabled" />
-              </SettingRow>
-              <SettingRow :label="t('扬声器')" :hint="t('选声音从哪里出来。')">
-                <select v-if="outputOptions.length > 0" v-model="form.output.deviceId" data-test="output-device">
-                  <option :value="null">{{ t('（默认设备）') }}</option>
-                  <option v-for="name in outputOptions" :key="name" :value="name">{{ name }}</option>
-                </select>
-                <input v-else type="text" v-model="form.output.deviceId" :placeholder="t('（默认设备）')" data-test="output-device" />
-              </SettingRow>
-              <SettingRow :label="t('语速')" :hint="t('1 是正常，0.8 慢一点，1.2 快一点。')">
-                <input type="number" step="0.05" v-model.number="form.output.speed" />
-              </SettingRow>
-              <SettingRow :label="t('朗读时不听麦克风')" :hint="t('避免助手把自己的声音当成你在说话。建议保持开启。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.output.muteDuringTts" data-test="output-mute-during-tts" />
-              </SettingRow>
-              <SettingRow :label="t('最小句长')" :unit="t('字')" :hint="t('朗读时，断句点之间不足这个字数就连成一句，不单独断开。默认 10。')" data-test="min-sentence-chars">
-                <input type="number" v-model.number="form.output.minSentenceChars" />
-              </SettingRow>
-              <SettingRow :label="t('无标点时多少字断开')" :unit="t('字')" :hint="t('整句没有标点时，超过这个字数就强行断句。默认 40。')" data-test="max-split-chars">
-                <input type="number" v-model.number="form.output.maxSplitChars" />
-              </SettingRow>
-              <p class="status-line" data-test="output-effect">
-                <template v-if="voice?.output.running">{{ t('运行中 · {device} · 已朗读 {count} 句', { device: voice.output.device, count: voice.output.count }) }}</template>
-                <template v-else-if="voice">{{ t('未运行 · {reason}', { reason: voice.output.reason }) }}</template>
-                <template v-else>{{ t('保存后可以看到运行状态') }}</template>
-              </p>
-            </div>
-
-            <div class="g-card">
-              <div class="g-card-head">
-                <h3>{{ t('朗读服务') }}</h3>
-                <TestButton
-                  kind="tts"
-                  :label="t('测试')"
-                  :testing="voiceTesting.tts === true"
-                  :result="voiceTest.tts"
-                  :stale="testStale('tts')"
-                  :unsaved="dirty"
-                  data-test="tts-test-row"
-                  @test="testConnection('tts')"
-                />
-              </div>
-              <SettingRow :label="t('接口类型')" :hint="t('选和你的朗读服务一致的那种。')">
-                <select v-model="form.tts.protocol" data-test="tts-protocol">
-                  <option value="local">{{ t('本地') }}</option>
-                  <option value="openai">{{ t('通用标准接口 · audio/speech') }}</option>
-                  <option v-if="form.tts.protocol === 'native'" value="native">{{ t('本地服务 · 流式（旧）') }}</option>
-                </select>
-              </SettingRow>
-              <SettingRow :label="t('服务地址')" :hint="t('朗读服务（TTS）的网址。留空则助手的回复不会被念出来。')">
-                <input type="text" v-model="form.tts.baseUrl" placeholder="http://127.0.0.1:45102" data-test="tts-base-url" />
-              </SettingRow>
-              <template v-if="form.tts.protocol === 'native'">
-                <SettingRow :label="t('语言')" :hint="t('本地服务用的语言代码，例如 zh。')">
-                  <input type="text" v-model="form.tts.lang" />
-                </SettingRow>
-                <SettingRow :label="t('克隆音色的参考音频')" :hint="t('填本地音频文件的路径，朗读时会模仿这个声音。只在启动时读取一次。')">
-                  <input type="text" v-model="form.tts.speakerRefPath" :placeholder="t('（不使用克隆）')" />
-                </SettingRow>
-              </template>
-              <template v-else-if="form.tts.protocol === 'local'">
-                <SettingRow :label="t('音色')" :hint="t('留空用引擎启动时的默认音色。也可以填 engines/tts/output/elaborate 里的音色名，例如 晓晓、心悦。')">
-                  <input type="text" v-model="form.tts.voice" :placeholder="t('（引擎默认）')" data-test="tts-local-voice" />
-                </SettingRow>
-                <SettingRow :label="t('克隆音色')" :hint="t('选一段清晰的人声录音（.wav，几秒到十几秒），朗读时会模仿它的声音。选了之后，上面的音色名不再生效。')">
-                  <div class="clone-pick">
-                    <span class="clone-name" data-test="tts-clone-name">{{ cloneName || t('未选择') }}</span>
-                    <input ref="cloneInput" type="file" accept=".wav,audio/wav,audio/x-wav" hidden data-test="tts-clone-file" @change="onCloneFile" />
-                    <button class="ghost" type="button" data-test="tts-clone-pick" :disabled="cloneBusy" @click="cloneInput?.click()">{{ t('选择音频文件') }}</button>
-                    <button v-if="form.tts.speakerRefPath" class="ghost" type="button" data-test="tts-clone-clear" @click="form.tts.speakerRefPath = null">{{ t('清除') }}</button>
-                  </div>
-                  <p v-if="cloneError" class="pkg-note" role="alert" data-test="tts-clone-error">{{ cloneError }}</p>
-                </SettingRow>
-                <SettingRow :label="t('参考文本')" :hint="t('参考录音里实际说的话，逐字填写。填了克隆更像；留空按零样本克隆，只取音色。填错会乱读。')">
-                  <input type="text" v-model="form.tts.speakerRefText" :placeholder="t('（留空 = 零样本克隆）')" data-test="tts-clone-ref-text" />
-                </SettingRow>
-              </template>
-              <template v-else-if="form.tts.protocol === 'openai'">
-                <SettingRow :label="t('模型')" :hint="t('例如 tts-1。')">
-                  <input type="text" v-model="form.tts.model" placeholder="tts-1" />
-                </SettingRow>
-                <SettingRow :label="t('音色')" :hint="t('服务提供的音色名，例如 alloy。')">
-                  <input type="text" v-model="form.tts.voice" placeholder="alloy" />
-                </SettingRow>
-                <SettingRow :label="t('语速')" :hint="t('这个接口自己的语速参数。')">
-                  <input type="number" step="0.05" v-model.number="form.tts.speed" />
-                </SettingRow>
-              </template>
-              <audio v-if="testTtsUrl" controls :src="testTtsUrl" data-test="tts-test-audio" class="tts-test-audio" />
-            </div>
-
-            <button class="ghost more" :aria-expanded="advanced.output === true" data-test="settings-more-output" @click="toggleAdvanced('output')">
-              <Icon name="chevron-down" :size="14" class="more-chevron" :class="{ 'is-open': advanced.output === true }" />
-              {{ t('更多选项') }}
-            </button>
-            <div v-show="advanced.output === true" class="g-card">
-              <SettingRow :label="t('句间停顿')" :unit="t('毫秒')" :hint="t('两段话之间加入的停顿。用克隆音色时固定为 0。')">
-                <input type="number" v-model.number="form.output.gapMs" />
-              </SettingRow>
-              <SettingRow :label="t('念完后再静音')" :unit="t('毫秒')" :hint="t('朗读结束后继续不听麦克风的时间，避免尾音被听进去。默认 400。')">
-                <input type="number" v-model.number="form.output.drainMs" />
-              </SettingRow>
-              <SettingRow :label="t('播放采样率')" unit="Hz" :hint="t('必须和朗读服务输出的一致，否则声音会变快或变慢。')">
-                <input type="number" v-model.number="form.output.sampleRate" />
-              </SettingRow>
-              <SettingRow :label="t('服务返回采样率')" unit="Hz" :hint="t('必须和服务实际返回的一致，否则播放速度会不对。')">
-                <input type="number" v-model.number="form.tts.sampleRate" />
-              </SettingRow>
-              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('超过这个时间还没合成完，就放弃这一句。')">
-                <input type="number" v-model.number="form.tts.timeoutSeconds" />
-              </SettingRow>
-              <SettingRow :label="t('分段大小')" :unit="t('毫秒')" :hint="t('边合成边播放时每一小段的长度，一般不用改。')">
-                <input type="number" v-model.number="form.tts.chunkMs" />
-              </SettingRow>
-            </div>
-          </section>
+          <VoiceOutputSettingsPanel
+            v-show="section === 'output'"
+            :form="form" :voice="voice" :voice-test="voiceTest" :voice-testing="voiceTesting"
+            :dirty="dirty" :advanced="advanced" :toggle-advanced="toggleAdvanced"
+            :test-stale="testStale" :test-connection="testConnection" :output-options="outputOptions"
+            :clone-name="cloneName" :clone-busy="cloneBusy" :clone-error="cloneError"
+            :on-clone-file="onCloneFile" :test-tts-url="testTtsUrl"
+          />
 
           <section v-show="section === 'desktop'" class="panel" data-test="settings-section-desktop">
             <header class="panel-head"><h2>{{ t('电脑操控') }}</h2></header>
@@ -2260,370 +2065,30 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <section v-if="petAvailable" v-show="section === 'pet'" class="panel" data-test="settings-section-pet">
-            <header class="panel-head">
-              <h2>{{ t('settings.section.pet') }}</h2>
-              <span class="g-chip" :class="form.pet.enabled ? 'is-ok' : ''" data-test="pet-effect">
-                {{ form.pet.enabled ? t('已开启') : t('已关闭') }}
-              </span>
-              <HintTip align="end">
-                {{ t('桌宠只读取会话里已经定稿的助手回复，按关键词判断情绪，不参与对话，也不会额外请求模型。') }}
-              </HintTip>
-            </header>
-
-            <div class="g-card">
-              <SettingRow :label="t('启用桌宠')">
-                <template #hint>
-                  {{ t('开启后，桌面上会出现一个 Live2D 角色。它只读取会话日志里已经定稿的回复，不参与对话，也不额外请求模型。') }}
-                </template>
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.enabled" data-test="pet-enabled" />
-              </SettingRow>
-              <SettingRow :label="t('置顶')" :hint="t('开启后桌宠始终在其他窗口之上；关掉它可以被别的窗口盖住。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.alwaysOnTop" data-test="pet-always-on-top" />
-              </SettingRow>
-              <SettingRow :label="t('透明区域鼠标穿透')">
-                <template #hint>{{ t('开启后，点击角色没画到的透明部分会落到后面的窗口上；关闭则整块窗口都吃点击。') }}</template>
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.clickThroughTransparent" data-test="pet-click-through" />
-              </SettingRow>
-              <SettingRow :label="t('播放动作音效')" :hint="t('动作自带音效时播放。默认关闭，免得桌宠突然出声。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.pet.motionSound" data-test="pet-motion-sound" />
-              </SettingRow>
-            </div>
-
-            <div class="g-card" data-test="pet-core">
-              <div class="g-card-head">
-                <h3>
-                  Cubism Core
-                  <HintTip>
-                    {{ t('Live2D 的运行时，不随应用分发：需要你自己从 Live2D 官网下载 Cubism 5 SDK for Web R5，并同意它的协议。只接受 CubismSdkForWeb-5-r.5.zip，整包哈希会逐字节校验。') }}
-                  </HintTip>
-                </h3>
-                <span class="g-chip" :class="petCore?.installed ? 'is-ok' : 'is-warn'" data-test="pet-core-state">
-                  <template v-if="petCore?.installed">{{ t('已安装 R{sdk} · {hash}', { sdk: petCore.sdk, hash: petCoreHash }) }}</template>
-                  <template v-else>{{ t('未安装') }}</template>
-                </span>
-              </div>
-
-              <SettingRow :label="t('下载地址')" :hint="t('在浏览器里打开，下载 R5 的 zip。导入之后它只留在本机，仓库和安装包都不含它。')">
-                <code class="pkg-root" data-test="pet-core-url">{{ PET_CORE_URL }}</code>
-                <button class="ghost" type="button" data-test="pet-core-copy" @click="copyText(PET_CORE_URL, t('已复制下载地址'))">{{ t('复制') }}</button>
-              </SettingRow>
-
-              <SettingRow :label="t('我已从 Live2D 官网下载并同意其协议')">
-                <template #hint>{{ t('这是导入的前提：Core 只由你自己下载，本应用不分发、不镜像。') }}</template>
-                <input type="checkbox" class="g-switch" role="switch" v-model="petCoreConsent" data-test="pet-core-consent" />
-              </SettingRow>
-
-              <SettingRow :label="t('Core 压缩包')" :hint="t('填 CubismSdkForWeb-5-r.5.zip 的完整路径，然后点导入。')">
-                <div class="pkg-actions">
-                  <input
-                    type="text"
-                    v-model="petCorePath"
-                    :placeholder="t('例如 D:/Downloads/CubismSdkForWeb-5-r.5.zip')"
-                    data-test="pet-core-path"
-                    @keydown.enter.prevent="importPetCore"
-                  />
-                  <button class="primary" type="button" data-test="pet-core-import" :disabled="!petCoreConsent || petCoreBusy || petCorePath.trim() === ''" @click="importPetCore">
-                    {{ petCoreBusy ? t('导入中…') : t('导入') }}
-                  </button>
-                </div>
-              </SettingRow>
-              <p v-if="petCoreError" class="warn-line" role="alert" data-test="pet-core-error">{{ petCoreError }}</p>
-            </div>
-
-            <div class="g-card" data-test="pet-models">
-              <div class="g-card-head">
-                <h3>{{ t('模型') }}</h3>
-                <button class="ghost icon-only" type="button" :title="t('重新读取')" :aria-label="t('重新读取模型列表')" data-test="pet-models-refresh" @click="refreshPetModels">
-                  <Icon name="refresh" :size="14" /><span class="sr-only">{{ t('刷新') }}</span>
-                </button>
-              </div>
-
-              <!-- Said in a sentence rather than behind an ⓘ: whether the app carries models at all is not a
-                   footnote, and "it did not work" reads very differently depending on the answer. -->
-              <p class="callout" data-test="pet-models-notice">
-                {{ t('模型不随应用分发，版权属于各自的作者。仓库和安装包都不含任何模型，你自己导入的只留在本机。') }}
-              </p>
-
-              <p v-if="petModels.length === 0" class="muted" data-test="pet-models-empty">{{ t('还没有导入模型。') }}</p>
-              <div v-for="model in petModels" :key="model.id" class="pet-model-row" :data-test="`pet-model-${model.id}`">
-                <span class="pet-model-name" :title="model.name">
-                  {{ model.name }}
-                  <span v-if="model.id === form.pet.activeModelId" class="engine-tag">{{ t('当前') }}</span>
-                </span>
-                <span class="pet-model-meta" data-test="pet-model-meta">
-                  {{ t('{count} 个动作 · {expressions} 个表情 · {size}', { count: model.motions.length, expressions: model.expressions.length, size: formatBytes(model.bytes) }) }}
-                  · {{ model.hasHitAreas ? t('有点击区域') : t('没有点击区域') }}
-                </span>
-                <button
-                  class="ghost"
-                  type="button"
-                  :disabled="model.id === form.pet.activeModelId"
-                  :data-test="`pet-model-current-${model.id}`"
-                  @click="form.pet.activeModelId = model.id"
-                >{{ t('设为当前') }}</button>
-                <button class="ghost" type="button" :data-test="`pet-model-delete-${model.id}`" @click="deletePetModel(model.id)">
-                  <Icon name="trash" :size="14" /> {{ petArmedModel === model.id ? t('确认删除') : t('删除') }}
-                </button>
-              </div>
-              <p v-if="petModelsError" class="warn-line" role="alert" data-test="pet-models-error">{{ petModelsError }}</p>
-
-              <SettingRow :label="t('导入模型')" :hint="t('填模型所在的文件夹，或者一个 zip 的完整路径。只复制 model3.json 引用到的文件。')">
-                <div class="pkg-actions">
-                  <input
-                    type="text"
-                    v-model="petModelPath"
-                    :placeholder="t('例如 D:/Live2D/猫猫 或 D:/models/cat.zip')"
-                    data-test="pet-model-path"
-                    @keydown.enter.prevent="importPetModel()"
-                  />
-                  <button class="primary" type="button" data-test="pet-model-import" :disabled="petImportBusy || petModelPath.trim() === ''" @click="importPetModel()">
-                    {{ petImportBusy ? t('导入中…') : t('导入') }}
-                  </button>
-                </div>
-              </SettingRow>
-
-              <!-- Several model3.json in one archive: the server reports the relative paths and imports nothing
-                   until one is named. -->
-              <div v-if="petCandidates.length > 0" class="pet-candidates" data-test="pet-model-candidates">
-                <p class="row-note">{{ t('这个包里有一个以上的 model3.json，选一个要导入的：') }}</p>
-                <SettingRow :label="t('model3.json')">
-                  <select v-model="petCandidateChoice" data-test="pet-model-candidate">
-                    <option v-for="candidate in petCandidates" :key="candidate" :value="candidate">{{ candidate }}</option>
-                  </select>
-                  <button class="primary" type="button" data-test="pet-model-candidate-confirm" @click="importPetModel(petCandidateChoice)">{{ t('导入这个') }}</button>
-                </SettingRow>
-              </div>
-              <p v-if="petImportError" class="warn-line" role="alert" data-test="pet-model-error">{{ petImportError }}</p>
-            </div>
-
-            <div class="g-card" data-test="pet-appearance">
-              <div class="g-card-head"><h3>{{ t('外观') }}</h3></div>
-              <SettingRow :label="t('缩放')" unit="%">
-                <template #hint>{{ t('50%–200%，乘以模型的画布尺寸得到窗口大小，保存后立即生效。') }}</template>
-                <input
-                  type="range"
-                  min="50"
-                  max="200"
-                  step="5"
-                  :value="petScalePercent"
-                  :aria-label="t('缩放')"
-                  data-test="pet-scale"
-                  @input="setScale"
-                />
-                <span class="pet-readout" data-test="pet-scale-readout">{{ petScalePercent }}%</span>
-              </SettingRow>
-              <!-- Immediate, like the other shell commands: where the window sits is not a setting in
-                   runtime.json, so there is nothing here for SaveBar to save. -->
-              <SettingRow v-if="shellPrefs" :label="t('重置位置')">
-                <template #hint>{{ t('把桌宠放回第一次打开时的位置。拖动过之后想归位就点它。') }}</template>
-                <button class="ghost" type="button" data-test="pet-reset-position" @click="resetPetWindow">{{ t('重置位置') }}</button>
-              </SettingRow>
-            </div>
-
-            <div class="g-card" data-test="pet-mapping">
-              <div class="g-card-head">
-                <h3>
-                  {{ t('动作映射') }}
-                  <HintTip>
-                    {{ t('每个动作先按这张表找模型的 motion，找不到就用程序化参数轨道，参数也不存在就跳过。改的是当前模型，换模型各记各的。') }}
-                  </HintTip>
-                </h3>
-                <span v-if="activePetModel" class="g-chip" data-test="pet-mapping-model">{{ activePetModel.name }}</span>
-              </div>
-
-              <p v-if="activePetModel === null" class="muted" data-test="pet-mapping-nomodel">
-                {{ t('还没有选当前模型。导入一个模型并「设为当前」之后，这里才会列出它的动作和表情。') }}
-              </p>
-
-              <template v-else>
-                <SettingRow v-for="action in PET_ACTIONS" :key="action" :label="actionLabel(action)" :data-test="`pet-action-${action}`">
-                  <select
-                    :value="motionValue(activeProfile.motions[action])"
-                    :aria-label="actionLabel(action)"
-                    :data-test="`pet-action-select-${action}`"
-                    @change="setMotion(action, ($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="option in withOption(motionOptions(), motionValue(activeProfile.motions[action]))" :key="option.value" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
-                  <button
-                    class="g-btn"
-                    type="button"
-                    :disabled="!petSpawned"
-                    :title="petSpawned ? undefined : t('桌宠没有打开，先在「通用」里启用')"
-                    :data-test="`pet-action-preview-${action}`"
-                    @click="previewAction(action)"
-                  >
-                    {{ t('预览') }}
-                  </button>
-                </SettingRow>
-
-                <SettingRow v-for="emotion in PET_EMOTIONS" :key="`expression-${emotion}`" :label="t('表情：{emotion}', { emotion: emotionLabel(emotion) })">
-                  <select
-                    :value="expressionValue(activeProfile.expressions[emotion])"
-                    :aria-label="t('表情：{emotion}', { emotion: emotionLabel(emotion) })"
-                    :data-test="`pet-expression-select-${emotion}`"
-                    @change="setExpression(emotion, ($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="option in withOption(expressionOptions(), expressionValue(activeProfile.expressions[emotion]))" :key="option.value" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
-                  <button
-                    class="g-btn"
-                    type="button"
-                    :disabled="!petSpawned"
-                    :title="petSpawned ? undefined : t('桌宠没有打开，先在「通用」里启用')"
-                    :data-test="`pet-expression-preview-${emotion}`"
-                    @click="previewExpression(emotion)"
-                  >
-                    {{ t('预览') }}
-                  </button>
-                </SettingRow>
-
-                <!-- Only meaningful without the model's own hit areas: with them the model says where its head
-                     and face are, and these percentages would be a second opinion nobody asked for. -->
-                <template v-if="activePetModel.hasHitAreas === false">
-                  <SettingRow :label="t('头部下沿')" unit="%">
-                    <template #hint>{{ t('没有点击区域时，按模型高度的这个比例切分头部。默认 35%。') }}</template>
-                    <input type="range" min="0" max="100" step="1" :value="Math.round(activeProfile.headBottom * 100)" data-test="pet-head-bottom" @input="setHeadBottom" />
-                    <span class="pet-readout" data-test="pet-head-bottom-readout">{{ Math.round(activeProfile.headBottom * 100) }}%</span>
-                  </SettingRow>
-                  <SettingRow :label="t('面部下沿')" unit="%">
-                    <template #hint>{{ t('这个比例以下是面部，其余是身体。默认 55%，必须不小于头部下沿。') }}</template>
-                    <input type="range" min="0" max="100" step="1" :value="Math.round(activeProfile.faceBottom * 100)" data-test="pet-face-bottom" @input="setFaceBottom" />
-                    <span class="pet-readout" data-test="pet-face-bottom-readout">{{ Math.round(activeProfile.faceBottom * 100) }}%</span>
-                  </SettingRow>
-                </template>
-              </template>
-            </div>
-
-            <div class="g-card" data-test="pet-behaviour">
-              <div class="g-card-head"><h3>{{ t('行为') }}</h3></div>
-              <SettingRow :label="t('待机动作间隔')" :unit="t('秒')">
-                <template #hint>{{ t('安静这么久之后随机做一个待机动作。下限 5 秒，上限不超过 3600 秒，且不能小于下限。') }}</template>
-                <span class="pet-range">
-                  <input type="number" min="5" max="3600" v-model.number="form.pet.idleMinSeconds" :aria-label="t('待机动作最短间隔')" data-test="pet-idle-min" />
-                  <span class="pet-range-sep">–</span>
-                  <input type="number" min="5" max="3600" v-model.number="form.pet.idleMaxSeconds" :aria-label="t('待机动作最长间隔')" data-test="pet-idle-max" />
-                </span>
-              </SettingRow>
-              <SettingRow :label="t('多久没互动就睡觉')" :unit="t('分钟')" :hint="t('0 表示不睡。睡着后点一下就会醒。最多 1440 分钟。')">
-                <input type="number" min="0" max="1440" v-model.number="form.pet.sleepAfterMinutes" data-test="pet-sleep-minutes" />
-              </SettingRow>
-              <SettingRow :label="t('问候时间')">
-                <template #hint>{{ t('用逗号分隔的 HH:mm，一天各触发一次，最多 12 个。留空则不主动打招呼。') }}</template>
-                <input
-                  type="text"
-                  :value="form.pet.greetingTimes.join(',')"
-                  :placeholder="t('09:00, 14:00')"
-                  data-test="pet-greeting-times"
-                  @input="setGreetingTimes"
-                />
-              </SettingRow>
-              <SettingRow :label="t('情绪冷却')" :unit="t('秒')" :hint="t('同一个情绪在这段时间内不会重复触发，免得连续几句都播同一个动作。0–600 秒。')">
-                <input type="number" min="0" max="600" v-model.number="form.pet.emotionCooldownSeconds" data-test="pet-emotion-cooldown" />
-              </SettingRow>
-              <SettingRow :label="t('表情保持')" :unit="t('秒')" :hint="t('表情在这么多秒后回到默认。1–120 秒。')">
-                <input type="number" min="1" max="120" v-model.number="form.pet.expressionHoldSeconds" data-test="pet-expression-hold" />
-              </SettingRow>
-              <SettingRow :label="t('快速拖拽阈值')" unit="px/s">
-                <template #hint>{{ t('松手速度超过这个值算「甩出去」，会播惊讶和回弹。100–20000 物理像素每秒。') }}</template>
-                <input type="number" min="100" max="20000" v-model.number="form.pet.fastDragPxPerSecond" data-test="pet-fast-drag" />
-              </SettingRow>
-            </div>
-
-            <div class="g-card" data-test="pet-emotions">
-              <div class="g-card-head">
-                <h3>
-                  {{ t('情绪字典') }}
-                  <HintTip>
-                    {{ t('桌宠按这张表给每条回复打分：每种情绪取命中关键词里的最高权重作为主分，主分最高的胜出。同一个函数也给下面的试算打分，所以试算结果就是真实结果。') }}
-                  </HintTip>
-                </h3>
-                <button class="ghost" type="button" data-test="pet-emotions-restore" @click="restoreDefaultDictionary">{{ t('恢复默认') }}</button>
-              </div>
-
-              <div v-for="emotion in PET_EMOTIONS" :key="`dict-${emotion}`" class="pet-dict">
-                <h4 class="pet-dict-head">{{ emotionLabel(emotion) }}</h4>
-                <div v-for="(entry, index) in keywordsOf(emotion)" :key="index" class="pet-keyword-row">
-                  <input
-                    type="text"
-                    :value="entry.text"
-                    maxlength="32"
-                    :aria-label="t('第 {v} 个关键词', { v: index + 1 })"
-                    :data-test="`pet-keyword-${emotion}`"
-                    @input="setKeywordText(emotion, index, $event)"
-                  />
-                  <input
-                    type="number"
-                    min="1"
-                    max="10"
-                    :value="entry.weight"
-                    :aria-label="t('第 {v} 个关键词的权重', { v: index + 1 })"
-                    :data-test="`pet-keyword-weight-${emotion}`"
-                    @input="setKeywordWeight(emotion, index, $event)"
-                  />
-                  <button class="ghost icon-only" type="button" :title="t('移除')" :aria-label="t('移除第 {v} 个关键词', { v: index + 1 })" :data-test="`pet-keyword-remove-${emotion}`" @click="removeKeyword(emotion, index)">
-                    <Icon name="x" :size="14" /><span class="sr-only">{{ t('移除') }}</span>
-                  </button>
-                </div>
-                <button class="ghost add" type="button" :data-test="`pet-keyword-add-${emotion}`" @click="addKeyword(emotion)">
-                  <Icon name="plus" :size="14" /> {{ t('添加关键词') }}
-                </button>
-              </div>
-
-              <SettingRow :label="t('否定前缀')">
-                <template #hint>{{ t('命中位置前两个字符内出现这些词，这次命中作废，所以「不开心」不算开心。逗号分隔，最多 32 个，每个不超过 8 个字符。') }}</template>
-                <input type="text" :value="form.pet.emotions.negationPrefixes.join(',')" :placeholder="t('不, 没, 别, not')" data-test="pet-negations" @input="setNegationPrefixes" />
-              </SettingRow>
-              <SettingRow :label="t('最低权重')" :hint="t('命中权重要达到这个值才算数，1–10。默认 1：只要有命中就触发。')">
-                <input type="number" min="1" max="10" :value="form.pet.emotions.minWeight" data-test="pet-min-weight" @input="setMinWeight" />
-              </SettingRow>
-
-              <SettingRow :label="t('试算')" stack :hint="t('粘贴一段回复，用上面这张表实时打分。不会保存，也不会发给桌宠。')">
-                <textarea v-model="petTrialText" rows="2" :placeholder="t('例如：哈哈，这个太好笑了，不过被你夸得有点害羞')" data-test="pet-trial-input" />
-                <div class="pet-trial" data-test="pet-trial-result">
-                  <template v-if="petTrial === null">
-                    <span class="muted">{{ t('输入一段文字就能看到结果。') }}</span>
-                  </template>
-                  <template v-else>
-                    <span class="g-chip" :class="petTrial.emotion === null ? '' : 'is-ok'" data-test="pet-trial-winner">
-                      {{ petTrial.emotion === null ? t('没有命中任何情绪') : t('胜出：{emotion}', { emotion: emotionLabel(petTrial.emotion) }) }}
-                    </span>
-                    <span v-for="emotion in PET_EMOTIONS" :key="`trial-${emotion}`" class="pet-trial-score" :data-test="`pet-trial-score-${emotion}`">
-                      {{ emotionLabel(emotion) }} {{ primaryScore(petTrial, emotion) }} / {{ petTrial.totals[emotion] }}
-                    </span>
-                    <span v-if="petTrial.hits.length > 0" class="pet-trial-hits" data-test="pet-trial-hits">
-                      {{ t('命中：{hits}', { hits: petTrial.hits.map((hit) => `${hit.text}@${hit.at}`).join(t('、')) }) }}
-                    </span>
-                  </template>
-                </div>
-              </SettingRow>
-            </div>
-
-            <div class="g-card" data-test="pet-notices">
-              <div class="g-card-head"><h3>{{ t('声明') }}</h3></div>
-              <p class="row-note" data-test="pet-notice-attribution">
-                {{ t('桌宠使用 Live2D Cubism。Cubism Core 的版权归 Live2D Inc.，由你自行下载并同意其协议；Cubism Framework 随桌宠前端分发，适用 Live2D Open Software License。') }}
-              </p>
-              <p class="row-note">
-                <span class="pet-link-label">{{ t('Open Software License') }}</span>
-                <code class="pkg-root" data-test="pet-license-open">{{ PET_LICENSE_URLS.open }}</code>
-                <button class="ghost" type="button" data-test="pet-license-open-copy" @click="copyText(PET_LICENSE_URLS.open, t('已复制链接'))">{{ t('复制') }}</button>
-              </p>
-              <p class="row-note">
-                <span class="pet-link-label">{{ t('Proprietary Software License') }}</span>
-                <code class="pkg-root" data-test="pet-license-proprietary">{{ PET_LICENSE_URLS.proprietary }}</code>
-                <button class="ghost" type="button" data-test="pet-license-proprietary-copy" @click="copyText(PET_LICENSE_URLS.proprietary, t('已复制链接'))">{{ t('复制') }}</button>
-              </p>
-              <p class="row-note" data-test="pet-notice-third-party">
-                {{ t('其他第三方组件与完整许可清单见安装目录下的 THIRD-PARTY-NOTICES.md（notices/THIRD-PARTY-NOTICES.md）。') }}
-              </p>
-            </div>
-          </section>
+          <PetSettingsPanel
+            v-if="petAvailable" v-show="section === 'pet'"
+            v-model:pet-core-consent="petCoreConsent" v-model:pet-core-path="petCorePath"
+            v-model:pet-model-path="petModelPath" v-model:pet-candidate-choice="petCandidateChoice"
+            v-model:pet-trial-text="petTrialText"
+            :form="form" :api="api" :PET_CORE_URL="PET_CORE_URL" :PET_LICENSE_URLS="PET_LICENSE_URLS"
+            :PET_ACTIONS="PET_ACTIONS" :PET_EMOTIONS="PET_EMOTIONS"
+            :pet-core="petCore" :pet-core-hash="petCoreHash" :pet-core-busy="petCoreBusy" :pet-core-error="petCoreError"
+            :pet-models="petModels" :pet-models-error="petModelsError" :pet-armed-model="petArmedModel"
+            :pet-import-busy="petImportBusy" :pet-import-error="petImportError" :pet-candidates="petCandidates"
+            :pet-scale-percent="petScalePercent" :shell-prefs="shellPrefs" :pet-spawned="petSpawned"
+            :pet-shell-error="petShellError" :pet-reset-error="petResetError" :pet-retry-target="petRetryTarget" :retry-pet-window="retryPetWindow"
+            :active-pet-model="activePetModel" :active-profile="activeProfile" :pet-trial="petTrial"
+            :copy-text="copyText" :import-pet-core="importPetCore" :refresh-pet-models="refreshPetModels"
+            :format-bytes="formatBytes" :delete-pet-model="deletePetModel" :import-pet-model="importPetModel"
+            :set-scale="setScale" :reset-pet-window="resetPetWindow" :action-label="actionLabel" :emotion-label="emotionLabel"
+            :motion-value="motionValue" :expression-value="expressionValue" :set-motion="setMotion" :set-expression="setExpression"
+            :with-option="withOption" :motion-options="motionOptions" :expression-options="expressionOptions"
+            :preview-action="previewAction" :preview-expression="previewExpression" :set-head-bottom="setHeadBottom"
+            :set-face-bottom="setFaceBottom" :edit-profile="editProfile" :set-greeting-times="setGreetingTimes"
+            :restore-default-dictionary="restoreDefaultDictionary" :keywords-of="keywordsOf" :set-keyword-text="setKeywordText"
+            :set-keyword-weight="setKeywordWeight" :remove-keyword="removeKeyword" :add-keyword="addKeyword"
+            :set-negation-prefixes="setNegationPrefixes" :set-min-weight="setMinWeight" :primary-score="primaryScore"
+          />
 
           <section v-show="section === 'files'" class="panel" data-test="settings-section-files">
             <header class="panel-head"><h2>{{ t('文件访问') }}</h2></header>
@@ -2776,115 +2241,23 @@ defineExpose({ refresh, hasUnsavedChanges })
             </div>
           </section>
 
-          <section v-show="section === 'engines'" class="panel" data-test="settings-section-engines">
-            <header class="panel-head">
-              <h2>{{ t('本地引擎') }}</h2>
-              <span class="g-chip">{{ t('进阶') }}</span>
-              <HintTip align="end">
-                {{ t('由 Partner 帮你启动和关闭的本地语音程序。关闭会真正结束进程、释放显存和内存；只是不再请求，并不会释放。 识别和朗读服务的地址仍在各自页面填，指向这里设置的端口。') }}
-              </HintTip>
-            </header>
-
-            <div v-if="enginePackage" class="g-card" data-test="engine-package">
-              <div class="g-card-head">
-                <h3>
-                  {{ t('引擎包') }}
-                  <HintTip>
-                    {{ t('引擎的运行环境和模型（约 3GB）不在安装包里，放在应用目录下的 engines 文件夹。 下载完成后会自动填好下面的设置；已经有一份的话，用「手动指定」指到它所在的文件夹。') }}
-                  </HintTip>
-                </h3>
-                <button class="ghost" type="button" data-test="engine-detect" :disabled="downloadRunning" @click="detectEngines">{{ t('检测') }}</button>
-              </div>
-
-              <SettingRow v-for="engine in (['tts', 'kws'] as const)" :key="engine" :label="t(ENGINE_NAMES[engine])">
-                <template #hint>
-                  <span v-if="!enginePackage[engine].installed" :data-test="`engine-missing-${engine}`">
-                    {{ t('缺少：{items}', { items: enginePackage[engine].missing.slice(0, 3).join(t('、')) }) }}{{ enginePackage[engine].missing.length > 3 ? t(' 等 {count} 项', { count: enginePackage[engine].missing.length }) : '' }}
-                  </span>
-                </template>
-                <span class="g-chip" :class="enginePackage[engine].installed ? 'is-ok' : ''" :data-test="`engine-state-${engine}`">
-                  {{ enginePackage[engine].installed ? t('已就绪') : t('未安装') }}
-                </span>
-              </SettingRow>
-
-              <SettingRow :label="t('位置')" :hint="enginePackage.customRoot ? t('手动指定的位置。') : t('应用目录下的默认位置。')">
-                <code class="pkg-root" data-test="engine-root">{{ enginePackage.root }}</code>
-              </SettingRow>
-
-              <template v-if="!allEnginesInstalled || enginePackage.customRoot">
-                <SettingRow v-if="!allEnginesInstalled" :label="t('下载')" :hint="t('下载缺少的引擎和模型到上面的位置，支持断点续传。')">
-                  <div class="pkg-actions">
-                    <button
-                      v-if="!downloadRunning"
-                      class="primary"
-                      type="button"
-                      data-test="engine-download"
-                      @click="startEngineDownload"
-                    >{{ t('下载引擎和模型') }}</button>
-                    <template v-else>
-                      <span class="pkg-progress" role="status" data-test="engine-progress">{{ downloadText }}</span>
-                      <button class="ghost" type="button" data-test="engine-cancel" @click="cancelEngineDownload">{{ t('取消') }}</button>
-                    </template>
-                  </div>
-                </SettingRow>
-
-                <SettingRow :label="t('手动指定')" :hint="t('引擎和模型已经在别处时，填它们所在的文件夹（里面是 tts 和 kws-asr）。留空确认则回到默认位置。')">
-                  <div class="pkg-actions">
-                    <button
-                      v-if="!engineManualOpen"
-                      class="ghost"
-                      type="button"
-                      data-test="engine-manual"
-                      :disabled="downloadRunning"
-                      @click="engineManualOpen = true; engineManualRoot = enginePackage.customRoot ? enginePackage.root : ''"
-                    >{{ t('手动指定…') }}</button>
-                    <template v-else>
-                      <input type="text" v-model="engineManualRoot" :placeholder="t('例如 D:\\engines')" data-test="engine-manual-root" @keydown.enter.prevent="applyEngineRoot" />
-                      <button class="primary" type="button" data-test="engine-manual-apply" @click="applyEngineRoot">{{ t('确定') }}</button>
-                      <button class="ghost" type="button" @click="engineManualOpen = false">{{ t('取消') }}</button>
-                    </template>
-                  </div>
-                </SettingRow>
-              </template>
-
-              <p v-if="enginePackageNote" class="pkg-note" role="status" data-test="engine-note">{{ enginePackageNote }}</p>
-            </div>
-
-            <template v-for="engine in (['tts', 'kws'] as const)" :key="engine">
-            <div v-if="showEngine(engine)" class="g-card" :data-test="`local-engine-${engine}`">
-              <div class="g-card-head">
-                <h3>
-                  {{ engine === 'tts' ? t('朗读引擎') : t('唤醒与识别引擎') }}
-                  <HintTip>{{ engine === 'tts' ? t('例如 qwentts.cpp server。') : t('例如 sherpa-onnx。开启后语音输入进入「唤醒模式」。') }}</HintTip>
-                </h3>
-              </div>
-              <SettingRow :label="t('由 Partner 启动')" :hint="t('开启后，启动时自动运行这个程序，关闭时自动结束。')">
-                <input type="checkbox" class="g-switch" role="switch" v-model="form.local[engine].enabled" :data-test="`local-${engine}-enabled`" />
-              </SettingRow>
-              <SettingRow :label="t('程序路径')" :hint="t('要启动的程序的完整路径。')">
-                <input type="text" v-model="form.local[engine].command" :data-test="`local-${engine}-command`" />
-              </SettingRow>
-              <SettingRow :label="t('启动参数')">
-                <template #hint>{{ t('用空格分隔；端口用') }} <code>{port}</code> {{ t('代替。') }}</template>
-                <input
-                  type="text"
-                  :value="form.local[engine].arguments.join(' ')"
-                  :data-test="`local-${engine}-arguments`"
-                  @input="onEngineArgumentsInput(engine, $event)"
-                />
-              </SettingRow>
-              <SettingRow :label="t('运行目录')" :hint="t('程序启动时所在的文件夹。留空则不指定。')">
-                <input type="text" v-model="form.local[engine].workingDirectory" />
-              </SettingRow>
-              <SettingRow :label="t('端口')" :hint="t('本地服务监听的端口。')">
-                <input type="number" v-model.number="form.local[engine].port" :data-test="`local-${engine}-port`" />
-              </SettingRow>
-              <SettingRow :label="t('启动等待')" :unit="t('秒')" :hint="t('启动后最多等多久，还没准备好就算失败。')">
-                <input type="number" v-model.number="form.local[engine].readyTimeoutSeconds" />
-              </SettingRow>
-            </div>
-            </template>
-          </section>
+          <EngineSettingsPanel
+            v-show="section === 'engines'"
+            v-model:engine-manual-open="engineManualOpen"
+            v-model:engine-manual-root="engineManualRoot"
+            :form="form"
+            :engine-package="enginePackage"
+            :engine-package-note="enginePackageNote"
+            :download-running="downloadRunning"
+            :all-engines-installed="allEnginesInstalled"
+            :download-text="downloadText"
+            :detect-engines="detectEngines"
+            :start-engine-download="startEngineDownload"
+            :cancel-engine-download="cancelEngineDownload"
+            :apply-engine-root="applyEngineRoot"
+            :show-engine="showEngine"
+            :on-engine-arguments-input="onEngineArgumentsInput"
+          />
 
           <section v-show="section === 'appearance'" class="panel" data-test="settings-section-appearance">
             <header class="panel-head"><h2>{{ t('settings.section.appearance') }}</h2></header>
@@ -2916,7 +2289,7 @@ defineExpose({ refresh, hasUnsavedChanges })
             <McpView v-else-if="section === 'mcp'" ref="child" :api="api" @changed="onChildChanged" />
             <PromptsView v-else ref="child" :api="api" @changed="onChildChanged" @navigate="onChildNavigate" />
           </div>
-        </div>
+        </fieldset>
       </div>
     </div>
 
@@ -2924,6 +2297,7 @@ defineExpose({ refresh, hasUnsavedChanges })
       v-if="!embedded"
       prefix="settings"
       :dirty="dirty"
+      :busy="settingsBusy || cloneBusy"
       :status="status"
       :error="error"
       can-discard
@@ -2933,555 +2307,4 @@ defineExpose({ refresh, hasUnsavedChanges })
   </div>
 </template>
 
-<style scoped>
-.settings-scroll {
-  flex: 1;
-  min-block-size: 0;
-}
-
-.settings.is-single {
-  grid-template-columns: minmax(0, var(--column-form));
-}
-
-/* An embedded page brings its own scroll region, top-bar clearance and Save bar. Inside this page the scroll
-   and the clearance already exist, and the Save bar anchors to this view's bottom edge instead of the embedded
-   page's own box. */
-.embedded :deep(.view) {
-  position: static;
-  display: flex;
-  flex-direction: column;
-  min-block-size: 0;
-  block-size: auto;
-}
-
-.embedded :deep(.scroll) {
-  overflow: visible;
-}
-
-.embedded :deep(.g-page) {
-  inline-size: 100%;
-  padding: 0;
-}
-
-/* Two columns: the categories, and one category at a time. The nav sticks under the top bar so switching never
-   needs a scroll back up. */
-.settings {
-  display: grid;
-  grid-template-columns: 11rem minmax(0, var(--column-form));
-  gap: var(--space-6);
-  justify-content: center;
-  padding: calc(var(--topbar-h) + var(--space-4)) var(--space-5) 7rem;
-}
-
-.settings-nav {
-  position: sticky;
-  inset-block-start: calc(var(--topbar-h) + var(--space-4));
-  align-self: start;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-1);
-}
-
-.nav-item {
-  justify-content: flex-start;
-  gap: var(--space-3);
-  min-block-size: 2.5rem;
-  padding: 0 var(--space-3);
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-2);
-}
-
-.nav-item:hover:not(:disabled) {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.nav-item.active {
-  background: var(--accent-soft);
-  color: var(--accent-pressed);
-  font-weight: 500;
-}
-
-.live-dot {
-  margin-inline-start: auto;
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: var(--ok);
-}
-
-.settings-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  min-inline-size: 0;
-}
-
-.panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-5);
-  align-content: start;
-  min-inline-size: 0;
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.panel-head h2 {
-  font-size: var(--fs-title);
-  margin-inline-end: auto;
-}
-
-/* A grouped list in a glass card: a title row, then rows that separate themselves with a hairline. */
-.g-card {
-  background: var(--glass-1);
-  border: 1px solid var(--glass-edge);
-  border-radius: var(--radius-md);
-  box-shadow: var(--glass-hi), var(--shadow-1);
-  padding: var(--space-2) var(--space-5) var(--space-3);
-  min-inline-size: 0;
-}
-
-.g-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  min-block-size: 3rem;
-  padding-block-start: var(--space-1);
-}
-
-.g-card-head h3 {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 0.8125rem;
-  color: var(--text-2);
-}
-
-.row-note {
-  display: flex;
-  gap: var(--space-3);
-  margin: 0;
-  padding-block-end: var(--space-2);
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-}
-
-.status-line {
-  margin: 0;
-  padding-block: var(--space-2);
-  border-block-start: 1px solid var(--glass-edge);
-  color: var(--text-2);
-  font-size: var(--fs-meta);
-}
-
-.warn-line {
-  margin: 0 0 var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  color: var(--warn);
-  font-size: var(--fs-meta);
-}
-
-.warn-line button {
-  min-block-size: 1.75rem;
-  font-size: var(--fs-meta);
-}
-
-.version-chip {
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.update-line {
-  margin: 0;
-  padding-block: var(--space-2);
-  font-size: var(--fs-ui);
-}
-
-.update-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  padding-block: var(--space-2);
-  border-block-start: 1px solid var(--glass-edge);
-}
-
-.update-size {
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-}
-
-.hint-line {
-  margin: 0;
-  padding-block: var(--space-2);
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-}
-
-.callout {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  color: var(--text);
-  font-size: var(--fs-ui);
-}
-
-.more {
-  justify-self: start;
-  color: var(--text-2);
-}
-
-.more-chevron {
-  transition: transform var(--motion-fast) var(--ease);
-  transform: rotate(-90deg);
-}
-
-.more-chevron.is-open {
-  transform: none;
-}
-
-.icon-only {
-  flex: none;
-  inline-size: 2.25rem;
-  padding: 0;
-  border-radius: var(--radius-sm);
-}
-
-.level {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding-block: var(--space-2) var(--space-1);
-}
-
-.level-track {
-  position: relative;
-  flex: 1 1 auto;
-  block-size: 0.5rem;
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  overflow: hidden;
-}
-
-.level-fill {
-  block-size: 100%;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  transition: width 120ms linear;
-}
-
-/* The threshold: a level that cannot reach it is silence, and silence that is never detected means an utterance
-   that never ends. */
-.level-mark {
-  position: absolute;
-  inset-block: 0;
-  inline-size: 2px;
-  background: var(--text);
-  opacity: 0.55;
-}
-
-.level-readout {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--fs-meta);
-  color: var(--text-2);
-}
-
-.tts-test-audio {
-  inline-size: 100%;
-  block-size: 2.25rem;
-  margin-block: var(--space-2);
-}
-
-.folders {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
-  padding-block: var(--space-3) var(--space-2);
-  border-block-start: 1px solid var(--glass-edge);
-}
-
-.folders-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.folder-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.folder-row input {
-  flex: 1;
-  min-inline-size: 0;
-}
-
-.folder-icon {
-  flex: none;
-  color: var(--text-3);
-}
-
-.add {
-  justify-self: start;
-}
-
-/* One line per engine: who it is, what it indexes, how it is doing, and the switch. The state is the part
-   that matters — an engine that is quietly paused is why a search came back thin. */
-.engine-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-block-size: 2.5rem;
-  padding-block: var(--space-1);
-  border-block-start: 1px solid var(--glass-edge);
-}
-
-.engine-name {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: none;
-  max-inline-size: 12rem;
-  font-size: var(--fs-ui);
-  color: var(--text);
-}
-
-.engine-tag {
-  flex: none;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--surface-2);
-  color: var(--text-3);
-  font-size: 0.6875rem;
-}
-
-.engine-kinds {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.engine-state {
-  flex: none;
-  max-inline-size: 14rem;
-  font-size: var(--fs-meta);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-2);
-}
-
-.engine-state.is-ok {
-  color: var(--text-3);
-}
-
-.engine-state.is-warn {
-  color: var(--warn);
-}
-
-.engine-state.is-off {
-  color: var(--text-3);
-  opacity: 0.7;
-}
-
-.pkg-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-inline-size: 0;
-}
-
-.pkg-actions input[type='text'] {
-  flex: 1 1 14rem;
-  min-inline-size: 0;
-}
-
-.pkg-root {
-  overflow-wrap: anywhere;
-  color: var(--text-2);
-}
-
-.pkg-progress {
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.clone-pick {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.clone-name {
-  color: var(--text-2);
-  overflow-wrap: anywhere;
-}
-
-.pkg-note {
-  margin: var(--space-2) 0 0;
-  color: var(--text-2);
-  overflow-wrap: anywhere;
-}
-
-/* One imported model on a line: name, what it offers, and the two verbs that act on it. The metadata is the
-   part that decides whether a model is worth using, so it sits between them rather than in a tooltip. */
-.pet-model-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-block-size: 2.5rem;
-  padding-block: var(--space-1);
-  border-block-start: 1px solid var(--glass-edge);
-}
-
-.pet-model-name {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: none;
-  max-inline-size: 12rem;
-  color: var(--text);
-  font-size: var(--fs-ui);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.pet-model-meta {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-}
-
-.pet-candidates {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
-  padding-block-end: var(--space-2);
-}
-
-/* A percentage that changes as the slider moves: tabular figures keep it from jittering. */
-.pet-readout {
-  flex: none;
-  min-inline-size: 3.5rem;
-  text-align: end;
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--fs-meta);
-}
-
-.pet-range {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.pet-range input {
-  inline-size: 6rem;
-}
-
-.pet-range-sep {
-  color: var(--text-3);
-}
-
-.pet-dict {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
-  padding-block: var(--space-3) var(--space-2);
-  border-block-start: 1px solid var(--glass-edge);
-}
-
-.pet-dict-head {
-  color: var(--text-2);
-  font-size: var(--fs-meta);
-}
-
-.pet-keyword-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.pet-keyword-row input[type='text'] {
-  flex: 1 1 auto;
-  min-inline-size: 0;
-}
-
-.pet-keyword-row input[type='number'] {
-  flex: none;
-  inline-size: 5rem;
-}
-
-.pet-trial {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  padding-block-start: var(--space-2);
-}
-
-.pet-trial-score {
-  color: var(--text-2);
-  font-size: var(--fs-meta);
-  font-variant-numeric: tabular-nums;
-}
-
-.pet-trial-hits {
-  color: var(--text-3);
-  font-size: var(--fs-meta);
-  overflow-wrap: anywhere;
-}
-
-.pet-link-label {
-  min-inline-size: 11rem;
-  color: var(--text-2);
-  font-size: var(--fs-meta);
-}
-
-@container body (max-width: 52rem) {
-  .settings {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-4);
-  }
-
-  .settings-nav {
-    position: static;
-    display: flex;
-    overflow-x: auto;
-    padding-block-end: var(--space-1);
-  }
-
-  .nav-item {
-    flex: none;
-    border-radius: var(--radius-pill);
-  }
-
-  .live-dot {
-    margin-inline-start: var(--space-1);
-  }
-}
-</style>
+<style scoped src="./settings-panel.css"></style>

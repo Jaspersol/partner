@@ -16,6 +16,10 @@ const zhTW: Record<string, string> = {
   'app.connecting': '連線中…',
   'app.tokenInvalid': 'token 已失效（401）——請重新啟動外殼以取得新的權杖',
   'app.cannotConnect': '無法連線到本機服務——請確認 Partner API 已啟動',
+  'app.sidecarFailures': '失敗次數',
+  'app.sidecarExitCode': '結束碼',
+  'app.sidecarLog': '日誌',
+  'app.retry': '重試',
 
   'topbar.disconnected': '未連線',
   'topbar.queueBlocked': '佇列阻塞：失敗 {count} 項',
@@ -73,6 +77,7 @@ const zhTW: Record<string, string> = {
   'settings.general.autostartFailed': '開機自動啟動設定失敗：{error}',
   'settings.general.trayFailed': '系統匣設定失敗：{error}',
   'settings.general.petFailed': '桌寵設定失敗：{error}',
+  'settings.pet.savedButWindowFailed': '設定已儲存，但桌寵視窗未能切換。',
   'settings.general.version': '版本',
   'settings.general.versionHint': '目前安裝的 Partner 版本。',
   'settings.general.checkUpdate': '檢查更新',

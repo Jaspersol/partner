@@ -141,7 +141,7 @@ public sealed partial class ViewEndpointsTests
     public async Task A_gear_the_menu_grew_is_accepted()
     {
         // The list is user-configured, not a built-in enum.
-        var settings = await _http.PutAsJsonAsync("/api/settings", new
+        var settings = await _http.PutSettingsAsync(new
         {
             model = new { reasoningGears = new[] { "medium", "high", "minimal" } },
         });

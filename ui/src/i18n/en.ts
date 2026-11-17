@@ -22,6 +22,10 @@ const en: Record<string, string> = {
   'app.connecting': 'Connecting…',
   'app.tokenInvalid': 'Token expired (401) — restart the shell to get a new one',
   'app.cannotConnect': 'Cannot reach the local service — make sure the Partner API is running',
+  'app.sidecarFailures': 'Failures',
+  'app.sidecarExitCode': 'Exit code',
+  'app.sidecarLog': 'Log',
+  'app.retry': 'Retry',
 
   'topbar.disconnected': 'Disconnected',
   'topbar.queueBlocked': 'Queue blocked: {count} failed',
@@ -79,6 +83,7 @@ const en: Record<string, string> = {
   'settings.general.autostartFailed': 'Failed to change launch at login: {error}',
   'settings.general.trayFailed': 'Failed to change the tray setting: {error}',
   'settings.general.petFailed': 'Failed to change the desktop pet setting: {error}',
+  'settings.pet.savedButWindowFailed': 'Settings were saved, but the pet window did not change.',
   'settings.general.version': 'Version',
   'settings.general.versionHint': 'The Partner version installed on this machine.',
   'settings.general.checkUpdate': 'Check for updates',

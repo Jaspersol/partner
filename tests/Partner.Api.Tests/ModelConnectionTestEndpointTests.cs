@@ -49,7 +49,7 @@ public sealed class ModelConnectionTestEndpointTests : ApiFixture
         await provider.StartAsync();
         try
         {
-            var saved = await _http.PutAsJsonAsync("/api/settings", new
+            var saved = await _http.PutSettingsAsync(new
             {
                 model = new
                 {

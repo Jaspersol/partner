@@ -330,7 +330,7 @@ public sealed partial class ViewEndpointsTests : ApiFixture
     [Fact]
     public async Task Settings_reject_a_negative_threshold_and_keep_the_previous_value()
     {
-        var bad = await _http.PutAsJsonAsync("/api/settings", new { input = new { silenceThreshold = -1.0 } });
+        var bad = await _http.PutSettingsAsync(new { input = new { silenceThreshold = -1.0 } });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         var current = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
@@ -342,7 +342,7 @@ public sealed partial class ViewEndpointsTests : ApiFixture
     [Fact]
     public async Task Settings_survive_a_new_store_instance()
     {
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             input = new { enabled = true, windowSeconds = 12.5 },
         });

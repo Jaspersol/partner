@@ -14,6 +14,8 @@ Back to the [documentation index](./README.en.md).
 
 The layers only talk over HTTP with a Bearer token. Every endpoint requires it, including `/api/health`.
 
+Settings reads use an in-process snapshot. Manual edits to workspace `settings/runtime.json` are not picked up automatically; restart the API to load them. Invalid JSON at startup falls back to safe defaults and is rewritten on the next successful save. `GET /api/settings` returns a `revision` that whole-document `PUT /api/settings` must include: a missing revision returns 400 and a stale one returns 409. Clients should retain unsaved edits and reload to resolve the conflict. Failed commits do not advance the revision; revisions are only valid for the current process.
+
 ## Full check
 
 ```bash

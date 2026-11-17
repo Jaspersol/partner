@@ -3,6 +3,7 @@
  * page's client. Same wire shapes and bearer token: the shell injects the token and port into both windows.
  */
 
+import type { ActionDiagnostic, ActionMapping } from './actions'
 import type { PetFeed } from './feed'
 
 interface PetCoreStatus {
@@ -50,6 +51,9 @@ interface PetModelProfile {
   headBottom: number
   faceBottom: number
   defaultExpression?: string | null
+  parameters?: ActionMapping['parameters']
+  amplitude?: ActionMapping['amplitude']
+  procedural?: ActionMapping['procedural']
 }
 
 /** Only the section of the settings document the pet acts on; the rest is the settings page's business. */
@@ -87,6 +91,7 @@ export interface PetApi {
   petModels(): Promise<PetModelInfo[]>
   petFeed(after: number, previewAfter: number): Promise<PetFeed>
   reportPetStatus(error: string | null): Promise<void>
+  reportDiagnostics(modelId: string | null, actions: ActionDiagnostic[]): Promise<void>
 }
 
 function createPetApi(port: number, token: string): PetApi {
@@ -121,6 +126,9 @@ function createPetApi(port: number, token: string): PetApi {
       ),
     reportPetStatus: async (error) => {
       await request<unknown>('POST', '/api/pet/status', { error })
+    },
+    reportDiagnostics: async (modelId, actions) => {
+      await request<unknown>('POST', '/api/pet/diagnostics', { modelId, actions })
     },
   }
 }

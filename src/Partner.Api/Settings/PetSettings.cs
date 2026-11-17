@@ -103,6 +103,27 @@ public sealed record PetExpressionRef
     public string? Name { get; init; }
 }
 
+/// <summary>One offset key in seconds, relative to the action's start.</summary>
+public sealed record PetTrackKey
+{
+    public double At { get; init; }
+    public double Value { get; init; }
+}
+
+/// <summary>A procedural offset track targeting an actual model parameter ID.</summary>
+public sealed record PetExtraTrack
+{
+    public string Id { get; init; } = string.Empty;
+    public IReadOnlyList<PetTrackKey> Keys { get; init; } = [];
+}
+
+/// <summary>Per-action multiplier and additional parameter tracks.</summary>
+public sealed record PetProceduralAction
+{
+    public double? Amplitude { get; init; }
+    public IReadOnlyList<PetExtraTrack> ExtraTracks { get; init; } = [];
+}
+
 /// <summary>
 /// A model's mapping table and its click geometry. The proportions are only used for models without
 /// <c>HitAreas</c>: a fraction of the model's bounding box, measured from the top.
@@ -115,6 +136,16 @@ public sealed record PetModelProfile
 
     public IReadOnlyDictionary<string, PetExpressionRef> Expressions { get; init; } =
         new Dictionary<string, PetExpressionRef>(StringComparer.Ordinal);
+
+    /// <summary>Standard Cubism channel ID to actual model parameter ID.</summary>
+    public IReadOnlyDictionary<string, string> Parameters { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>Multiplier for procedural offsets; 1 preserves the built-in amplitude.</summary>
+    public double Amplitude { get; init; } = 1;
+
+    public IReadOnlyDictionary<string, PetProceduralAction> Procedural { get; init; } =
+        new Dictionary<string, PetProceduralAction>(StringComparer.Ordinal);
 
     /// <summary>Below this fraction of the model height is the head.</summary>
     public double HeadBottom { get; init; } = 0.35;

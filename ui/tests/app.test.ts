@@ -13,6 +13,7 @@ import App from '../src/App.vue'
  */
 
 const SETTINGS = {
+  revision: 1,
   input: {
     enabled: false,
     deviceId: null,

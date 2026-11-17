@@ -27,9 +27,8 @@ echo "== publish the API sidecar =="
 
 echo "== frontend =="
 if [ ! -d ui/node_modules ]; then
-  "$NPM" --prefix ui install
+  "$NPM" --prefix ui ci
 fi
-"$NPM" --prefix ui run build
 
 # The local engines (interpreter, inference packages, models: ~3GB) are NOT part of the installer. Only the two
 # small server scripts under engines/ are bundled (see tauri.conf.json); the rest is downloaded from the
@@ -37,6 +36,7 @@ fi
 
 if [ -n "${SKIP_INSTALLER:-}" ]; then
   echo "== shell (compile only) =="
+  "$NPM" --prefix ui run build
   cargo build --manifest-path src-tauri/Cargo.toml --release
 else
   echo "== shell + installer =="

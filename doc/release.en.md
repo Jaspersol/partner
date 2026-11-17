@@ -40,6 +40,8 @@ The download is checked against that SHA-256 before the installer is started and
 
 The version comes from the tag: the workflow runs `scripts/set-version.mjs` to write `0.2.0` into `src-tauri/tauri.conf.json`, `Cargo.toml` and `ui/package.json`, so the tag and the installer cannot drift apart.
 
+A manually specified tag must already exist. With or without publishing, the build checks out that tag's commit and uses its version. Publishing requires a tag; the publish job verifies the tag target, version, installer name and artifact digests. The build job has read-only permissions and does not persist checkout credentials; only the separate publish job has write access.
+
 ## Engine packs
 
 The workflow neither packs nor publishes engines, so no self-hosted runner is needed. `engines-v1` is read-only: published installers pin the SHA-256 of the files under it, and changing any byte makes the download fail its final check.
@@ -85,6 +87,10 @@ npm --prefix ui exec tauri build
 The installer ends up in `src-tauri/target/release/bundle/nsis/`.
 
 The build is that one command, with no environment variables and no `--config`: `pet.html` and `cfg(partner_pet)` are on by default, and the asset protocol and `asset.localhost` CSP entry the pet page needs come from the base configuration. `scripts/check-live2d-bundle.mjs` then checks that every emitted chunk carrying the Cubism Framework also carries Live2D's copyright line.
+
+Use `PARTNER_PET=0 bash scripts/build-shell.sh` for a pet-disabled variant. The same switch disables the frontend page, shell commands and settings entry; a conflicting `VITE_PARTNER_PET` is rejected. Pet-disabled and release builds are not synonymous. PR CI checks both frontend variants and tests the Rust shell; the network-dependent engine pin check remains separate.
+
+The installer path builds the frontend once through the Tauri hook; the compile-only path builds it once in the script. Publish the API first when invoking Tauri directly. Sidecar restart backoff resets only after a child exits following at least one minute of successful runtime; repeated spawn failures retain the 30-second cap, and manual retry interrupts the wait.
 
 ## Known limitations
 

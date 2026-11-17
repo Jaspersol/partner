@@ -145,7 +145,7 @@ public sealed class AgentsEndpointTests : ApiFixture
         var disabled = await PutAgentsAsync(null, Desktop(enabled: false));
         Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
 
-        var on = await _http.PutAsJsonAsync("/api/settings", new
+        var on = await _http.PutSettingsAsync(new
         {
             desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
@@ -157,7 +157,7 @@ public sealed class AgentsEndpointTests : ApiFixture
     [Fact]
     public async Task The_desktop_agent_cannot_be_disabled_while_desktop_control_is_on()
     {
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -172,17 +172,17 @@ public sealed class AgentsEndpointTests : ApiFixture
     [Fact]
     public async Task Reading_files_needs_a_directory_that_exists()
     {
-        var none = await _http.PutAsJsonAsync("/api/settings", new { files = new { enabled = true, roots = Array.Empty<string>() } });
+        var none = await _http.PutSettingsAsync(new { files = new { enabled = true, roots = Array.Empty<string>() } });
         Assert.Equal(HttpStatusCode.BadRequest, none.StatusCode);
         Assert.Contains(await ErrorsAsync(none), error => error.Contains("没有配置允许读取的目录", StringComparison.Ordinal));
 
-        var missing = await _http.PutAsJsonAsync("/api/settings", new
+        var missing = await _http.PutSettingsAsync(new
         {
             files = new { enabled = true, roots = new[] { Path.Combine(_workspace, "no-such-dir") } },
         });
         Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
 
-        var fine = await _http.PutAsJsonAsync("/api/settings", new
+        var fine = await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             files = new { enabled = true, roots = new[] { _workspace } },
@@ -195,7 +195,7 @@ public sealed class AgentsEndpointTests : ApiFixture
     {
         var drive = Path.Combine(Path.GetTempPath(), "partner-agents-drive", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(drive);
-        var enabled = await _http.PutAsJsonAsync("/api/settings", new
+        var enabled = await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             files = new { enabled = true, roots = new[] { drive } },
@@ -204,7 +204,7 @@ public sealed class AgentsEndpointTests : ApiFixture
 
         // The drive is unplugged. The settings page sends the whole document, files section included.
         Directory.Delete(drive);
-        var unrelated = await _http.PutAsJsonAsync("/api/settings", new
+        var unrelated = await _http.PutSettingsAsync(new
         {
             output = new { speed = 1.2 },
             files = new { enabled = true, roots = new[] { drive } },
@@ -216,7 +216,7 @@ public sealed class AgentsEndpointTests : ApiFixture
             view.GetProperty("problems").EnumerateArray().Select(p => p.GetString()),
             problem => problem!.Contains("不存在", StringComparison.Ordinal));
 
-        var typo = await _http.PutAsJsonAsync("/api/settings", new
+        var typo = await _http.PutSettingsAsync(new
         {
             files = new { enabled = true, roots = new[] { drive, Path.Combine(drive, "typo") } },
         });
@@ -228,7 +228,7 @@ public sealed class AgentsEndpointTests : ApiFixture
     {
         // The prompt limit is derived from the model's context, and other tests in this class change that
         // context. Pin it here so the verdict does not depend on which test happened to run first.
-        var pinned = await _http.PutAsJsonAsync("/api/settings", new
+        var pinned = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = 16000, maxTokens = 2000 },
         });
@@ -351,7 +351,7 @@ public sealed class AgentsEndpointTests : ApiFixture
     public async Task Saving_the_settings_page_does_not_erase_the_agents_or_the_file_whitelist()
     {
         await PutAgentsAsync("主提示词", Desktop(), Reader(prompt: "读文件的提示词"));
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             files = new { enabled = true, roots = new[] { _workspace } },

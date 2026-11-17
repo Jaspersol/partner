@@ -33,7 +33,7 @@ public sealed class VoiceHostTests : ApiFixture
 
     private async Task PutAsync(object settings)
     {
-        var response = await _http.PutAsJsonAsync("/api/settings", settings);
+        var response = await _http.PutSettingsAsync(settings);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
@@ -95,6 +95,121 @@ public sealed class VoiceHostTests : ApiFixture
         Assert.False(output.GetProperty("running").GetBoolean());
         Assert.Contains("打开输出设备失败", output.GetProperty("reason").GetString()!, StringComparison.Ordinal);
     }
+    [Fact]
+    public async Task Playback_failure_is_isolated_and_reconfigure_rebuilds_the_device()
+    {
+        _components.UseFaultSink = true;
+        await PutAsync(EnabledVoice());
+        var approval = _context.Approvals.RequestAsync("desktop_act", "{}");
+        Assert.True(await WaitForPromptsAsync(1));
+        _components.FaultSink!.Failed = true;
+        var feed = await _http.GetAsync("/api/pet/feed");
+        Assert.Equal(HttpStatusCode.OK, feed.StatusCode);
+        Assert.False((await feed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("speaking").GetBoolean());
+        Assert.True(await Eventually.IsTrueAsync(async () => !(await StateAsync()).GetProperty("output").GetProperty("running").GetBoolean()));
+        Assert.Contains("播放", (await StateAsync()).GetProperty("output").GetProperty("reason").GetString()!);
+        await FeedAsync(_components.LastSource!);
+        Assert.True(await Eventually.IsTrueAsync(async () => (await VoiceInputItemsAsync()).Count > 0));
+        _context.Approvals.Answer(_context.Approvals.Pending[0].ApprovalId, false);
+        await approval;
+        _components.UseFaultSink = false;
+        await PutAsync(EnabledVoice());
+        Assert.True((await StateAsync()).GetProperty("output").GetProperty("running").GetBoolean());
+        var next = _context.Approvals.RequestAsync("desktop_act", "{}");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_components.TtsRequests.Count(text => text.Contains("拒绝执行", StringComparison.Ordinal)) >= 2)));
+        _context.Approvals.Answer(_context.Approvals.Pending[0].ApprovalId, false);
+        await next;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Repeated_same_settings_retries_device_after_rebuild_failures(bool failOnStart)
+    {
+        _components.UseFaultSink = true;
+        await PutAsync(EnabledVoice());
+        _components.FaultSink!.Failed = true;
+        Assert.False(_voice.IsSpeaking);
+        Assert.True(_voice.OutputFaulted);
+
+        _components.UseFaultSink = false;
+        _components.FailToOpenSink = !failOnStart;
+        _components.FailToStartSink = failOnStart;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            await PutAsync(EnabledVoice());
+            Assert.True(_voice.OutputFaulted);
+            Assert.False((await StateAsync()).GetProperty("output").GetProperty("running").GetBoolean());
+            Assert.True((await StateAsync()).GetProperty("input").GetProperty("running").GetBoolean());
+            Assert.Equal(HttpStatusCode.OK, (await _http.GetAsync("/api/pet/feed")).StatusCode);
+        }
+
+        await FeedAsync(_components.LastSource!);
+        Assert.True(await Eventually.IsTrueAsync(async () => (await VoiceInputItemsAsync()).Count > 0));
+        _components.FailToOpenSink = false;
+        _components.FailToStartSink = false;
+        await PutAsync(EnabledVoice());
+        Assert.False(_voice.OutputFaulted);
+        Assert.True((await StateAsync()).GetProperty("output").GetProperty("running").GetBoolean());
+        var sink = _components.LastSink;
+        await PutAsync(EnabledVoice());
+        Assert.Same(sink, _components.LastSink);
+        await _context.Session.AppendAsync(new Core.Sessions.SessionEvent
+        {
+            Kind = Core.Contracts.SessionEventKind.Assistant,
+            Source = Core.Contracts.InputSource.Text,
+            Body = "设备恢复后的新回复。",
+        });
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_components.TtsRequests.Any(text => text.Contains("设备恢复后的新回复", StringComparison.Ordinal)))));
+    }
+
+    [Fact]
+    public async Task Disabled_or_unconfigured_output_is_not_a_device_fault()
+    {
+        await PutAsync(EnabledVoice(output: false));
+        Assert.False(_voice.OutputFaulted);
+        await PutAsync(EnabledVoice(ttsBaseUrl: null));
+        Assert.False(_voice.OutputFaulted);
+        Assert.Contains("TTS", (await StateAsync()).GetProperty("output").GetProperty("reason").GetString()!);
+    }
+
+    [Fact]
+    public async Task Late_old_device_exception_does_not_fault_replacement()
+    {
+        _components.UseFaultSink = true;
+        await PutAsync(EnabledVoice());
+        var old = _components.FaultSink!;
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var reading = Task.Run(() =>
+        {
+            old.BlockThreadId = Environment.CurrentManagedThreadId;
+            old.Entered = entered;
+            old.ReadRelease = release;
+            return _voice.IsSpeaking;
+        });
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+            _components.UseFaultSink = false;
+            await PutAsync(EnabledVoice(ttsBaseUrl: "http://127.0.0.1:45103"));
+        }
+        finally { release.Set(); }
+        Assert.False(await reading.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(_voice.OutputFaulted);
+        Assert.True((await StateAsync()).GetProperty("output").GetProperty("running").GetBoolean());
+        await _context.Session.AppendAsync(new Core.Sessions.SessionEvent
+        {
+            Kind = Core.Contracts.SessionEventKind.Assistant,
+            Source = Core.Contracts.InputSource.Text,
+            Body = "新设备继续播放。",
+        });
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_components.TtsRequests.Any(text => text.Contains("新设备继续播放", StringComparison.Ordinal)))));
+        _components.LastSink!.MarkDrained();
+        await FeedAsync(_components.LastSource!);
+        Assert.True(await Eventually.IsTrueAsync(async () => (await VoiceInputItemsAsync()).Count > 0));
+    }
+
 
     [Fact]
     public async Task An_output_device_that_will_not_start_is_reported_without_failing_the_settings_call()
@@ -398,6 +513,8 @@ internal sealed class SyntheticVoice : IVoiceComponents
 
     /// <summary>Opening the sink succeeds but starting it throws — a machine with no playback endpoint.</summary>
     public bool FailToStartSink { get; set; }
+    public bool UseFaultSink { get; set; }
+    public FaultingSink? FaultSink { get; private set; }
 
     /// <summary>Opening the source succeeds but starting it throws — a machine with no capture endpoint.</summary>
     public bool FailToStartSource { get; set; }
@@ -423,7 +540,7 @@ internal sealed class SyntheticVoice : IVoiceComponents
         {
             RefuseToStart = FailToStartSink,
         };
-        return LastSink;
+        return UseFaultSink ? FaultSink = new FaultingSink(LastSink) : LastSink;
     }
 
     public IReadOnlyList<string> ListInputDevices() => new[] { "synthetic-mic", "synthetic-mic-2" };
@@ -467,4 +584,37 @@ internal sealed class SyntheticVoice : IVoiceComponents
         {
         }
     }
+}
+
+internal sealed class FaultingSink(SyntheticAudioSink inner) : IAudioSink
+{
+    public volatile bool Failed;
+    public int BlockThreadId;
+    public ManualResetEventSlim? Entered;
+    public ManualResetEventSlim? ReadRelease;
+    private void Check() { if (Failed) throw new InvalidOperationException("device lost"); }
+    public int SampleRate => inner.SampleRate;
+    public string DeviceName => inner.DeviceName;
+    public double DrainMs { get => inner.DrainMs; set => inner.DrainMs = value; }
+    public bool IsPlaying
+    {
+        get
+        {
+            if (Environment.CurrentManagedThreadId == BlockThreadId && Entered is { } entered && ReadRelease is { } release)
+            {
+                entered.Set();
+                release.Wait();
+                throw new InvalidOperationException("late device failure");
+            }
+            Check();
+            return inner.IsPlaying;
+        }
+    }
+    public bool HasPending { get { Check(); return inner.HasPending; } }
+    public void Start() { Check(); inner.Start(); }
+    public void Enqueue(float[] pcm, int rate, bool final = false) { Check(); inner.Enqueue(pcm, rate, final); }
+    public void Hold() { Check(); inner.Hold(); }
+    public void Release() { Check(); inner.Release(); }
+    public void Stop() => inner.Stop();
+    public void Dispose() => inner.Dispose();
 }

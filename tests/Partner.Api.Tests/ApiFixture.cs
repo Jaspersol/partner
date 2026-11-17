@@ -119,3 +119,14 @@ public abstract class ApiFixture : IAsyncLifetime
         return port;
     }
 }
+
+internal static class SettingsTestClient
+{
+    internal static async Task<HttpResponseMessage> PutSettingsAsync(this HttpClient http, object settings)
+    {
+        var current = await System.Net.Http.Json.HttpClientJsonExtensions.GetFromJsonAsync<System.Text.Json.JsonElement>(http, "/api/settings");
+        var body = System.Text.Json.JsonSerializer.SerializeToNode(settings, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!.AsObject();
+        body["revision"] = current.GetProperty("revision").GetInt32();
+        return await System.Net.Http.Json.HttpClientJsonExtensions.PutAsJsonAsync(http, "/api/settings", body);
+    }
+}

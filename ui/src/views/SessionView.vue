@@ -120,6 +120,8 @@ function format(tokens: number): string {
 
 /** The day the reader chose, or null for "the newest" (which then follows along). */
 const selectedDay = ref<string | null>(null)
+let refreshGeneration = 0
+let alive = true
 
 /**
  * The day shown as "newest" while work is running across midnight.
@@ -167,7 +169,8 @@ function chooseDay(day: string) {
   if (selectedDay.value === null) heldDay.value = newest ?? null
   following.value = selectedDay.value === null
   clearSelection()
-  void refresh().then(async () => {
+  void refresh().then(async (applied) => {
+    if (!applied) return
     await nextTick()
     const el = scroller.value
     if (el === null) return
@@ -179,12 +182,19 @@ function chooseDay(day: string) {
   })
 }
 
-async function refresh() {
+async function refresh(): Promise<boolean> {
+  const generation = ++refreshGeneration
+  const window = windowRequest()
+  const current = () => {
+    const now = windowRequest()
+    return alive && generation === refreshGeneration && now.day === window.day && now.open === window.open && now.offsetMinutes === window.offsetMinutes
+  }
   try {
-    const next = await props.api.session(undefined, undefined, windowRequest())
-    // A turn that ends has usually just handed work to a sub-agent. Read the jobs before showing it as over, so
-    // the screen goes straight from "running" to "delegating" and never through "finished".
+    const next = await props.api.session(undefined, undefined, window)
+    if (!current()) return false
+    // Read jobs before displaying a transition from running to idle.
     if (view.value?.busy === true && next.busy !== true) await refreshJobs()
+    if (!current()) return false
     view.value = next
     // The chosen day no longer exists (its conversation was deleted): the server answered with the newest.
     if (selectedDay.value !== null && next.day !== selectedDay.value) selectedDay.value = null
@@ -195,9 +205,11 @@ async function refresh() {
     loaded.value = true
     // Content just changed — a new event, or the reply growing. A reader at the bottom stays at the bottom.
     await followIfFollowing()
+    return true
   } catch {
     // A failed read says nothing on screen any more. The last good list stays where it is and the poll tries
     // again a few hundred milliseconds later, which is the same thing the reader would do by hand.
+    return false
   }
 }
 
@@ -367,7 +379,8 @@ function refreshJobs(): Promise<void> {
   lastJobsPoll = Date.now()
   jobsRequest = (async () => {
     try {
-      jobs.value = await props.api.agentJobs()
+      const next = await props.api.agentJobs()
+      if (alive) jobs.value = next
     } catch {
       // An older build has no jobs endpoint, and a failed read keeps the cards that were there: a card that blinks
       // out on a hiccup and comes back is worse than one a second out of date.
@@ -513,13 +526,16 @@ async function followIfFollowing() {
 onMounted(async () => {
   void refreshJobs()
   await refresh()
+  if (!alive) return
 
   // Open on the newest event. A session is a conversation and its interesting end is the bottom, so this is
   // the one scroll the view does on its own. From here on it follows the reader's position instead: growing
   // text keeps the bottom pinned only while they are still there.
   await nextTick()
+  if (!alive) return
   following.value = true
   await followIfFollowing()
+  if (!alive) return
 
   poller = setInterval(() => {
     void poll()
@@ -527,6 +543,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  alive = false
+  refreshGeneration++
   clearTimeout(settleTimer)
   if (poller !== undefined) {
     clearInterval(poller)

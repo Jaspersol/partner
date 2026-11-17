@@ -5,10 +5,7 @@ using Partner.Voice.Tts;
 
 namespace Partner.Voice.Tests;
 
-/// <summary>
-/// Playback order and synthesize-before-speaking: every sentence's audio must reach the sink before Release,
-/// including on the second and later turns that reuse the same sink.
-/// </summary>
+/// <summary>Consumer-visible playback and interruption contracts.</summary>
 public sealed class VoiceOutputHalfTests
 {
     /// <summary>
@@ -26,45 +23,119 @@ public sealed class VoiceOutputHalfTests
     }
 
     [Fact]
-    public async Task Every_sentence_is_synthesised_before_any_of_them_plays()
+    public async Task Turns_preserve_sentence_order_and_samples_on_a_reused_sink()
     {
         var sink = new RecordingSink();
         var tts = new ScriptedTts();
         using var output = Half(sink, tts, out _);
-
-        output.OnText("第一句话。第二句话。第三句话。", sessionEventSeq: 1);
+        output.OnText("第一句。第二句。", 1);
         await output.FlushTurnAsync();
-
-        Assert.Equal(new[] { "第一句话。", "第二句话。", "第三句话。" }, tts.Requests);
-        Assert.Equal(3, sink.EnqueuedSegments);
-
-        // Nothing leaked out: every segment arrived while held, and Release comes last.
-        Assert.Equal(0, sink.EnqueuedWhileFree);
-        Assert.Equal(1, sink.Releases);
+        output.OnText("第三句。第四句。", 2);
+        await output.FlushTurnAsync();
+        Assert.Equal(new[] { "第一句。", "第二句。", "第三句。", "第四句。" }, tts.Requests);
+        Assert.Equal(4, sink.EnqueuedSegments);
+        Assert.Equal(960, sink.Samples);
+        Assert.Equal(4, sink.FinalMarkers);
     }
 
     [Fact]
-    public async Task A_second_turn_on_the_reused_sink_is_still_buffered()
+    public async Task Interruption_during_text_acceptance_clears_the_tail_and_next_turn_survives()
     {
-        var sink = new RecordingSink();
+        using var entered = new ManualResetEventSlim();
+        using var proceed = new ManualResetEventSlim();
+        var tts = new ScriptedTts();
+        using var output = TimedHalf(new RecordingSink(), tts, () => { entered.Set(); proceed.Wait(); return 0; });
+        var producer = Task.Run(() => output.OnText("旧句。旧尾", 1));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var interrupt = Task.Run(output.StopPlayback);
+        proceed.Set();
+        await Task.WhenAll(producer, interrupt);
+        output.ResumeAfterInterruption();
+        output.OnText("新句。", 2);
+        await output.FlushTurnAsync();
+        Assert.Equal(new[] { "新句。" }, tts.Requests);
+        Assert.True(output.SentencesEmpty);
+    }
+
+    [Fact]
+    public async Task Priority_cues_are_drained_at_each_sentence_boundary()
+    {
+        var tts = new ScriptedTts();
+        using var output = Half(new RecordingSink(), tts, out _);
+        output.OnText("第一句。第二句。", 1);
+        var boundaries = 0;
+        await output.PlayPendingAsync(default, () =>
+        {
+            if (++boundaries == 2) output.Say("审批。", SpeechKind.ApprovalPrompt, priority: true);
+        });
+        Assert.Equal(new[] { "第一句。", "审批。", "第二句。" }, tts.Requests);
+    }
+
+    [Fact]
+    public async Task Approval_arriving_during_backpressure_precedes_the_next_sentence()
+    {
+        var sink = new BlockingSink();
         var tts = new ScriptedTts();
         using var output = Half(sink, tts, out _);
+        output.OnText("第一句。第二句。", 1);
+        var cue = false;
+        var playing = output.FlushTurnAsync(default, () =>
+        {
+            if (cue) { cue = false; output.Say("审批。", SpeechKind.ApprovalPrompt, priority: true); }
+        });
+        await sink.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cue = true;
+        sink.Block = false;
+        sink.ReleaseBlocked.TrySetResult();
+        await playing.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { "第一句。", "审批。", "第二句。" }, tts.Requests);
+    }
 
-        output.OnText("第一回合的第一句。第一回合的第二句。", sessionEventSeq: 1);
+    [Fact]
+    public async Task Blocked_producer_is_canceled_by_interruption_and_the_sink_is_reused()
+    {
+        var sink = new BlockingSink();
+        var tts = new ScriptedTts();
+        using var output = Half(sink, tts, out _);
+        output.OnText("旧句。旧尾", 1);
+        var playing = output.FlushTurnAsync();
+        await sink.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        output.StopPlayback();
+        await playing.WaitAsync(TimeSpan.FromSeconds(5));
+        sink.Block = false;
+        output.ResumeAfterInterruption();
+        output.OnText("新句。", 2);
         await output.FlushTurnAsync();
+        Assert.Equal(new[] { "旧句。", "新句。" }, tts.Requests);
+        Assert.Equal(240, sink.Samples);
+    }
 
-        var freeAfterFirstTurn = sink.EnqueuedWhileFree;
-        var releasesAfterFirstTurn = sink.Releases;
-
-        output.OnText("第二回合的第一句。第二回合的第二句。", sessionEventSeq: 2);
-        await output.FlushTurnAsync();
-
-        // The second turn must also play nothing before Release.
-        Assert.Equal(freeAfterFirstTurn, sink.EnqueuedWhileFree);
-        Assert.Equal(releasesAfterFirstTurn + 1, sink.Releases);
-        Assert.Equal(
-            new[] { "第一回合的第一句。", "第一回合的第二句。", "第二回合的第一句。", "第二回合的第二句。" },
-            tts.Requests);
+    private sealed class BlockingSink : IAudioSink
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Block = true;
+        public int Samples;
+        public int SampleRate => 24000;
+        public string DeviceName => "blocked";
+        public double DrainMs { get; set; }
+        public bool IsPlaying => false;
+        public bool HasPending => false;
+        public void Start() { }
+        public void Hold() { }
+        public void Release() { }
+        public void Stop() { }
+        public void Dispose() { }
+        public void Enqueue(float[] pcm, int rate, bool final = false) => Samples += pcm.Length;
+        public async Task EnqueueAsync(float[] pcm, int rate, bool final = false, CancellationToken ct = default)
+        {
+            if (Block && pcm.Length > 0)
+            {
+                Entered.TrySetResult();
+                await ReleaseBlocked.Task.WaitAsync(ct);
+            }
+            Enqueue(pcm, rate, final);
+        }
     }
 
     private static VoiceOutputHalf TimedHalf(IAudioSink sink, ITtsClient tts, Func<long> nowMs) =>
@@ -162,6 +233,8 @@ public sealed class VoiceOutputHalfTests
         public double DrainMs { get; set; } = 400;
 
         public int EnqueuedSegments { get; private set; }
+        public int Samples { get; private set; }
+        public int FinalMarkers { get; private set; }
 
         public int EnqueuedWhileFree { get; private set; }
 
@@ -180,6 +253,8 @@ public sealed class VoiceOutputHalfTests
             ArgumentNullException.ThrowIfNull(pcm);
 
             // A terminator (empty array) is not an audio segment; every sentence ends with one.
+            Samples += pcm.Length;
+            if (final) FinalMarkers++;
             if (pcm.Length > 0)
             {
                 EnqueuedSegments++;

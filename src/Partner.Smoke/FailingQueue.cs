@@ -1,6 +1,3 @@
-using Partner.Core.Contracts;
-using Partner.Core.Queue;
-
 namespace Partner.Smoke;
 
 /// <summary>Delegating queue that fails its first enqueue, used to prove failure retention end to end.</summary>

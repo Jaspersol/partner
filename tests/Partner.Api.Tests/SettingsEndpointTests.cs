@@ -25,6 +25,68 @@ public sealed class SettingsEndpointTests : ApiFixture
     protected override string ReadinessPath => "/api/settings";
 
     [Fact]
+    public async Task Rebase_guard_ignores_independently_edited_subdomains()
+    {
+        async Task<string?> GuardAsync() => (await _http.GetFromJsonAsync<JsonElement>("/api/settings"))
+            .GetProperty("rebaseGuard").GetString();
+
+        var guard = await GuardAsync();
+        Assert.False(string.IsNullOrEmpty(guard));
+        _context.Settings.Update(s => s with { Agents = s.Agents with { Main = s.Agents.Main with { Prompt = "guard-test" } } });
+        Assert.Equal(guard, await GuardAsync());
+        _context.Settings.Update(s => s with { Mcp = s.Mcp with { Enabled = !s.Mcp.Enabled } });
+        Assert.Equal(guard, await GuardAsync());
+        _context.Settings.Update(s => s with { Skills = s.Skills with { Disabled = ["guard-test"] } });
+        Assert.Equal(guard, await GuardAsync());
+        _context.Settings.Update(s => s with { Memory = s.Memory with { Embeddings = !s.Memory.Embeddings } });
+        Assert.Equal(guard, await GuardAsync());
+    }
+
+    [Fact]
+    public async Task Rebase_guard_changes_when_a_model_secret_changes_without_exposing_it()
+    {
+        const string firstKey = "guard-secret-one";
+        const string secondKey = "guard-secret-two";
+        var first = await _http.PutSettingsAsync(new { model = new { apiKey = firstKey } });
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var firstRaw = await _http.GetStringAsync("/api/settings");
+        var firstGuard = JsonDocument.Parse(firstRaw).RootElement.GetProperty("rebaseGuard").GetString();
+
+        var second = await _http.PutSettingsAsync(new { model = new { apiKey = secondKey } });
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        var secondRaw = await _http.GetStringAsync("/api/settings");
+        var secondGuard = JsonDocument.Parse(secondRaw).RootElement.GetProperty("rebaseGuard").GetString();
+        Assert.NotEqual(firstGuard, secondGuard);
+        Assert.DoesNotContain(firstKey, firstRaw, StringComparison.Ordinal);
+        Assert.DoesNotContain(secondKey, secondRaw, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Settings_writes_require_the_current_revision()
+    {
+        var before = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        var revision = before.GetProperty("revision").GetInt32();
+
+        var missing = await _http.PutAsJsonAsync("/api/settings", new { input = new { enabled = true } });
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        var saved = await _http.PutAsJsonAsync("/api/settings", new { revision, input = new { enabled = true } });
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        var savedBody = await saved.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(revision + 1, savedBody.GetProperty("settings").GetProperty("revision").GetInt32());
+
+        var stale = await _http.PutAsJsonAsync("/api/settings", new { revision, input = new { enabled = false } });
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        var conflict = await stale.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(revision + 1, conflict.GetProperty("revision").GetInt32());
+        Assert.Equal(JsonValueKind.String, conflict.GetProperty("error").ValueKind);
+
+        var after = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        Assert.Equal(revision + 1, after.GetProperty("revision").GetInt32());
+        Assert.True(after.GetProperty("input").GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
     public async Task Shrinking_the_context_folds_the_history_once()
     {
         for (var i = 1; i <= 6; i++)
@@ -39,7 +101,7 @@ public sealed class SettingsEndpointTests : ApiFixture
 
         // The consumer is disabled in this fixture (no model), so compaction reports that it cannot summarise
         // rather than silently doing nothing.
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = 64, maxTokens = 8 },
         });
@@ -61,7 +123,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     {
         // Start from a context smaller than the one this test grows to. Other tests in this class change the
         // stored context, so reading it from whatever ran before would make the verdict order-dependent.
-        var pinned = await _http.PutAsJsonAsync("/api/settings", new
+        var pinned = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = 8192, maxTokens = 2048 },
         });
@@ -74,7 +136,7 @@ public sealed class SettingsEndpointTests : ApiFixture
             Body = "one",
         });
 
-        var put = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextTokens = 32768 } });
+        var put = await _http.PutSettingsAsync(new { model = new { contextTokens = 32768 } });
         var body = await put.Content.ReadFromJsonAsync<JsonElement>();
 
         Assert.Equal(JsonValueKind.Null, body.GetProperty("compaction").ValueKind);
@@ -83,7 +145,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     [Fact]
     public async Task The_context_and_output_limits_round_trip_and_are_validated()
     {
-        var saved = await _http.PutAsJsonAsync("/api/settings", new
+        var saved = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = 8192, maxTokens = 2048 },
         });
@@ -93,7 +155,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         Assert.Equal(8192, view.GetProperty("model").GetProperty("contextTokens").GetInt32());
         Assert.Equal(2048, view.GetProperty("model").GetProperty("maxTokens").GetInt32());
 
-        var bad = await _http.PutAsJsonAsync("/api/settings", new { model = new { contextTokens = 0, maxTokens = -1 } });
+        var bad = await _http.PutSettingsAsync(new { model = new { contextTokens = 0, maxTokens = -1 } });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         var errors = (await bad.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("errors")
@@ -102,7 +164,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         Assert.Contains(errors, e => e.Contains("maxTokens", StringComparison.Ordinal));
 
         // A completion that cannot fit alongside its own prompt is a truncation, not a configuration.
-        var inverted = await _http.PutAsJsonAsync("/api/settings", new
+        var inverted = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = 4096, maxTokens = 4096 },
         });
@@ -167,7 +229,7 @@ public sealed class SettingsEndpointTests : ApiFixture
             // sixth of that (10) is kept back for the summary, so 50 remain — two turns. The three oldest are
             // folded and the two newest stay.
             var system = (await consumer.MeasureContextAsync(context.Settings.Load())).SystemTokens;
-            var put = await http.PutAsJsonAsync("/api/settings", new
+            var put = await http.PutSettingsAsync(new
             {
                 model = new { contextTokens = system + 8 + 60, maxTokens = 8 },
             });
@@ -229,7 +291,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     {
         // Off by default, and the switch round-trips. The store reads it at process open, so a live save has
         // no effect until restart — asserted here by scoring through the same workspace after reopening.
-        var put = await _http.PutAsJsonAsync("/api/settings", new { memory = new { embeddings = true } });
+        var put = await _http.PutSettingsAsync(new { memory = new { embeddings = true } });
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
         Assert.True((await _http.GetFromJsonAsync<JsonElement>("/api/settings"))
             .GetProperty("memory").GetProperty("embeddings").GetBoolean());
@@ -271,7 +333,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     [Fact]
     public async Task The_gear_menu_and_its_default_round_trip()
     {
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { reasoningEffort = "high", reasoningGears = new[] { "low", "high" } },
         });
@@ -291,7 +353,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         // what new turns send — the menu just grows an entry so the value stays selectable. Rejecting
         // instead would make the page unsavable the moment a gear is renamed, which is the normal way to
         // use this editor.
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { reasoningEffort = "turbo", reasoningGears = new[] { "low" } },
         });
@@ -309,7 +371,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     public async Task The_gear_menu_is_normalized_and_deduplicated_in_the_users_order()
     {
         // Order is the menu order, so it is preserved; casing and padding are not a different setting.
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { reasoningGears = new[] { "  HIGH ", "low", "high", "  " } },
         });
@@ -324,7 +386,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     [Fact]
     public async Task The_api_key_is_accepted_but_never_echoed()
     {
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", apiKey = "super-secret" },
         });
@@ -343,13 +405,13 @@ public sealed class SettingsEndpointTests : ApiFixture
     [Fact]
     public async Task An_absent_key_is_kept_and_an_empty_one_clears_it()
     {
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", apiKey = "keep-me" },
         });
 
         // A client editing an unrelated field must not silently wipe the key.
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             input = new { utteranceGapMs = 900 },
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
@@ -359,7 +421,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         Assert.Equal("keep-me", kept.Model.ApiKey);
 
         // An explicit empty string is how a client says "remove it".
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", apiKey = "" },
         });
@@ -374,7 +436,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     [Fact]
     public async Task An_unusable_endpoint_is_rejected_with_every_reason()
     {
-        var bad = await _http.PutAsJsonAsync("/api/settings", new
+        var bad = await _http.PutSettingsAsync(new
         {
             asr = new { baseUrl = "not-a-url" },
             tts = new { baseUrl = "ftp://example.test" },
@@ -398,7 +460,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         var before = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         Assert.False(before.GetProperty("running").GetBoolean());
 
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "settings-model" },
         });
@@ -419,7 +481,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         // Port 9 is the discard port: the connection is refused, which is exactly the observable we want —
         // the failure proves the request went to the endpoint from settings and not somewhere else.
         var closed = FreePort();
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = $"http://127.0.0.1:{closed}/v1", model = "settings-model" },
         });
@@ -460,7 +522,7 @@ public sealed class SettingsEndpointTests : ApiFixture
     public async Task Changing_an_unrelated_section_does_not_restart_the_consumer()
     {
         var closed = FreePort();
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = $"http://127.0.0.1:{closed}/v1", model = "settings-model" },
         });
@@ -475,7 +537,7 @@ public sealed class SettingsEndpointTests : ApiFixture
         Assert.True(handled, "the first item was never handled");
 
         // A restart would reset the counters; editing the voice section must not interrupt a turn in flight.
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             input = new { utteranceGapMs = 700 },
             model = new { baseUrl = $"http://127.0.0.1:{closed}/v1", model = "settings-model" },
@@ -497,7 +559,7 @@ public sealed class SettingsEndpointTests : ApiFixture
             Environment.SetEnvironmentVariable(HttpLlmClient.BaseUrlVariable, "http://127.0.0.1:9/v1");
             Environment.SetEnvironmentVariable(HttpLlmClient.ModelVariable, "env-model");
 
-            await _http.PutAsJsonAsync("/api/settings", new
+            await _http.PutSettingsAsync(new
             {
                 model = new { baseUrl = "http://127.0.0.1:9/v1", model = "settings-model" },
             });

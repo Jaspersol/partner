@@ -8,6 +8,11 @@ fn main() {
     // `default` is on in development, and a gating feature could not keep the pet in `tauri dev` while taking it
     // out of the release. An env-gated cfg has no such inversion.
     println!("cargo:rerun-if-env-changed=PARTNER_PET");
+    println!("cargo:rerun-if-env-changed=VITE_PARTNER_PET");
+    if let Ok(frontend) = std::env::var("VITE_PARTNER_PET") {
+        let shell_enabled = std::env::var("PARTNER_PET").map(|value| value != "0") != Ok(false);
+        assert_eq!(frontend != "0", shell_enabled, "VITE_PARTNER_PET conflicts with PARTNER_PET");
+    }
     println!("cargo:rustc-check-cfg=cfg(partner_pet)");
     if std::env::var("PARTNER_PET").map(|value| value != "0") != Ok(false) {
         println!("cargo:rustc-cfg=partner_pet");

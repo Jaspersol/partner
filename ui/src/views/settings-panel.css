@@ -1,0 +1,557 @@
+.settings-scroll {
+  flex: 1;
+  min-block-size: 0;
+}
+.settings-body {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+
+.settings.is-single {
+  grid-template-columns: minmax(0, var(--column-form));
+}
+
+/* An embedded page brings its own scroll region, top-bar clearance and Save bar. Inside this page the scroll
+   and the clearance already exist, and the Save bar anchors to this view's bottom edge instead of the embedded
+   page's own box. */
+.embedded :deep(.view) {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  block-size: auto;
+}
+
+.embedded :deep(.scroll) {
+  overflow: visible;
+}
+
+.embedded :deep(.g-page) {
+  inline-size: 100%;
+  padding: 0;
+}
+
+/* Two columns: the categories, and one category at a time. The nav sticks under the top bar so switching never
+   needs a scroll back up. */
+.settings {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, var(--column-form));
+  gap: var(--space-6);
+  justify-content: center;
+  padding: calc(var(--topbar-h) + var(--space-4)) var(--space-5) 7rem;
+}
+
+.settings-nav {
+  position: sticky;
+  inset-block-start: calc(var(--topbar-h) + var(--space-4));
+  align-self: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+
+.nav-item {
+  justify-content: flex-start;
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding: 0 var(--space-3);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+}
+
+.nav-item:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-pressed);
+  font-weight: 500;
+}
+
+.live-dot {
+  margin-inline-start: auto;
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-inline-size: 0;
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-content: start;
+  min-inline-size: 0;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.panel-head h2 {
+  font-size: var(--fs-title);
+  margin-inline-end: auto;
+}
+
+/* A grouped list in a glass card: a title row, then rows that separate themselves with a hairline. */
+.g-card {
+  background: var(--glass-1);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-hi), var(--shadow-1);
+  padding: var(--space-2) var(--space-5) var(--space-3);
+  min-inline-size: 0;
+}
+
+.g-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-block-size: 3rem;
+  padding-block-start: var(--space-1);
+}
+
+.g-card-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8125rem;
+  color: var(--text-2);
+}
+
+.row-note {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  padding-block-end: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.status-line {
+  margin: 0;
+  padding-block: var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.warn-line {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: var(--fs-meta);
+}
+
+.warn-line button {
+  min-block-size: 1.75rem;
+  font-size: var(--fs-meta);
+}
+
+.version-chip {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.update-line {
+  margin: 0;
+  padding-block: var(--space-2);
+  font-size: var(--fs-ui);
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.update-size {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.hint-line {
+  margin: 0;
+  padding-block: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.callout {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--text);
+  font-size: var(--fs-ui);
+}
+
+.more {
+  justify-self: start;
+  color: var(--text-2);
+}
+
+.more-chevron {
+  transition: transform var(--motion-fast) var(--ease);
+  transform: rotate(-90deg);
+}
+
+.more-chevron.is-open {
+  transform: none;
+}
+
+.icon-only {
+  flex: none;
+  inline-size: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.level {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-block: var(--space-2) var(--space-1);
+}
+
+.level-track {
+  position: relative;
+  flex: 1 1 auto;
+  block-size: 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.level-fill {
+  block-size: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+/* The threshold: a level that cannot reach it is silence, and silence that is never detected means an utterance
+   that never ends. */
+.level-mark {
+  position: absolute;
+  inset-block: 0;
+  inline-size: 2px;
+  background: var(--text);
+  opacity: 0.55;
+}
+
+.level-readout {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.tts-test-audio {
+  inline-size: 100%;
+  block-size: 2.25rem;
+  margin-block: var(--space-2);
+}
+
+.folders {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block: var(--space-3) var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.folders-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.folder-row input {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.folder-icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.add {
+  justify-self: start;
+}
+
+/* One line per engine: who it is, what it indexes, how it is doing, and the switch. The state is the part
+   that matters — an engine that is quietly paused is why a search came back thin. */
+.engine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding-block: var(--space-1);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.engine-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  max-inline-size: 12rem;
+  font-size: var(--fs-ui);
+  color: var(--text);
+}
+
+.engine-tag {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 0.6875rem;
+}
+
+.engine-kinds {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.engine-state {
+  flex: none;
+  max-inline-size: 14rem;
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-2);
+}
+
+.engine-state.is-ok {
+  color: var(--text-3);
+}
+
+.engine-state.is-warn {
+  color: var(--warn);
+}
+
+.engine-state.is-off {
+  color: var(--text-3);
+  opacity: 0.7;
+}
+
+.pkg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+.pkg-actions input[type='text'] {
+  flex: 1 1 14rem;
+  min-inline-size: 0;
+}
+
+.pkg-root {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.pkg-progress {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.clone-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.clone-name {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.pkg-note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* One imported model on a line: name, what it offers, and the two verbs that act on it. The metadata is the
+   part that decides whether a model is worth using, so it sits between them rather than in a tooltip. */
+.pet-model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: 2.5rem;
+  padding-block: var(--space-1);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.pet-model-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  max-inline-size: 12rem;
+  color: var(--text);
+  font-size: var(--fs-ui);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pet-model-meta {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.pet-candidates {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block-end: var(--space-2);
+}
+
+/* A percentage that changes as the slider moves: tabular figures keep it from jittering. */
+.pet-readout {
+  flex: none;
+  min-inline-size: 3.5rem;
+  text-align: end;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-meta);
+}
+
+.pet-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pet-range input {
+  inline-size: 6rem;
+}
+
+.pet-range-sep {
+  color: var(--text-3);
+}
+
+.pet-dict {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block: var(--space-3) var(--space-2);
+  border-block-start: 1px solid var(--glass-edge);
+}
+
+.pet-dict-head {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.pet-keyword-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pet-keyword-row input[type='text'] {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.pet-keyword-row input[type='number'] {
+  flex: none;
+  inline-size: 5rem;
+}
+
+.pet-trial {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block-start: var(--space-2);
+}
+
+.pet-trial-score {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.pet-trial-hits {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
+.pet-link-label {
+  min-inline-size: 11rem;
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+@container body (max-width: 52rem) {
+  .settings {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .settings-nav {
+    position: static;
+    display: flex;
+    overflow-x: auto;
+    padding-block-end: var(--space-1);
+  }
+
+  .nav-item {
+    flex: none;
+    border-radius: var(--radius-pill);
+  }
+
+  .live-dot {
+    margin-inline-start: var(--space-1);
+  }
+}

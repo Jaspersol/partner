@@ -18,6 +18,7 @@ speakers ← ordered playback ← TTS ← sentence split ← new assistant reply
 - Only replies that appear after start-up are read; history is not read out on launch.
 - "Mute the microphone while speaking" is recommended, so the assistant does not hear itself as you.
 - "Interrupt the assistant by speaking": speak for about half a second while it talks and it stops. There is no echo cancellation, so use it with headphones.
+- If the playback device fails, read-aloud stops and the microphone is released. Save voice settings to reopen the device; if reopening fails, save again after the device is available.
 - Sentence split: a sentence ending (period, question mark, exclamation mark, …) cuts the text, but a fragment shorter than "Shortest sentence" (default 10 characters) is not read on its own — it is joined to what follows. Text with no punctuation is cut after "Characters before a forced break" (default 40), preferring the last sentence ending, then a soft break (comma, space), then the cap.
 
 ## Two ways to connect
@@ -39,7 +40,7 @@ The installer carries only two small server scripts. Runtimes and models are not
 - If you only need recognition, download only KWS + ASR. No GPU required.
 - Downloads resume; SHA-256 is verified when available; when the server reports a length it is checked, and a truncated file does not count as success.
 - A dropped connection is retried three times from the bytes already on disk, and 60 seconds without data counts as dropped, so the download button does not have to be pressed again.
-- "Check" on the settings page looks at the files on disk and lists what is missing. You can also point it at an existing engine directory.
+- The settings page displays engine readiness and missing files without changing settings on open. Click “Check” to fill in detected engine paths, then save to apply them; you can also choose an existing engine directory manually.
 - Default paths are stored relative to the app directory, so moving or reinstalling the app needs no settings change.
 - Switching an engine off ends its process (the whole tree) and returns all VRAM and RAM.
 
@@ -57,6 +58,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install-engines.ps1 -Engine tts
 ```
 
 Cloning a voice from wav/mp3 needs `ffmpeg` on PATH; the bundled voice anchors do not.
+While reference audio is uploading, editing, saving and discarding settings are disabled. After a failure, retry; after success, save the settings.
 
 ## Wake word
 

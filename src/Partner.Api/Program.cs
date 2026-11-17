@@ -54,7 +54,8 @@ if (Environment.GetEnvironmentVariable("PARTNER_API_PARENT_WATCH") == "1")
 
 try
 {
-    await app.RunAsync();
+    await app.StartAsync();
+    await app.WaitForShutdownAsync();
 }
 finally
 {
@@ -70,4 +71,5 @@ finally
     await localEngines.DisposeAsync();
     await voice.DisposeAsync();
     await consumer.DisposeAsync();
+    await app.DisposeAsync();
 }

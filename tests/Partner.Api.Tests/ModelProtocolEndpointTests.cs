@@ -17,13 +17,13 @@ public sealed class ModelProtocolEndpointTests : ApiFixture
     [Fact]
     public async Task The_model_protocol_round_trips_and_rejects_unknown_values()
     {
-        var saved = await _http.PutAsJsonAsync("/api/settings", new { model = new { protocol = "claude" } });
+        var saved = await _http.PutSettingsAsync(new { model = new { protocol = "claude" } });
         Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
 
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
         Assert.Equal("anthropic", view.GetProperty("model").GetProperty("protocol").GetString());
 
-        var bad = await _http.PutAsJsonAsync("/api/settings", new { model = new { protocol = "gemini" } });
+        var bad = await _http.PutSettingsAsync(new { model = new { protocol = "gemini" } });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         var failure = await bad.Content.ReadFromJsonAsync<JsonElement>();

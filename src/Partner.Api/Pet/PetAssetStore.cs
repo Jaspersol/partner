@@ -13,6 +13,12 @@ public sealed record PetCoreStatus(bool Installed, string Sdk, string? Sha256);
 /// <summary>One playable motion: the group it belongs to, its index inside that group, and the name the UI shows.</summary>
 public sealed record PetMotionInfo(string Group, int No, string Name);
 
+/// <summary>A parameter declared by display info; this is descriptive metadata, not proof of a runtime parameter.</summary>
+public sealed record PetParameterInfo(string Id, string Name, string? GroupId);
+
+/// <summary>A display-info parameter group and its optional parent group.</summary>
+public sealed record PetParameterGroupInfo(string Id, string Name, string? GroupId);
+
 /// <summary>
 /// One imported model. <see cref="Model3"/> is the absolute path the pet window loads; everything else is what
 /// the settings page needs to offer the model, its motions and its expressions.
@@ -24,7 +30,10 @@ public sealed record PetModelInfo(
     IReadOnlyList<PetMotionInfo> Motions,
     IReadOnlyList<string> Expressions,
     bool HasHitAreas,
-    long Bytes);
+    long Bytes,
+    IReadOnlyList<PetParameterInfo> Parameters,
+    IReadOnlyList<PetParameterGroupInfo> ParameterGroups,
+    IReadOnlyList<string> Warnings);
 
 /// <summary>
 /// The outcome of an import: either the model, or the model3 files found inside the input so the caller can pick
@@ -82,6 +91,9 @@ public sealed class PetAssetStore
     private const long MaxModelBytes = 200L * 1024 * 1024;
 
     private const int MaxFiles = 2000;
+
+    // Display metadata is optional and should not consume the whole model import budget during JSON parsing.
+    private const long MaxDisplayInfoBytes = 4L * 1024 * 1024;
 
     /// <summary>Only what Live2D reads. <c>.js</c> is excluded on purpose — see <see cref="ValidateName"/>.</summary>
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -449,6 +461,8 @@ public sealed class PetAssetStore
                 }
 
                 var warnings = new List<string>();
+                var parameters = new List<PetParameterInfo>();
+                var parameterGroups = new List<PetParameterGroupInfo>();
                 foreach (var reference in parsed.Optional)
                 {
                     var full = Resolve(modelRoot, reference.Path);
@@ -466,16 +480,33 @@ public sealed class PetAssetStore
                         continue;
                     }
 
-                    // A sound inside the model root is copied: with motion sound on, the SDK loads it by its
-                    // model3 path and fails at playback if it is missing. Display info is never read, so it is not.
-                    if (IsSoundPath(reference.Path))
+                    if (reference.Label == "fileReferences.displayInfo")
+                    {
+                        if (!reference.Path.EndsWith(".cdi3.json", StringComparison.OrdinalIgnoreCase))
+                        {
+                            warnings.Add($"已跳过格式不受支持的显示信息：{reference.Path}");
+                            continue;
+                        }
+
+                        RejectReparse(full, reference.Path);
+                        if (new FileInfo(full).Length > MaxDisplayInfoBytes)
+                        {
+                            warnings.Add($"已跳过过大的显示信息：{reference.Path}");
+                            continue;
+                        }
+
+                        files[Path.GetRelativePath(modelRoot, full).Replace('\\', '/')] = full;
+                        ReadDisplayInfo(full, reference.Path, parameters, parameterGroups, warnings);
+                    }
+                    else if (IsSoundPath(reference.Path))
                     {
                         RejectReparse(full, reference.Path);
                         files[Path.GetRelativePath(modelRoot, full).Replace('\\', '/')] = full;
-                        continue;
                     }
-
-                    warnings.Add($"已跳过未复制的显示信息（{reference.Label}）：{reference.Path}");
+                    else
+                    {
+                        warnings.Add($"已跳过格式不受支持的声音文件：{reference.Path}");
+                    }
                 }
 
                 var hash = HashTree(files);
@@ -508,6 +539,8 @@ public sealed class PetAssetStore
                         Motions = parsed.Motions,
                         Expressions = parsed.Expressions,
                         HasHitAreas = parsed.HasHitAreas,
+                        Parameters = parameters,
+                        ParameterGroups = parameterGroups,
                         Warnings = warnings,
                     };
 
@@ -1011,6 +1044,82 @@ public sealed class PetAssetStore
         }
     }
 
+    private static void ReadDisplayInfo(
+        string path, string reference, List<PetParameterInfo> parameters,
+        List<PetParameterGroupInfo> groups, List<string> warnings)
+    {
+        try
+        {
+            using var input = File.OpenRead(path);
+            using var data = new MemoryStream();
+            var buffer = ArrayPool<byte>.Shared.Rent(8192);
+            try
+            {
+                int count;
+                while ((count = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    if (data.Length + count > MaxDisplayInfoBytes)
+                    {
+                        warnings.Add($"已跳过过大的显示信息：{reference}");
+                        return;
+                    }
+
+                    data.Write(buffer, 0, count);
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            data.Position = 0;
+            using var document = JsonDocument.Parse(data);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                warnings.Add($"无法解析显示信息：{reference}");
+                return;
+            }
+
+            ReadEntries("Parameters", (id, name, group) => parameters.Add(new PetParameterInfo(id, name, group)));
+            ReadEntries("ParameterGroups", (id, name, group) => groups.Add(new PetParameterGroupInfo(id, name, group)));
+
+            void ReadEntries(string property, Action<string, string, string?> add)
+            {
+                if (!root.TryGetProperty(property, out var entries)) return;
+                if (entries.ValueKind != JsonValueKind.Array)
+                {
+                    warnings.Add($"显示信息中的 {property} 不是数组：{reference}");
+                    return;
+                }
+
+                var ids = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var entry in entries.EnumerateArray())
+                {
+                    var id = StringProperty(entry, "Id");
+                    if (string.IsNullOrWhiteSpace(id) || !ids.Add(id))
+                    {
+                        warnings.Add($"已跳过无效或重复的 {property} 项：{reference}");
+                        continue;
+                    }
+
+                    var name = StringProperty(entry, "Name");
+                    var group = StringProperty(entry, "GroupId");
+                    add(id, string.IsNullOrWhiteSpace(name) ? id : name, string.IsNullOrWhiteSpace(group) ? null : group);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            warnings.Add($"无法解析显示信息：{reference}");
+        }
+    }
+
+    private static string? StringProperty(JsonElement element, string name) =>
+        element.ValueKind == JsonValueKind.Object
+        && element.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
     /// <summary>
     /// Whether an optional reference is a motion sound. The model3's only other optional reference is display
     /// info (<c>.cdi3.json</c>), so the extension is what decides: a file it cannot decode is not a sound.
@@ -1052,10 +1161,11 @@ public sealed class PetAssetStore
 
         public bool HasHitAreas { get; init; }
 
-        /// <summary>
-        /// References that were dropped, one sentence each. Kept in the manifest rather than on the wire: the page
-        /// has nothing to show for them, and an investigation reads the manifest the model was imported with.
-        /// </summary>
+        public IReadOnlyList<PetParameterInfo> Parameters { get; init; } = [];
+
+        public IReadOnlyList<PetParameterGroupInfo> ParameterGroups { get; init; } = [];
+
+        /// <summary>Optional references or metadata that could not be used during import.</summary>
         public IReadOnlyList<string> Warnings { get; init; } = [];
     }
 
@@ -1097,7 +1207,10 @@ public sealed class PetAssetStore
         manifest.Motions,
         manifest.Expressions,
         manifest.HasHitAreas,
-        Bytes(directory));
+        Bytes(directory),
+        manifest.Parameters,
+        manifest.ParameterGroups,
+        manifest.Warnings);
 
     private static long Bytes(string directory)
     {

@@ -499,10 +499,23 @@ export interface PetExpressionRef {
   name?: string | null
 }
 
+export interface PetParameterTrack {
+  id: string
+  keys: { at: number; value: number }[]
+}
+
+export interface PetProceduralAction {
+  amplitude?: number
+  extraTracks?: PetParameterTrack[]
+}
+
 /** A model's mapping table and its click geometry. The proportions are only used without `hitAreas`. */
 export interface PetModelProfile {
   motions: Record<string, PetMotionRef>
   expressions: Record<string, PetExpressionRef>
+  parameters?: Record<string, string>
+  amplitude?: number
+  procedural?: Record<string, PetProceduralAction>
   /** Below this fraction of the model height is the head. */
   headBottom: number
   /** Below this fraction is the face; the rest is the body. */
@@ -566,6 +579,14 @@ export interface PetModelInfo {
   expressions: string[]
   hasHitAreas: boolean
   bytes: number
+  parameters?: { id: string; name: string; groupId: string | null }[]
+  parameterGroups?: { id: string; name: string; groupId: string | null }[]
+  warnings?: string[]
+}
+
+export interface PetDiagnostics {
+  modelId: string | null
+  actions: { action: string; kind: 'motion' | 'procedural' | 'skipped'; parameters: { channel: string; id: string; min: number; max: number }[]; missing: string[] }[]
 }
 
 /**
@@ -732,6 +753,7 @@ export interface MemorySettings {
 }
 
 export interface RuntimeSettings {
+  revision: number
   input: InputSettings
   output: OutputSettings
   asr: AsrSettings
@@ -750,6 +772,9 @@ export interface RuntimeSettings {
 }
 
 export interface SettingsView {
+  revision: number
+  /** Opaque guard for fields not owned by embedded settings pages. */
+  rebaseGuard?: string
   input: InputSettings
   output: OutputSettings
   asr: AsrSettings
@@ -1258,6 +1283,7 @@ export interface PartnerApiSurface {
   /** Rejects with an `ApiError` carrying the reason when the zip is the wrong SDK release or a bad hash. */
   importPetCore(path: string): Promise<PetCoreStatus>
   petModels(): Promise<PetModelInfo[]>
+  petDiagnostics?(): Promise<PetDiagnostics>
   /** Answers `candidates` instead of importing when the folder or zip holds several `model3.json` files. */
   importPetModel(path: string, model3?: string): Promise<PetImportResult>
   /** False when the model was already gone — nothing to delete, not an error. */
@@ -1612,6 +1638,10 @@ export class PartnerApi implements PartnerApiSurface {
 
   petModels(): Promise<PetModelInfo[]> {
     return this.request<PetModelInfo[]>('GET', '/api/pet/models')
+  }
+
+  petDiagnostics(): Promise<PetDiagnostics> {
+    return this.request<PetDiagnostics>('GET', '/api/pet/diagnostics')
   }
 
   async importPetModel(path: string, model3?: string): Promise<PetImportResult> {

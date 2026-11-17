@@ -18,11 +18,31 @@ public sealed class SettingsStore
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+    private static readonly byte[] RebaseKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+
+    /// <summary>Opaque guard for fields outside the embedded settings pages, including write-only secrets.</summary>
+    public static string RebaseGuard(RuntimeSettings settings)
+    {
+        var guarded = settings with
+        {
+            Agents = new AgentsSettings(),
+            Mcp = new McpSettings(),
+            Skills = new SkillSettings(),
+            Memory = new MemorySettings(),
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(guarded, Json);
+        return Convert.ToBase64String(System.Security.Cryptography.HMACSHA256.HashData(RebaseKey, bytes));
+    }
 
     private readonly string _path;
     private readonly int _apiPort;
     private readonly Func<IReadOnlyCollection<string>>? _petModelIds;
-    private int _revision = 1;
+    private int _revision = Random.Shared.Next(1, 1_000_000_000);
+    private readonly object _gate = new();
+    private RuntimeSettings? _snapshot;
+
+    /// <summary>Serializes commits and their asynchronous runtime reconfiguration.</summary>
+    public SemaphoreSlim ApplyGate { get; } = new(1, 1);
 
     /// <param name="path">Where <c>runtime.json</c> lives.</param>
     /// <param name="apiPort">The port the services listen on, which a token may be bound to.</param>
@@ -47,6 +67,94 @@ public sealed class SettingsStore
     public int Revision => Volatile.Read(ref _revision);
 
     public RuntimeSettings Load()
+    {
+        lock (_gate)
+        {
+            _snapshot ??= Freeze(ReadFile());
+            return _snapshot;
+        }
+    }
+
+    public (RuntimeSettings Settings, int Revision) Snapshot()
+    {
+        lock (_gate)
+        {
+            _snapshot ??= Freeze(ReadFile());
+            return (_snapshot, _revision);
+        }
+    }
+
+    /// <summary>Explicitly reloads hand-edited settings; malformed JSON uses the safe defaults.</summary>
+    public RuntimeSettings Reload()
+    {
+        lock (_gate)
+        {
+            var loaded = Freeze(ReadFile());
+            _snapshot = loaded;
+            Interlocked.Increment(ref _revision);
+            return loaded;
+        }
+    }
+
+    private static IReadOnlyList<T> FrozenList<T>(IEnumerable<T> values) => Array.AsReadOnly(values.ToArray());
+
+    private static IReadOnlyDictionary<string, T> FrozenMap<T>(IEnumerable<KeyValuePair<string, T>> values) =>
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, T>(values.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal));
+
+    private static LocalEngineSettings FreezeEngine(LocalEngineSettings engine) => engine with
+    {
+        Arguments = FrozenList(engine.Arguments),
+        Keywords = FrozenList(engine.Keywords),
+    };
+
+    // Copy and wrap every collection, including nested pet and MCP collections, at publication.
+    private static RuntimeSettings Freeze(RuntimeSettings settings) => settings with
+    {
+        Model = settings.Model with
+        {
+            ReasoningGears = FrozenList(settings.Model.ReasoningGears),
+            ReasoningLabels = FrozenMap(settings.Model.ReasoningLabels),
+        },
+        Desktop = settings.Desktop with { AllowedWindowTitles = FrozenList(settings.Desktop.AllowedWindowTitles) },
+        Files = settings.Files with { Roots = FrozenList(settings.Files.Roots) },
+        Web = settings.Web with { DisabledEngines = FrozenList(settings.Web.DisabledEngines) },
+        Skills = settings.Skills with { Disabled = FrozenList(settings.Skills.Disabled) },
+        Agents = settings.Agents with { SubAgents = FrozenList(settings.Agents.SubAgents) },
+        Services = settings.Services with { Instances = FrozenList(settings.Services.Instances) },
+        Mcp = settings.Mcp with
+        {
+            Servers = FrozenList(settings.Mcp.Servers.Select(server => server with { Arguments = FrozenList(server.Arguments) })),
+            AllowedTools = FrozenList(settings.Mcp.AllowedTools),
+        },
+        Local = settings.Local with { Tts = FreezeEngine(settings.Local.Tts), Kws = FreezeEngine(settings.Local.Kws) },
+        Pet = settings.Pet with
+        {
+            GreetingTimes = FrozenList(settings.Pet.GreetingTimes),
+            Emotions = settings.Pet.Emotions with
+            {
+                NegationPrefixes = FrozenList(settings.Pet.Emotions.NegationPrefixes),
+                Keywords = FrozenMap(settings.Pet.Emotions.Keywords.Select(pair =>
+                    new KeyValuePair<string, IReadOnlyList<PetKeyword>>(pair.Key, FrozenList(pair.Value)))),
+            },
+            Profiles = FrozenMap(settings.Pet.Profiles.Select(pair => new KeyValuePair<string, PetModelProfile>(pair.Key,
+                pair.Value with
+                {
+                    Motions = FrozenMap(pair.Value.Motions),
+                    Expressions = FrozenMap(pair.Value.Expressions),
+                    Parameters = FrozenMap(pair.Value.Parameters),
+                    Procedural = FrozenMap(pair.Value.Procedural.Select(action =>
+                        new KeyValuePair<string, PetProceduralAction>(action.Key, action.Value with
+                        {
+                            ExtraTracks = FrozenList(action.Value.ExtraTracks.Select(track => track with
+                            {
+                                Keys = FrozenList(track.Keys),
+                            })),
+                        }))),
+                }))),
+        },
+    };
+
+    private RuntimeSettings ReadFile()
     {
         if (!File.Exists(_path))
         {
@@ -135,14 +243,39 @@ public sealed class SettingsStore
     /// </para>
     /// </summary>
     /// <exception cref="SettingsValidationException">The merged settings are not usable.</exception>
-    public RuntimeSettings Save(RuntimeSettings incoming)
+    public RuntimeSettings Save(RuntimeSettings incoming, int? expectedRevision = null)
     {
         ArgumentNullException.ThrowIfNull(incoming);
+        lock (_gate)
+        {
+            if (expectedRevision.HasValue && expectedRevision.Value != _revision)
+            {
+                throw new SettingsConflictException(_revision);
+            }
+            return SaveLocked(incoming);
+        }
+    }
 
-        var stored = Load();
+    /// <summary>Performs a local read-modify-write under the same lock as whole-document saves.</summary>
+    public RuntimeSettings Update(Func<RuntimeSettings, RuntimeSettings?> update)
+    {
+        lock (_gate)
+        {
+            _snapshot ??= Freeze(ReadFile());
+            var current = _snapshot;
+            var incoming = update(current);
+            return incoming is null ? current : SaveLocked(incoming);
+        }
+    }
+
+    private RuntimeSettings SaveLocked(RuntimeSettings incoming)
+    {
+        _snapshot ??= Freeze(ReadFile());
+        var stored = _snapshot;
         var gears = NormalizeGears(incoming.Model.ReasoningGears, incoming.Model.ReasoningEffort);
         var merged = incoming with
         {
+            Revision = null,
             Agents = incoming.AgentsSpecified ? MergeAgentKeys(incoming.Agents, stored.Agents) : stored.Agents,
             Services = incoming.ServicesSpecified
                 ? MergeServiceSecrets(incoming.Services, stored.Services)
@@ -171,11 +304,12 @@ public sealed class SettingsStore
             throw new SettingsValidationException(errors);
         }
 
-        Write(merged);
-
-        // Only after the write succeeded: a rejected save must not look like "settings changed" to a poller.
+        // Freeze before writing so failures cannot publish a partial commit.
+        var published = Freeze(merged);
+        Write(published);
+        _snapshot = published;
         Interlocked.Increment(ref _revision);
-        return merged;
+        return published;
     }
 
     /// <summary>
@@ -337,6 +471,11 @@ public sealed class SettingsStore
             File.Move(temp, _path);
         }
     }
+}
+
+public sealed class SettingsConflictException(int currentRevision) : Exception("Settings have changed; reload before saving.")
+{
+    public int CurrentRevision { get; } = currentRevision;
 }
 
 /// <summary>Carries every validation failure at once, so a client can fix them in one pass.</summary>

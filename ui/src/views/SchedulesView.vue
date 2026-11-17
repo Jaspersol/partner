@@ -248,7 +248,7 @@ defineExpose({ refresh })
             </span>
           </header>
 
-          <SettingRow :label="t('什么时候')">
+          <SettingRow :label="t('什么时候')" group>
             <Segmented v-model="kind" :options="KINDS" :label="t('触发方式')" />
           </SettingRow>
 
@@ -290,11 +290,11 @@ defineExpose({ refresh })
             </span>
           </SettingRow>
 
-          <SettingRow v-else :label="t('执行时间')" :hint="t('按这台电脑的本地时间。过去的日期和时间不能选。')">
+          <SettingRow v-else :label="t('执行时间')" :hint="t('按这台电脑的本地时间。过去的日期和时间不能选。')" group>
             <DateTimePicker v-model="at" data-test="schedule-at" />
           </SettingRow>
 
-          <SettingRow :label="t('错过了怎么办')" :hint="t('程序没在运行、电脑睡着了，到点没发出去的任务，之后怎么处理。')">
+          <SettingRow :label="t('错过了怎么办')" :hint="t('程序没在运行、电脑睡着了，到点没发出去的任务，之后怎么处理。')" group>
             <Segmented v-model="catchUp" :options="CATCH_UPS" :label="t('错过后')" data-test="schedule-catchup" />
           </SettingRow>
 

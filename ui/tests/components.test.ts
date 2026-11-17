@@ -951,6 +951,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
     deleteMemory: vi.fn(async () => {}),
     memoryRevisions: vi.fn(async () => []),
     settings: vi.fn(async () => ({
+      revision: 1,
       input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false,
       wakeTone: true, bargeIn: false },
       output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true, maxSplitChars: 40, minSentenceChars: 10 },

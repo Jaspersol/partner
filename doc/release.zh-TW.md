@@ -40,6 +40,8 @@
 
 版本號由 tag 決定：workflow 用 `scripts/set-version.mjs` 把 `0.2.0` 寫進 `src-tauri/tauri.conf.json`、`Cargo.toml`、`ui/package.json`，所以 tag 和安裝包版本不會走偏。
 
+手動填入的 tag 必須已存在；無論是否勾選發佈，都檢出該 tag 的提交並使用其版本。發佈必須填寫 tag，發佈 job 會複核 tag 指向、版本、安裝檔名與建置產物摘要；建置 job 只有唯讀權限且不保留 checkout 憑證，只有獨立發佈 job 持有寫入權限。
+
 ## 引擎包
 
 workflow 不打也不發引擎包，所以不需要 self-hosted runner。`engines-v1` 是唯讀的：已發佈的安裝包 pin 了它底下檔案的 SHA-256，改動任何位元組都會讓下載在最後校驗失敗。
@@ -87,6 +89,10 @@ npm --prefix ui exec tauri build
 產出的安裝包在 `src-tauri/target/release/bundle/nsis/`。
 
 建置就是上面這一條，不帶任何環境變數與 `--config`：`pet.html` 和 `cfg(partner_pet)` 都依預設打開，桌寵頁面需要的 asset protocol 與 `asset.localhost` CSP 也來自基礎設定。`scripts/check-live2d-bundle.mjs` 會核對產物裡每個含 Cubism Framework 的 chunk 都帶 Live2D 的版權行。
+
+可用 `PARTNER_PET=0 bash scripts/build-shell.sh` 建置無桌寵變體：同一開關同時關閉前端頁面、殼命令與設定入口，不能與 `VITE_PARTNER_PET` 指定相反的值。無桌寵與發佈建置並非同義詞。PR CI 分別檢查預設及無桌寵產物並測試 Rust 殼；需要網路的引擎 pin 檢查仍獨立執行。
+
+安裝包路徑透過 Tauri 鉤子建置一次前端，僅編譯路徑由指令稿建置一次；直接執行 Tauri 時仍須先發佈 API。sidecar 只在成功運行至少一分鐘後退出才重置重啟退避，持續啟動失敗會保持最長 30 秒間隔，手動重試可提前觸發。
 
 ## 已知
 

@@ -28,14 +28,24 @@ interface PointerSample {
   at: number
 }
 
+export interface CursorReport {
+  cursorX: number
+  cursorY: number
+  inside: boolean
+  width: number
+  height: number
+  scale: number
+}
+
 export interface InputHost {
   /** 0..1 alpha of the rendered pixel under a window-local physical pixel; null when it cannot be read. */
   alphaAt(x: number, y: number): number | null
-  cursor(): Promise<{ cursorX: number; cursorY: number; inside: boolean; width: number; height: number; scale: number }>
+  cursor(): Promise<CursorReport>
   setPassthrough(on: boolean): Promise<void>
   moveBy(dx: number, dy: number): Promise<void>
-  /** The model's canvas in CSS pixels, for turning a window point into the sprite's own proportions. */
-  modelSize(): { width: number; height: number }
+  /** Resting visible figure bounds in canvas-local CSS pixels, or null if unmeasurable. */
+  visibleBounds(): { top: number; height: number } | null
+  isHidden(): boolean
   /** The model's own hit area answer (`Head`/`Face`/`Body`), or null when it has none. */
   hitZone(): ClickZone | null
   headBottom(): number
@@ -85,6 +95,12 @@ interface PointerState {
   drag: DragState | null
 }
 
+// All input layers in this webview control the same native window. Keep commands serialized even when a model
+// rebuild disposes the layer that issued an outstanding command.
+let passthroughOwner: PetInput | null = null
+let passthroughInFlight = false
+
+
 /**
  * Wires the window's pointer handling. Everything it needs from the rest of the app is a callback on `host`, so
  * the module stays testable and `PetApp` owns the wiring.
@@ -100,7 +116,10 @@ export class PetInput {
   private clickTimer: number | undefined
   private hoverSince = 0
   private hovering = false
-  private passthroughOn = false
+  private passthroughOn: boolean | undefined
+  private passthroughWanted: boolean | undefined
+  private pollInFlight = false
+  private pollGeneration = 0
   private pollTimer: number | undefined
   private dragging = false
   private disposed = false
@@ -113,6 +132,7 @@ export class PetInput {
   constructor(element: HTMLElement, host: InputHost) {
     this.element = element
     this.host = host
+    passthroughOwner = this
 
     element.addEventListener('pointerdown', this.onPointerDown)
     element.addEventListener('pointermove', this.onPointerMove)
@@ -126,12 +146,20 @@ export class PetInput {
 
   dispose(): void {
     this.disposed = true
+    if (passthroughOwner === this) passthroughOwner = null
     window.clearInterval(this.pollTimer)
     window.clearTimeout(this.clickTimer)
     this.element.removeEventListener('pointerdown', this.onPointerDown)
     this.element.removeEventListener('pointermove', this.onPointerMove)
     this.element.removeEventListener('pointerup', this.onPointerUp)
     this.element.removeEventListener('pointercancel', this.onPointerCancel)
+  }
+
+  /** Invalidate a cursor report started before a visibility change. */
+  visibilityChanged(): void {
+    this.pollGeneration += 1
+    this.hovering = false
+    this.hoverSince = 0
   }
 
   // ------------------------------------------------------------------ cursor poll
@@ -141,48 +169,63 @@ export class PetInput {
    * is on another window. Dragging forces click-through off, or the window would slip out from under the pointer.
    */
   private async poll(): Promise<void> {
-    if (this.disposed) return
-
-    let report: Awaited<ReturnType<InputHost['cursor']>>
+    if (this.disposed || this.host.isHidden() || this.pollInFlight) return
+    this.pollInFlight = true
+    const generation = this.pollGeneration
+    let report: CursorReport
     try {
       report = await this.host.cursor()
     } catch {
       // The pet window can be closed under us; nothing to do then.
       return
+    } finally {
+      this.pollInFlight = false
     }
-    if (this.disposed) return
+    if (this.disposed || this.host.isHidden() || generation !== this.pollGeneration) return
 
     const scale = report.scale || 1
     this.scale = scale
-    const size = this.host.modelSize()
     const wantPassthrough = this.host.clickThroughEnabled() && !this.dragging
 
-    if (report.inside && !this.dragging) {
+    if (report.inside && this.pointer === null) {
       const alpha = this.host.alphaAt(report.cursorX, report.cursorY)
       // A null alpha means the buffer could not be read (a lost context); keeping the window clickable is the
       // safer failure, because an unclickable pet is one a user cannot even drag away.
       const opaque = alpha === null ? true : alpha > OPAQUE_ALPHA
       void this.setPassthrough(wantPassthrough && !opaque)
       this.trackHover(opaque)
-    } else if (!this.dragging) {
+    } else if (this.pointer === null) {
       void this.setPassthrough(wantPassthrough)
       this.hovering = false
       this.hoverSince = 0
     }
 
-    if (size.width > 0 && size.height > 0 && report.width > 0 && report.height > 0) {
+    if (report.width > 0 && report.height > 0) {
       const target = lookTarget(report.cursorX, report.cursorY, report.width, report.height)
       this.host.look(target.x, target.y)
     }
   }
 
   private async setPassthrough(on: boolean): Promise<void> {
-    if (on === this.passthroughOn) return
-    this.passthroughOn = on
+    if (this.disposed || passthroughOwner !== this) return
+    this.passthroughWanted = on
+    if (passthroughInFlight || on === this.passthroughOn) return
+    passthroughInFlight = true
     try {
       await this.host.setPassthrough(on)
+      if (passthroughOwner === this) this.passthroughOn = on
     } catch {
-      // Racing the window's own teardown: the next poll tries again.
+      // The state is unknown after failure; a later poll retries the target.
+      this.passthroughOn = undefined
+    } finally {
+      passthroughInFlight = false
+      const owner = passthroughOwner
+      // A rebuilt layer must reconcile after the old command, regardless of its result. Within one layer,
+      // immediately apply a changed target, but leave a failed unchanged target for the next poll.
+      if (owner && owner.passthroughWanted !== undefined &&
+          (owner !== this || owner.passthroughWanted !== on)) {
+        void owner.setPassthrough(owner.passthroughWanted)
+      }
     }
   }
 
@@ -208,8 +251,10 @@ export class PetInput {
 
   private handleDown(event: PointerEvent): void {
     if (event.button !== 0) return
+    this.pollGeneration += 1
     const sample: PointerSample = { screenX: event.screenX, screenY: event.screenY, at: event.timeStamp }
     this.pointer = { down: sample, drag: null }
+    void this.setPassthrough(false)
     this.host.notify()
     // A press has to answer immediately: the click's own scene waits up to 250 ms for a possible double click, and
     // without this a single tap on a still pet looks like nothing happened at all. A blink is small, lasts 0.14 s,
@@ -278,6 +323,7 @@ export class PetInput {
   private handleUp(event: PointerEvent): void {
     const pointer = this.pointer
     if (pointer === null) return
+    this.pollGeneration += 1
     this.pointer = null
 
     if (this.element.hasPointerCapture(event.pointerId)) {
@@ -298,7 +344,6 @@ export class PetInput {
         // what it springs back from.
         this.host.action('dragSpring', { velocityX: release.x, velocityY: release.y, priority: 3 })
       }
-      void this.setPassthrough(this.host.clickThroughEnabled())
       return
     }
 
@@ -337,22 +382,21 @@ export class PetInput {
     }, DOUBLE_CLICK_WINDOW_MS)
   }
 
-  /** The fallback zone: the profile's fractions of the window's height, measured from the top. */
+  /** The fallback uses the same CSS coordinate system as the measured resting figure. */
   private zoneAt(localY: number): ClickZone {
+    const bounds = this.host.visibleBounds()
     const rect = this.element.getBoundingClientRect()
-    const size = this.host.modelSize()
-    const height = size.height > 0 ? size.height : rect.height
-    return zoneFor(localY, height, this.host.headBottom(), this.host.faceBottom())
+    return zoneFor(localY - (bounds?.top ?? 0), bounds?.height ?? rect.height, this.host.headBottom(), this.host.faceBottom())
   }
 
   private cancelDrag(): void {
+    this.pollGeneration += 1
     if (this.pointer?.drag === null || this.pointer === null) {
       this.pointer = null
       return
     }
     this.pointer = null
     this.dragging = false
-    void this.setPassthrough(this.host.clickThroughEnabled())
   }
 }
 

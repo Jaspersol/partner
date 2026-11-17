@@ -23,6 +23,12 @@ public static class PetEndpoints
     /// <summary>Both halves are optional: a preview is either a motion or a face, and an unknown name is ignored.</summary>
     public sealed record PreviewRequest(string? Action, string? Expression);
 
+    public sealed record DiagnosticParameter(string Channel, string Id, double Min, double Max);
+    public sealed record ActionDiagnostic(string Action, string Kind, IReadOnlyList<DiagnosticParameter> Parameters, IReadOnlyList<string> Missing);
+    public sealed record PetDiagnostics(string? ModelId, IReadOnlyList<ActionDiagnostic> Actions);
+
+    private static PetDiagnostics _diagnostics = new(null, Array.Empty<ActionDiagnostic>());
+
     public static void Map(WebApplication app, ApiContext ctx)
     {
         app.MapGet("/api/pet/core", (PetAssetStore pet) => Results.Ok(pet.Status()));
@@ -93,6 +99,14 @@ public static class PetEndpoints
         app.MapPost("/api/pet/preview", (PreviewRequest request, PetAssetStore pet) =>
             Results.Ok(pet.RequestPreview(request.Action ?? string.Empty, request.Expression ?? string.Empty)));
 
+        // The pet webview owns the loaded SDK model; the settings page reads its last published resolution.
+        app.MapGet("/api/pet/diagnostics", () => Results.Ok(Volatile.Read(ref _diagnostics)));
+        app.MapPost("/api/pet/diagnostics", (PetDiagnostics diagnostics) =>
+        {
+            Volatile.Write(ref _diagnostics, diagnostics);
+            return Results.Ok(new { });
+        });
+
         // The pet window is the only place that sees the webview's console, so what it fails at has to come back
         // here to be visible at all.
         app.MapPost("/api/pet/status", (StatusRequest request, PetAssetStore pet) =>
@@ -104,40 +118,26 @@ public static class PetEndpoints
 
     /// <summary>
     /// The last five finalized assistant replies, oldest first, and the cursor for the caller's next <c>after</c>.
-    /// The log is read in pages because it is the user's whole history and the window polls every second. Only
-    /// <see cref="Partner.Core.Contracts.SessionEventKind.Assistant"/> counts, and the body is cut to what fits above
+    /// The backlog is read once. Only <see cref="Partner.Core.Contracts.SessionEventKind.Assistant"/> counts,
+    /// and the body is cut to what fits above
     /// a model. The cursor is the session's last seq even when no reply was found (see <see cref="PetFeed.LastSeq"/>).
     /// </summary>
     private static async Task<(IReadOnlyList<PetReply> Replies, long LastSeq)> RepliesAsync(
         ApiContext ctx, long after, CancellationToken ct)
     {
-        const int PageSize = 100;
         const int Keep = 5;
         const int MaxBodyChars = 4000;
 
         var found = new List<PetReply>(Keep);
         var lastSeq = ctx.Session.LastSeq;
-        var from = Math.Max(1, after + 1);
-        while (from <= lastSeq)
+        if (after < lastSeq)
         {
-            var page = new List<Partner.Core.Sessions.SessionEvent>(PageSize);
-            await foreach (var sessionEvent in ctx.Session
-                .ReadAsync(from, PageSize, ct)
-                .ConfigureAwait(false))
-            {
-                page.Add(sessionEvent);
-            }
-
-            if (page.Count == 0)
-            {
-                break;
-            }
-
-            foreach (var sessionEvent in page)
+            var from = Math.Max(1, after + 1);
+            await foreach (var sessionEvent in ctx.Session.ReadAsync(from, int.MaxValue, ct).ConfigureAwait(false))
             {
                 if (sessionEvent.Seq > lastSeq)
                 {
-                    continue;
+                    break;
                 }
 
                 if (sessionEvent.Kind != Partner.Core.Contracts.SessionEventKind.Assistant)
@@ -149,15 +149,12 @@ public static class PetEndpoints
                     ? sessionEvent.Body[..SafeCut(sessionEvent.Body, MaxBodyChars)]
                     : sessionEvent.Body;
 
-                // A ring of five: the window shows a short stack, so older ones are dropped as newer ones arrive.
                 found.Add(new PetReply(sessionEvent.Seq, body));
                 if (found.Count > Keep)
                 {
                     found.RemoveAt(0);
                 }
             }
-
-            from = page[^1].Seq + 1;
         }
 
         return (found, lastSeq);
@@ -169,24 +166,21 @@ public static class PetEndpoints
     /// </summary>
     internal static void ForgetDeletedModel(SettingsStore settings, string id)
     {
-        var stored = settings.Load();
-        var pet = stored.Pet;
-        var active = pet.ActiveModelId == id;
-        if (!active && !pet.Profiles.ContainsKey(id))
+        settings.Update(stored =>
         {
-            return;
-        }
-
-        // Save bumps the revision, which is what makes the pet window re-read the document.
-        settings.Save(stored with
-        {
-            Pet = pet with
+            var pet = stored.Pet;
+            var active = pet.ActiveModelId == id;
+            if (!active && !pet.Profiles.ContainsKey(id)) return null;
+            return stored with
             {
-                ActiveModelId = active ? null : pet.ActiveModelId,
-                Profiles = pet.Profiles
-                    .Where(pair => !string.Equals(pair.Key, id, StringComparison.Ordinal))
-                    .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
-            },
+                Pet = pet with
+                {
+                    ActiveModelId = active ? null : pet.ActiveModelId,
+                    Profiles = pet.Profiles
+                        .Where(pair => !string.Equals(pair.Key, id, StringComparison.Ordinal))
+                        .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
+                },
+            };
         });
     }
 

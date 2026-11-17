@@ -99,6 +99,9 @@ function profileMapping(settings: PetSettings, modelId: string | null): ActionMa
     expressions: profile?.expressions ?? {},
     headBottom: profile?.headBottom ?? 0.35,
     faceBottom: profile?.faceBottom ?? 0.55,
+    parameters: profile?.parameters ?? {},
+    amplitude: profile?.amplitude ?? 1,
+    procedural: profile?.procedural ?? {},
   }
 }
 
@@ -166,6 +169,7 @@ class PetApp {
   private model: PetModelInfo | null = null
 
   private app: Application | null = null
+  private readonly pixel = new Uint8Array(4)
   private sprite: Live2DSprite | null = null
   private actions: ActionLayer | null = null
   private director: Director | null = null
@@ -180,6 +184,8 @@ class PetApp {
   private lastHit: { name: string; at: number } | null = null
   /** The resting figure's crop box as fractions of the full canvas, measured once at mount; see {@link resize}. */
   private crop: { minX: number; minY: number; width: number; height: number } | null = null
+  /** Resting visible figure bounds as fractions of the uncropped model canvas. */
+  private figureBounds: { top: number; height: number } | null = null
   private tickHandler: ((ticker: Ticker) => void) | null = null
 
   constructor(api: PetApi, element: HTMLElement) {
@@ -296,6 +302,7 @@ class PetApp {
 
     this.configureDirector()
     this.applyShellSettings()
+    await this.api.reportDiagnostics(model.id, this.actions?.diagnostics() ?? []).catch(() => undefined)
   }
 
   /**
@@ -433,6 +440,7 @@ class PetApp {
   }
 
   private async unmount(): Promise<void> {
+    await this.api.reportDiagnostics(null, []).catch(() => undefined)
     this.input?.dispose()
     this.input = null
 
@@ -443,6 +451,7 @@ class PetApp {
     this.director = null
     this.actions = null
     this.crop = null
+    this.figureBounds = null
 
     if (this.sprite !== null) {
       this.sprite.destroy()
@@ -501,6 +510,7 @@ class PetApp {
         void this.shell?.setSize(fullWidth, fullHeight)
         return
       }
+      this.figureBounds = { top: measured.minY / fullHeight, height: measured.height / fullHeight }
       // Pad all four sides so motions are not clipped, clamped to the canvas so a figure that already fills it is
       // not shrunk by an imaginary margin.
       const marginX = measured.width * CROP_MARGIN
@@ -623,9 +633,8 @@ class PetApp {
     const pixelY = height - Math.round(y) - 1
     if (pixelX < 0 || pixelY < 0 || pixelX >= width || pixelY >= height) return null
 
-    const buffer = new Uint8Array(4)
-    gl.readPixels(pixelX, pixelY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buffer)
-    return (buffer[3] as number) / 255
+    gl.readPixels(pixelX, pixelY, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel)
+    return (this.pixel[3] as number) / 255
   }
 
   /** A model's own hit area, when it has one, decides the click zone; the profile's fractions are the fallback. */
@@ -651,10 +660,15 @@ class PetApp {
       moveBy: async (dx, dy) => {
         await this.shell?.moveBy(dx, dy)
       },
-      modelSize: () => ({
-        width: this.app?.renderer.width ?? 0,
-        height: this.app?.renderer.height ?? 0,
-      }),
+      visibleBounds: () => {
+        const sprite = this.sprite
+        const app = this.app
+        const bounds = this.figureBounds
+        if (sprite === null || app === null || bounds === null || app.screen.height <= 0) return null
+        const cssScale = app.canvas.getBoundingClientRect().height / app.screen.height
+        return { top: (sprite.y + bounds.top * sprite.height) * cssScale, height: bounds.height * sprite.height * cssScale }
+      },
+      isHidden: () => this.hidden,
       hitZone: () => this.zoneFromHitArea(),
       headBottom: () => profileMapping(this.settings, this.model?.id ?? null).headBottom,
       faceBottom: () => profileMapping(this.settings, this.model?.id ?? null).faceBottom,
@@ -709,6 +723,7 @@ class PetApp {
 
   private setVisible(visible: boolean): void {
     this.hidden = !visible
+    this.input?.visibilityChanged()
     const app = this.app
     if (app === null) return
 

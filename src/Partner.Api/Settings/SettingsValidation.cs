@@ -288,6 +288,87 @@ public static partial class SettingsValidation
         }
 
         ValidateEmotions(pet.Emotions ?? new PetEmotionDictionary(), errors);
+        ValidatePetProfiles(pet.Profiles, errors);
+    }
+
+    // These durations match the built-in procedural tracks in ui/src/pet/actions.ts.
+    private static readonly IReadOnlyDictionary<string, double> PetActionDurations = new Dictionary<string, double>(StringComparer.Ordinal)
+    {
+        ["blink"] = 0.14, ["stretch"] = 2.6, ["greet"] = 2, ["wave"] = 2,
+        ["headTurn"] = 1.2, ["headShake"] = 1.4, ["bodyTurn"] = 1.4, ["bodyShake"] = 1.2,
+        ["nod"] = 1.2, ["shake"] = 1.2, ["tilt"] = 1.2, ["pat"] = 1.4, ["shrink"] = 1.4,
+        ["surprise"] = 0.9, ["puff"] = 1.6, ["sob"] = 2.4, ["sleep"] = 2, ["wake"] = 0.6,
+    };
+
+    private static void ValidatePetProfiles(IReadOnlyDictionary<string, PetModelProfile>? profiles, List<string> errors)
+    {
+        if (profiles is null)
+        {
+            errors.Add("pet.profiles 不能为空");
+            return;
+        }
+
+        foreach (var (modelId, profile) in profiles)
+        {
+            var path = $"pet.profiles.{modelId}";
+            if (profile is null)
+            {
+                errors.Add($"{path} 不能为空");
+                continue;
+            }
+
+            if (!double.IsFinite(profile.Amplitude) || profile.Amplitude is < -4 or > 4)
+                errors.Add($"{path}.amplitude 必须是 -4–4 的有限数值");
+
+            if (profile.Parameters is null || profile.Parameters.Any(pair =>
+                string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value)))
+                errors.Add($"{path}.parameters 的通道和参数 ID 必须非空");
+
+            if (profile.Procedural is null)
+            {
+                errors.Add($"{path}.procedural 不能为空");
+                continue;
+            }
+
+            foreach (var (action, settings) in profile.Procedural)
+            {
+                var actionPath = $"{path}.procedural.{action}";
+                if (!PetActionDurations.TryGetValue(action, out var duration) || settings is null)
+                {
+                    errors.Add($"{actionPath} 不是有效的程序化动作");
+                    continue;
+                }
+
+                if (settings.Amplitude is { } amplitude && (!double.IsFinite(amplitude) || amplitude is < -4 or > 4))
+                    errors.Add($"{actionPath}.amplitude 必须是 -4–4 的有限数值");
+
+                if (settings.ExtraTracks is null)
+                {
+                    errors.Add($"{actionPath}.extraTracks 不能为空");
+                    continue;
+                }
+
+                foreach (var track in settings.ExtraTracks)
+                {
+                    if (track is null || string.IsNullOrWhiteSpace(track.Id) || track.Keys is null || track.Keys.Count < 2)
+                    {
+                        errors.Add($"{actionPath}.extraTracks 需要参数 ID 和至少两个关键帧");
+                        continue;
+                    }
+
+                    var keys = track.Keys;
+                    var valid = keys.All(key => key is not null && double.IsFinite(key.At) && double.IsFinite(key.Value));
+                    if (valid)
+                    {
+                        valid = keys[0].At == 0 && keys[0].Value == 0
+                            && keys[^1].At == duration && keys[^1].Value == 0;
+                        for (var i = 1; valid && i < keys.Count; i++) valid = keys[i].At > keys[i - 1].At;
+                    }
+
+                    if (!valid) errors.Add($"{actionPath}.extraTracks 的关键帧必须时间递增并在动作首尾归零");
+                }
+            }
+        }
     }
 
     /// <summary>

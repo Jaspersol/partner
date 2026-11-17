@@ -122,17 +122,15 @@ public static class DesktopEndpoints
 
             var gear = ApprovalGears.Normalize(requested);
 
-            var before = ctx.Settings.Load();
-            if (before.Desktop.Approval == gear)
+            var changed = false;
+            // Governance reads the committed gear directly; no consumer restart is needed.
+            var stored = ctx.Settings.Update(current =>
             {
-                return Results.Ok(new { approval = gear, changed = false });
-            }
+                changed = current.Desktop.Approval != gear;
+                return changed ? current with { Desktop = current.Desktop with { Approval = gear } } : null;
+            });
 
-            // No restart: governance reads the gear per call, and restarting would interrupt a turn in flight
-            // and tear down a consumer started with an injected client.
-            var stored = ctx.Settings.Save(before with { Desktop = before.Desktop with { Approval = gear } });
-
-            return Results.Ok(new { approval = stored.Desktop.Approval, changed = true });
+            return Results.Ok(new { approval = stored.Desktop.Approval, changed });
         });
 
         app.MapPost("/api/desktop/observe", (ApiContext ctx) =>

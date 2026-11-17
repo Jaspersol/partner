@@ -355,6 +355,158 @@ public sealed class PetAssetStoreTests : IDisposable
     }
 
     [Fact]
+    public void Display_info_is_preserved_and_exposed_after_reloading_the_store()
+    {
+        var model = MakeModel(_root);
+        File.WriteAllText(Path.Combine(model, "cat.model3.json"), Model3(extra: ",\"DisplayInfo\":\"meta/cat.cdi3.json\""));
+        Directory.CreateDirectory(Path.Combine(model, "meta"));
+        var cdi = """{"Version":3,"Parameters":[{"Id":"PARAM_ANGLE_X","Name":"头 X","GroupId":"head"},{"Id":"custom"}],"ParameterGroups":[{"Id":"head","Name":"头部","GroupId":"root"}]}""";
+        File.WriteAllText(Path.Combine(model, "meta", "cat.cdi3.json"), cdi);
+
+        var imported = Store().Import(model).Imported!;
+        Assert.Equal(cdi, File.ReadAllText(Path.Combine(Path.GetDirectoryName(imported.Model3)!, "meta", "cat.cdi3.json")));
+        Assert.Equal(new PetParameterInfo("PARAM_ANGLE_X", "头 X", "head"), imported.Parameters[0]);
+        Assert.Equal(new PetParameterInfo("custom", "custom", null), imported.Parameters[1]);
+        Assert.Equal(new PetParameterGroupInfo("head", "头部", "root"), Assert.Single(imported.ParameterGroups));
+        var listed = Assert.Single(Store().List());
+        Assert.Equal(imported.Parameters, listed.Parameters);
+        Assert.Equal(imported.ParameterGroups, listed.ParameterGroups);
+        Assert.Empty(listed.Warnings);
+
+        File.WriteAllText(Path.Combine(model, "meta", "cat.cdi3.json"), cdi.Replace("头 X", "新名称", StringComparison.Ordinal));
+        Assert.NotEqual(imported.Id, Store().Import(model).Imported!.Id);
+    }
+
+    [Fact]
+    public void Malformed_display_info_does_not_prevent_import_and_is_reported()
+    {
+        var model = MakeModel(_root);
+        File.WriteAllText(Path.Combine(model, "cat.model3.json"), Model3(extra: ",\"DisplayInfo\":\"cat.cdi3.json\""));
+        File.WriteAllText(Path.Combine(model, "cat.cdi3.json"), "{broken");
+        var imported = Store().Import(model).Imported!;
+        Assert.Empty(imported.Parameters);
+        Assert.Contains(imported.Warnings, warning => warning.Contains("cat.cdi3.json", StringComparison.Ordinal));
+        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(imported.Model3)!, "cat.cdi3.json")));
+    }
+
+    [Fact]
+    public void Invalid_and_duplicate_display_entries_are_skipped_without_losing_valid_entries()
+    {
+        var model = MakeModel(_root);
+        File.WriteAllText(Path.Combine(model, "cat.model3.json"), Model3(extra: ",\"DisplayInfo\":\"cat.cdi3.json\""));
+        File.WriteAllText(Path.Combine(model, "cat.cdi3.json"), """{"Parameters":[null,{"Id":""},{"Id":"x"},{"Id":"x"},{"Id":"X","Name":12}],"ParameterGroups":{}}""");
+        var imported = Store().Import(model).Imported!;
+        Assert.Equal(new[] { new PetParameterInfo("x", "x", null), new PetParameterInfo("X", "X", null) }, imported.Parameters);
+        Assert.Empty(imported.ParameterGroups);
+        Assert.Equal(4, imported.Warnings.Count);
+    }
+
+    [Fact]
+    public void Outside_and_oversized_display_info_are_not_imported()
+    {
+        var model = MakeModel(_root);
+        var outside = Path.Combine(_root, "outside.cdi3.json");
+        File.WriteAllText(outside, """{"Parameters":[{"Id":"outside"}]}""");
+        File.WriteAllText(Path.Combine(model, "cat.model3.json"), Model3(extra: ",\"DisplayInfo\":\"../outside.cdi3.json\""));
+        var first = Store().Import(model).Imported!;
+        Assert.Empty(first.Parameters);
+        Assert.Single(first.Warnings);
+
+        File.WriteAllText(Path.Combine(model, "cat.model3.json"), Model3(extra: ",\"DisplayInfo\":\"large.cdi3.json\""));
+        using (var file = File.Create(Path.Combine(model, "large.cdi3.json"))) file.SetLength(4 * 1024 * 1024 + 1);
+        var second = Store().Import(model).Imported!;
+        Assert.Empty(second.Parameters);
+        Assert.Single(second.Warnings);
+        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(second.Model3)!, "large.cdi3.json")));
+    }
+
+    [Fact]
+    public void Zip_display_info_and_wire_contract_include_metadata()
+    {
+        var model3 = """{"Version":3,"FileReferences":{"Moc":"cat.moc3","DisplayInfo":"cat.cdi3.json"}}""";
+        var cdi = """{"Parameters":[{"Id":"custom","Name":"Custom"}],"ParameterGroups":[]}""";
+        var zip = Zip(_root, "cat.zip", ("cat/cat.model3.json", Utf8(model3)),
+            ("cat/cat.moc3", [1]), ("cat/cat.cdi3.json", Utf8(cdi)));
+        var imported = Store().Import(zip).Imported!;
+        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(imported.Model3)!, "cat.cdi3.json")));
+        var json = JsonSerializer.SerializeToElement(imported, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var parameter = Assert.Single(json.GetProperty("parameters").EnumerateArray());
+        Assert.Equal("custom", parameter.GetProperty("id").GetString());
+        Assert.Equal("Custom", parameter.GetProperty("name").GetString());
+        Assert.Equal(JsonValueKind.Null, parameter.GetProperty("groupId").ValueKind);
+        Assert.Empty(json.GetProperty("parameterGroups").EnumerateArray());
+        Assert.Empty(json.GetProperty("warnings").EnumerateArray());
+    }
+
+    [Fact]
+    public void Older_manifests_without_metadata_still_list_with_empty_parameters()
+    {
+        var model = MakeModel(_root);
+        var imported = Store().Import(model).Imported!;
+        var manifest = Path.Combine(Path.GetDirectoryName(imported.Model3)!, "pet-model.json");
+        File.WriteAllText(manifest, JsonSerializer.Serialize(new { imported.Id, imported.Name, model3Rel = Path.GetFileName(imported.Model3) },
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var listed = Assert.Single(Store().List());
+        Assert.Empty(listed.Parameters);
+        Assert.Empty(listed.ParameterGroups);
+        Assert.Empty(listed.Warnings);
+    }
+
+    [Fact]
+    public void Procedural_profile_collections_are_frozen_and_persisted()
+    {
+        var store = new SettingsStore(Path.Combine(_root, "runtime.json"));
+        var keys = new List<PetTrackKey> { new() { At = 0, Value = 0 }, new() { At = 0.6, Value = -2 }, new() { At = 1.2, Value = 0 } };
+        var tracks = new List<PetExtraTrack> { new() { Id = "custom", Keys = keys } };
+        var actions = new Dictionary<string, PetProceduralAction> { ["nod"] = new() { Amplitude = -0.5, ExtraTracks = tracks } };
+        var parameters = new Dictionary<string, string> { ["ParamAngleY"] = "PARAM_ANGLE_Y" };
+        var profile = new PetModelProfile { Parameters = parameters, Amplitude = 2, Procedural = actions };
+        var saved = store.Save(store.Load() with { Pet = new PetSettings { Profiles = new Dictionary<string, PetModelProfile> { ["cat"] = profile } } });
+        parameters["ParamAngleY"] = "changed";
+        keys.Clear();
+        tracks.Clear();
+        actions.Clear();
+        var frozen = saved.Pet.Profiles["cat"];
+        Assert.Equal("PARAM_ANGLE_Y", frozen.Parameters["ParamAngleY"]);
+        Assert.Throws<NotSupportedException>(() => ((IDictionary<string, string>)frozen.Parameters).Clear());
+        Assert.Throws<NotSupportedException>(() => ((IDictionary<string, PetProceduralAction>)frozen.Procedural).Clear());
+        var action = frozen.Procedural["nod"];
+        Assert.Throws<NotSupportedException>(() => ((IList<PetExtraTrack>)action.ExtraTracks).Clear());
+        Assert.Throws<NotSupportedException>(() => ((IList<PetTrackKey>)action.ExtraTracks[0].Keys).Clear());
+        var reloaded = new SettingsStore(store.Path).Load().Pet.Profiles["cat"];
+        Assert.Equal(2, reloaded.Amplitude);
+        Assert.Equal(-0.5, reloaded.Procedural["nod"].Amplitude);
+        Assert.Equal(-2, reloaded.Procedural["nod"].ExtraTracks[0].Keys[1].Value);
+    }
+
+    [Fact]
+    public void Nonfinite_amplitudes_and_track_values_are_rejected_before_publication()
+    {
+        var store = new SettingsStore(Path.Combine(_root, "runtime.json"));
+        var before = store.Snapshot();
+        var profile = new PetModelProfile
+        {
+            Amplitude = double.NaN,
+            Procedural = new Dictionary<string, PetProceduralAction>
+            {
+                ["nod"] = new()
+                {
+                    Amplitude = double.PositiveInfinity,
+                    ExtraTracks = [new PetExtraTrack { Id = "x", Keys =
+                    [new() { At = 0, Value = 0 }, new() { At = 0.6, Value = double.NaN }, new() { At = 1.2, Value = 0 }] }],
+                },
+            },
+        };
+        var error = Assert.Throws<SettingsValidationException>(() => store.Save(before.Settings with
+        {
+            Pet = before.Settings.Pet with { Profiles = new Dictionary<string, PetModelProfile> { ["cat"] = profile } },
+        }));
+        Assert.NotNull(error);
+        Assert.Equal(before.Revision, store.Snapshot().Revision);
+        Assert.Empty(store.Load().Pet.Profiles);
+    }
+
+    [Fact]
     public void Several_model3_files_are_reported_as_candidates()
     {
         var root = Path.Combine(_root, "bundle");
@@ -712,6 +864,39 @@ public sealed class PetEndpointTests : ApiFixture
     }
 
     [Fact]
+    public async Task Diagnostics_round_trip_and_clear_for_the_loaded_model()
+    {
+        var payload = new
+        {
+            modelId = "model-1",
+            actions = new[]
+            {
+                new
+                {
+                    action = "greet", kind = "procedural",
+                    parameters = new[] { new { channel = "ParamAngleZ", id = "CUSTOM", min = -30.0, max = 30.0 } },
+                    missing = new[] { "ParamBodyAngleZ" }
+                }
+            }
+        };
+        var post = await _http.PostAsJsonAsync("/api/pet/diagnostics", payload);
+        Assert.Equal(HttpStatusCode.OK, post.StatusCode);
+        var report = await _http.GetFromJsonAsync<JsonElement>("/api/pet/diagnostics");
+        Assert.Equal("model-1", report.GetProperty("modelId").GetString());
+        var action = report.GetProperty("actions")[0];
+        Assert.Equal("procedural", action.GetProperty("kind").GetString());
+        Assert.Equal("CUSTOM", action.GetProperty("parameters")[0].GetProperty("id").GetString());
+        Assert.Equal(-30, action.GetProperty("parameters")[0].GetProperty("min").GetDouble());
+        Assert.Equal("ParamBodyAngleZ", action.GetProperty("missing")[0].GetString());
+
+        var clear = await _http.PostAsJsonAsync("/api/pet/diagnostics", new { modelId = (string?)null, actions = Array.Empty<object>() });
+        Assert.Equal(HttpStatusCode.OK, clear.StatusCode);
+        report = await _http.GetFromJsonAsync<JsonElement>("/api/pet/diagnostics");
+        Assert.Equal(JsonValueKind.Null, report.GetProperty("modelId").ValueKind);
+        Assert.Empty(report.GetProperty("actions").EnumerateArray());
+    }
+
+    [Fact]
     public async Task The_feed_carries_only_finalized_assistant_replies()
     {
         // Seeded through the store rather than the endpoint: there is no "write an event" endpoint by design.
@@ -783,6 +968,35 @@ public sealed class PetEndpointTests : ApiFixture
     }
 
     [Fact]
+    public async Task Feed_reads_large_backlog_and_preserves_surrogate_pairs_at_cutoff()
+    {
+        for (var i = 0; i < 205; i++)
+        {
+            await _context.Session.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.Assistant,
+                Source = InputSource.Text,
+                Body = $"reply {i}",
+            });
+        }
+        var last = await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Assistant,
+            Source = InputSource.Text,
+            Body = new string('x', 3999) + "😀tail",
+        });
+
+        var feed = await _http.GetFromJsonAsync<JsonElement>("/api/pet/feed?after=100");
+        var replies = feed.GetProperty("replies").EnumerateArray().ToArray();
+        Assert.Equal(5, replies.Length);
+        Assert.Equal("reply 201", replies[0].GetProperty("body").GetString());
+        Assert.Equal(new string('x', 3999), replies[^1].GetProperty("body").GetString());
+        Assert.Equal(last, feed.GetProperty("lastSeq").GetInt64());
+        var caughtUp = await _http.GetFromJsonAsync<JsonElement>($"/api/pet/feed?after={last}");
+        Assert.Empty(caughtUp.GetProperty("replies").EnumerateArray());
+    }
+
+    [Fact]
     public async Task The_feed_can_be_read_from_a_cursor()
     {
         var first = await _context.Session.AppendAsync(new SessionEvent
@@ -839,7 +1053,7 @@ public sealed class PetEndpointTests : ApiFixture
     {
         var before = (await _http.GetFromJsonAsync<JsonElement>("/api/pet/feed")).GetProperty("settingsRevision").GetInt32();
 
-        var save = await _http.PutAsJsonAsync("/api/settings", new { pet = new { enabled = true } });
+        var save = await _http.PutSettingsAsync(new { pet = new { enabled = true } });
         save.EnsureSuccessStatusCode();
 
         var after = (await _http.GetFromJsonAsync<JsonElement>("/api/pet/feed")).GetProperty("settingsRevision").GetInt32();
@@ -879,7 +1093,7 @@ public sealed class PetEndpointTests : ApiFixture
 
     private async Task<List<string>> PetErrorsAsync(object pet)
     {
-        var response = await _http.PutAsJsonAsync("/api/settings", new { pet });
+        var response = await _http.PutSettingsAsync(new { pet });
         if (response.StatusCode == HttpStatusCode.OK)
         {
             return [];
@@ -888,6 +1102,61 @@ public sealed class PetEndpointTests : ApiFixture
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         return (await response.Content.ReadFromJsonAsync<JsonElement>())
             .GetProperty("errors").EnumerateArray().Select(error => error.GetString()!).ToList();
+    }
+
+    [Fact]
+    public async Task Procedural_profile_round_trips_through_settings_api()
+    {
+        var save = await _http.PutSettingsAsync(new { pet = new { profiles = new Dictionary<string, object>
+        {
+            ["cat"] = new
+            {
+                parameters = new Dictionary<string, string> { ["ParamAngleY"] = "PARAM_ANGLE_Y" },
+                amplitude = -1.5,
+                procedural = new Dictionary<string, object> { ["nod"] = new
+                {
+                    amplitude = 0.5,
+                    extraTracks = new[] { new { id = "custom", keys = new[]
+                    {
+                        new { at = 0.0, value = 0.0 }, new { at = 0.6, value = -5.0 }, new { at = 1.2, value = 0.0 },
+                    } } },
+                } },
+            },
+        } } });
+        save.EnsureSuccessStatusCode();
+        var view = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        var profile = view.GetProperty("pet").GetProperty("profiles").GetProperty("cat");
+        Assert.Equal("PARAM_ANGLE_Y", profile.GetProperty("parameters").GetProperty("ParamAngleY").GetString());
+        Assert.Equal(-1.5, profile.GetProperty("amplitude").GetDouble());
+        var action = profile.GetProperty("procedural").GetProperty("nod");
+        Assert.Equal(0.5, action.GetProperty("amplitude").GetDouble());
+        var track = Assert.Single(action.GetProperty("extraTracks").EnumerateArray());
+        Assert.Equal("custom", track.GetProperty("id").GetString());
+        Assert.Equal(-5, track.GetProperty("keys")[1].GetProperty("value").GetDouble());
+    }
+
+    [Fact]
+    public async Task Invalid_procedural_profile_values_are_refused()
+    {
+        var errors = await PetErrorsAsync(new { profiles = new Dictionary<string, object> { ["cat"] = new
+        {
+            amplitude = 5,
+            parameters = new Dictionary<string, string> { ["ParamAngleX"] = " " },
+            procedural = new Dictionary<string, object>
+            {
+                ["unknown"] = new { },
+                ["nod"] = new { amplitude = -5, extraTracks = new[] { new { id = "x", keys = new[]
+                {
+                    new { at = 0.0, value = 0.0 }, new { at = 0.6, value = 1.0 },
+                    new { at = 0.6, value = 0.0 },
+                } } } },
+            },
+        } } });
+        Assert.Contains(errors, error => error.Contains("cat.amplitude", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("cat.parameters", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("unknown", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("nod.amplitude", StringComparison.Ordinal));
+        Assert.Contains(errors, error => error.Contains("nod.extraTracks", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -947,7 +1216,7 @@ public sealed class PetEndpointTests : ApiFixture
     [Fact]
     public async Task An_unknown_emotion_key_saves_and_is_dropped()
     {
-        var save = await _http.PutAsJsonAsync("/api/settings", new
+        var save = await _http.PutSettingsAsync(new
         {
             pet = new
             {

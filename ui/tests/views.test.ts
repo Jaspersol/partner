@@ -4,6 +4,7 @@ import { flushPromises } from '@vue/test-utils'
 import type {
   AgentsSettings,
   AgentsView,
+  EnginePackageStatus,
   MemoryItem,
   MemoryRevision,
   PartnerApiSurface,
@@ -34,6 +35,7 @@ import SkillsView from '../src/views/SkillsView.vue'
 import PromptsView from '../src/views/PromptsView.vue'
 import { ApiError } from '../src/api'
 import ServicesView from '../src/views/ServicesView.vue'
+import { locale } from '../src/i18n'
 
 /**
  * View behaviour with a stub API. The stub implements the same interface the real client does, so the
@@ -113,6 +115,7 @@ const PET_MODEL_FIXTURE: PetModelInfo = {
  * list, say) still has to build its override from the whole shape.
  */
 const SETTINGS_FIXTURE: SettingsView = {
+  revision: 1,
   input: {
     enabled: false,
     deviceId: null,
@@ -448,6 +451,30 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
 }
 
 describe('session view', () => {
+  it('does not poll after unmount while the initial session request is pending', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending: Array<(value: SessionViewData) => void> = []
+      const session = vi.fn(() => new Promise<SessionViewData>((resolve) => pending.push(resolve)))
+      const agentJobs = vi.fn(async () => [])
+      const { stub } = createStub({ session, agentJobs })
+      for (let i = 0; i < 3; i++) {
+        const wrapper = mount(SessionView, { props: { api: stub } })
+        wrapper.unmount()
+      }
+      expect(session).toHaveBeenCalledTimes(3)
+      expect(agentJobs).toHaveBeenCalledTimes(3)
+      for (const resolve of pending) resolve({ lastSeq: 0, items: [] } as unknown as SessionViewData)
+      await Promise.resolve()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(10000)
+      expect(session).toHaveBeenCalledTimes(3)
+      expect(agentJobs).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders the log', async () => {
     const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
@@ -560,6 +587,32 @@ describe('day picker', () => {
     await wrapper.find('[data-test="session-day-date-2026-09-27"]').trigger('click')
     await flushPromises()
     expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ open: true })
+  })
+
+  it.each([false, true])('ignores an older day response when the newer request fails: %s', async (failNewer) => {
+    const days = ['2026-09-25', '2026-09-26', '2026-09-27']
+    const oldRequest = Promise.withResolvers<SessionViewData>()
+    const newRequest = Promise.withResolvers<SessionViewData>()
+    const session = vi.fn((_from?: number, _take?: number, window?: { day: string; open: boolean }) => {
+      if (window?.day === '2026-09-25') return oldRequest.promise
+      if (window?.day === '2026-09-26') return newRequest.promise
+      return Promise.resolve(reply('2026-09-27', days))
+    })
+    const wrapper = mount(SessionView, { props: { api: createStub({ session }).stub } })
+    await flushPromises()
+    await column(wrapper, 'dates')
+    await wrapper.find('[data-test="session-day-date-2026-09-25"]').trigger('click')
+    await column(wrapper, 'dates')
+    await wrapper.find('[data-test="session-day-date-2026-09-26"]').trigger('click')
+    if (failNewer) newRequest.reject(new Error('offline'))
+    else newRequest.resolve(reply('2026-09-26', days))
+    await flushPromises()
+    oldRequest.resolve(reply('2026-09-25', days))
+    await flushPromises()
+    expect(wrapper.find('[data-test="session-day"]').text()).toContain('2026年9月26日')
+    expect(wrapper.text()).not.toContain('on 2026-09-25')
+    if (!failNewer) expect(wrapper.text()).toContain('on 2026-09-26')
+    wrapper.unmount()
   })
 
   it('closes on Escape without choosing anything', async () => {
@@ -2128,6 +2181,34 @@ describe('settings view', () => {
       expect(wrapper.find('[data-test="local-engine-kws"]').exists()).toBe(false)
     })
 
+    it.each([false, true])('keeps the initial form clean when engine installed=%s', async (installed) => {
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({
+        tts: readiness(installed),
+        kws: readiness(installed),
+        ttsDefaults: { command: 'engines/tts/.venv/Scripts/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102 },
+        kwsDefaults: { command: 'engines/kws-asr/sherpa-onnx/Scripts/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103 },
+      }) as never)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="settings-savebar"]').exists()).toBe(false)
+      await wrapper.find('[data-test="utterance-gap"]').setValue('900')
+      expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(true)
+    })
+
+    it('does not overwrite edits when a passive engine refresh finishes late', async () => {
+      const pending = Promise.withResolvers<EnginePackageStatus>()
+      const { stub } = createStub()
+      vi.mocked(stub.enginePackage).mockImplementation(() => pending.promise)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      await wrapper.find('[data-test="local-tts-command"]').setValue('engines/tts/python/changed-python.exe')
+      pending.resolve(packageStatus({ tts: readiness(true), ttsDefaults: { command: 'engines/tts/.venv/Scripts/python.exe', arguments: ['tts-server.py', '--port', '{port}'], workingDirectory: 'engines/tts', port: 45102 } }) as EnginePackageStatus)
+      await flushPromises()
+      expect((wrapper.find('[data-test="local-tts-command"]').element as HTMLInputElement).value).toBe('engines/tts/python/changed-python.exe')
+    })
+
     it('shows the engine settings with package-relative defaults once the engines are found', async () => {
       const { stub } = createStub()
       vi.mocked(stub.enginePackage).mockResolvedValue(packageStatus({ tts: readiness(true), kws: readiness(true) }) as never)
@@ -2211,6 +2292,113 @@ describe('settings view', () => {
 
       await wrapper.find('[data-test="tts-clone-clear"]').trigger('click')
       expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('未选择')
+    })
+
+    it.each(['save', 'discard'])('waits for a reference upload before allowing %s', async (operation) => {
+      const { stub, calls } = createStub()
+      const pending = Promise.withResolvers<{ path: string; fileName: string; bytes: number }>()
+      vi.mocked(stub.uploadVoiceReference).mockReturnValue(pending.promise)
+      const save = vi.mocked(stub.saveSettings).getMockImplementation()!
+      vi.mocked(stub.saveSettings).mockImplementation(async (patch) => {
+        const result = await save(patch)
+        return { ...result, settings: { ...result.settings, input: patch.input, tts: patch.tts } }
+      })
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      await wrapper.find('[data-test="utterance-gap"]').setValue('750')
+      const input = wrapper.find('[data-test="tts-clone-file"]')
+      Object.defineProperty(input.element, 'files', { value: [new File(['RIFF'], 'voice.wav')], configurable: true })
+      await input.trigger('change')
+      expect(wrapper.find('[data-test="settings-editor"]').attributes('disabled')).toBeDefined()
+      expect(wrapper.find('[data-test="settings-save"]').attributes('disabled')).toBeDefined()
+      expect(wrapper.find('[data-test="settings-discard"]').attributes('disabled')).toBeDefined()
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+      await wrapper.find('[data-test="settings-discard"]').trigger('click')
+      expect(calls.saves).toHaveLength(0)
+      expect(stub.settings).toHaveBeenCalledTimes(1)
+
+      pending.resolve({ path: 'C:/voices/voice.wav', fileName: 'voice.wav', bytes: 4 })
+      await flushPromises()
+      expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('voice.wav')
+      expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(true)
+      if (operation === 'save') {
+        await wrapper.find('[data-test="settings-save"]').trigger('click')
+        await flushPromises()
+        expect(calls.saves[0]?.tts.speakerRefPath).toBe('C:/voices/voice.wav')
+      } else {
+        await wrapper.find('[data-test="settings-discard"]').trigger('click')
+        await wrapper.find('[data-test="settings-discard"]').trigger('click')
+        await flushPromises()
+        expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('未选择')
+      }
+      expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
+    })
+
+    it('unlocks after a failed reference upload and allows the old reference to be cleared', async () => {
+      const { stub, calls } = createStub({
+        settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, tts: { ...SETTINGS_FIXTURE.tts, protocol: 'local' as const, speakerRefPath: 'C:/voices/old.wav' } })),
+      })
+      const pending = Promise.withResolvers<{ path: string; fileName: string; bytes: number }>()
+      vi.mocked(stub.uploadVoiceReference).mockReturnValue(pending.promise)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      const input = wrapper.find('[data-test="tts-clone-file"]')
+      Object.defineProperty(input.element, 'files', { value: [new File(['x'], 'bad.wav')], configurable: true })
+      await input.trigger('change')
+      expect(wrapper.find('[data-test="tts-clone-clear"]').element.closest('fieldset[disabled]')).not.toBeNull()
+      pending.reject(new Error('upload failed'))
+      await flushPromises()
+      expect(wrapper.find('[data-test="tts-clone-error"]').text()).toContain('upload failed')
+      expect(wrapper.find('[data-test="settings-editor"]').attributes('disabled')).toBeUndefined()
+      await wrapper.find('[data-test="tts-clone-clear"]').trigger('click')
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+      await flushPromises()
+      expect(calls.saves[0]?.tts.speakerRefPath).toBeNull()
+    })
+
+    it('allows clearing the newly uploaded reference before saving', async () => {
+      const { stub, calls } = createStub()
+      const pending = Promise.withResolvers<{ path: string; fileName: string; bytes: number }>()
+      vi.mocked(stub.uploadVoiceReference).mockReturnValue(pending.promise)
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      await wrapper.find('[data-test="utterance-gap"]').setValue('750')
+      const input = wrapper.find('[data-test="tts-clone-file"]')
+      Object.defineProperty(input.element, 'files', { value: [new File(['RIFF'], 'voice.wav')], configurable: true })
+      await input.trigger('change')
+      pending.resolve({ path: 'C:/voices/voice.wav', fileName: 'voice.wav', bytes: 4 })
+      await flushPromises()
+      await wrapper.find('[data-test="tts-clone-clear"]').trigger('click')
+      expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('未选择')
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+      await flushPromises()
+      expect(calls.saves[0]?.tts.speakerRefPath).toBeNull()
+    })
+
+    it.each(['save', 'discard'])('rejects a reference selection while %s is pending', async (operation) => {
+      const { stub } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+      await flushPromises()
+      await wrapper.find('[data-test="utterance-gap"]').setValue('750')
+      const pending = Promise.withResolvers<void>()
+      if (operation === 'save') {
+        const save = vi.mocked(stub.saveSettings).getMockImplementation()!
+        vi.mocked(stub.saveSettings).mockImplementation(async (patch) => { await pending.promise; return save(patch) })
+        await wrapper.find('[data-test="settings-save"]').trigger('click')
+      } else {
+        const settings = vi.mocked(stub.settings).getMockImplementation()!
+        vi.mocked(stub.settings).mockImplementation(async () => { await pending.promise; return settings() })
+        await wrapper.find('[data-test="settings-discard"]').trigger('click')
+        await wrapper.find('[data-test="settings-discard"]').trigger('click')
+      }
+      const input = wrapper.find('[data-test="tts-clone-file"]')
+      Object.defineProperty(input.element, 'files', { value: [new File(['RIFF'], 'late.wav')], configurable: true })
+      await input.trigger('change')
+      expect(stub.uploadVoiceReference).not.toHaveBeenCalled()
+      pending.resolve()
+      await flushPromises()
+      expect(wrapper.find('[data-test="tts-clone-name"]').text()).toBe('未选择')
+      expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(false)
     })
 
     it('says why a reference clip was refused', async () => {
@@ -2410,6 +2598,7 @@ describe('settings view', () => {
   it('never fills the key field from the server and says whether one is stored', async () => {
     const { stub } = createStub({
       settings: vi.fn(async () => ({
+        revision: 1,
         input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false,
         wakeTone: true, bargeIn: false },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true, maxSplitChars: 40, minSentenceChars: 10 },
@@ -2440,6 +2629,7 @@ describe('settings view', () => {
   it('does not send an untouched key, and sends an explicit clear when asked', async () => {
     const { stub, calls } = createStub({
       settings: vi.fn(async () => ({
+        revision: 1,
         input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false,
         wakeTone: true, bargeIn: false },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true, maxSplitChars: 40, minSentenceChars: 10 },
@@ -2591,6 +2781,7 @@ describe('settings view', () => {
   it('keeps a stored device that no longer enumerates selectable', async () => {
     const { stub } = createStub({
       settings: vi.fn(async () => ({
+        revision: 1,
         input: { enabled: false, deviceId: '拔掉的麦克风', silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false,
         wakeTone: true, bargeIn: false },
         output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true, maxSplitChars: 40, minSentenceChars: 10 },
@@ -2689,6 +2880,7 @@ describe('settings view', () => {
         calls.saves.push(patch)
         return {
           settings: {
+            revision: patch.revision + 1,
             input: { enabled: false, deviceId: null, silenceThreshold: 0.03, utteranceGapMs: 1200, wakeTimeoutMs: 5000, sentenceGapMs: 450, windowSeconds: 8, asrStream: false, wakeTone: true, bargeIn: false },
             output: { enabled: false, deviceId: null, voice: null, speed: 1, gapMs: 0, drainMs: 400, sampleRate: 24000, muteDuringTts: true, maxSplitChars: 40, minSentenceChars: 10 },
             asr: { baseUrl: null, protocol: 'chat-audio', model: 'qwen3-asr', language: 'Chinese', connectTimeoutMs: 2000, readTimeoutMs: 3000, sampleRate: 16000 },
@@ -2748,6 +2940,35 @@ describe('settings view', () => {
     expect(calls.saves).toHaveLength(1)
     expect(calls.saves[0]?.input.enabled).toBe(true)
     expect(calls.saves[0]?.output.muteDuringTts).toBe(true)
+  })
+
+  it.each(['save', 'discard'])('locks settings editing while %s is pending and unlocks afterwards', async (operation) => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.find('[data-test="utterance-gap"]').setValue('750')
+    const pending = Promise.withResolvers<void>()
+    if (operation === 'save') {
+      const save = vi.mocked(stub.saveSettings).getMockImplementation()!
+      vi.mocked(stub.saveSettings).mockImplementation(async (settings) => { await pending.promise; return save(settings) })
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+    } else {
+      const settings = vi.mocked(stub.settings).getMockImplementation()!
+      vi.mocked(stub.settings).mockImplementation(async () => { await pending.promise; return settings() })
+      await wrapper.find('[data-test="settings-discard"]').trigger('click')
+      await wrapper.find('[data-test="settings-discard"]').trigger('click')
+    }
+    expect(wrapper.find('fieldset[data-test="settings-editor"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="settings-save"]').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-test="settings-nav-model"]').trigger('click')
+    // happy-dom does not implement the inherited :disabled state of fieldset descendants.
+    expect(wrapper.find('[data-test="model-api-key"]').element.closest('fieldset[disabled]')).not.toBeNull()
+    expect(wrapper.find('[data-test="utterance-gap"]').element.closest('fieldset[disabled]')).not.toBeNull()
+    pending.resolve()
+    await flushPromises()
+    expect(wrapper.find('fieldset[data-test="settings-editor"]').attributes('disabled')).toBeUndefined()
+    await wrapper.find('[data-test="model-api-key"]').setValue('new-secret')
+    expect(wrapper.find('[data-test="settings-dirty"]').exists()).toBe(true)
   })
 
   it('says when there is something to save, and stops saying so once saved', async () => {
@@ -3018,6 +3239,30 @@ describe('settings view', () => {
     window.localStorage.removeItem('partner.settings.section')
   })
 
+  it.each([
+    ['unchanged protected fields', 'guard-a', 2, ['changed']],
+    ['a concurrent protected change', 'guard-b', 1, []],
+  ])('rebases after an embedded save only with %s', async (_label, guard, expectedRevision, expectedDisabled) => {
+    window.localStorage.removeItem('partner.settings.section')
+    let current: SettingsView = { ...SETTINGS_FIXTURE, revision: 1, rebaseGuard: 'guard-a' }
+    const { stub, calls } = createStub({ settings: vi.fn(async () => current) })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.find('[data-test="files-enabled"]').setValue(true)
+    await wrapper.find('[data-test="settings-nav-mcp"]').trigger('click')
+    await flushPromises()
+    current = { ...current, revision: 2, rebaseGuard: guard, skills: { disabled: ['changed'] } }
+    wrapper.findComponent(McpView).vm.$emit('changed')
+    await flushPromises()
+    await wrapper.find('[data-test="settings-nav-input"]').trigger('click')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.revision).toBe(expectedRevision)
+    expect(calls.saves[0]?.skills.disabled).toEqual(expectedDisabled)
+    expect(calls.saves[0]?.files.enabled).toBe(true)
+    window.localStorage.removeItem('partner.settings.section')
+  })
+
   it('carries the memory setting through a save made here, so it cannot be reset', async () => {
     window.localStorage.removeItem('partner.settings.section')
     const { stub, calls } = createStub({
@@ -3155,6 +3400,14 @@ describe('pet section', () => {
     const rows = wrapper.findAll('[data-test="pet-keyword-smile"]')
     expect(rows).toHaveLength(3)
 
+    // These icon buttons have accessible names; unanchored absolute sr-only text can escape the scrollport.
+    const refresh = wrapper.get('[data-test="pet-models-refresh"]')
+    const remove = wrapper.get('[data-test="pet-keyword-remove-smile"]')
+    expect(refresh.attributes('aria-label')).toBeTruthy()
+    expect(remove.attributes('aria-label')).toBeTruthy()
+    expect(refresh.find('.sr-only').exists()).toBe(false)
+    expect(remove.find('.sr-only').exists()).toBe(false)
+
     await rows[2]?.setValue('   ')
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
@@ -3202,6 +3455,54 @@ describe('pet section', () => {
     // Untouched rows are written back exactly as they arrived, unknown kind and all: normalising them here
     // would be this page inventing a mapping for a model it does not understand.
     expect(profile?.motions.wave).toEqual({ kind: 'something-new' })
+  })
+
+  it('saves per-model channel mappings and gain without losing existing tracks', async () => {
+    const track = { id: 'PARAM_ARM', keys: [{ at: 0, value: 0 }, { at: 1.3, value: -2 }, { at: 2.6, value: 0 }] }
+    const pet = { ...PET_FIXTURE, profiles: { 'cat-1a2b3c4d': {
+      ...PET_FIXTURE.profiles['cat-1a2b3c4d']!, parameters: { ParamAngleX: 'PARAM_ANGLE_X' },
+      amplitude: 1.5, procedural: { stretch: { amplitude: -1, extraTracks: [track] } },
+    } } }
+    const { stub, calls } = createStub({ settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, pet })) })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.get('[data-test="pet-channel-ParamAngleX"]').setValue('CustomAngle')
+    await wrapper.get('[data-test="pet-amplitude"]').setValue('2')
+    await wrapper.get('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    const saved = calls.saves[0]?.pet.profiles['cat-1a2b3c4d']
+    expect(saved?.parameters?.ParamAngleX).toBe('CustomAngle')
+    expect(saved?.amplitude).toBe(2)
+    expect(saved?.procedural?.stretch).toEqual({ amplitude: -1, extraTracks: [track] })
+    expect(pet.profiles['cat-1a2b3c4d']?.parameters.ParamAngleX).toBe('PARAM_ANGLE_X')
+  })
+
+  it('reports shell failures on the pet page and retries the persisted window preference', async () => {
+    const shell = fakeShell()
+    shell.invoke.mockImplementation(async (command: string) => {
+      if (command === 'set_pet_enabled' || command === 'pet_reset_position') throw new Error('shell unavailable')
+      return undefined
+    })
+    try {
+      const { stub } = createStub()
+      const wrapper = mount(SettingsViewComponent, { props: { api: stub, page: 'pet' } })
+      await flushPromises()
+      await wrapper.find('[data-test="pet-enabled"]').setValue(true)
+      await wrapper.find('[data-test="settings-save"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="pet-shell-error"]').text()).toContain('shell unavailable')
+      expect((wrapper.find('[data-test="pet-enabled"]').element as HTMLInputElement).checked).toBe(false)
+      expect(wrapper.find('[data-test="settings-status"]').exists()).toBe(false)
+      shell.invoke.mockImplementation(async () => undefined)
+      await wrapper.find('[data-test="pet-shell-retry"]').trigger('click')
+      await flushPromises()
+      expect(shell.invoke).toHaveBeenLastCalledWith('set_pet_enabled', { enabled: true })
+      expect((wrapper.find('[data-test="pet-enabled"]').element as HTMLInputElement).checked).toBe(true)
+      shell.invoke.mockImplementation(async (command: string) => { if (command === 'pet_reset_position') throw new Error('reset failed'); return undefined })
+      await wrapper.find('[data-test="pet-reset-position"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="pet-reset-error"]').text()).toContain('reset failed')
+    } finally { shell.restore() }
   })
 
   it('tells the shell the pet switch moved, after the settings were saved', async () => {
@@ -3547,8 +3848,13 @@ describe('interface language', () => {
         'Web search',
         'Local engines',
       ])
+      expect(locale.value).toBe('en')
 
+      expect(wrapper.findAll('[data-test="settings-language"] button').map((node) => node.attributes('data-value')))
+        .toEqual(['zh-CN', 'zh-TW', 'en'])
       await wrapper.findAll('[data-test="settings-language"] button')[1]?.trigger('click')
+      expect([...(wrapper.findComponent({ name: 'Segmented' }).emitted('update:modelValue') ?? [])]).toEqual([['en'], ['zh-TW']])
+      expect(locale.value).toBe('zh-TW')
       expect(wrapper.findAll('.settings-nav .nav-item')[0]?.text()).toBe('一般')
     } finally {
       await wrapper.findAll('[data-test="settings-language"] button')[0]?.trigger('click')

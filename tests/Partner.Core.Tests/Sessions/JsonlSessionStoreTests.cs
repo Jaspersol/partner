@@ -10,6 +10,7 @@ internal sealed class FakeSink : IAppendOnlySink
     private readonly List<string> _lines = new();
     private readonly List<string> _buffer = new();
     private bool _failNextFlush;
+    public Action? BeforeFlush { get; set; }
 
     public long DurableLength { get; private set; }
 
@@ -29,6 +30,8 @@ internal sealed class FakeSink : IAppendOnlySink
 
     public void FlushToDisk()
     {
+        BeforeFlush?.Invoke();
+
         if (_failNextFlush)
         {
             _failNextFlush = false;
@@ -71,6 +74,68 @@ internal sealed class FakeSink : IAppendOnlySink
     }
 }
 
+// Models a file reader that can observe appended bytes before the durability barrier completes.
+internal sealed class LiveReadSink : IAppendOnlySink
+{
+    private readonly object _gate = new();
+    private List<string> _lines = new();
+    private long _durableLength;
+    public Action? BeforeFlush { get; set; }
+    public bool FailFlush { get; set; }
+
+    public long DurableLength { get { lock (_gate) return _durableLength; } }
+    public long Length { get { lock (_gate) return _lines.Count; } }
+    public void Append(string record) { lock (_gate) _lines.Add(record); }
+    public void FlushToDisk()
+    {
+        BeforeFlush?.Invoke();
+        if (FailFlush) throw new IOException("simulated flush failure");
+        lock (_gate) _durableLength = _lines.Count;
+    }
+    public void Rewrite(IReadOnlyList<string> records)
+    {
+        lock (_gate)
+        {
+            _lines = records.ToList();
+            _durableLength = _lines.Count;
+        }
+    }
+    public IReadOnlyList<string> ReadLines()
+    {
+        lock (_gate) return new LiveLines(_gate, _lines);
+    }
+    public long RepairTail() => 0;
+    public void TruncateTo(long length)
+    {
+        lock (_gate)
+        {
+            _lines.RemoveRange((int)length, _lines.Count - (int)length);
+            _durableLength = length;
+        }
+    }
+    public void Dispose() { }
+
+    private sealed class LiveLines(object gate, List<string> lines) : IReadOnlyList<string>
+    {
+        public int Count { get { lock (gate) return lines.Count; } }
+        public string this[int index] { get { lock (gate) return lines[index]; } }
+        public IEnumerator<string> GetEnumerator()
+        {
+            for (var i = 0; ; i++)
+            {
+                string line;
+                lock (gate)
+                {
+                    if (i >= lines.Count) yield break;
+                    line = lines[i];
+                }
+                yield return line;
+            }
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+}
+
 internal sealed class FixedClock(DateTimeOffset now) : TimeProvider
 {
     private DateTimeOffset _now = now;
@@ -94,6 +159,159 @@ public sealed class JsonlSessionStoreTests : IDisposable
 
     private static SessionEvent Ev(SessionEventKind kind = SessionEventKind.User, string body = "hi") =>
         new() { Kind = kind, Source = InputSource.Text, Body = body };
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Raw_reader_keeps_its_committed_watermark_during_append(bool fail, bool ranged)
+    {
+        var sink = new LiveReadSink();
+        await using var store = new JsonlSessionStore(sink);
+        await store.AppendAsync(Ev(body: "first"));
+        await using var reader = (ranged ? store.ReadAsync(1, 10) : store.ReadAllAsync()).GetAsyncEnumerator();
+        Assert.True(await reader.MoveNextAsync());
+        Assert.Equal("first", reader.Current.Body);
+
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        sink.BeforeFlush = () => { entered.Set(); release.Wait(); };
+        sink.FailFlush = fail;
+        var append = Task.Run(() => store.AppendAsync(Ev(body: "second")));
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "flush was not reached");
+            Assert.Equal(1, store.LastSeq);
+            Assert.False(await reader.MoveNextAsync());
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        if (fail)
+        {
+            await Assert.ThrowsAsync<IOException>(() => append);
+            Assert.Equal(new long[] { 1 }, (await ReadAllAsync(store)).Select(e => e.Seq));
+        }
+        else
+        {
+            Assert.Equal(2, await append);
+            Assert.Equal(new long[] { 1, 2 }, (await ReadAllAsync(store)).Select(e => e.Seq));
+        }
+    }
+
+    [Fact]
+    public async Task Buffered_raw_reads_exclude_visible_uncommitted_bytes_until_flush()
+    {
+        var sink = new LiveReadSink();
+        await using var store = new JsonlSessionStore(sink, flushOnAppend: false);
+        await store.AppendAsync(Ev(body: "first"));
+        Assert.Empty(await ReadAllAsync(store));
+        Assert.Empty((await store.ProjectAsync()).Items);
+        await store.FlushAsync();
+
+        await using var reader = store.ReadAllAsync().GetAsyncEnumerator();
+        Assert.True(await reader.MoveNextAsync());
+        await store.AppendAsync(Ev(body: "second"));
+        Assert.False(await reader.MoveNextAsync());
+        Assert.Single(await ReadAllAsync(store));
+        await store.FlushAsync();
+        Assert.Equal(new long[] { 1, 2 }, (await ReadAllAsync(store)).Select(e => e.Seq));
+    }
+
+    [Fact]
+    public async Task Raw_reader_preserves_open_generation_across_purge()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            await store.AppendAsync(Ev(body: "first"));
+            await store.AppendAsync(Ev(body: "removed"));
+            await store.AppendAsync(Ev(body: "third"));
+            await using var reader = store.ReadAsync(1, 10).GetAsyncEnumerator();
+            Assert.True(await reader.MoveNextAsync());
+            Assert.Equal(1, reader.Current.Seq);
+            await store.PurgeAsync(2, 2);
+            await store.AppendAsync(Ev(body: "after"));
+            var oldSeqs = new List<long> { 1 };
+            while (await reader.MoveNextAsync()) oldSeqs.Add(reader.Current.Seq);
+            Assert.Equal(new long[] { 1, 2, 3 }, oldSeqs);
+            Assert.Equal(new long[] { 1, 3, 4, 5 }, (await ReadAllAsync(store)).Select(e => e.Seq));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_purge_reopens_original_and_preserves_buffered_records(bool buffered)
+    {
+        var path = Path.Combine(_dir, "recover.jsonl");
+        var attempts = 0;
+        var sink = new FileAppendOnlySink(path, (_, _) => { attempts++; throw new IOException("locked"); },
+            p => new FileStream(p, FileMode.Open, FileAccess.ReadWrite, FileShare.Read));
+        await using (var store = new JsonlSessionStore(sink, flushOnAppend: !buffered))
+        {
+            await store.AppendAsync(Ev(body: "first"));
+            await store.AppendAsync(Ev(body: "second"));
+            await Assert.ThrowsAsync<RewriteRecoveredException>(() => store.PurgeAsync(1, 1));
+            Assert.Equal(21, attempts);
+            Assert.False(store.Faulted);
+            Assert.Equal(new[] { "first", "second" }, (await ReadAllAsync(store)).Select(e => e.Body));
+            await store.AppendAsync(Ev(body: "after"));
+            await store.FlushAsync();
+        }
+        await using var reopened = new JsonlSessionStore(new FileAppendOnlySink(path));
+        Assert.Equal(new[] { "first", "second", "after" }, (await ReadAllAsync(reopened)).Select(e => e.Body));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Purge_reopen_failure_faults_store_before_any_further_write(bool replaced)
+    {
+        var path = Path.Combine(_dir, "fault.jsonl");
+        var sink = new FileAppendOnlySink(path,
+            (source, destination) => { if (replaced) File.Move(source, destination, true); else throw new IOException("locked"); },
+            _ => throw new IOException("reopen failed"));
+        await using var store = new JsonlSessionStore(sink);
+        await store.AppendAsync(Ev(body: "first"));
+        await store.AppendAsync(Ev(body: "second"));
+        await Assert.ThrowsAnyAsync<Exception>(() => store.PurgeAsync(1, 1));
+        Assert.True(store.Faulted);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.AppendAsync(Ev(body: "after")));
+    }
+
+    [Fact]
+    public async Task Purge_includes_buffered_survivors()
+    {
+        var path = Path.Combine(_dir, "buffered.jsonl");
+        await using (var store = new JsonlSessionStore(new FileAppendOnlySink(path), flushOnAppend: false))
+        {
+            await store.AppendAsync(Ev(body: "remove"));
+            await store.AppendAsync(Ev(body: "keep"));
+            await store.PurgeAsync(1, 1);
+        }
+        await using var reopened = new JsonlSessionStore(new FileAppendOnlySink(path));
+        Assert.Contains((await ReadAllAsync(reopened)), e => e.Body == "keep");
+    }
+
+    [Fact]
+    public async Task Raw_reader_honors_cancellation_between_events()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            await store.AppendAsync(Ev(body: "first"));
+            await store.AppendAsync(Ev(body: "second"));
+            using var cancellation = new CancellationTokenSource();
+            await using var reader = store.ReadAsync(1, 10, cancellation.Token).GetAsyncEnumerator();
+            Assert.True(await reader.MoveNextAsync());
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await reader.MoveNextAsync());
+        }
+    }
 
     [Fact]
     public async Task A_purge_takes_the_lines_out_and_leaves_a_content_free_marker()
@@ -122,6 +340,55 @@ public sealed class JsonlSessionStoreTests : IDisposable
         Assert.Equal(new[] { one, three }, view.Items.Select(i => i.Seq).ToArray());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Projection_publishes_cached_append_only_after_successful_flush(bool fail)
+    {
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        await store.AppendAsync(Ev(body: "first"));
+        var oldView = await store.ProjectAsync();
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        sink.BeforeFlush = () => { entered.Set(); release.Wait(); };
+        if (fail) sink.FailNextFlush();
+
+        var append = Task.Run(() => store.AppendAsync(Ev(body: "second")));
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "flush was not reached");
+            var during = await store.ProjectAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, store.LastSeq);
+            Assert.Equal(1, during.LastSeq);
+            Assert.Equal(new[] { "first" }, during.Items.Select(i => i.Body));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        if (fail)
+        {
+            await Assert.ThrowsAsync<IOException>(() => append);
+            Assert.True(store.Faulted);
+            Assert.Equal(1, store.LastSeq);
+            Assert.Single(sink.ReadLines());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.ProjectAsync());
+        }
+        else
+        {
+            Assert.Equal(2, await append);
+            var committed = await store.ProjectAsync();
+            Assert.Equal(2, store.LastSeq);
+            Assert.Equal(2, committed.LastSeq);
+            Assert.Equal(new[] { "first", "second" }, committed.Items.Select(i => i.Body));
+        }
+
+        Assert.Equal(1, oldView.LastSeq);
+        Assert.Equal(new[] { "first" }, oldView.Items.Select(i => i.Body));
+    }
+
     [Fact]
     public async Task Projection_is_reused_until_the_log_moves()
     {
@@ -139,6 +406,63 @@ public sealed class JsonlSessionStoreTests : IDisposable
         // it is silent — the reader is simply told the wrong thing about a conversation.
         Assert.Equal(2, (await store.ProjectAsync()).Items.Count);
         Assert.Equal(new[] { "first", "second" }, (await store.ProjectAsync()).Items.Select(i => i.Body));
+    }
+
+    [Fact]
+    public async Task Incremental_projection_preserves_old_views_across_chunk_boundaries_and_mutations()
+    {
+        var sink = new FakeSink();
+        await using var store = new JsonlSessionStore(sink);
+        for (var i = 0; i < 1023; i++)
+            await store.AppendAsync(Ev(body: $"old {i}") with { At = DateTimeOffset.UnixEpoch.AddDays(i % 2) });
+
+        var before = await store.ProjectAsync();
+        await store.AppendAsync(Ev(body: "boundary"));
+        await store.AppendAsync(Ev(body: "next chunk"));
+        var after = await store.ProjectAsync();
+        Assert.Equal(1023, before.Items.Count);
+        Assert.Equal("old 1022", before.Items[1022].Body);
+        Assert.Equal(1025, after.Items.Count);
+        Assert.Equal("boundary", after.Items[1023].Body);
+        Assert.Equal("next chunk", after.Items[1024].Body);
+
+        await store.AppendAsync(Ev(SessionEventKind.Edit, "edited") with { EditedFromSeq = 1 });
+        await store.AppendAsync(Ev(SessionEventKind.Retract, "retracted") with
+        {
+            Meta = SessionRetraction.Single(2),
+        });
+        var changed = await store.ProjectAsync();
+        Assert.Equal("edited", changed.Items[0].Body);
+        Assert.Equal("old 0", after.Items[0].Body);
+        Assert.DoesNotContain(changed.Items, item => item.Seq == 2);
+        await store.AppendAsync(Ev(body: "after mutation"));
+        var resumed = await store.ProjectAsync();
+        var raw = new List<SessionEvent>();
+        await foreach (var e in store.ReadAllAsync()) raw.Add(e);
+        var rebuilt = SessionProjection.Build(raw);
+        Assert.Equal(rebuilt.LastSeq, resumed.LastSeq);
+        Assert.Equal(rebuilt.Items, resumed.Items);
+    }
+
+    [Fact]
+    public async Task Forward_retraction_in_existing_log_still_hides_later_appends()
+    {
+        var sink = new FakeSink();
+        sink.Append(SessionJson.Serialize(Ev(body: "first") with { Seq = 1 }));
+        sink.Append(SessionJson.Serialize(Ev(SessionEventKind.Retract, "future") with
+        {
+            Seq = 2,
+            Meta = SessionRetraction.Between(1, 4),
+        }));
+        sink.FlushToDisk();
+        await using var store = new JsonlSessionStore(sink);
+        Assert.Empty((await store.ProjectAsync()).Items);
+        await store.AppendAsync(Ev(body: "hidden"));
+        Assert.Empty((await store.ProjectAsync()).Items);
+        await store.AppendAsync(Ev(body: "also hidden"));
+        Assert.Empty((await store.ProjectAsync()).Items);
+        await store.AppendAsync(Ev(body: "visible"));
+        Assert.Equal("visible", Assert.Single((await store.ProjectAsync()).Items).Body);
     }
 
     [Fact]
@@ -538,6 +862,55 @@ public sealed class JsonlSessionStoreTests : IDisposable
             }
 
             Assert.Equal(new long[] { 2, 3 }, page);
+        }
+    }
+
+    [Fact]
+    public async Task Indexed_reads_survive_reopen_tail_repair_and_purge()
+    {
+        var path = Path.Combine(_dir, "session", "events.jsonl");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var lines = Enumerable.Range(1, 600)
+            .Select(i => SessionJson.Serialize(Ev(body: $"消息 😀 {i}") with { Seq = i }));
+        await File.WriteAllTextAsync(path, string.Join("\r\n", lines) + "\r\n{torn");
+
+        var (store, repaired) = JsonlSessionStore.Open(_dir);
+        Assert.Equal(5, repaired);
+        await using (store)
+        {
+            async Task<long[]> Read(long from, int take)
+            {
+                var result = new List<long>();
+                await foreach (var e in store.ReadAsync(from, take)) result.Add(e.Seq);
+                return result.ToArray();
+            }
+
+            Assert.Equal(Enumerable.Range(491, 100).Select(i => (long)i), await Read(491, 100));
+            await store.PurgeAsync(100, 400);
+            Assert.Equal(Enumerable.Range(491, 100).Select(i => (long)i), await Read(491, 100));
+            Assert.Equal(new long[] { 99, 401, 402 }, await Read(99, 3));
+            Assert.Equal(602, await store.AppendAsync(Ev(body: "after purge")));
+        }
+
+        var (reopened, _) = JsonlSessionStore.Open(_dir);
+        await using (reopened)
+        {
+            var seqs = new List<long>();
+            await foreach (var e in reopened.ReadAsync(599, 10)) seqs.Add(e.Seq);
+            Assert.Equal(new long[] { 599, 600, 601, 602 }, seqs);
+        }
+    }
+
+    [Fact]
+    public async Task Range_reader_does_not_hold_writer_gate_across_yields()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            await store.AppendAsync(Ev());
+            await using var reader = store.ReadAllAsync().GetAsyncEnumerator();
+            Assert.True(await reader.MoveNextAsync());
+            await store.AppendAsync(Ev(body: "next"));
         }
     }
 

@@ -66,7 +66,7 @@ public sealed class WebEndpointTests : ApiFixture
     [Fact]
     public async Task The_switch_the_bounds_and_the_disabled_list_all_round_trip()
     {
-        var saved = await _http.PutAsJsonAsync("/api/settings", new
+        var saved = await _http.PutSettingsAsync(new
         {
             web = new
             {
@@ -99,7 +99,7 @@ public sealed class WebEndpointTests : ApiFixture
     [Fact]
     public async Task Values_the_number_inputs_could_not_enforce_are_refused_by_the_api()
     {
-        var tooLong = await _http.PutAsJsonAsync("/api/settings", new { web = new { timeBudgetSeconds = 600 } });
+        var tooLong = await _http.PutSettingsAsync(new { web = new { timeBudgetSeconds = 600 } });
         Assert.Equal(HttpStatusCode.BadRequest, tooLong.StatusCode);
 
         var errors = (await tooLong.Content.ReadFromJsonAsync<JsonElement>())
@@ -108,12 +108,12 @@ public sealed class WebEndpointTests : ApiFixture
 
         Assert.Equal(
             HttpStatusCode.BadRequest,
-            (await _http.PutAsJsonAsync("/api/settings", new { web = new { maxResults = 99 } })).StatusCode);
+            (await _http.PutSettingsAsync(new { web = new { maxResults = 99 } })).StatusCode);
 
         // A proxy is only a proxy if it is an absolute http(s) address; the field is Latin free text otherwise.
         Assert.Equal(
             HttpStatusCode.BadRequest,
-            (await _http.PutAsJsonAsync("/api/settings", new { web = new { proxy = "socks5://127.0.0.1:1080" } })).StatusCode);
+            (await _http.PutSettingsAsync(new { web = new { proxy = "socks5://127.0.0.1:1080" } })).StatusCode);
 
         // None of them wrote anything.
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/web");

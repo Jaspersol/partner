@@ -211,17 +211,15 @@ public static partial class SkillEndpoints
             Directory.Delete(target, recursive: true);
 
             // A deny-list entry for a skill that is gone would silently switch a later skill of the same name off.
-            var settings = ctx.Settings.Load();
-            if (settings.Skills.Disabled.Contains(skillId, StringComparer.Ordinal))
-            {
-                ctx.Settings.Save(settings with
+            ctx.Settings.Update(settings => settings.Skills.Disabled.Contains(skillId, StringComparer.Ordinal)
+                ? settings with
                 {
                     Skills = new SkillSettings
                     {
                         Disabled = settings.Skills.Disabled.Where(id => !string.Equals(id, skillId, StringComparison.Ordinal)).ToList(),
                     },
-                });
-            }
+                }
+                : null);
 
             consumer.ReloadSkills();
             return Results.Ok(new { deleted = skillId });

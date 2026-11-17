@@ -62,7 +62,15 @@ public sealed class VoiceOutputHalf : IDisposable
     private readonly ITtsClient _tts;
     private readonly PlaybackGate _gate;
     private readonly Action<string> _log;
-    private readonly List<SpeechItem> _items = new();
+    private readonly object _itemsGate = new();
+    private readonly LinkedList<SpeechItem> _active = new();
+    private readonly Dictionary<string, LinkedListNode<SpeechItem>> _activeById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _pendingText = new(StringComparer.Ordinal);
+    private readonly Queue<SpeechItem> _history = new();
+    private const int HistoryLimit = 256;
+    private int _playbackGeneration;
+    private CancellationTokenSource _generationStop = new();
+    private long _lastAssistantEventSeq;
     private readonly Func<long> _nowMs;
     private readonly int _maxSplitChars;
     private readonly int _minChars;
@@ -110,7 +118,10 @@ public sealed class VoiceOutputHalf : IDisposable
 
     public SpeechSegmenter Segmenter { get; }
 
-    public IReadOnlyList<SpeechItem> Items => _items;
+    public IReadOnlyList<SpeechItem> Items { get { lock (_itemsGate) return _history.Concat(_active).ToArray(); } }
+
+    /// <summary>Total accepted sentences, including records evicted from diagnostic history.</summary>
+    public int TotalCount => _seq;
 
     public bool TtsBusy { get; private set; }
 
@@ -121,22 +132,24 @@ public sealed class VoiceOutputHalf : IDisposable
     /// <summary>True between <see cref="BeginStream"/> and the playback release that ends the hold.</summary>
     public bool IsStreaming => _streamHeld;
 
-    public bool SentencesEmpty => Segmenter.IsEmpty && _items.All(i => i.Status is SpeechStatus.Played or SpeechStatus.Failed);
+    public bool SentencesEmpty { get { lock (_itemsGate) return Segmenter.IsEmpty && _active.Count == 0; } }
 
     /// <summary>Feeds assistant text and returns the sentences that became speakable.</summary>
     public IReadOnlyList<SpeechItem> OnText(string text, long sessionEventSeq)
     {
-        if (_interrupted || !Enabled || string.IsNullOrWhiteSpace(text))
-        {
+        if (!Enabled || string.IsNullOrWhiteSpace(text))
             return Array.Empty<SpeechItem>();
-        }
 
+        var generation = Volatile.Read(ref _playbackGeneration);
         var cleaned = TtsTextCleaner.Clean(text);
         if (cleaned.Length == 0)
         {
             return Array.Empty<SpeechItem>();
         }
 
+        lock (_itemsGate)
+        {
+        if (_interrupted || generation != _playbackGeneration) return Array.Empty<SpeechItem>();
         if (!_replyOpen)
         {
             _replyOpen = true;
@@ -145,6 +158,7 @@ public sealed class VoiceOutputHalf : IDisposable
         }
 
         var ready = Segmenter.Push(cleaned);
+        _lastAssistantEventSeq = sessionEventSeq;
         var items = new List<SpeechItem>();
 
         foreach (var sentence in DeduplicateAgainstPending(ready))
@@ -158,11 +172,12 @@ public sealed class VoiceOutputHalf : IDisposable
                 Status = SpeechStatus.Queued,
             };
 
-            _items.Add(item);
+            AddActive(item);
             items.Add(item);
         }
 
         return items;
+        }
     }
 
     /// <summary>
@@ -197,12 +212,7 @@ public sealed class VoiceOutputHalf : IDisposable
             return Array.Empty<SpeechItem>();
         }
 
-        // Approval speech is not the rest of an interrupted reply: the person has just answered, and the
-        // assistant's next reply must be spoken normally.
-        if (kind != SpeechKind.Assistant)
-        {
-            _interrupted = false;
-        }
+        // Approval speech does not change the interrupted assistant generation.
 
         if (forceGate)
         {
@@ -218,11 +228,16 @@ public sealed class VoiceOutputHalf : IDisposable
         // A result answers something the person just said, so it goes before every queued item. A prompt is
         // inserted before assistant text but after prompts that arrived earlier: reversing two pending
         // questions would make the order on screen disagree with the order in the speaker.
-        var insertAt = priority
-            ? kind == SpeechKind.ApprovalResult
-                ? _items.FindIndex(item => item.Status == SpeechStatus.Queued)
-                : _items.FindIndex(item => item.Status == SpeechStatus.Queued && item.Kind == SpeechKind.Assistant)
-            : -1;
+        lock (_itemsGate)
+        {
+        var before = _active.First;
+        if (priority)
+        {
+            while (before is not null && (before.Value.Status != SpeechStatus.Queued
+                || (kind != SpeechKind.ApprovalResult && before.Value.Kind != SpeechKind.Assistant)))
+                before = before.Next;
+        }
+        else before = null;
 
         foreach (var sentence in sentences)
         {
@@ -237,14 +252,9 @@ public sealed class VoiceOutputHalf : IDisposable
                 Tag = tag,
             };
 
-            var index = insertAt >= 0 ? insertAt : _items.Count;
-            if (insertAt >= 0)
-            {
-                insertAt++;
-            }
-
-            _items.Insert(index, item);
+            AddActive(item, before);
             items.Add(item);
+        }
         }
 
         return items;
@@ -262,17 +272,17 @@ public sealed class VoiceOutputHalf : IDisposable
             return;
         }
 
-        for (var i = 0; i < _items.Count; i++)
+        lock (_itemsGate)
         {
-            var item = _items[i];
-            if (item.Tag is null
-                || !string.Equals(item.Tag, tag, StringComparison.Ordinal)
-                || item.Status != SpeechStatus.Queued)
-            {
-                continue;
-            }
-
-            _items[i] = item with { Status = SpeechStatus.Failed, Error = reason };
+        var node = _active.First;
+        while (node is not null)
+        {
+            var next = node.Next;
+            var item = node.Value;
+            if (item.Status == SpeechStatus.Queued && string.Equals(item.Tag, tag, StringComparison.Ordinal))
+                Replace(item with { Status = SpeechStatus.Failed, Error = reason });
+            node = next;
+        }
         }
     }
 
@@ -305,30 +315,29 @@ public sealed class VoiceOutputHalf : IDisposable
     /// </summary>
     public void StopPlayback()
     {
-        // Set first: a synthesis already running on the output loop checks it before it hands the sink more audio.
-        _interrupted = true;
-        _replyOpen = false;
-        _sink.Stop();
-        _streamHeld = false;
-        _streamSynthesized = 0;
-
-        for (var i = 0; i < _items.Count; i++)
+        lock (_itemsGate)
         {
-            if (_items[i].Status is SpeechStatus.Queued or SpeechStatus.Synthesizing)
-            {
-                _items[i] = _items[i] with { Status = SpeechStatus.Failed, Error = "被用户打断" };
-            }
+            _interrupted = true;
+            Interlocked.Increment(ref _playbackGeneration);
+            var previous = _generationStop;
+            _generationStop = new CancellationTokenSource();
+            previous.Cancel();
+            previous.Dispose();
+            _replyOpen = false;
+            _streamHeld = false;
+            _streamSynthesized = 0;
+            while (_active.First is { } node)
+                Replace(node.Value with { Status = SpeechStatus.Failed, Error = "被用户打断" });
+            Segmenter.Flush();
+            _sink.Stop();
         }
-
-        // The unfinished tail of the reply is not spoken either.
-        Segmenter.Flush();
     }
 
     /// <summary>
     /// The person has spoken again, so the next reply is an answer to something new and is spoken normally. Until
     /// then the rest of an interrupted reply is dropped as it arrives.
     /// </summary>
-    public void ResumeAfterInterruption() => _interrupted = false;
+    public void ResumeAfterInterruption() { lock (_itemsGate) _interrupted = false; }
 
     /// <summary>Releases a held stream whose first sentence has waited long enough for a second one.</summary>
     public void ReleaseStreamIfDue()
@@ -366,38 +375,42 @@ public sealed class VoiceOutputHalf : IDisposable
     /// constructor-time value only applies to the first turn.
     /// </para>
     /// </summary>
-    public async Task FlushTurnAsync(CancellationToken ct = default)
+    public async Task FlushTurnAsync(CancellationToken ct = default, Action? sentenceBoundary = null)
     {
         if (!Enabled)
         {
             return;
         }
+        var generation = Volatile.Read(ref _playbackGeneration);
 
-        // Latch again on every turn: all sentences of the turn are synthesized into the sink queue first and
-        // released together. Otherwise sentence 2 waits for sentence 1 to finish synthesizing, leaving a gap
-        // that grows with the text. The tone uses the same sink, so while latched it only queues.
+        // A bounded sink cannot retain an entire turn while held: release before synthesis so long
+        // sentences and turns can make progress under backpressure.
         if (!_streamHeld)
         {
-            // A stream that is already playing was released earlier; latching again would stall it.
-            if (!_sink.IsPlaying && !_sink.HasPending)
-            {
-                _sink.Hold();
-            }
+            _sink.Release();
+            if (_settings.MuteDuringTts) _gate.Engage();
         }
 
+        lock (_itemsGate)
+        {
+        if (!_interrupted)
+        {
         foreach (var sentence in DeduplicateAgainstPending(Segmenter.Flush()))
         {
-            _items.Add(new SpeechItem
+            AddActive(new SpeechItem
             {
                 SpeechId = Guid.NewGuid().ToString("n"),
                 Seq = ++_seq,
-                SessionEventSeq = _items.LastOrDefault(item => item.Kind == SpeechKind.Assistant)?.SessionEventSeq ?? 0,
+                SessionEventSeq = _lastAssistantEventSeq,
                 Text = sentence,
                 Status = SpeechStatus.Queued,
             });
         }
+        }
+        }
 
-        await PlayPendingAsync(ct).ConfigureAwait(false);
+        await PlayPendingAsync(ct, sentenceBoundary).ConfigureAwait(false);
+        if (generation != Volatile.Read(ref _playbackGeneration)) return;
 
         NoteFirstAudio();
         _replyOpen = false;
@@ -405,14 +418,14 @@ public sealed class VoiceOutputHalf : IDisposable
         _streamHeld = false;
         _sink.Release();
 
-        if (_settings.MuteDuringTts && _items.Any(i => i.Status is SpeechStatus.Played or SpeechStatus.Playing))
+        if (_settings.MuteDuringTts && Items.Any(i => i.Status == SpeechStatus.Played))
         {
             _gate.Engage();
         }
     }
 
     /// <summary>Synthesizes and enqueues every queued sentence, strictly in sequence order.</summary>
-    public async Task<int> PlayPendingAsync(CancellationToken ct = default)
+    public async Task<int> PlayPendingAsync(CancellationToken ct = default, Action? sentenceBoundary = null)
     {
         if (!Enabled)
         {
@@ -424,23 +437,27 @@ public sealed class VoiceOutputHalf : IDisposable
 
         while (true)
         {
-            var queued = _interrupted ? null : _items.FirstOrDefault(i => i.Status == SpeechStatus.Queued);
-            if (queued is null)
+            sentenceBoundary?.Invoke();
+            SpeechItem item;
+            int generation;
+            CancellationToken generationToken;
+            lock (_itemsGate)
             {
-                break;
+                var queued = _active.First?.Value;
+                if (queued is null) break;
+                generation = Volatile.Read(ref _playbackGeneration);
+                generationToken = _generationStop.Token;
+                item = queued with { Status = SpeechStatus.Synthesizing };
+                Replace(item);
             }
-
-            // Records are immutable, so every state change replaces the entry — and it must be found by
-            // SpeechId, not by instance: the previous instance is no longer in the list.
-            var item = queued with { Status = SpeechStatus.Synthesizing };
-            Replace(item);
+            using var synthesisStop = CancellationTokenSource.CreateLinkedTokenSource(ct, generationToken);
             TtsBusy = true;
 
             try
             {
-                await foreach (var chunk in _tts.SynthesizeAsync(item.Text, ct).ConfigureAwait(false))
+                await foreach (var chunk in _tts.SynthesizeAsync(item.Text, synthesisStop.Token).ConfigureAwait(false))
                 {
-                    if (_interrupted)
+                    if (generation != Volatile.Read(ref _playbackGeneration))
                     {
                         break;
                     }
@@ -450,21 +467,32 @@ public sealed class VoiceOutputHalf : IDisposable
                         continue;
                     }
 
-                    _sink.Enqueue(chunk, _settings.SampleRate);
+                    await EnqueueAudioAsync(chunk, synthesisStop.Token).ConfigureAwait(false);
                 }
+                if (generation != Volatile.Read(ref _playbackGeneration)) break;
+
 
                 // The configured pause between sentences, as silence at the end of this one.
                 if (_settings.GapMs > 0)
                 {
-                    _sink.Enqueue(new float[(int)(_settings.SampleRate * _settings.GapMs / 1000.0)], _settings.SampleRate);
+                    await EnqueueAudioAsync(new float[(int)(_settings.SampleRate * _settings.GapMs / 1000.0)], synthesisStop.Token).ConfigureAwait(false);
                 }
 
                 // A final marker is mandatory: without it the player waits for this sequence forever.
-                _sink.Enqueue(Array.Empty<float>(), _settings.SampleRate, final: true);
+                await EnqueueAudioAsync(Array.Empty<float>(), synthesisStop.Token, final: true).ConfigureAwait(false);
 
                 Replace(item with { Status = SpeechStatus.Played });
                 played++;
                 NoteSynthesized();
+            }
+            catch (OperationCanceledException) when ((_interrupted || generation != Volatile.Read(ref _playbackGeneration)) && !ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (AudioPlaybackException)
+            {
+                Replace(item with { Status = SpeechStatus.Failed, Error = "音频播放失败" });
+                throw;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -473,7 +501,7 @@ public sealed class VoiceOutputHalf : IDisposable
             catch (Exception ex)
             {
                 // Tombstone: the sequence still terminates so later sentences are not dragged down.
-                _sink.Enqueue(Array.Empty<float>(), _settings.SampleRate, final: true);
+                await EnqueueAudioAsync(Array.Empty<float>(), synthesisStop.Token, final: true).ConfigureAwait(false);
                 Replace(item with { Status = SpeechStatus.Failed, Error = ex.Message });
                 NoteSynthesized();
                 _log($"voice: synthesis failed for '{item.Text}': {ex.Message}");
@@ -522,7 +550,7 @@ public sealed class VoiceOutputHalf : IDisposable
         IsPlaying: IsPlaying,
         PendingAudio: PendingAudio,
         SentencesEmpty: SentencesEmpty,
-        SegmenterEmpty: Segmenter.IsEmpty,
+        SegmenterEmpty: SentencesEmpty,
         TtsBusy: TtsBusy,
         AsrBusy: asrBusy);
 
@@ -540,19 +568,65 @@ public sealed class VoiceOutputHalf : IDisposable
 
     public void Dispose()
     {
+        _generationStop.Dispose();
         _tts.Dispose();
         _sink.Dispose();
     }
 
-    /// <summary>Replaces an entry by its stable id — records are immutable, so instance identity is useless.</summary>
-    private void Replace(SpeechItem updated)
+    private void AddActive(SpeechItem item, LinkedListNode<SpeechItem>? before = null)
     {
-        var index = _items.FindIndex(i => string.Equals(i.SpeechId, updated.SpeechId, StringComparison.Ordinal));
-        if (index >= 0)
+        lock (_itemsGate)
         {
-            _items[index] = updated;
+        var node = before is null ? _active.AddLast(item) : _active.AddBefore(before, item);
+        _activeById.Add(item.SpeechId, node);
+        if (item.Kind == SpeechKind.Assistant)
+            _pendingText[item.Text] = _pendingText.GetValueOrDefault(item.Text) + 1;
         }
     }
+
+    /// <summary>Updates an active record by stable id, moving terminal records into bounded history.</summary>
+    private void Replace(SpeechItem updated)
+    {
+        lock (_itemsGate)
+        {
+        if (!_activeById.TryGetValue(updated.SpeechId, out var node)) return;
+        if (updated.Status is not (SpeechStatus.Played or SpeechStatus.Failed))
+        {
+            node.Value = updated;
+            return;
+        }
+        _active.Remove(node);
+        _activeById.Remove(updated.SpeechId);
+        if (updated.Kind == SpeechKind.Assistant)
+        {
+            var count = _pendingText[updated.Text] - 1;
+            if (count == 0) _pendingText.Remove(updated.Text);
+            else _pendingText[updated.Text] = count;
+        }
+        _history.Enqueue(updated);
+        if (_history.Count > HistoryLimit) _history.Dequeue();
+        }
+    }
+
+    private async Task EnqueueAudioAsync(float[] pcm, CancellationToken ct, bool final = false)
+    {
+        try
+        {
+            var pending = _sink.EnqueueAsync(pcm, _settings.SampleRate, final, ct);
+            if (_streamHeld && !pending.IsCompleted)
+            {
+                // The first chunk can itself exceed the sink capacity. Never wait for a second sentence
+                // while a held producer is unable to finish writing the first one.
+                if (await Task.WhenAny(pending, Task.Delay(StreamLeadMs, ct)).ConfigureAwait(false) != pending)
+                    ReleaseStream();
+            }
+            await pending.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { throw new AudioPlaybackException(ex); }
+    }
+
+    private sealed class AudioPlaybackException(Exception inner) : Exception("Audio playback failed.", inner) { }
 
     /// <summary>
     /// Same-text sentence deduplication: a new sentence identical to one still playing or still queued is
@@ -571,10 +645,8 @@ public sealed class VoiceOutputHalf : IDisposable
         foreach (var sentence in sentences)
         {
             // Comparing against the most recent unfinished sentence is enough: duplicates come from replaying the same text through the pipeline.
-            var duplicate = _items
-                .Where(i => i.Kind == SpeechKind.Assistant)
-                .Where(i => i.Status is not (SpeechStatus.Played or SpeechStatus.Failed))
-                .Any(i => string.Equals(i.Text, sentence, StringComparison.Ordinal));
+            bool duplicate;
+            lock (_itemsGate) duplicate = _pendingText.ContainsKey(sentence);
             if (!duplicate)
             {
                 result.Add(sentence);
