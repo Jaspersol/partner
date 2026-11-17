@@ -77,6 +77,8 @@ The rules behind that table:
 - Emotion scenes have a cooldown (`EmotionCooldownSeconds`). The same emotion triggering again only refreshes the expression hold; the motion is not replayed.
 - While asleep only a click wakes the pet, and the wake scene plays *then* the tap's own scene, so the first click is never a non-event. A new reply or a scheduled greeting wakes it first and then runs its scene. Dragging still works and does not wake it.
 - While asleep only the eyes follow the cursor: the head stays put and there is no speaking nod, because the held `sleep` track owns the sleeping pose and anything else writing those parameters fights it.
+- The cursor look turns the head at most 40% of the parameter's half range (±12° on a ±30° parameter); the eyeballs follow fully. Outside the window the look fades with the cursor's distance and is gone one window width away. While a procedural track or a model motion drives the head, the look's head share drops to 20% and returns within 0.3 s afterwards.
+- Procedural tracks, the look and the drag recoil are offsets on top of the model's own motion, blink and breath, written before physics, so hair and physics smoothing chains follow them. This needs a patch to easy-live2d 1.1.0 (`ui/patches/easy-live2d+1.1.0.patch`, applied by patch-package on `npm install`).
 - An expression returns to default after `ExpressionHoldSeconds`.
 - The random source and the clock are injected, so tests can pin both.
 

@@ -1,15 +1,10 @@
 // @vitest-environment node
-// The action layer talks to a model only through the small `ActionRuntime` interface, so a fake one is the whole
-// fixture: no Pixi, no WebGL, no Live2D.
+// The action layer talks to a model only through the small `ActionRuntime` interface and the per-update
+// `FrameParameters`, so fakes of both are the whole fixture: no Pixi, no WebGL, no Live2D.
 import { describe, expect, it } from 'vitest'
 
-import { ActionLayer, type ActionMapping, type ActionRuntime } from '../src/pet/actions'
-
-interface Write {
-  id: string
-  value: number
-  weight: number
-}
+import { ActionLayer, type ActionMapping, type ActionName, type ActionRuntime } from '../src/pet/actions'
+import { lookTarget } from '../src/pet/input'
 
 interface MotionCall {
   group: string
@@ -18,45 +13,67 @@ interface MotionCall {
 }
 
 /**
- * A stand-in for the sprite. `present` is the set of parameters the model has; anything else answers null from
- * `parameterRange`, which is exactly what a real model does for a parameter it does not carry.
+ * The range a parameter actually has in a Cubism model. Degrees for the head and body angles, 0..1 for an open
+ * eye, -1..1 for the brows and the mouth shape — a fixture that answered ±1 for everything would clamp a 30°
+ * head turn to 1 and make a composition test pass for the wrong reason.
  */
-function fakeRuntime(options: { present?: string[]; groups?: string[] } = {}) {
+function rangeOf(id: string): { min: number; max: number } {
+  if (id.startsWith('ParamAngle') || id.startsWith('ParamBodyAngle')) return { min: -30, max: 30 }
+  if (id === 'ParamEyeLOpen' || id === 'ParamEyeROpen') return { min: 0, max: 1 }
+  if (id === 'ParamMouthOpenY' || id === 'ParamCheek') return { min: 0, max: 1 }
+  return { min: -1, max: 1 }
+}
+
+/**
+ * A stand-in for the sprite. `present` is the set of parameters the model has; anything else answers null from
+ * `parameterRange`, which is exactly what a real model does for a parameter it does not carry. `refuse` lists groups
+ * that exist but whose motion does not start, as easy-live2d answers when a higher-priority motion is playing.
+ */
+function fakeRuntime(options: { present?: string[]; groups?: string[]; refuse?: string[] } = {}) {
   const present = new Set(options.present ?? [])
   const groups = new Set(options.groups ?? [])
-  const writes: Write[] = []
+  const refuse = new Set(options.refuse ?? [])
   const motions: MotionCall[] = []
   const expressions: string[] = []
 
   const runtime: ActionRuntime = {
     playMotion: async (group, no, priority) => {
-      if (!groups.has(group)) return false
+      if (!groups.has(group) || refuse.has(group)) return false
       motions.push({ group, no, priority })
       return true
-    },
-    setParameter: (id, value, weight) => {
-      writes.push({ id, value, weight: weight ?? 1 })
     },
     parameterRange: (id) => (present.has(id) ? rangeOf(id) : null),
     setExpression: (name) => {
       expressions.push(name)
     },
   }
-  return { runtime, writes, motions, expressions }
-}
 
-/**
- * The override map as easy-live2d keeps it: one slot per parameter id, last write wins, and a weight-0 write
- * releases the slot rather than pinning zero. A test that asserts on `writes` alone cannot see a later source
- * overwriting an earlier one.
- */
-function overrides(writes: readonly Write[]): Map<string, number> {
-  const map = new Map<string, number>()
-  for (const write of writes) {
-    if (write.weight === 0) map.delete(write.id)
-    else map.set(write.id, write.value)
+  /**
+   * One model update: every present parameter starts from what the model's motion, blink and breath left
+   * (`base`, else open eyes and zero elsewhere), the layer applies its frame, and the model clamps each write.
+   */
+  const update = (
+    layer: ActionLayer,
+    base: Record<string, number> = {},
+    motionPlaying = false,
+  ): Map<string, number> => {
+    const values = new Map<string, number>()
+    for (const id of present) values.set(id, base[id] ?? (id === 'ParamEyeLOpen' || id === 'ParamEyeROpen' ? 1 : 0))
+    const clamp = (id: string, value: number) => Math.max(rangeOf(id).min, Math.min(rangeOf(id).max, value))
+    layer.apply({
+      setParameterValueById: (id, value) => {
+        if (values.has(id)) values.set(id, clamp(id, value))
+      },
+      addParameterValueById: (id, value) => {
+        const current = values.get(id)
+        if (current !== undefined) values.set(id, clamp(id, current + value))
+      },
+      isMotionFinished: () => !motionPlaying,
+    })
+    return values
   }
-  return map
+
+  return { runtime, motions, expressions, update }
 }
 
 const allParams = [
@@ -77,18 +94,6 @@ const allParams = [
   'ParamMouthForm',
 ]
 
-/**
- * The range a parameter actually has in a Cubism model. Degrees for the head and body angles, 0..1 for an open
- * eye, -1..1 for the brows and the mouth shape — a fixture that answered ±1 for everything would clamp a 30°
- * head turn to 1 and make a composition test pass for the wrong reason.
- */
-function rangeOf(id: string): { min: number; max: number } {
-  if (id.startsWith('ParamAngle') || id.startsWith('ParamBodyAngle')) return { min: -30, max: 30 }
-  if (id === 'ParamEyeLOpen' || id === 'ParamEyeROpen') return { min: 0, max: 1 }
-  if (id === 'ParamMouthOpenY' || id === 'ParamCheek') return { min: 0, max: 1 }
-  return { min: -1, max: 1 }
-}
-
 function mapping(overrides: Partial<ActionMapping> = {}): ActionMapping {
   return { motions: {}, expressions: {}, headBottom: 0.35, faceBottom: 0.55, ...overrides }
 }
@@ -96,12 +101,25 @@ function mapping(overrides: Partial<ActionMapping> = {}): ActionMapping {
 describe('auto mapping by name', () => {
   it('matches an action to a group named after it', async () => {
     const fake = fakeRuntime({ groups: ['Greet'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'Greet', no: 2, name: 'hello' }], [])
+    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'Greet', no: 2, name: 'Greet_2' }], [])
 
     layer.play('greet')
     await Promise.resolve()
 
     expect(fake.motions).toEqual([{ group: 'Greet', no: 2, priority: 2 }])
+  })
+
+  it('does not play an Idle group for a stretch', async () => {
+    // An idle motion is the model breathing in place; playing it for a stretch looks like nothing happened.
+    const fake = fakeRuntime({ groups: ['Idle'], present: ['ParamBodyAngleY', 'ParamAngleY'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'Idle', no: 0, name: 'Idle_0' }], [])
+
+    layer.play('stretch')
+    await Promise.resolve()
+    for (let index = 0; index < 20; index += 1) layer.tick(0.05)
+
+    expect(fake.motions).toEqual([])
+    expect(fake.update(layer).get('ParamBodyAngleY')).toBeGreaterThan(0)
   })
 
   it('matches an expression by name', () => {
@@ -127,8 +145,8 @@ describe('explicit profile mapping', () => {
       fake.runtime,
       mapping({ motions: { greet: { kind: 'motion', group: 'CAT', no: 1 } } }),
       [
-        { group: 'TapBody', no: 0, name: 'tap' },
-        { group: 'CAT', no: 1, name: 'motion1' },
+        { group: 'TapBody', no: 0, name: 'TapBody_0' },
+        { group: 'CAT', no: 1, name: 'CAT_1' },
       ],
       [],
     )
@@ -152,24 +170,36 @@ describe('explicit profile mapping', () => {
   })
 })
 
+describe('refused motions', () => {
+  it('runs the procedural track when the model refuses the motion', async () => {
+    // A tap motion at a higher priority is still playing: easy-live2d answers -1 and the motion never starts.
+    const fake = fakeRuntime({ groups: ['Greet'], refuse: ['Greet'], present: ['ParamAngleZ', 'ParamBodyAngleZ'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'Greet', no: 0, name: 'Greet_0' }], [])
+
+    layer.play('greet')
+    await Promise.resolve()
+    layer.tick(0.3)
+
+    expect(fake.update(layer).get('ParamAngleZ')).toBeGreaterThan(1)
+  })
+})
+
 describe('none and procedural', () => {
   it('skips an action mapped to none', async () => {
     const fake = fakeRuntime({ present: allParams, groups: ['Greet'] })
     const layer = new ActionLayer(
       fake.runtime,
       mapping({ motions: { greet: { kind: 'none' } } }),
-      [{ group: 'Greet', no: 0, name: 'hello' }],
+      [{ group: 'Greet', no: 0, name: 'Greet_0' }],
       [],
     )
 
     layer.play('greet')
-    layer.tick(0.1)
+    layer.tick(0.3)
     await Promise.resolve()
 
     expect(fake.motions).toEqual([])
-    // A tick still hands the look parameters back at rest (weight 0); the action itself wrote nothing.
-    expect(fake.writes.every((write) => write.weight === 0)).toBe(true)
-    expect(fake.writes.some((write) => write.id === 'ParamAngleZ')).toBe(false)
+    expect(fake.update(layer).get('ParamAngleZ')).toBe(0)
   })
 
   it('skips the name match when the mapping says procedural', async () => {
@@ -177,16 +207,16 @@ describe('none and procedural', () => {
     const layer = new ActionLayer(
       fake.runtime,
       mapping({ motions: { greet: { kind: 'procedural' } } }),
-      [{ group: 'Greet', no: 0, name: 'hello' }],
+      [{ group: 'Greet', no: 0, name: 'Greet_0' }],
       [],
     )
 
     layer.play('greet')
-    layer.tick(0.1)
+    layer.tick(0.3)
     await Promise.resolve()
 
     expect(fake.motions).toEqual([])
-    expect(fake.writes.some((write) => write.id === 'ParamAngleZ')).toBe(true)
+    expect(fake.update(layer).get('ParamAngleZ')).toBeGreaterThan(1)
   })
 
   it('applies the parameter preset for a procedural expression, ignoring the .exp3', () => {
@@ -201,37 +231,25 @@ describe('none and procedural', () => {
     layer.expression('shy')
     expect(fake.expressions).not.toContain('blush.exp3.json')
     layer.tick(0.05)
-    expect(fake.writes.some((write) => write.id === 'ParamCheek' && write.value === 1)).toBe(true)
+    expect(fake.update(layer).get('ParamCheek')).toBe(1)
   })
 
-  it('releases a parameter preset when it expires, leaving nothing pinned', () => {
-    // Asserted on the override map, not on `writes`: the release is in the write log either way, and what matters
-    // is that nothing writes the preset back at weight 1 after it.
+  it('stops writing a parameter preset when it expires', () => {
     const fake = fakeRuntime({ present: ['ParamBrowLY', 'ParamMouthForm', 'ParamCheek'] })
     const layer = new ActionLayer(fake.runtime, mapping({ expressions: { angry: { kind: 'procedural' } } }), [], [], {
       holdSeconds: 0.5,
     })
 
     layer.expression('angry')
-    fake.writes.length = 0
-    for (let index = 0; index < 20; index += 1) layer.tick(0.05)
-
-    expect(Object.fromEntries(overrides(fake.writes))).toEqual({})
-  })
-
-  it('leaves a preset that is still running in place', () => {
-    // The other half of the same rule: a preset is not released the moment it starts.
-    const fake = fakeRuntime({ present: ['ParamBrowLY', 'ParamMouthForm', 'ParamCheek'] })
-    const layer = new ActionLayer(fake.runtime, mapping({ expressions: { angry: { kind: 'procedural' } } }), [], [])
-
-    layer.expression('angry')
-    fake.writes.length = 0
     layer.tick(0.05)
+    expect(fake.update(layer).get('ParamBrowLY')).toBe(-1)
 
-    expect(Object.fromEntries(overrides(fake.writes))).toEqual({
-      ParamBrowLY: -1,
-      ParamMouthForm: -1,
-      ParamCheek: 0.3,
+    for (let index = 0; index < 20; index += 1) layer.tick(0.05)
+    // The model's own values come back: nothing is pinned once the face is over.
+    expect(Object.fromEntries(fake.update(layer, { ParamBrowLY: 0.3 }))).toEqual({
+      ParamBrowLY: 0.3,
+      ParamMouthForm: 0,
+      ParamCheek: 0,
     })
   })
 
@@ -240,7 +258,7 @@ describe('none and procedural', () => {
     const layer = new ActionLayer(
       fake.runtime,
       mapping({ motions: { greet: { kind: 'something-new' } } }),
-      [{ group: 'Greet', no: 0, name: 'hello' }],
+      [{ group: 'Greet', no: 0, name: 'Greet_0' }],
       [],
     )
 
@@ -251,59 +269,88 @@ describe('none and procedural', () => {
 })
 
 describe('procedural tracks', () => {
-  it('skips a parameter the model does not have', () => {
-    // A model with only the eye parameter: the stretch track's body keys must not be written at all.
+  it('writes only the parameters the model has', () => {
     const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen'] })
     const layer = new ActionLayer(fake.runtime, mapping(), [], [])
 
     layer.play('stretch')
-    layer.tick(0.5)
+    layer.tick(1.3 / 6)
+    for (let index = 0; index < 5; index += 1) layer.tick(1.3 / 6)
 
-    expect(fake.writes.length).toBeGreaterThan(0)
-    expect(new Set(fake.writes.map((write) => write.id))).toEqual(new Set(['ParamEyeLOpen', 'ParamEyeROpen']))
+    const values = fake.update(layer)
+    expect([...values.keys()].sort()).toEqual(['ParamEyeLOpen', 'ParamEyeROpen'])
+    expect(values.get('ParamEyeLOpen')).toBeLessThan(0.7)
   })
 
-  it('releases a present parameter with weight 0 when the track ends', () => {
+  it('adds to the model\'s own motion and breath instead of replacing them', () => {
+    // F1: the offsets ride on top of what the model already set this update, so its motion and breathing survive.
+    const fake = fakeRuntime({ present: ['ParamAngleZ', 'ParamBodyAngleZ'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+
+    layer.play('greet')
+    for (let index = 0; index < 3; index += 1) layer.tick(0.2)
+    const alone = fake.update(layer).get('ParamAngleZ') ?? 0
+    const onBreath = fake.update(layer, { ParamAngleZ: 4, ParamBodyAngleZ: -2 })
+
+    expect(alone).toBeGreaterThan(5)
+    expect(onBreath.get('ParamAngleZ')).toBeCloseTo(alone + 4)
+    expect(onBreath.get('ParamBodyAngleZ')).toBeCloseTo((fake.update(layer).get('ParamBodyAngleZ') ?? 0) - 2)
+  })
+
+  it('leaves the model untouched once a track ends', () => {
     const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen'] })
     const layer = new ActionLayer(fake.runtime, mapping(), [], [])
 
     layer.play('blink')
-    layer.tick(0.1)
-    const during = fake.writes.length
-    expect(during).toBeGreaterThan(0)
+    layer.tick(0.07)
+    expect(fake.update(layer).get('ParamEyeLOpen')).toBeLessThan(0.2)
 
     layer.tick(0.3)
-    const last = fake.writes.filter((write) => write.id === 'ParamEyeLOpen').at(-1)
-    expect(last?.weight).toBe(0)
+    // The framework's own blink, half way closed this update, is what shows.
+    expect(fake.update(layer, { ParamEyeLOpen: 0.4 }).get('ParamEyeLOpen')).toBe(0.4)
   })
 
-  it('holds the sleep pose instead of releasing it', () => {
+  it('eases every track back to rest, so nothing snaps when it ends', () => {
+    // A track whose last key is off rest drops to 0 in the one update after it ends; with the writes feeding
+    // physics, that snap whips the hair. `sleep` holds on purpose and `wake` starts from its pose, so neither is here.
+    const actions: ActionName[] = [
+      'blink', 'stretch', 'greet', 'wave', 'headTurn', 'headShake', 'bodyTurn', 'bodyShake',
+      'nod', 'shake', 'tilt', 'pat', 'shrink', 'surprise', 'puff', 'sob',
+    ]
+    const present = [...allParams, 'ParamBrowLY', 'ParamBrowRY']
+    for (const action of actions) {
+      const fake = fakeRuntime({ present })
+      const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+      const rest = fake.update(layer)
+      layer.play(action)
+
+      const frames: Map<string, number>[] = []
+      for (let index = 0; index < 100; index += 1) {
+        layer.tick(1 / 30)
+        frames.push(fake.update(layer))
+      }
+
+      for (const id of present) {
+        const resting = rest.get(id) ?? 0
+        const last = frames.findLastIndex((frame) => frame.get(id) !== resting)
+        if (last < 0) continue
+        const { min, max } = rangeOf(id)
+        // The last off-rest update is the jump the model sees when the track ends: under 5% of the parameter's span.
+        expect(Math.abs((frames[last]?.get(id) ?? 0) - resting), `${action} ${id}`).toBeLessThan((max - min) * 0.05)
+      }
+    }
+  })
+
+  it('holds the sleep pose instead of ending it', () => {
     const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen', 'ParamAngleY'] })
     const layer = new ActionLayer(fake.runtime, mapping(), [], [])
 
     layer.play('sleep')
-    // Ticks are clamped to a quarter second, as a real frame is: advance past the track's two seconds.
-    for (let index = 0; index < 12; index += 1) layer.tick(0.2)
+    for (let index = 0; index < 30; index += 1) layer.tick(0.2)
 
-    const eye = fake.writes.filter((write) => write.id === 'ParamEyeLOpen').at(-1)
-    expect(eye?.weight).toBe(1)
-    expect(eye?.value).toBeCloseTo(0)
-  })
-
-  it('releases the look parameters at rest instead of blending them', () => {
-    const fake = fakeRuntime({ present: ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
-
-    layer.look(1, 1)
-    layer.tick(0.2)
-    expect(fake.writes.filter((write) => write.weight === 0.6).length).toBeGreaterThan(0)
-
-    // Back to centre and settled: every look parameter has to be handed back, or the framework's own breathing
-    // would stay damped forever.
-    layer.look(0, 0)
-    for (let index = 0; index < 40; index += 1) layer.tick(0.05)
-    const tail = fake.writes.slice(-4)
-    expect(tail.map((write) => write.weight)).toEqual([0, 0, 0, 0])
+    const values = fake.update(layer)
+    expect(values.get('ParamEyeLOpen')).toBe(0)
+    expect(values.get('ParamAngleY')).toBeCloseTo(-10)
   })
 
   it('closes the mouth when speaking stops', () => {
@@ -311,11 +358,16 @@ describe('procedural tracks', () => {
     const layer = new ActionLayer(fake.runtime, mapping(), [], [])
 
     layer.mouth(true)
-    layer.tick(0.2)
-    layer.mouth(false)
+    let opened = false
+    for (let index = 0; index < 10 && !opened; index += 1) {
+      layer.tick(0.1)
+      opened = (fake.update(layer).get('ParamMouthOpenY') ?? 0) > 0
+    }
+    expect(opened).toBe(true)
 
-    const last = fake.writes.filter((write) => write.id === 'ParamMouthOpenY').at(-1)
-    expect(last?.weight).toBe(0)
+    layer.mouth(false)
+    layer.tick(0.05)
+    expect(fake.update(layer).get('ParamMouthOpenY')).toBe(0)
   })
 
   it('returns to the profile default expression', () => {
@@ -331,98 +383,6 @@ describe('procedural tracks', () => {
     expect(fake.expressions.at(-1)).toBe('live2d_expression0.exp3.json')
   })
 
-  it('expires a held expression after the configured seconds', () => {
-    const fake = fakeRuntime({ present: allParams })
-    const layer = new ActionLayer(fake.runtime, mapping(), [], [], { holdSeconds: 1 })
-
-    layer.expression('cry')
-    for (let index = 0; index < 25; index += 1) layer.tick(0.05)
-    // Well past the hold: the preset parameters were released and the default expression is back.
-    expect(fake.expressions.at(-1)).toBe('')
-    expect(fake.writes.some((write) => write.weight === 0)).toBe(true)
-  })
-})
-describe('one write per parameter per frame', () => {
-  // The fake runtime above keeps every write, but the model keeps only the last one per id. Composing a frame
-  // before writing is what the real layer has to do, so these read the override map rather than the write log.
-
-  it('adds the cursor look to a nod instead of replacing it', () => {
-    const fake = fakeRuntime({ present: ['ParamAngleY'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
-
-    layer.look(0, -1)
-    for (let index = 0; index < 10; index += 1) layer.tick(0.05)
-    const lookAlone = overrides(fake.writes).get('ParamAngleY') ?? 0
-    expect(lookAlone).toBeGreaterThan(0)
-
-    layer.play('nod')
-    // Early in the nod the track pulls the head down while the look pushes it up; the composed value has to sit
-    // strictly between them, which it cannot if either source overwrote the other.
-    layer.tick(0.05)
-    const composed = overrides(fake.writes).get('ParamAngleY') ?? 0
-    expect(composed).toBeLessThan(lookAlone)
-    expect(composed).toBeGreaterThan(lookAlone - 15)
-  })
-
-  it('keeps a track visible when an expression preset drives the same parameter', () => {
-    const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
-
-    layer.expression('cry')
-    layer.tick(0.1)
-    layer.play('blink')
-    layer.tick(0.05)
-
-    // The blink closes the eyes; the cry preset's half-open lids must not be the value that survives the frame.
-    const eye = overrides(fake.writes).get('ParamEyeLOpen')
-    expect(eye).toBeDefined()
-    expect(eye).toBeLessThan(1)
-  })
-
-  it('never writes the same parameter twice in one tick', () => {
-    const fake = fakeRuntime({ present: allParams })
-    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
-
-    layer.expression('shy')
-    layer.look(0.5, 0.5)
-    layer.play('headShake')
-    layer.play('dragSpring', { velocityX: 40 })
-    fake.writes.length = 0
-
-    layer.tick(0.05)
-    const ids = fake.writes.map((write) => write.id)
-    expect(new Set(ids).size).toBe(ids.length)
-  })
-})
-
-describe('sleeping and waking', () => {
-  it('opens the eyes again after the held sleep track is released', () => {
-    const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen', 'ParamAngleY'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
-
-    layer.play('sleep')
-    for (let index = 0; index < 12; index += 1) layer.tick(0.2)
-    expect(overrides(fake.writes).get('ParamEyeLOpen')).toBeCloseTo(0)
-
-    // Starting the wake track drops the held sleep pose and eases the eyes open over its 0.6s.
-    layer.play('wake')
-    for (let index = 0; index < 2; index += 1) layer.tick(0.2)
-    expect(overrides(fake.writes).get('ParamEyeLOpen')).toBeGreaterThan(0.5)
-
-    // The third tick reaches the track's end, which releases the parameter so the framework's own open eyes win,
-    // and the sleep track must not outlive the wake and write zero again on later frames.
-    layer.tick(0.2)
-    expect(overrides(fake.writes).has('ParamEyeLOpen')).toBe(false)
-
-    const closed = fake.writes.filter((write) => write.id === 'ParamEyeLOpen' && write.weight > 0)
-    for (let index = 0; index < 20; index += 1) layer.tick(0.2)
-    expect(fake.writes.filter((write) => write.id === 'ParamEyeLOpen' && write.weight > 0).length).toBe(
-      closed.length,
-    )
-  })
-})
-
-describe('expression resolution', () => {
   it('expires an expression the model supplies as an .exp3 file', () => {
     const fake = fakeRuntime({ present: [] })
     const layer = new ActionLayer(fake.runtime, mapping(), [], ['angry.exp3.json'], { holdSeconds: 1 })
@@ -434,31 +394,126 @@ describe('expression resolution', () => {
     for (let index = 0; index < 25; index += 1) layer.tick(0.05)
     expect(fake.expressions.at(-1)).toBe('')
   })
+
+  it('keeps a blink visible on top of a crying face', () => {
+    const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+
+    layer.expression('cry')
+    layer.tick(0.1)
+    expect(fake.update(layer).get('ParamEyeLOpen')).toBe(0.5)
+
+    layer.play('blink')
+    layer.tick(0.07)
+    expect(fake.update(layer).get('ParamEyeLOpen')).toBeLessThan(0.1)
+  })
+})
+
+describe('cursor look', () => {
+  it('keeps the head well inside its range at full deflection', () => {
+    const fake = fakeRuntime({ present: ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+
+    layer.look(1, -1)
+    for (let index = 0; index < 40; index += 1) layer.tick(0.05)
+    const values = fake.update(layer)
+
+    // 40% of a ±30 half range: ±12, leaving room for a nod or a stretch on top.
+    expect(values.get('ParamAngleX')).toBeCloseTo(12, 0)
+    expect(values.get('ParamAngleY')).toBeCloseTo(12, 0)
+    expect(values.get('ParamEyeBallX')).toBeCloseTo(1, 1)
+  })
+
+  it('lets a stretch show while the cursor sits off the top-right corner', () => {
+    // R2: with the head pinned at +30 by the look, the stretch's head pitch was clipped to nothing.
+    const fake = fakeRuntime({ present: ['ParamAngleX', 'ParamAngleY', 'ParamBodyAngleY'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+
+    layer.look(1, -1)
+    for (let index = 0; index < 40; index += 1) layer.tick(0.05)
+
+    layer.play('stretch')
+    const pitch: number[] = []
+    for (let index = 0; index < 52; index += 1) {
+      layer.tick(0.05)
+      pitch.push(fake.update(layer).get('ParamAngleY') ?? 0)
+    }
+
+    expect(Math.max(...pitch) - Math.min(...pitch)).toBeGreaterThanOrEqual(8)
+    expect(Math.max(...pitch)).toBeLessThan(30)
+  })
+
+  it('gives way while a model motion plays and comes back after', () => {
+    const fake = fakeRuntime({ present: ['ParamAngleX'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+
+    layer.look(1, 0)
+    for (let index = 0; index < 40; index += 1) layer.tick(0.05)
+
+    for (let index = 0; index < 10; index += 1) {
+      fake.update(layer, {}, true)
+      layer.tick(0.05)
+    }
+    expect(fake.update(layer, {}, true).get('ParamAngleX')).toBeLessThan(3)
+
+    for (let index = 0; index < 10; index += 1) {
+      fake.update(layer)
+      layer.tick(0.05)
+    }
+    expect(fake.update(layer).get('ParamAngleX')).toBeCloseTo(12, 0)
+  })
+
+  it('fades out as the cursor moves away from the window', () => {
+    // A 200×400 window: the edge looks at full strength, one window width beyond it not at all.
+    expect(lookTarget(200, 0, 200, 400)).toEqual({ x: 1, y: -1 })
+    const near = lookTarget(300, 200, 200, 400)
+    expect(near.x).toBeCloseTo(0.5)
+    expect(near.y).toBe(0)
+    expect(lookTarget(500, -1000, 200, 400)).toEqual({ x: 0, y: -0 })
+  })
+})
+
+describe('sleeping and waking', () => {
+  it('opens the eyes again after waking and does not close them later', () => {
+    const fake = fakeRuntime({ present: ['ParamEyeLOpen', 'ParamEyeROpen', 'ParamAngleY'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [], [])
+
+    layer.play('sleep')
+    for (let index = 0; index < 12; index += 1) layer.tick(0.2)
+    expect(fake.update(layer).get('ParamEyeLOpen')).toBe(0)
+
+    layer.play('wake')
+    for (let index = 0; index < 2; index += 1) layer.tick(0.2)
+    expect(fake.update(layer).get('ParamEyeLOpen')).toBeGreaterThan(0.5)
+
+    for (let index = 0; index < 20; index += 1) layer.tick(0.2)
+    expect(fake.update(layer).get('ParamEyeLOpen')).toBe(1)
+  })
 })
 
 describe('keyword boundaries', () => {
   it('does not match a short ASCII keyword inside another word', async () => {
-    // `hi` must not claim `this_motion`: model motion names are full of English words, and a greeting that fires
-    // on a body tap is worse than one that does not fire at all.
+    // `hi` must not claim `ThisIsFine`: model group names are full of English words, and a greeting that fires on a
+    // body tap is worse than one that does not fire at all.
     const fake = fakeRuntime({ present: ['ParamAngleZ', 'ParamBodyAngleZ'], groups: ['ThisIsFine'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'ThisIsFine', no: 0, name: 'shine' }], [])
+    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'ThisIsFine', no: 0, name: 'ThisIsFine_0' }], [])
 
     layer.play('greet')
     await Promise.resolve()
 
     // No motion matched, so the procedural greeting track ran instead.
     expect(fake.motions).toEqual([])
-    layer.tick(0.1)
-    expect(fake.writes.some((write) => write.id === 'ParamAngleZ' || write.id === 'ParamBodyAngleX')).toBe(true)
+    layer.tick(0.3)
+    expect(fake.update(layer).get('ParamAngleZ')).toBeGreaterThan(1)
   })
 
   it('still matches a keyword that is a whole word or a prefix of one', async () => {
-    const fake = fakeRuntime({ groups: ['Hi'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'Hi', no: 1, name: 'hi_01' }], [])
+    const fake = fakeRuntime({ groups: ['Hi_01'] })
+    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'Hi_01', no: 1, name: 'Hi_01_1' }], [])
 
     layer.play('greet')
     await Promise.resolve()
-    expect(fake.motions).toEqual([{ group: 'Hi', no: 1, priority: 2 }])
+    expect(fake.motions).toEqual([{ group: 'Hi_01', no: 1, priority: 2 }])
   })
 })
 
@@ -470,16 +525,12 @@ describe('drag reaction', () => {
     // Dragging right: the sprite hangs back, so the body tips left (a negative angle).
     layer.play('dragSpring', { velocityX: 600, velocityY: 0, priority: 3 })
     layer.tick(0.05)
-    const rightward = fake.writes.filter((write) => write.id === 'ParamBodyAngleX').at(-1)?.value ?? 0
-    expect(rightward).toBeLessThan(0)
+    expect(fake.update(layer).get('ParamBodyAngleX')).toBeLessThan(0)
 
     layer.stopAction('dragSpring')
-    fake.writes.length = 0
-
     layer.play('dragSpring', { velocityX: -600, velocityY: 0, priority: 3 })
     layer.tick(0.05)
-    const leftward = fake.writes.filter((write) => write.id === 'ParamBodyAngleX').at(-1)?.value ?? 0
-    expect(leftward).toBeGreaterThan(0)
+    expect(fake.update(layer).get('ParamBodyAngleX')).toBeGreaterThan(0)
   })
 
   it('does not pump the spring when pointer moves repeat the same velocity', () => {
@@ -491,45 +542,36 @@ describe('drag reaction', () => {
     for (let index = 0; index < 60; index += 1) {
       layer.play('dragSpring', { velocityX: 400, velocityY: 0, priority: 3 })
       layer.tick(1 / 60)
-      const value = fake.writes.filter((write) => write.id === 'ParamBodyAngleX').at(-1)?.value ?? 0
-      peak = Math.max(peak, Math.abs(value))
+      peak = Math.max(peak, Math.abs(fake.update(layer).get('ParamBodyAngleX') ?? 0))
     }
     expect(peak).toBeLessThanOrEqual(18)
   })
 
-  it('settles back to rest and stops writing the body parameters', () => {
-    const fake = fakeRuntime({ present: ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ', 'ParamAngleX'] })
+  it('settles back to exactly the model\'s own pose', () => {
+    const fake = fakeRuntime({ present: ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ'] })
     const layer = new ActionLayer(fake.runtime, mapping(), [], [])
 
     layer.play('dragSpring', { velocityX: 400, velocityY: 0, priority: 3 })
-    for (let index = 0; index < 20; index += 1) layer.tick(0.05)
+    for (let index = 0; index < 60; index += 1) layer.tick(0.05)
 
-    // The spring's tail must reach zero: a body left at 0.001° would stay pinned forever. The look layer keeps
-    // writing releases at rest, which is correct, so this counts only the spring's own parameters.
-    const body = () => fake.writes.filter((write) => write.id.startsWith('ParamBodyAngle'))
-    const quiet = body().length
-    for (let index = 0; index < 40; index += 1) layer.tick(0.05)
-
-    expect(body().length).toBe(quiet)
-    // The last thing written is the weight-0 release, one tick after the spring snapped shut; without it the
-    // parameters would stay pinned at their last subtle angle.
-    const last = body().at(-1)
-    expect(last?.weight).toBe(0)
-    expect(last?.value).toBe(0)
+    // A body left at 0.001° would be pinned forever; the breath underneath has to come through unchanged.
+    expect(Object.fromEntries(fake.update(layer, { ParamBodyAngleX: 2 }))).toEqual({
+      ParamBodyAngleX: 2,
+      ParamBodyAngleY: 0,
+      ParamBodyAngleZ: 0,
+    })
   })
 })
 
 describe('tap zone', () => {
   it('prefers the model\'s own tap motion for the zone that was hit', async () => {
-    const fake = fakeRuntime({
-      groups: ['TapHead', 'TapBody'],
-    })
+    const fake = fakeRuntime({ groups: ['TapHead', 'TapBody'] })
     const layer = new ActionLayer(
       fake.runtime,
       mapping(),
       [
-        { group: 'TapHead', no: 0, name: 'pat' },
-        { group: 'TapBody', no: 1, name: 'poke' },
+        { group: 'TapHead', no: 0, name: 'TapHead_0' },
+        { group: 'TapBody', no: 1, name: 'TapBody_1' },
       ],
       [],
     )
@@ -548,8 +590,8 @@ describe('tap zone', () => {
       fake.runtime,
       mapping(),
       [
-        { group: 'TapHead', no: 0, name: 'pat' },
-        { group: 'TapBody', no: 1, name: 'poke' },
+        { group: 'TapHead', no: 0, name: 'TapHead_0' },
+        { group: 'TapBody', no: 1, name: 'TapBody_1' },
       ],
       [],
     )
@@ -562,7 +604,7 @@ describe('tap zone', () => {
 
   it('falls back to a generic Tap group, and then to the procedural track', async () => {
     const generic = fakeRuntime({ groups: ['Tap'] })
-    const withTap = new ActionLayer(generic.runtime, mapping(), [{ group: 'Tap', no: 3, name: 'm03' }], [])
+    const withTap = new ActionLayer(generic.runtime, mapping(), [{ group: 'Tap', no: 3, name: 'Tap_3' }], [])
     withTap.play('tilt', { tapZone: 'face' })
     await Promise.resolve()
     expect(generic.motions).toEqual([{ group: 'Tap', no: 3, priority: 2 }])
@@ -571,9 +613,8 @@ describe('tap zone', () => {
     const withoutTap = new ActionLayer(bare.runtime, mapping(), [], [])
     withoutTap.play('tilt', { tapZone: 'face' })
     await Promise.resolve()
-    bare.writes.length = 0
-    withoutTap.tick(0.05)
-    expect(bare.writes.some((write) => write.id === 'ParamAngleZ')).toBe(true)
+    withoutTap.tick(0.3)
+    expect(bare.update(withoutTap).get('ParamAngleZ')).toBeGreaterThan(10)
   })
 
   it('picks one of the group\'s motions at random instead of always the first', async () => {
@@ -582,9 +623,9 @@ describe('tap zone', () => {
       fake.runtime,
       mapping(),
       [
-        { group: 'Tap', no: 0, name: 'a' },
-        { group: 'Tap', no: 1, name: 'b' },
-        { group: 'Tap', no: 2, name: 'c' },
+        { group: 'Tap', no: 0, name: 'Tap_0' },
+        { group: 'Tap', no: 1, name: 'Tap_1' },
+        { group: 'Tap', no: 2, name: 'Tap_2' },
       ],
       [],
       { random: () => 0.99 },
@@ -599,7 +640,7 @@ describe('tap zone', () => {
   it('never falls into the model\'s Tap group once a scene\'s first step has used the zone', async () => {
     // The zone is per play: actions the director plays without it stay off the model's Tap group.
     const fake = fakeRuntime({ groups: ['TapHead'], present: ['ParamEyeLOpen'] })
-    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'TapHead', no: 0, name: 'pat' }], [])
+    const layer = new ActionLayer(fake.runtime, mapping(), [{ group: 'TapHead', no: 0, name: 'TapHead_0' }], [])
 
     layer.play('pat', { tapZone: 'head' })
     await Promise.resolve()
