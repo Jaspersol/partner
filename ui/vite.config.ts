@@ -3,11 +3,12 @@ import vue from '@vitejs/plugin-vue'
 
 import { LIVE2D_BANNER } from './src/pet/licence'
 
-/**
- * `VITE_PARTNER_PET=0` builds the shell alone, without the Live2D page: a build that excludes the runtime must not
- * so much as emit `pet.html`.
- */
-const petEnabled = process.env.VITE_PARTNER_PET !== '0'
+/** PARTNER_PET controls both the frontend and the Tauri shell. */
+const petEnabled = process.env.PARTNER_PET !== '0'
+if (process.env.VITE_PARTNER_PET !== undefined &&
+    (process.env.VITE_PARTNER_PET !== '0') !== petEnabled) {
+  throw new Error('VITE_PARTNER_PET conflicts with PARTNER_PET; use PARTNER_PET for both builds')
+}
 
 /** True when a chunk's own modules come from easy-live2d, which is what bundles the Cubism Framework. */
 function carriesLive2d(moduleIds: readonly string[] | undefined): boolean {

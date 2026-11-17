@@ -186,6 +186,14 @@ describe('the API contract the UI binds to', () => {
     expect(reloaded.asr.model).toBe('contract-asr')
   })
 
+  it('rejects stale settings instead of overwriting a newer commit', async () => {
+    const stale = await api.settings()
+    const saved = await api.saveSettings(stale)
+    expect(saved.settings.revision).toBeGreaterThan(stale.revision)
+    await expect(api.saveSettings(stale)).rejects.toMatchObject({ status: 409 })
+    expect((await api.settings()).revision).toBe(saved.settings.revision)
+  })
+
   it('round-trips the thinking gear and stores it normalized', async () => {
     // The gear is free text (an endpoint may understand a word the menu does not offer), so what the round
     // trip has to prove is that it survives — and that its shape is normalized, so `HIGH` and `high` are one
@@ -199,8 +207,8 @@ describe('the API contract the UI binds to', () => {
     expect(saved.settings.model.reasoningEffort).toBe('high')
 
     const cleared = await api.saveSettings({
-      ...current,
-      model: { ...current.model, reasoningEffort: 'off' },
+      ...saved.settings,
+      model: { ...saved.settings.model, reasoningEffort: 'off' },
     })
 
     expect(cleared.settings.model.reasoningEffort).toBe('off')
@@ -218,8 +226,8 @@ describe('the API contract the UI binds to', () => {
 
     // Clearing is an explicit empty string, not an omission.
     const cleared = await api.saveSettings({
-      ...current,
-      model: { ...current.model, apiKey: '' },
+      ...saved.settings,
+      model: { ...saved.settings.model, apiKey: '' },
     })
     expect(cleared.settings.model.apiKeySet).toBe(false)
   })
@@ -277,12 +285,12 @@ describe('the API contract the UI binds to', () => {
     // document the page writes back — so what has to round-trip is that document, not the view.
     const current = await api.settings()
     const switchedOff = view.engines[0].id
-    await api.saveSettings({ ...current, web: { ...current.web, disabledEngines: [switchedOff] } })
+    const disabled = await api.saveSettings({ ...current, web: { ...current.web, disabledEngines: [switchedOff] } })
 
     const after = await api.web()
     expect(after.engines.filter((engine) => engine.disabled).map((engine) => engine.id)).toEqual([switchedOff])
 
-    await api.saveSettings({ ...current, web: { ...current.web, disabledEngines: [] } })
+    await api.saveSettings({ ...disabled.settings, web: { ...disabled.settings.web, disabledEngines: [] } })
   })
 
   it('lists the devices the runtime can see', async () => {

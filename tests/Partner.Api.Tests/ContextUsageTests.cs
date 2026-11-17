@@ -74,7 +74,7 @@ public sealed partial class ViewEndpointsTests
         }
 
         // A window far too small for twelve 100-token entries once the system prompt has taken its share.
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = 900, maxTokens = 64 },
         });
@@ -103,7 +103,7 @@ public sealed partial class ViewEndpointsTests
 
         var uncapped = await ContextAsync();
 
-        await _http.PutAsJsonAsync("/api/settings", new { model = new { contextTokens = 512, maxTokens = 64 } });
+        await _http.PutSettingsAsync(new { model = new { contextTokens = 512, maxTokens = 64 } });
         var capped = await ContextAsync();
 
         Assert.True(

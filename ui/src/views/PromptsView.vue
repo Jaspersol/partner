@@ -703,7 +703,7 @@ defineExpose({ refresh, hasUnsavedChanges })
 
               <div class="block rows">
                 <h3>{{ t('模型') }}</h3>
-                <SettingRow :label="t('使用哪个模型')" :hint="t('默认用和主 Agent 同一个模型。')">
+                <SettingRow :label="t('使用哪个模型')" :hint="t('默认用和主 Agent 同一个模型。')" group>
                   <Segmented
                     :model-value="selectedSub.model === null ? 'main' : 'custom'"
                     :options="[
@@ -742,7 +742,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                       {{ keySetFor(selectedSub) ? t('已设置') : t('未设置') }}
                     </span>
                   </SettingRow>
-                  <SettingRow :label="t('思考强度')" :hint="t('回答前想多久。越高通常越准，但越慢、越费。')">
+                  <SettingRow :label="t('思考强度')" :hint="t('回答前想多久。越高通常越准，但越慢、越费。')" group>
                     <Segmented
                       v-model="selectedSub.model.reasoningEffort"
                       :options="gearChoices(selectedSub.model.reasoningEffort)"

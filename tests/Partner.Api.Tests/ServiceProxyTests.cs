@@ -367,7 +367,7 @@ public sealed class ServiceProxyTests : ApiFixture
     public async Task A_settings_put_that_adds_an_instance_without_a_token_generates_one()
     {
         var port = FakeUpstream.FreePort();
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             services = new
             {
@@ -397,7 +397,7 @@ public sealed class ServiceProxyTests : ApiFixture
     public async Task An_upstream_whose_protocol_differs_from_the_service_is_refused_at_save_time()
     {
         var port = FakeUpstream.FreePort();
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9", model = "m", protocol = "anthropic", apiKey = "k" },
             services = new

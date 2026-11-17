@@ -33,7 +33,7 @@ public sealed class AutoCompactionTests : ApiFixture
 
         // A window that holds the system block and a couple of those messages, no more.
         var system = (await _consumer.MeasureContextAsync(_context.Settings.Load())).SystemTokens;
-        var put = await _http.PutAsJsonAsync("/api/settings", new
+        var put = await _http.PutSettingsAsync(new
         {
             model = new { contextTokens = system + 8 + 120, maxTokens = 8 },
         });

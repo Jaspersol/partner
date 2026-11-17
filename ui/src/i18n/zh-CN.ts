@@ -13,6 +13,10 @@ const zhCN = {
   'app.connecting': '连接中…',
   'app.tokenInvalid': 'token 失效（401）——请重启壳以获取新令牌',
   'app.cannotConnect': '无法连接到本地服务——请确认 Partner API 已启动',
+  'app.sidecarFailures': '失败次数',
+  'app.sidecarExitCode': '退出码',
+  'app.sidecarLog': '日志',
+  'app.retry': '重试',
 
   'topbar.disconnected': '未连接',
   'topbar.queueBlocked': '队列阻塞：失败 {count} 项',
@@ -66,6 +70,7 @@ const zhCN = {
   'settings.general.autostartFailed': '开机自启设置失败：{error}',
   'settings.general.trayFailed': '托盘设置失败：{error}',
   'settings.general.petFailed': '桌宠设置失败：{error}',
+  'settings.pet.savedButWindowFailed': '设置已保存，但桌宠窗口未能切换。',
   'settings.general.version': '版本',
   'settings.general.versionHint': '当前安装的 Partner 版本。',
   'settings.general.checkUpdate': '检查更新',

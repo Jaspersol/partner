@@ -16,8 +16,13 @@ tauri-build = { version = "2", features = [] }
 # dependency does not: a config-only build fails at the build script, not at runtime.
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [features]
 # Without `custom-protocol`, a release binary still points at devUrl and shows ERR_CONNECTION_REFUSED because

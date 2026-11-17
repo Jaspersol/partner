@@ -28,7 +28,7 @@
 
 所以每个应用 release 必须保留三个资产：`Partner_<版本>_x64-setup.exe`、`<安装包名>.exe.sha256`、以及列出它的 `SHA256SUMS.txt`。旧 release 只有后两者也仍能更新（走兜底路径），但两条路都拿不到校验值时不会提供更新。
 
-下载完成后先核对 SHA-256，再启动安装程序并退出应用。安装程序以 `/UPDATE /P` 运行：**不卸载旧版本**，直接在原安装目录上覆盖 `api/`、壳程序和两个引擎脚本，免去 Tauri 维护页里默认的「先卸载再安装」；`engines/` 下已下载的运行环境和模型不在安装包的清单里，所以更新不会动它们，也不需要再下一遍。fork 需要把 `UpdateService.Repository` 改成自己的仓库。
+下载完成后先核对 SHA-256，再关闭 API 及其后代进程，启动安装程序并退出应用；若安装程序无法启动，壳会恢复 API 监督。安装程序以 `/UPDATE /P` 运行：**不卸载旧版本**，直接在原安装目录上覆盖 `api/`、壳程序和两个引擎脚本，免去 Tauri 维护页里默认的「先卸载再安装」；`engines/` 下已下载的运行环境和模型不在安装包的清单里，所以更新不会动它们，也不需要再下一遍。fork 需要把 `UpdateService.Repository` 改成自己的仓库。
 
 ## 触发方式
 
@@ -39,6 +39,8 @@
 | 同上，填 `tag` + 勾 `publish` | 按指定 tag 发安装包 |
 
 版本号由 tag 决定：workflow 用 `scripts/set-version.mjs` 把 `0.2.0` 写进 `src-tauri/tauri.conf.json`、`Cargo.toml`、`ui/package.json`，所以 tag 和安装包版本不会走偏。
+
+手动填写的 tag 必须已经存在；无论是否勾选发布，都检出该 tag 的提交并使用其版本。发布必须填写 tag，发布 job 复核 tag 指向、版本、安装包名及构建产物摘要；构建 job 只有只读权限且不持久化 checkout 凭据，只有独立发布 job 持有写权限。
 
 ## 引擎包
 
@@ -87,6 +89,10 @@ npm --prefix ui exec tauri build
 生成的安装包在 `src-tauri/target/release/bundle/nsis/`。
 
 构建命令就是上面这一条，不带任何环境变量和 `--config`：`pet.html` 和 `cfg(partner_pet)` 都按默认打开，桌宠页面需要的 asset protocol 与 `asset.localhost` CSP 也来自基础配置。`scripts/check-live2d-bundle.mjs` 会核对产物里每个含 Cubism Framework 的 chunk 都带 Live2D 的版权行。
+
+可用 `PARTNER_PET=0 bash scripts/build-shell.sh` 构建无桌宠变体：同一开关同时关闭前端页面、壳命令及设置入口，不能与 `VITE_PARTNER_PET` 指定相反的值。无桌宠与发布构建不是同义词。PR CI 分别检查默认和无桌宠产物并测试 Rust 壳；引擎 pin 检查需要网络，仍独立运行。
+
+构建脚本的安装包路径通过 Tauri 钩子构建一次前端，编译专用路径由脚本构建一次；直接运行 Tauri 时仍需先发布 API。sidecar 仅在成功运行至少一分钟后退出才重置重启退避，连续启动失败保持最长 30 秒间隔，人工重试可提前触发。
 
 ## 已知
 

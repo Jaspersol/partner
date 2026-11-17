@@ -24,6 +24,8 @@ npx --prefix ui tauri dev        # dev mode; Vue edits apply immediately
 
 The desktop shell picks a free port, starts the API and injects the access token into the UI. Nothing to configure at this step.
 
+Starting Partner again focuses the existing window rather than starting another API. If the local service cannot start or keeps exiting, the connection page shows the failure, exit code, failure count and log path; inspect the log and choose Retry. The default log is `%LOCALAPPDATA%\Partner\partner-api.log`.
+
 ## 3. Configure a model
 
 Open "Settings → Chat model":
@@ -65,6 +67,8 @@ The default workspace is `%LocalAppData%/Partner/workspace`:
 
 The session and queue can be rebuilt from their logs. The memory database is copied into `memory/backups/` at least once a day (startup catch-up plus the daily pass), newest 7 kept; anything written after the last copy is not in a backup.
 
+If replacing the session log during history deletion fails, the operation reports an error. Writing can continue if the original file is reopened; otherwise the store faults and rejects further writes. Resolve file locks or permissions and restart the app.
+
 ## 6. Build the installer
 
 ```bash
@@ -72,3 +76,4 @@ bash scripts/build-shell.sh      # SKIP_INSTALLER=1 compiles the shell only
 ```
 
 The script runs "publish API → build frontend → compile shell → NSIS package" in that order. The order matters: otherwise the installer ships an old API.
+The installer uses Tauri's `beforeBuildCommand` to build the frontend once; `SKIP_INSTALLER=1` builds it once in the script before compiling the shell. Direct `tauri build` still builds the frontend, but requires publishing the API first.

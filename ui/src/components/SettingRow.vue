@@ -5,9 +5,9 @@ import HintTip from './HintTip.vue'
  * One settings row: the name (and its ⓘ) on the left, the control on the right.
  *
  * <para>
- * A `<label>`, so the whole row is the hit target for a switch or a field and the name is the control's
- * accessible name. The ⓘ stops its own click (see HintTip), so reading a hint never toggles the row. `stack`
- * puts the control under the name for the wide ones — a text area, a list, the reasoning dial.
+ * A `<label>` by default, so the whole row is the hit target for a single field. Use `group` for controls that
+ * contain several independently labelled buttons or fields. The ⓘ stops its own click (see HintTip). `stack`
+ * puts the control under the name for wide controls.
  * </para>
  */
 withDefaults(
@@ -19,19 +19,21 @@ withDefaults(
     /** A unit shown after the control (毫秒, 秒, token…) so it never has to live in the label. */
     unit?: string | undefined
     disabled?: boolean | undefined
+    /** Use a non-label wrapper for a group of independently labelled controls. */
+    group?: boolean | undefined
   }>(),
-  { hint: undefined, stack: false, unit: undefined, disabled: false },
+  { hint: undefined, stack: false, unit: undefined, disabled: false, group: false },
 )
 </script>
 
 <template>
-  <label class="g-row" :class="{ 'is-stack': stack, 'is-disabled': disabled, 'has-unit': unit }">
+  <component :is="group ? 'div' : 'label'" class="g-row" :class="{ 'is-stack': stack, 'is-disabled': disabled, 'has-unit': unit }">
     <span class="g-row-name">
       <span class="g-row-label">{{ label }}</span>
       <HintTip v-if="hint || $slots.hint"><slot name="hint">{{ hint }}</slot></HintTip>
     </span>
     <span class="g-row-control"><slot /><span v-if="unit" class="g-unit">{{ unit }}</span></span>
-  </label>
+  </component>
 </template>
 
 <style scoped>

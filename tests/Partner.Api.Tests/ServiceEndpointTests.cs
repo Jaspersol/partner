@@ -38,6 +38,40 @@ public sealed class ServiceEndpointTests : ApiFixture
     }
 
     [Fact]
+    public async Task Concurrent_service_creates_both_remain_in_settings()
+    {
+        var firstPort = FakeUpstream.FreePort();
+        var secondPort = FakeUpstream.FreePort();
+        while (secondPort == firstPort)
+        {
+            secondPort = FakeUpstream.FreePort();
+        }
+
+        var created = await Task.WhenAll(CreateAsync(Body("concurrent-a", firstPort)), CreateAsync(Body("concurrent-b", secondPort)));
+        var ids = created.Select(item => item.GetProperty("settings").GetProperty("id").GetString()).ToArray();
+        var list = await _http.GetFromJsonAsync<JsonElement>("/api/services");
+        var actual = list.EnumerateArray().Select(item => item.GetProperty("settings").GetProperty("id").GetString()).ToArray();
+        Assert.All(ids, id => Assert.Contains(id, actual));
+    }
+
+    [Fact]
+    public async Task A_stale_settings_document_cannot_restore_a_deleted_service()
+    {
+        var created = await CreateAsync(Body("removed", FakeUpstream.FreePort()));
+        var id = created.GetProperty("settings").GetProperty("id").GetString()!;
+        var stale = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        var guardBefore = stale.GetProperty("rebaseGuard").GetString();
+
+        Assert.Equal(HttpStatusCode.OK, (await _http.DeleteAsync($"/api/services/{id}")).StatusCode);
+        var afterDelete = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
+        Assert.NotEqual(guardBefore, afterDelete.GetProperty("rebaseGuard").GetString());
+        var response = await _http.PutAsJsonAsync("/api/settings", stale);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var list = await _http.GetFromJsonAsync<JsonElement>("/api/services");
+        Assert.DoesNotContain(list.EnumerateArray(), item => item.GetProperty("settings").GetProperty("id").GetString() == id);
+    }
+
+    [Fact]
     public async Task Services_crud_round_trip()
     {
         var port = FakeUpstream.FreePort();
@@ -136,7 +170,7 @@ public sealed class ServiceEndpointTests : ApiFixture
     {
         await CreateAsync(Body("keep", FakeUpstream.FreePort()));
 
-        var put = await _http.PutAsJsonAsync("/api/settings", new { input = new { enabled = true } });
+        var put = await _http.PutSettingsAsync(new { input = new { enabled = true } });
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
 
         var list = await _http.GetFromJsonAsync<JsonElement>("/api/services");

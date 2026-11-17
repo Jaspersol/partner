@@ -27,6 +27,14 @@ public interface IAudioSink : IDisposable
 
     void Enqueue(float[] pcm, int sampleRate, bool final = false);
 
+    /// <summary>Waits for playback capacity; interruption and cancellation release waiting producers.</summary>
+    Task EnqueueAsync(float[] pcm, int sampleRate, bool final = false, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Enqueue(pcm, sampleRate, final);
+        return Task.CompletedTask;
+    }
+
     /// <summary>Latches playback: nothing is written while held.</summary>
     void Hold();
 

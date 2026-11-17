@@ -17,6 +17,8 @@ public sealed class JsonlSessionStore : ISessionStore
     private readonly TimeProvider _clock;
     private readonly bool _flushOnAppend;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private const int IndexStride = 128;
+    private readonly List<(long Seq, long Offset)> _index = new();
 
     /// <summary>
     /// Bumped by every mutation of the underlying log. A cached projection is only reusable while this is
@@ -28,13 +30,16 @@ public sealed class JsonlSessionStore : ISessionStore
     private ProjectionCache? _cache;
     private readonly object _cacheGate = new();
 
-    private sealed class ProjectionCache(List<SessionEvent> events, long version)
+    private sealed class ProjectionCache(List<SessionEvent> events, long version, SessionView view)
     {
         public List<SessionEvent> Events { get; } = events;
         public long Version { get; set; } = version;
-        public SessionView? View { get; set; }
-
-        public void MarkStale() => View = null;
+        public SessionView View { get; set; } = view;
+        public List<SessionEvent> Pending { get; } = new();
+        // Legacy logs may contain forward-looking ranges or revisions; those require a full replay.
+        public bool CanIncrement { get; set; } = events.All(e =>
+            (!SessionRetraction.TryRead(e, out _, out var to) || to <= view.LastSeq)
+            && (e.Kind != SessionEventKind.Edit || e.EditedFromSeq <= view.LastSeq));
     }
 
     /// <summary>Last seq handed out by <see cref="AppendAsync"/> (may be ahead of durability in buffered mode).</summary>
@@ -107,12 +112,9 @@ public sealed class JsonlSessionStore : ISessionStore
 
         var record = sessionEvent with { Seq = next, At = sessionEvent.At == default ? _clock.GetUtcNow() : sessionEvent.At };
         var durableBefore = _sink.DurableLength;
+        var offset = _sink.Length;
         var line = SessionJson.Serialize(record);
         _sink.Append(line);
-
-        // Parse the serialized line so the cache matches a disk replay; bump the version before flushing so a
-        // rollback cannot leave it claiming a record that is gone.
-        RecordProjectionAppend(SessionJson.Deserialize(line), include: _flushOnAppend);
 
         if (_flushOnAppend)
         {
@@ -128,8 +130,15 @@ public sealed class JsonlSessionStore : ISessionStore
 
             Interlocked.Exchange(ref _durableSeq, next);
         }
+        // A cached incremental view must not expose an append until its durability barrier succeeds.
+        // Buffered mode still invalidates immediately and relies on the sink's normal read visibility.
+        RecordProjectionAppend(SessionJson.Deserialize(line), include: _flushOnAppend);
 
         Interlocked.Exchange(ref _assignedSeq, next);
+        if (_sink is FileAppendOnlySink && (next - 1) % IndexStride == 0)
+        {
+            _index.Add((next, offset));
+        }
         return Task.FromResult(next);
     }
 
@@ -157,6 +166,16 @@ public sealed class JsonlSessionStore : ISessionStore
         try
         {
             ThrowIfFaulted();
+
+            // Include accepted buffered records in the rewrite, and publish them only after the barrier.
+            if (Interlocked.Read(ref _assignedSeq) != Interlocked.Read(ref _durableSeq))
+            {
+                var durableBefore = _sink.DurableLength;
+                try { _sink.FlushToDisk(); }
+                catch { RollBackAndFault(durableBefore); throw; }
+                Interlocked.Exchange(ref _durableSeq, Interlocked.Read(ref _assignedSeq));
+                InvalidateProjection();
+            }
 
             var survivors = new List<string>();
             var removed = 0;
@@ -205,8 +224,19 @@ public sealed class JsonlSessionStore : ISessionStore
                 return new PurgeResult(0, 0, LastSeq);
             }
 
-            _sink.Rewrite(survivors);
-            InvalidateProjection();
+            try
+            {
+                _sink.Rewrite(survivors);
+                RebuildIndex();
+                InvalidateProjection();
+            }
+            catch (RewriteRecoveredException) { throw; }
+            catch
+            {
+                Faulted = true;
+                InvalidateProjection();
+                throw;
+            }
 
             var tombstone = await AppendCoreAsync(
                 new SessionEvent
@@ -301,29 +331,48 @@ public sealed class JsonlSessionStore : ISessionStore
         var version = Interlocked.Read(ref _version);
 
         List<SessionEvent>? retained = null;
+        SessionView? baseView = null;
+        List<SessionEvent>? pending = null;
         lock (_cacheGate)
         {
             if (_cache is { } cached && cached.Version == version)
             {
-                if (cached.View is { } view)
+                if (cached.Pending.Count == 0)
                 {
-                    return view;
+                    return cached.View;
                 }
 
-                // Copy under the lock; build outside it so readers do not block each other.
-                retained = new List<SessionEvent>(cached.Events);
+                if (cached.CanIncrement && cached.Pending.All(e =>
+                    e.Kind is not (SessionEventKind.Edit or SessionEventKind.Retract)))
+                {
+                    baseView = cached.View;
+                    pending = new List<SessionEvent>(cached.Pending);
+                }
+                else
+                {
+                    retained = new List<SessionEvent>(cached.Events);
+                }
             }
         }
 
-        if (retained is not null)
+        if (baseView is not null || retained is not null)
         {
-            var rebuilt = SessionProjection.Build(retained);
+            var rebuilt = baseView is not null
+                ? SessionProjection.Append(baseView, pending!)
+                : SessionProjection.Build(retained!);
             lock (_cacheGate)
             {
                 // Publish only if the log has not moved.
                 if (_cache is { } cached && cached.Version == version)
                 {
                     cached.View = rebuilt;
+                    cached.Pending.Clear();
+                    if (retained is not null)
+                    {
+                        cached.CanIncrement = retained.All(e =>
+                            (!SessionRetraction.TryRead(e, out _, out var to) || to <= rebuilt.LastSeq)
+                            && (e.Kind != SessionEventKind.Edit || e.EditedFromSeq <= rebuilt.LastSeq));
+                    }
                 }
             }
 
@@ -354,7 +403,7 @@ public sealed class JsonlSessionStore : ISessionStore
                 return view;
             }
 
-            _cache = new ProjectionCache(events, version) { View = view };
+            _cache = new ProjectionCache(events, version, view);
         }
 
         return view;
@@ -376,7 +425,7 @@ public sealed class JsonlSessionStore : ISessionStore
             {
                 cached.Events.Add(appended);
                 cached.Version = version;
-                cached.MarkStale();
+                cached.Pending.Add(appended);
             }
             else
             {
@@ -422,43 +471,91 @@ public sealed class JsonlSessionStore : ISessionStore
                 yield break;
             }
 
-            // Read once, yield in order. The log is line-framed and flushed per record.
-            var lines = _sink.ReadLines();
-            var yielded = 0;
-            foreach (var line in lines)
+            IEnumerator<string>? reader = null;
+            bool hasLine;
+            long maxVisibleSeq;
+            await _writeGate.WaitAsync(ct).ConfigureAwait(false);
+            try
             {
-                ct.ThrowIfCancellationRequested();
-
-                var parsed = SessionJson.Deserialize(line);
-                if (parsed is null || parsed.Seq < fromSeq)
+                // Capture the watermark with the index and open file generation, not before taking the gate.
+                maxVisibleSeq = LastSeq;
+                IEnumerable<string> lines;
+                if (_sink is FileAppendOnlySink file)
                 {
-                    continue;
+                    var low = 0;
+                    var high = _index.Count;
+                    while (low < high)
+                    {
+                        var middle = low + (high - low) / 2;
+                        if (_index[middle].Seq <= fromSeq) low = middle + 1;
+                        else high = middle;
+                    }
+                    var offset = low == 0 ? 0 : _index[low - 1].Offset;
+                    lines = file.ReadLinesFrom(offset).Select(entry => entry.Line);
+                }
+                else
+                {
+                    lines = _sink.ReadLines();
                 }
 
-                yield return parsed;
-
-                if (++yielded >= take)
-                {
-                    yield break;
-                }
+                reader = lines.GetEnumerator();
+                // Open the file while the offset and log generation are protected by the write gate.
+                hasLine = reader.MoveNext();
+            }
+            catch
+            {
+                reader?.Dispose();
+                throw;
+            }
+            finally
+            {
+                _writeGate.Release();
             }
 
-            await Task.CompletedTask.ConfigureAwait(false);
+            using (reader)
+            {
+                var yielded = 0;
+                while (hasLine)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var parsed = SessionJson.Deserialize(reader!.Current);
+                    if (parsed is not null && parsed.Seq >= fromSeq && parsed.Seq <= maxVisibleSeq)
+                    {
+                        yield return parsed;
+                        if (++yielded >= take) yield break;
+                    }
+                    hasLine = reader!.MoveNext();
+                }
+            }
         }
     }
 
-    private long LoadLastSeq()
+    private long LoadLastSeq() => RebuildIndex();
+
+    // Derived only from the log: repair and rewrite can discard it without affecting correctness.
+    private long RebuildIndex()
     {
+        _index.Clear();
         var max = 0L;
-        foreach (var line in _sink.ReadLines())
+        var count = 0;
+        if (_sink is FileAppendOnlySink file)
         {
-            var parsed = SessionJson.Deserialize(line);
-            if (parsed is not null && parsed.Seq > max)
+            foreach (var (offset, line) in file.ReadLinesFrom(0))
             {
-                max = parsed.Seq;
+                var parsed = SessionJson.Deserialize(line);
+                if (parsed is null) continue;
+                if (count++ % IndexStride == 0) _index.Add((parsed.Seq, offset));
+                max = Math.Max(max, parsed.Seq);
             }
         }
-
+        else
+        {
+            foreach (var line in _sink.ReadLines())
+            {
+                var parsed = SessionJson.Deserialize(line);
+                if (parsed is not null) max = Math.Max(max, parsed.Seq);
+            }
+        }
         return max;
     }
 
@@ -582,7 +679,7 @@ public sealed class JsonlSessionStore : ISessionStore
         if (Faulted)
         {
             throw new InvalidOperationException(
-                "Session store is faulted after a failed durability barrier; the log state is unknown.");
+                "Session store is faulted after a storage failure; the log state is unknown.");
         }
     }
 }
@@ -648,9 +745,87 @@ public static class SessionRetraction
     };
 }
 
+/// <summary>Immutable chunks preserve published views without copying all historical items on append.</summary>
+internal sealed class SessionViewItems : IReadOnlyList<SessionViewItem>
+{
+    private const int ChunkSize = 1024;
+    private readonly SessionViewItem[][] _chunks;
+    public int Count { get; }
+
+    private SessionViewItems(SessionViewItem[][] chunks, int count)
+    {
+        _chunks = chunks;
+        Count = count;
+    }
+
+    public static SessionViewItems From(IReadOnlyList<SessionViewItem> items)
+    {
+        var chunks = new SessionViewItem[(items.Count + ChunkSize - 1) / ChunkSize][];
+        for (var i = 0; i < chunks.Length; i++)
+        {
+            var length = Math.Min(ChunkSize, items.Count - i * ChunkSize);
+            var chunk = new SessionViewItem[length];
+            for (var j = 0; j < length; j++) chunk[j] = items[i * ChunkSize + j];
+            chunks[i] = chunk;
+        }
+        return new SessionViewItems(chunks, items.Count);
+    }
+
+    public SessionViewItems Append(IReadOnlyList<SessionViewItem> items)
+    {
+        if (items.Count == 0) return this;
+        var total = checked(Count + items.Count);
+        var chunks = new SessionViewItem[(total + ChunkSize - 1) / ChunkSize][];
+        var full = Count / ChunkSize;
+        Array.Copy(_chunks, chunks, full);
+        var oldPartial = Count % ChunkSize;
+        var consumed = 0;
+        for (var i = full; i < chunks.Length; i++)
+        {
+            var length = Math.Min(ChunkSize, total - i * ChunkSize);
+            var chunk = new SessionViewItem[length];
+            var existing = i == full ? oldPartial : 0;
+            if (existing != 0) Array.Copy(_chunks[i], chunk, existing);
+            var added = length - existing;
+            for (var j = 0; j < added; j++) chunk[existing + j] = items[consumed++];
+            chunks[i] = chunk;
+        }
+        return new SessionViewItems(chunks, total);
+    }
+
+    public SessionViewItem this[int index] => index >= 0 && index < Count
+        ? _chunks[index / ChunkSize][index % ChunkSize]
+        : throw new ArgumentOutOfRangeException(nameof(index));
+
+    public IEnumerator<SessionViewItem> GetEnumerator()
+    {
+        foreach (var chunk in _chunks)
+            foreach (var item in chunk)
+                yield return item;
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
 /// <summary>Builds the projected view from raw log events.</summary>
 public static class SessionProjection
 {
+    internal static SessionView Append(SessionView view, IReadOnlyList<SessionEvent> events)
+    {
+        var additions = new List<SessionViewItem>();
+        var lastSeq = view.LastSeq;
+        foreach (var e in events)
+        {
+            lastSeq = Math.Max(lastSeq, e.Seq);
+            if (e.Kind.IsContent() || e.Kind.IsToolControl())
+            {
+                additions.Add(new SessionViewItem(e.Seq, e.At, e.Kind, e.Source, e.Body, null, 0, e.Meta));
+            }
+        }
+        var items = view.Items as SessionViewItems ?? SessionViewItems.From(view.Items);
+        return new SessionView(lastSeq, items.Append(additions));
+    }
+
     public static SessionView Build(IReadOnlyList<SessionEvent> events)
     {
         ArgumentNullException.ThrowIfNull(events);
@@ -712,6 +887,6 @@ public static class SessionProjection
                 e.Meta));
         }
 
-        return new SessionView(lastSeq, items);
+        return new SessionView(lastSeq, SessionViewItems.From(items));
     }
 }

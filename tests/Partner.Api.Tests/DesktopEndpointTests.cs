@@ -65,7 +65,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task Enabling_it_is_reported_back_and_survives_a_reload()
     {
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             desktop = new { enabled = true, leaseTtlMs = 4000, allowedWindowTitles = new[] { "记事本" } },
         });
@@ -81,7 +81,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task The_settings_response_carries_the_section_the_ui_refills_from()
     {
-        var saved = await _http.PutAsJsonAsync("/api/settings", new
+        var saved = await _http.PutSettingsAsync(new
         {
             desktop = new { enabled = true, leaseTtlMs = 7000, allowedWindowTitles = new[] { "记事本" } },
         });
@@ -104,7 +104,7 @@ public sealed partial class ViewEndpointsTests
         Assert.Empty(off.GetProperty("tools").EnumerateArray());
         Assert.Empty(await DesktopToolsAsync());
 
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -119,7 +119,7 @@ public sealed partial class ViewEndpointsTests
         Assert.Contains("desktop_observe:allow", tools);
         Assert.Contains("desktop_act:ask", tools);
 
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -141,7 +141,7 @@ public sealed partial class ViewEndpointsTests
         async Task<List<string>> ToolsAsync() =>
             (await DesktopToolsAsync()).Select(tool => $"{tool.Name}:{tool.Decision}").ToList();
 
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
             desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -185,7 +185,7 @@ public sealed partial class ViewEndpointsTests
         async Task<List<string>> ToolsAsync() =>
             (await DesktopToolsAsync()).Select(tool => tool.Name).ToList();
 
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", supportsImages = false },
             desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -193,7 +193,7 @@ public sealed partial class ViewEndpointsTests
 
         Assert.DoesNotContain("desktop_screenshot", await ToolsAsync());
 
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m", supportsImages = true },
             desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
@@ -214,7 +214,7 @@ public sealed partial class ViewEndpointsTests
     {
         // Decide is called directly with an act argument carrying a window id; the lease label is what the
         // exhaustion-rate threshold keys on.
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
@@ -233,7 +233,7 @@ public sealed partial class ViewEndpointsTests
         }
         finally
         {
-            await _http.PutAsJsonAsync("/api/settings", new
+            await _http.PutSettingsAsync(new
             {
                 desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
             });
@@ -245,7 +245,7 @@ public sealed partial class ViewEndpointsTests
     {
         // A lease is "continue working in this window". Win+R opens a run dialog, which is not that window;
         // it must ask on its own and must not consume the steps the human granted for GUI work.
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             desktop = new { enabled = true, approval = "dangerous", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
@@ -275,7 +275,7 @@ public sealed partial class ViewEndpointsTests
         }
         finally
         {
-            await _http.PutAsJsonAsync("/api/settings", new
+            await _http.PutSettingsAsync(new
             {
                 desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
             });
@@ -285,7 +285,7 @@ public sealed partial class ViewEndpointsTests
     [Fact]
     public async Task System_shortcuts_ask_under_the_all_gear_too()
     {
-        await _http.PutAsJsonAsync("/api/settings", new
+        await _http.PutSettingsAsync(new
         {
             desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
@@ -308,7 +308,7 @@ public sealed partial class ViewEndpointsTests
         }
         finally
         {
-            await _http.PutAsJsonAsync("/api/settings", new
+            await _http.PutSettingsAsync(new
             {
                 desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
             });

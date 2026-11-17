@@ -1,7 +1,7 @@
 // @vitest-environment node
 // The action layer talks to a model only through the small `ActionRuntime` interface and the per-update
 // `FrameParameters`, so fakes of both are the whole fixture: no Pixi, no WebGL, no Live2D.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { ActionLayer, type ActionMapping, type ActionName, type ActionRuntime } from '../src/pet/actions'
 import { lookTarget } from '../src/pet/input'
@@ -169,6 +169,105 @@ describe('explicit profile mapping', () => {
     expect(fake.expressions.at(-1)).toBe('live2d_expression1.exp3.json')
   })
 })
+
+describe('procedural parameter configuration', () => {
+  it('maps tracks, look, expression and mouth to explicit model channels', () => {
+    const fake = fakeRuntime({ present: ['ParamAngleCustom', 'ParamAngleLook', 'CustomCheek', 'CustomMouth'] })
+    const layer = new ActionLayer(fake.runtime, mapping({
+      parameters: { ParamAngleZ: 'ParamAngleCustom', ParamAngleX: 'ParamAngleLook', ParamCheek: 'CustomCheek', ParamMouthOpenY: 'CustomMouth' },
+    }), [], [], { random: () => 1 })
+    layer.play('greet')
+    layer.tick(0.2)
+    expect(fake.update(layer).get('ParamAngleCustom')).toBeGreaterThan(0)
+    layer.expression('shy')
+    layer.tick(0.1)
+    expect(fake.update(layer).get('CustomCheek')).toBe(1)
+    layer.look(1, 0)
+    const random = vi.spyOn(Math, 'random').mockReturnValue(1)
+    layer.mouth(true)
+    layer.tick(0.1)
+    random.mockRestore()
+    expect(fake.update(layer).get('ParamAngleLook')).toBeGreaterThan(0)
+    expect(fake.update(layer).get('CustomMouth')).toBeGreaterThan(0)
+  })
+
+  it('combines model and action gains and drives an explicit extra track', () => {
+    const fake = fakeRuntime({ present: ['ParamAngleZ', 'CustomArm'] })
+    const layer = new ActionLayer(fake.runtime, mapping({
+      amplitude: 0.5,
+      procedural: { greet: { amplitude: 0.5, extraTracks: [
+        { id: 'CustomArm', keys: [{ at: 0, value: 0 }, { at: 0.6, value: -2 }, { at: 2, value: 0 }] },
+      ] } },
+    }), [], [])
+    layer.play('greet')
+    for (let index = 0; index < 3; index += 1) layer.tick(0.2)
+    const values = fake.update(layer)
+    expect(values.get('ParamAngleZ')).toBeCloseTo(2.25)
+    expect(values.get('CustomArm')).toBeCloseTo(-0.5)
+    for (let index = 0; index < 8; index += 1) layer.tick(0.2)
+    expect(fake.update(layer).get('CustomArm')).toBe(0)
+  })
+
+  it('does not run configured procedural offsets when a model motion succeeds', async () => {
+    const fake = fakeRuntime({ present: ['ParamAngleZ'], groups: ['Greet'] })
+    const layer = new ActionLayer(fake.runtime, mapping({ amplitude: 3 }), [{ group: 'Greet', no: 0, name: 'Greet' }], [])
+    layer.play('greet')
+    await Promise.resolve()
+    layer.tick(0.2)
+    expect(fake.motions).toHaveLength(1)
+    expect(fake.update(layer).get('ParamAngleZ')).toBe(0)
+  })
+
+  it('uses configured channels and gain when a model motion is refused', async () => {
+    const fake = fakeRuntime({ present: ['ParamAngleCustom'], groups: ['Greet'], refuse: ['Greet'] })
+    const layer = new ActionLayer(fake.runtime, mapping({
+      parameters: { ParamAngleZ: 'ParamAngleCustom' }, amplitude: 0.5,
+    }), [{ group: 'Greet', no: 0, name: 'Greet' }], [])
+    layer.play('greet')
+    await Promise.resolve()
+    for (let index = 0; index < 3; index += 1) layer.tick(0.2)
+    expect(fake.update(layer).get('ParamAngleCustom')).toBeCloseTo(4.5)
+  })
+
+  it('ignores extra tracks that do not return to rest', () => {
+    const fake = fakeRuntime({ present: ['CustomArm'] })
+    const layer = new ActionLayer(fake.runtime, mapping({ procedural: { greet: { extraTracks: [
+      { id: 'CustomArm', keys: [{ at: 0, value: 0 }, { at: 2, value: 1 }] },
+    ] } } }), [], [])
+    layer.play('greet')
+    layer.tick(0.2)
+    expect(fake.update(layer).get('CustomArm')).toBe(0)
+  })
+
+  it('treats extra track IDs as actual IDs even when a standard channel is remapped', () => {
+    const fake = fakeRuntime({ present: ['ParamAngleZ', 'ParamAngleCustom'] })
+    const layer = new ActionLayer(fake.runtime, mapping({
+      parameters: { ParamAngleZ: 'ParamAngleCustom' },
+      procedural: { greet: { extraTracks: [{ id: 'ParamAngleZ', keys: [
+        { at: 0, value: 0 }, { at: 0.6, value: -2 }, { at: 2, value: 0 },
+      ] }] } },
+    }), [], [])
+    layer.play('greet')
+    for (let index = 0; index < 3; index += 1) layer.tick(0.2)
+    expect(fake.update(layer).get('ParamAngleZ')).toBeCloseTo(-2)
+    expect(fake.update(layer).get('ParamAngleCustom')).toBeCloseTo(9)
+  })
+
+  it('reports model motion, available mapped channels and missing channels without playing', () => {
+    const fake = fakeRuntime({ present: ['ParamAngleCustom'], groups: ['Greet'] })
+    const layer = new ActionLayer(fake.runtime, mapping({ parameters: { ParamAngleZ: 'ParamAngleCustom' } }),
+      [{ group: 'Greet', no: 0, name: 'Greet' }], [])
+    const diagnostics = layer.diagnostics()
+    const greet = diagnostics.find((item) => item.action === 'greet')
+    expect(greet?.kind).toBe('motion')
+    expect(greet?.parameters).toContainEqual({ channel: 'ParamAngleZ', id: 'ParamAngleCustom', min: -30, max: 30 })
+    expect(greet?.missing).toContain('ParamBodyAngleZ')
+    expect(diagnostics.find((item) => item.action === 'tilt')?.kind).toBe('procedural')
+    expect(diagnostics.find((item) => item.action === 'nod')?.kind).toBe('skipped')
+    expect(fake.motions).toHaveLength(0)
+  })
+})
+
 
 describe('refused motions', () => {
   it('runs the procedural track when the model refuses the motion', async () => {

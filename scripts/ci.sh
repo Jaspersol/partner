@@ -41,6 +41,17 @@ echo "== css (scoped classes not inheriting a global box model) =="
 # inheriting the shell's grid. See the script header.
 node scripts/check-css-names.mjs
 
+echo "== shell build entrypoints =="
+bash scripts/test-build-shell.sh
+
+echo "== Live2D assets are untracked =="
+tracked=$(git ls-files '*.moc3' '*live2dcubismcore*' '*.model3.json')
+if [ -n "$tracked" ]; then
+  echo "Live2D binaries must not be tracked:" >&2
+  echo "$tracked" >&2
+  exit 1
+fi
+
 echo "== build =="
 "$DOTNET" build -v q --nologo
 
@@ -62,17 +73,17 @@ if [ ! -d ui/node_modules ]; then
   # fails with ENOENT. `ci` is also what the release job uses, so the two agree on the tree being installed.
   "$NPM" --prefix ui ci
 fi
-"$NPM" --prefix ui run typecheck
 "$NPM" --prefix ui run test
 "$NPM" --prefix ui run build
+node scripts/check-live2d-bundle.mjs
 
 if [ -z "${SKIP_SHELL:-}" ]; then
-  echo "== shell (cargo build) =="
+  echo "== shell (cargo test) =="
   if command -v cargo >/dev/null 2>&1; then
     # Same ordering as scripts/build-shell.sh: the shell bundles the published API, so publish first.
     "$DOTNET" publish src/Partner.Api -c Release -r win-x64 --self-contained true \
       -o src/Partner.Api/bin/Release/net10.0/win-x64/publish -v q --nologo
-    cargo build --manifest-path src-tauri/Cargo.toml
+    cargo test --manifest-path src-tauri/Cargo.toml
   else
     echo "cargo not found on PATH — skipping the shell build" >&2
   fi

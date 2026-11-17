@@ -20,6 +20,23 @@ export function hasShellPrefs(): boolean {
   return internals() !== null
 }
 
+export interface SidecarDiagnostic {
+  error: string
+  exitCode: number | null
+  failures: number
+  logPath: string | null
+}
+
+export async function getSidecarDiagnostic(): Promise<SidecarDiagnostic | null> {
+  const tauri = internals()
+  if (!tauri) return null
+  return await tauri.invoke('sidecar_diagnostic') as SidecarDiagnostic
+}
+
+export async function retrySidecar(): Promise<void> {
+  await internals()?.invoke('retry_sidecar')
+}
+
 export async function getAutostart(): Promise<boolean> {
   const tauri = internals()
   return tauri === null ? false : (await tauri.invoke('plugin:autostart|is_enabled')) === true

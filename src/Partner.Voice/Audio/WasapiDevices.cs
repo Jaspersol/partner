@@ -134,36 +134,42 @@ public sealed class WasapiAudioSource : IAudioSource
 public sealed class WasapiAudioSink : IAudioSink
 {
     private readonly object _gate = new();
-    private readonly Queue<(float[] Pcm, int Rate)> _queue = new();
-    private readonly Thread _pump;
-    private readonly AutoResetEvent _signal = new(false);
+    private readonly SemaphoreSlim _writer = new(1, 1);
+    private readonly Func<IWavePlayer> _createPlayer;
+    private readonly bool _checkDevice;
     private BufferedWaveProvider? _provider;
     private IWavePlayer? _player;
+    private Exception? _failure;
     private int _openRate;
-
-    // The latch is set by each turn's FlushTurnAsync: the sink instance is reused across turns, so the
-    // field starts false.
+    private int _generation;
     private bool _held;
     private bool _running;
     private bool _disposed;
+    private bool _wasBuffered;
     private DateTimeOffset _busyUntil = DateTimeOffset.MinValue;
 
     public WasapiAudioSink(VoiceOutputSetting setting)
     {
         ArgumentNullException.ThrowIfNull(setting);
-
         DeviceNumber = ResolveDevice(setting.DeviceId, out var name);
         DeviceName = name;
+        _createPlayer = () => new WaveOutEvent { DeviceNumber = DeviceNumber };
+        _checkDevice = true;
         DrainMs = setting.DrainMs;
-        _pump = new Thread(Pump) { IsBackground = true, Name = "voice-playback" };
+    }
+
+    /// <summary>Creates a sink with a supplied playback device, for hosts with a custom player.</summary>
+    public WasapiAudioSink(VoiceOutputSetting setting, Func<IWavePlayer> createPlayer)
+    {
+        ArgumentNullException.ThrowIfNull(setting);
+        _createPlayer = createPlayer ?? throw new ArgumentNullException(nameof(createPlayer));
+        DeviceName = "custom";
+        DrainMs = setting.DrainMs;
     }
 
     public int SampleRate { get; private set; } = 24_000;
-
     public int DeviceNumber { get; }
-
     public string DeviceName { get; }
-
     public double DrainMs { get; set; }
 
     public bool IsPlaying
@@ -172,8 +178,15 @@ public sealed class WasapiAudioSink : IAudioSink
         {
             lock (_gate)
             {
-                return (_player?.PlaybackState == PlaybackState.Playing && _provider?.BufferedBytes > 0)
-                    || DateTimeOffset.UtcNow < _busyUntil;
+                ThrowIfFailed();
+                var buffered = !_held && _provider?.BufferedBytes > 0;
+                if (buffered) _wasBuffered = true;
+                else if (_wasBuffered && !_held)
+                {
+                    _wasBuffered = false;
+                    _busyUntil = DateTimeOffset.UtcNow.AddMilliseconds(DrainMs);
+                }
+                return buffered || DateTimeOffset.UtcNow < _busyUntil;
             }
         }
     }
@@ -184,7 +197,8 @@ public sealed class WasapiAudioSink : IAudioSink
         {
             lock (_gate)
             {
-                return _queue.Count > 0;
+                ThrowIfFailed();
+                return _provider?.BufferedBytes > 0;
             }
         }
     }
@@ -196,7 +210,6 @@ public sealed class WasapiAudioSink : IAudioSink
         {
             names.Add(WaveOut.GetCapabilities(i).ProductName);
         }
-
         return names;
     }
 
@@ -214,159 +227,152 @@ public sealed class WasapiAudioSink : IAudioSink
                 }
             }
         }
-
         resolvedName = WaveOut.DeviceCount > 0 ? WaveOut.GetCapabilities(0).ProductName : "(none)";
         return 0;
     }
 
     public void Start()
     {
-        if (_running)
+        lock (_gate)
         {
-            return;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ThrowIfFailed();
+            if (_running) return;
+            if (_checkDevice && WaveOut.DeviceCount == 0) throw new InvalidOperationException("No playback device is available.");
+            _running = true;
         }
-
-        if (WaveOut.DeviceCount == 0)
-        {
-            throw new InvalidOperationException("No playback device is available.");
-        }
-
-        _running = true;
-        _pump.Start();
     }
 
-    public void Enqueue(float[] pcm, int sampleRate, bool final = false)
+    public void Enqueue(float[] pcm, int sampleRate, bool final = false) =>
+        EnqueueAsync(pcm, sampleRate, final).GetAwaiter().GetResult();
+
+    public async Task EnqueueAsync(float[] pcm, int sampleRate, bool final = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(pcm);
-
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        int generation;
         lock (_gate)
         {
-            _queue.Enqueue((pcm, sampleRate));
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ThrowIfFailed();
+            generation = _generation;
+            if (!_running) throw new OperationCanceledException("Playback was stopped.");
         }
-
-        _signal.Set();
-    }
-
-    public void Hold()
-    {
-        lock (_gate)
+        await _writer.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            _held = true;
+            var bytes = new byte[Math.Min(pcm.Length, 4096) * 2];
+            var offset = 0;
+            while (offset < pcm.Length)
+            {
+                ct.ThrowIfCancellationRequested();
+                lock (_gate)
+                {
+                    ObjectDisposedException.ThrowIf(_disposed, this);
+                    ThrowIfFailed();
+                    if (generation != _generation || !_running) throw new OperationCanceledException("Playback was stopped.");
+                    // A rate change must drain the previous stream, never discard its tail.
+                    if (_provider is null || _openRate == sampleRate || _provider.BufferedBytes == 0)
+                    {
+                        EnsureStream(sampleRate);
+                        var count = Math.Min(pcm.Length - offset, Math.Min(4096, (_provider!.BufferLength - _provider.BufferedBytes) / 2));
+                        if (count > 0)
+                        {
+                            for (var i = 0; i < count; i++)
+                            {
+                                var value = (short)(Math.Clamp(pcm[offset + i], -1f, 1f) * 32767);
+                                bytes[i * 2] = (byte)value;
+                                bytes[i * 2 + 1] = (byte)(value >> 8);
+                            }
+                            _provider.AddSamples(bytes, 0, count * 2);
+                            if (!_held) _wasBuffered = true;
+                            offset += count;
+                        }
+                    }
+                }
+                if (offset < pcm.Length) await Task.Delay(20, ct).ConfigureAwait(false);
+            }
         }
+        finally { _writer.Release(); }
     }
+
+    public void Hold() { lock (_gate) { _held = true; _player?.Pause(); } }
 
     public void Release()
     {
         lock (_gate)
         {
+            ThrowIfFailed();
             _held = false;
+            if (_provider?.BufferedBytes > 0) _wasBuffered = true;
+            _player?.Play();
         }
-
-        _signal.Set();
     }
 
     public void Stop()
     {
-        _running = false;
-        _signal.Set();
-
         lock (_gate)
         {
-            _player?.Stop();
-            _player?.Dispose();
-            _player = null;
-            _provider = null;
-            _openRate = 0;
+            _generation++;
+            _running = false;
+            _held = false;
+            CloseStream();
+            _wasBuffered = false;
+            _busyUntil = DateTimeOffset.MinValue;
         }
     }
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_gate)
         {
-            return;
+            if (_disposed) return;
+            _disposed = true;
+            _generation++;
+            _running = false;
+            CloseStream();
         }
-
-        _disposed = true;
-        Stop();
-        _signal.Dispose();
     }
 
-    private void Pump()
+    private void CloseStream()
     {
-        while (_running)
+        var player = _player;
+        _player = null;
+        _provider = null;
+        _openRate = 0;
+        if (player is not null)
         {
-            (float[] Pcm, int Rate) item;
-
-            lock (_gate)
-            {
-                if (_held || _queue.Count == 0)
-                {
-                    item = (Array.Empty<float>(), 0);
-                }
-                else
-                {
-                    item = _queue.Dequeue();
-                }
-            }
-
-            if (item.Rate == 0)
-            {
-                _signal.WaitOne(50);
-                continue;
-            }
-
-            EnsureStream(item.Rate);
-            Write(item.Pcm, item.Rate);
+            player.PlaybackStopped -= OnPlaybackStopped;
+            player.Stop();
+            player.Dispose();
         }
     }
 
     private void EnsureStream(int rate)
     {
-        lock (_gate)
+        if (_player is not null && _openRate == rate) return;
+        CloseStream();
+        _provider = new BufferedWaveProvider(new WaveFormat(rate, 16, 1))
         {
-            // One stream per sample rate, reused: reopening per sentence costs 20–240 ms and leaks the old one.
-            if (_player is not null && _openRate == rate)
-            {
-                return;
-            }
-
-            _player?.Dispose();
-            _provider = new BufferedWaveProvider(new WaveFormat(rate, 16, 1))
-            {
-                DiscardOnBufferOverflow = true,
-                BufferDuration = TimeSpan.FromSeconds(30),
-            };
-            _player = new WaveOutEvent { DeviceNumber = DeviceNumber };
-            _player.Init(_provider);
-            _player.Play();
-            _openRate = rate;
-            SampleRate = rate;
-        }
+            DiscardOnBufferOverflow = false,
+            BufferDuration = TimeSpan.FromSeconds(2),
+        };
+        _player = _createPlayer();
+        _player.PlaybackStopped += OnPlaybackStopped;
+        _player.Init(_provider);
+        if (!_held) _player.Play();
+        _openRate = rate;
+        SampleRate = rate;
     }
 
-    private void Write(float[] pcm, int rate)
+    private void OnPlaybackStopped(object? sender, StoppedEventArgs args)
     {
-        if (pcm.Length == 0)
-        {
-            return;
-        }
+        if (args.Exception is not null) Interlocked.CompareExchange(ref _failure, args.Exception, null);
+    }
 
-        var bytes = new byte[pcm.Length * 2];
-        for (var i = 0; i < pcm.Length; i++)
-        {
-            var clamped = Math.Clamp(pcm[i], -1f, 1f);
-            var value = (short)(clamped * 32767);
-            bytes[i * 2] = (byte)(value & 0xFF);
-            bytes[(i * 2) + 1] = (byte)((value >> 8) & 0xFF);
-        }
-
-        lock (_gate)
-        {
-            _provider?.AddSamples(bytes, 0, bytes.Length);
-            // stream.Write is effectively blocking: by the time we return, the audio has been sounding,
-            // so only the device buffer's residual audio remains.
-            _busyUntil = DateTimeOffset.UtcNow.AddMilliseconds(DrainMs);
-        }
+    private void ThrowIfFailed()
+    {
+        var error = Volatile.Read(ref _failure);
+        if (error is not null) throw new InvalidOperationException("Audio playback failed.", error);
     }
 }

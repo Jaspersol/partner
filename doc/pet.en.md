@@ -53,6 +53,8 @@ The window is cropped to the figure's own opaque extent rather than the whole mo
 
 The scenes are fixed. Only two kinds of trigger exist: local interaction or a timer, and a keyword match in a reply. Each scene is an action combination plus an expression; actions resolve through the current model's mapping first, fall back to procedural parameter tracks, and skip when the parameter does not exist.
 
+In Procedural action tuning, map standard channels to actual parameter IDs per model. The cdi3 names are suggestions, not automatic guesses or proof that a runtime parameter exists. Model and per-action gains default to 1, range from -4 to 4, and multiply; a negative value reverses the track. Model motions still take priority. Extra tracks use actual parameter IDs: their first and last values must be zero, times must increase strictly, and the last key must match the action duration. Values are clamped to the model parameter range. Save and open the pet, then read action diagnostics to see the loaded configuration's motion, procedural or skipped resolution, parameter ranges and missing IDs. Diagnostics are static candidates: motion priority can still refuse a motion and cause a fallback. Diagnostics and preview do not include unsaved edits. Automatic displacement calibration is not implemented.
+
 | Scene | Trigger | Actions / expression | Priority |
 |---|---|---|---|
 | First load | after the model is ready | greet + blink / smile | 2 |
@@ -79,6 +81,7 @@ The rules behind that table:
 - While asleep only the eyes follow the cursor: the head stays put and there is no speaking nod, because the held `sleep` track owns the sleeping pose and anything else writing those parameters fights it.
 - The cursor look turns the head at most 40% of the parameter's half range (±12° on a ±30° parameter); the eyeballs follow fully. Outside the window the look fades with the cursor's distance and is gone one window width away. While a procedural track or a model motion drives the head, the look's head share drops to 20% and returns within 0.3 s afterwards.
 - Procedural tracks, the look and the drag recoil are offsets on top of the model's own motion, blink and breath, written before physics, so hair and physics smoothing chains follow them. This needs a patch to easy-live2d 1.1.0 (`ui/patches/easy-live2d+1.1.0.patch`, applied by patch-package on `npm install`).
+- Sleep does not currently slow breathing. easy-live2d 1.1.0 advances Framework `CubismBreath` inside its effects update; the existing pre-physics hook sees already-combined parameters and cannot safely change breathing speed independently of motion or physics.
 - An expression returns to default after `ExpressionHoldSeconds`.
 - The random source and the clock are injected, so tests can pin both.
 
@@ -132,5 +135,5 @@ What we do about it:
 - **Sound is opt-in** — motion sound is off by default; when on it follows `Config.MotionSound`.
 - **The window has little power** — it may move, resize, read the cursor and toggle click-through. It cannot close itself or start with Windows. Closing the main window, or Quit in the tray, ends it too.
 - **One screen at a time** — position restores from `pet-window.json`, and a position outside every visible area is moved to the main display's bottom right. Manual smoke at 125% / 150% scaling and on a secondary monitor with negative coordinates is still outstanding.
-- **Click-through by pixel** — every 50 ms the alpha under the cursor decides whether the window passes clicks through; dragging forces it off. A model exported without `premultipliedAlpha` can show dark edges.
+- **Click-through by pixel** — every 50 ms the alpha under the cursor decides whether the window passes clicks through; dragging forces it off. After a model switch, the new input layer waits for any old window command and synchronizes click-through to the new settings; failed commands are retried on a later poll. A model exported without `premultipliedAlpha` can show dark edges.
 - **Cost** — capped at 30 fps and the ticker stops while the window is hidden. Heavy models (many large textures) drop frames while being dragged.

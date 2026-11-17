@@ -5,7 +5,7 @@ import { join } from 'node:path'
  * The Live2D notice check for a built bundle.
  *
  * The licence obligation is on the shipped JavaScript, not on the source: a chunk that bundles the Cubism Framework
- * has to carry Live2D's copyright notice, and a distributed build must not contain the Framework at all.
+ * has to carry Live2D's copyright notice; a pet-disabled build must not contain the Framework at all.
  * `pet-csp` pins the banner in the source; this is the same check against what `vite build` actually emitted,
  * which is what ends up in the installer.
  */
@@ -18,8 +18,11 @@ if (!existsSync(dist)) {
   process.exit(1)
 }
 
-/** A build can set `VITE_PARTNER_PET=0` to leave the pet out, so its absence is a pass, not a failure. */
-const petEnabled = process.env.VITE_PARTNER_PET !== '0'
+/** PARTNER_PET=0 leaves the pet out of both the frontend and shell. */
+const petEnabled = process.env.PARTNER_PET !== '0'
+if (process.env.VITE_PARTNER_PET !== undefined && (process.env.VITE_PARTNER_PET !== '0') !== petEnabled) {
+  throw new Error('VITE_PARTNER_PET conflicts with PARTNER_PET')
+}
 
 const assets = join(dist, 'assets')
 const scripts = existsSync(assets) ? readdirSync(assets).filter((name) => name.endsWith('.js')) : []
@@ -45,6 +48,10 @@ const withFramework = scripts.filter(carriesLive2d)
 const unmarked = withFramework.filter((name) => !readFileSync(join(assets, name), 'utf8').includes(BANNER))
 
 if (petEnabled) {
+  if (!existsSync(join(dist, 'pet.html'))) {
+    console.error('the pet build emitted no pet.html')
+    process.exit(1)
+  }
   if (withFramework.length === 0) {
     console.error('the pet build emitted no Live2D chunk; the pet page would load nothing')
     process.exit(1)
@@ -54,8 +61,8 @@ if (petEnabled) {
     process.exit(1)
   }
 } else if (withFramework.length > 0 || existsSync(join(dist, 'pet.html'))) {
-  // The distributed build must contain neither the Framework nor a page that would load it.
-  console.error('a release build still contains the pet:', withFramework.join(', ') || 'pet.html')
+  // The pet-disabled build must contain neither the Framework nor its page.
+  console.error('a pet-disabled build still contains the pet:', withFramework.join(', ') || 'pet.html')
   process.exit(1)
 }
 

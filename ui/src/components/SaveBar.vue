@@ -113,12 +113,13 @@ const visible = () =>
           <button
             class="ghost"
             :class="{ danger: confirming }"
+            :disabled="busy"
             :data-test="`${prefix}-discard`"
             @click="onDiscard"
           >
             {{ confirming ? t('savebar.confirmDiscard') : t('savebar.discard') }}
           </button>
-          <button v-if="confirming" class="ghost" @click="confirming = false">{{ t('savebar.cancel') }}</button>
+          <button v-if="confirming" class="ghost" :disabled="busy" @click="confirming = false">{{ t('savebar.cancel') }}</button>
         </template>
         <button
           class="primary"

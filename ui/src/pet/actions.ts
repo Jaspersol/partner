@@ -106,6 +106,25 @@ interface ExpressionMapping {
   kind: string
   name?: string | null
 }
+/** An explicit extra procedural offset, in the target parameter's units. */
+export interface ExtraParameterTrack {
+  id: string
+  keys: { at: number; value: number }[]
+}
+
+/** Per-action gain and optional extra offsets. Key times are seconds within the action duration. */
+export interface ProceduralActionConfig {
+  amplitude?: number
+  extraTracks?: ExtraParameterTrack[]
+}
+
+export interface ActionDiagnostic {
+  action: ActionName
+  kind: 'motion' | 'procedural' | 'skipped'
+  parameters: { channel: string; id: string; min: number; max: number }[]
+  missing: string[]
+}
+
 
 /**
  * The mapping `PetModelProfile` carries, flattened. `kind` is `auto`, `motion`, `procedural`, `expression` or
@@ -116,6 +135,12 @@ export interface ActionMapping {
   expressions: Record<string, ExpressionMapping>
   headBottom: number
   faceBottom: number
+  /** Standard channel ID to actual model ID. Unmapped channels retain their standard ID. */
+  parameters?: Record<string, string>
+  /** Model-wide multiplier for procedural tracks only, default 1. */
+  amplitude?: number
+  /** Overrides and extra tracks by action name. Motion resolution always takes precedence. */
+  procedural?: Partial<Record<ActionName, ProceduralActionConfig>>
 }
 
 interface ActionLayerOptions {
@@ -150,6 +175,8 @@ interface RunningTrack {
   elapsed: number
   /** Parameters actually applied — a model without the parameter is not written at all. */
   live: ParameterTrack[]
+  amplitude: number
+  extra: ParameterTrack[]
 }
 
 interface FacePreset {
@@ -405,6 +432,19 @@ const EXPRESSION_PRESETS: Record<Exclude<ExpressionName, 'default'>, FacePreset>
   },
 }
 
+/** The procedural duration in seconds, including aliases, or null for non-track actions. */
+export function proceduralDuration(action: ActionName): number | null {
+  return TRACKS[TRACK_ALIASES[action] ?? action]?.duration ?? null
+}
+
+/** Standard channels used by procedural tracks, presets, look, mouth and drag spring. */
+export const PARAMETER_CHANNELS: readonly string[] = [...new Set([
+  ...Object.values(TRACKS).flatMap((track) => track.params.map((parameter) => parameter.id)),
+  ...Object.values(EXPRESSION_PRESETS).flatMap((preset) => Object.keys(preset.params)),
+  'ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY', 'ParamMouthOpenY',
+  'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+])].sort()
+
 /**
  * Name fragments that identify an action in a model's own vocabulary. Matched case-insensitively against the
  * motion's group only: the motion list names each entry `{group}_{index}`, not after its file. `idle` is in no
@@ -544,6 +584,7 @@ export class ActionLayer {
 
   /** The writes {@link tick} composed, applied by {@link apply} on every model update until the next tick. */
   private frame: Frame = new Map()
+  private extraFrame: Frame = new Map()
   /** Whether a model motion was playing at the last {@link apply}; it makes the look give way like a track does. */
   private motionPlaying = false
   /** The share of the look's head component currently applied, 1 when nothing else drives the head. */
@@ -578,6 +619,39 @@ export class ActionLayer {
     this.expressions = expressions
     if (options.holdSeconds !== undefined) this.holdSeconds = options.holdSeconds
     if (options.defaultExpression !== undefined) this.defaultExpression = options.defaultExpression
+  }
+
+  /** Describes the loaded model without starting a motion or changing its pose. */
+  diagnostics(): ActionDiagnostic[] {
+    return ACTION_NAMES.map((action) => {
+      const name = TRACK_ALIASES[action] ?? action
+      const definition = TRACKS[name]
+      const mapping = this.mapping.motions[action]
+      const mode = mapping?.kind ?? 'auto'
+      const explicit = mode === 'motion' && typeof mapping?.group === 'string' && mapping.group !== ''
+      const motion = explicit
+        ? this.motions.find((item) => item.group === mapping?.group && item.no === (mapping?.no ?? 0))
+        : mode !== 'none' && mode !== 'procedural' ? this.matchMotion(action) : undefined
+      const channels = definition?.params.map((track) => track.id) ??
+        (action === 'mouth' ? ['ParamMouthOpenY'] : action === 'look'
+          ? ['ParamAngleX', 'ParamAngleY', 'ParamEyeBallX', 'ParamEyeBallY'] : action === 'dragSpring'
+            ? ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ', 'ParamAngleX'] : [])
+      const extra = definition === undefined ? [] : this.validExtraTracks(action, name, definition)
+      const parameters: ActionDiagnostic['parameters'] = []
+      const missing: string[] = []
+      const candidates = [
+        ...[...new Set(channels)].map((channel) => ({ channel, id: this.parameterId(channel) })),
+        ...[...new Set(extra.map((track) => track.id))].map((id) => ({ channel: id, id })),
+      ]
+      for (const { channel, id } of candidates) {
+        const range = this.runtime.parameterRange(id)
+        if (range === null) missing.push(id)
+        else parameters.push({ channel, id, ...range })
+      }
+      const kind = mode === 'none' ? 'skipped' : motion !== undefined ? 'motion' :
+        parameters.length > 0 ? 'procedural' : 'skipped'
+      return { action, kind, parameters, missing }
+    })
   }
 
   // ------------------------------------------------------------------ playing
@@ -730,6 +804,7 @@ export class ActionLayer {
   tick(dtSeconds: number): void {
     const dt = Math.max(0, Math.min(0.25, dtSeconds))
     const frame: Frame = new Map()
+    const extraFrame: Frame = new Map()
 
     // The expression timer runs first, so a preset it releases this frame is not written once more.
     this.tickExpression(dt)
@@ -743,7 +818,8 @@ export class ActionLayer {
         this.tracks.delete(running.action)
         continue
       }
-      for (const parameter of running.live) addValue(frame, parameter.id, sample(parameter.keys, running.elapsed))
+      for (const parameter of running.live) addValue(frame, parameter.id, sample(parameter.keys, running.elapsed) * running.amplitude)
+      for (const parameter of running.extra) addValue(extraFrame, parameter.id, sample(parameter.keys, running.elapsed) * running.amplitude)
     }
 
     this.tickLook(dt, frame)
@@ -751,6 +827,7 @@ export class ActionLayer {
     this.tickSpring(dt, frame)
 
     this.frame = frame
+    this.extraFrame = extraFrame
   }
 
   /**
@@ -760,8 +837,17 @@ export class ActionLayer {
    */
   apply(parameters: FrameParameters): void {
     this.motionPlaying = !parameters.isMotionFinished()
-    for (const [id, write] of this.frame) {
+    const resolved: Frame = new Map()
+    for (const [channel, write] of this.frame) {
+      const id = this.parameterId(channel)
       if (this.runtime.parameterRange(id) === null) continue
+      if (write.set !== null) setValue(resolved, id, write.set)
+      addValue(resolved, id, write.add)
+    }
+    for (const [id, write] of this.extraFrame) {
+      if (this.runtime.parameterRange(id) !== null) addValue(resolved, id, write.add)
+    }
+    for (const [id, write] of resolved) {
       if (write.set !== null) parameters.setParameterValueById(id, write.set, 1)
       if (write.add !== 0) parameters.addParameterValueById(id, write.add, 1)
     }
@@ -802,7 +888,7 @@ export class ActionLayer {
 
   /** How far the look turns the head at full deflection: a share of the parameter's own half range. */
   private lookHeadReach(id: string): number {
-    const range = this.runtime.parameterRange(id)
+    const range = this.runtime.parameterRange(this.parameterId(id))
     return range === null ? 0 : ((range.max - range.min) / 2) * LOOK_HEAD_SHARE
   }
 
@@ -883,6 +969,21 @@ export class ActionLayer {
 
   // ------------------------------------------------------------------ resolution
 
+  private parameterId(channel: string): string {
+    return this.mapping.parameters?.[channel] || channel
+  }
+
+  private validExtraTracks(action: ActionName, name: ActionName, definition: TrackDefinition): ParameterTrack[] {
+    const config = this.mapping.procedural?.[action] ?? this.mapping.procedural?.[name]
+    return (config?.extraTracks ?? []).filter((track) => {
+      const keys = track.keys
+      return track.id !== '' && keys.length >= 2 && keys[0]?.at === 0 && keys[0]?.value === 0 &&
+        keys[keys.length - 1]?.at === definition.duration && keys[keys.length - 1]?.value === 0 &&
+        keys.every((key, index) => Number.isFinite(key.at) && Number.isFinite(key.value) &&
+          (index === 0 || key.at > (keys[index - 1]?.at ?? 0)))
+    })
+  }
+
   private startTrack(action: ActionName): void {
     const name = TRACK_ALIASES[action] ?? action
     const definition = TRACKS[name]
@@ -894,10 +995,16 @@ export class ActionLayer {
     // Starting a track replaces the running one, so two taps cannot stack into a doubled bend.
     this.tracks.delete(name)
 
-    const live = definition.params.filter((parameter) => this.runtime.parameterRange(parameter.id) !== null)
-    if (live.length === 0) return
-
-    this.tracks.set(name, { action: name, definition, elapsed: 0, live })
+    const live = definition.params.filter((parameter) => this.runtime.parameterRange(this.parameterId(parameter.id)) !== null)
+    const config = this.mapping.procedural?.[action] ?? this.mapping.procedural?.[name]
+    const extra = this.validExtraTracks(action, name, definition)
+      .filter((track) => this.runtime.parameterRange(track.id) !== null)
+    if (live.length === 0 && extra.length === 0) return
+    const modelGain = this.mapping.amplitude
+    const actionGain = config?.amplitude
+    const amplitude = (typeof modelGain === 'number' && Number.isFinite(modelGain) ? modelGain : 1) *
+      (typeof actionGain === 'number' && Number.isFinite(actionGain) ? actionGain : 1)
+    this.tracks.set(name, { action: name, definition, elapsed: 0, live, extra, amplitude })
   }
 
   private matchMotion(action: ActionName): { group: string; no: number; name: string } | undefined {
@@ -970,7 +1077,7 @@ export class ActionLayer {
 
     const preset = EXPRESSION_PRESETS[name]
     for (const [id, value] of Object.entries(preset.params)) {
-      if (this.runtime.parameterRange(id) === null) continue
+      if (this.runtime.parameterRange(this.parameterId(id)) === null) continue
       this.presetParams.set(id, value)
     }
     // The framework has no "no expression" call, so a preset leaves the last `.exp3` playing and covers it with

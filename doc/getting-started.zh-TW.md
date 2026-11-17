@@ -24,6 +24,8 @@ npx --prefix ui tauri dev        # 開發模式，改 Vue 立即生效
 
 桌面殼會自己挑空閒連接埠、帶起 API、把存取權杖注入介面。這一步不需要填任何設定。
 
+重複啟動會聚焦既有視窗，不會再啟動另一個 API。若本機服務無法啟動或持續結束，連線頁會顯示失敗原因、結束碼、失敗次數與日誌路徑；檢查日誌後可按「重試」。預設日誌位於 `%LOCALAPPDATA%\Partner\partner-api.log`。
+
 ## 3. 設定模型
 
 開啟「設定 → 對話模型」：
@@ -65,6 +67,8 @@ export PARTNER_LLM_PROTOCOL=openai   # 選填：openai / anthropic
 
 工作階段和佇列可以從記錄重建。記憶庫至少每天備份一次到 `memory/backups/`（啟動時補一次，每日維護前也檢查），保留最近 7 份；備份之後寫入的記憶不在副本裡。
 
+清除工作階段歷史時，若記錄檔替換失敗，操作會回報錯誤；原檔能重新開啟時仍可繼續寫入。若無法恢復寫入，儲存會進入故障狀態並拒絕後續寫入；排除檔案占用或權限問題後重啟應用程式。
+
 ## 6. 打包安裝檔
 
 ```bash
@@ -72,3 +76,4 @@ bash scripts/build-shell.sh      # SKIP_INSTALLER=1 只編譯殼
 ```
 
 腳本依「發佈 API → 建置前端 → 編譯殼 → 打包 NSIS」的順序執行。順序不能換，否則安裝檔裡會是舊的 API。
+預設安裝包由 Tauri 的 `beforeBuildCommand` 建置一次前端；`SKIP_INSTALLER=1` 由指令稿直接建置一次前端後編譯殼。直接呼叫 `tauri build` 仍會建置前端，但須先自行發佈 API。

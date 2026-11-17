@@ -370,7 +370,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <input v-model.number="card.draft.port" type="number" min="1024" max="65535" data-test="services-port" />
               </SettingRow>
 
-              <SettingRow :label="t('协议')" :hint="t('调用方使用的接口格式。必须和上游模型的格式一致：这里只转发请求，不做格式转换。')">
+              <SettingRow :label="t('协议')" :hint="t('调用方使用的接口格式。必须和上游模型的格式一致：这里只转发请求，不做格式转换。')" group>
                 <Segmented
                   :model-value="card.draft.protocol"
                   :options="PROTOCOLS"

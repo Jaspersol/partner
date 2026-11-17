@@ -14,6 +14,10 @@ namespace Partner.Api.Settings;
 /// </summary>
 public sealed record RuntimeSettings
 {
+    /// <summary>Revision supplied by a whole-document editor; not persisted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? Revision { get; init; }
+
     public InputSettings Input { get; init; } = new();
 
     public OutputSettings Output { get; init; } = new();
@@ -639,6 +643,9 @@ public sealed record ModelSettingsView
 
 public sealed record SettingsView
 {
+    public int Revision { get; init; }
+    public string RebaseGuard { get; init; } = string.Empty;
+
     public InputSettings Input { get; init; } = new();
 
     public OutputSettings Output { get; init; } = new();
@@ -668,8 +675,10 @@ public sealed record SettingsView
 
     public PetSettings Pet { get; init; } = new();
 
-    public static SettingsView From(RuntimeSettings settings) => new()
+    public static SettingsView From(RuntimeSettings settings, int revision = 0) => new()
     {
+        Revision = revision,
+        RebaseGuard = SettingsStore.RebaseGuard(settings),
         Input = settings.Input,
         Output = settings.Output,
         Asr = settings.Asr,

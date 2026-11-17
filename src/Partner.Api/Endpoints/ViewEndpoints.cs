@@ -910,22 +910,37 @@ public static class ViewEndpoints
 
     private static void MapSettings(WebApplication app)
     {
-        app.MapGet("/api/settings", (ApiContext ctx) => Results.Ok(SettingsView.From(ctx.Settings.Load())));
+        app.MapGet("/api/settings", (ApiContext ctx) =>
+        {
+            var snapshot = ctx.Settings.Snapshot();
+            return Results.Ok(SettingsView.From(snapshot.Settings, snapshot.Revision));
+        });
 
         app.MapPut("/api/settings", async (
             RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, VoiceHost voice,
             LocalEngineHost localEngines, ServiceHost services, CancellationToken ct) =>
         {
+            if (incoming.Revision is null)
+            {
+                return Results.BadRequest(new { error = "Settings revision is required; reload before saving." });
+            }
+            await ctx.Settings.ApplyGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
             var before = ctx.Settings.Load();
 
             RuntimeSettings stored;
             try
             {
-                stored = ctx.Settings.Save(incoming);
+                stored = ctx.Settings.Save(incoming, incoming.Revision);
             }
             catch (SettingsValidationException invalid)
             {
                 return Results.BadRequest(new { error = invalid.Message, errors = invalid.Errors });
+            }
+            catch (SettingsConflictException conflict)
+            {
+                return Results.Conflict(new { error = conflict.Message, revision = conflict.CurrentRevision });
             }
 
             // The model section must take effect now rather than at the next restart. Other sections can change
@@ -968,9 +983,9 @@ public static class ViewEndpoints
                 compaction = await consumer.CompactAsync(SessionCompactor.HistoryBudget(usage), ct).ConfigureAwait(false);
             }
 
-            // Voice halves are restarted only when their own sections changed: reopening a device mid-utterance
-            // loses the utterance.
-            if (before.Input != stored.Input || before.Output != stored.Output
+            // Avoid interrupting a healthy utterance on unrelated saves. A failed playback device is retried
+            // even when the saved settings are unchanged, so the user can recover after reconnecting it.
+            if (voice.OutputFaulted || before.Input != stored.Input || before.Output != stored.Output
                 || before.Asr != stored.Asr || before.Tts != stored.Tts)
             {
                 await voice.ReconfigureAsync(stored).ConfigureAwait(false);
@@ -985,12 +1000,17 @@ public static class ViewEndpoints
 
             return Results.Ok(new
             {
-                settings = SettingsView.From(stored),
+                settings = SettingsView.From(stored, incoming.Revision.Value + 1),
                 consumer = consumer.State,
                 voice = voice.State,
                 local = localEngines.State,
                 compaction,
             });
+            }
+            finally
+            {
+                ctx.Settings.ApplyGate.Release();
+            }
         });
     }
 

@@ -124,6 +124,7 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 - **Nothing to maintain** — No sessions to create, name, switch, or clean up, and no need to remember which session something was discussed in
 - **Suits voice** — You don't pick a session before you speak
 - **Split by day** — The date picker only changes which day you see. A message sent while an old day is on screen still goes to the end of the log, and days without messages are not listed. Days follow your local time zone, and a turn still running at midnight finishes before the view moves to the new day
+- **Committed history** — In the default  mode, the session view does not publish a new event until its disk flush succeeds; a failed commit is not shown as history
 
 ### Memory
 

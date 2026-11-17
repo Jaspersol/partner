@@ -17,7 +17,10 @@ public static class AgentEndpoints
 
         app.MapPut("/api/agents", async (AgentsSettings incoming, ApiContext ctx, ConsumerHost consumer) =>
         {
-            var before = ctx.Settings.Load();
+            await ctx.Settings.ApplyGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+            RuntimeSettings? before = null;
 
             // A new sub-agent arrives without an id; the server names it, so two clients cannot collide.
             var named = incoming with
@@ -32,7 +35,7 @@ public static class AgentEndpoints
             RuntimeSettings stored;
             try
             {
-                stored = ctx.Settings.Save(before with { Agents = named });
+                stored = ctx.Settings.Update(current => { before = current; return current with { Agents = named }; });
             }
             catch (SettingsValidationException invalid)
             {
@@ -41,13 +44,15 @@ public static class AgentEndpoints
 
             // Only what changes the main agent's tool table restarts the consumer; a prompt, a name, a round
             // count or a sub-agent's model is read when a turn or a job starts.
-            if (AgentRouting.ToolTableDiffers(before, stored))
+            if (AgentRouting.ToolTableDiffers(before!, stored))
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
             }
 
             return Results.Ok(new { agents = AgentsView.From(stored), consumer = consumer.State });
+            }
+            finally { ctx.Settings.ApplyGate.Release(); }
         });
 
         app.MapGet("/api/agent-jobs", (ConsumerHost consumer) => Results.Ok(new { jobs = consumer.Agents.Jobs() }));

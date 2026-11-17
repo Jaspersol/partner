@@ -228,6 +228,7 @@ public sealed class VoiceHost : IAsyncDisposable
     private readonly Func<LiveAssistant?>? _live;
     private readonly LiveSpeech _liveSpeech = new();
     private readonly SemaphoreSlim _reconfigure = new(1, 1);
+    private readonly object _outputLifecycle = new();
     private readonly PlaybackGate _playbackGate = new();
 
     // Approval state crosses three loops without sharing mutable objects: the watcher and the input loop only
@@ -252,6 +253,7 @@ public sealed class VoiceHost : IAsyncDisposable
     private Task? _approvalLoop;
     private VoiceInputState _inputState = VoiceState.Idle.Input;
     private VoiceHalfState _outputState = VoiceState.Idle.Output;
+    private int _outputFaulted;
 
     /// <summary>The playback sample rate configured in output settings. The wake tone is synthesized at this rate
     /// so the sink does not split it onto another stream.</summary>
@@ -266,6 +268,9 @@ public sealed class VoiceHost : IAsyncDisposable
 
     public VoiceState State => new(_inputState, _outputState);
 
+    /// <summary>Whether saving settings should retry a failed playback device.</summary>
+    public bool OutputFaulted => Volatile.Read(ref _outputFaulted) != 0;
+
     /// <summary>
     /// Whether the speaker is currently producing sound, counting everything already queued. The pet window polls
     /// this to hold its idle animation: a model that starts waving while the pet is mid-sentence looks broken.
@@ -274,9 +279,11 @@ public sealed class VoiceHost : IAsyncDisposable
     {
         get
         {
-            var output = _output;
-            return output is not null
-                && (output.IsPlaying || output.PendingAudio || output.TtsBusy || output.IsStreaming);
+            VoiceOutputHalf? output;
+            lock (_outputLifecycle) output = _output;
+            if (output is null || Volatile.Read(ref _outputFaulted) != 0) return false;
+            try { return output.IsPlaying || output.PendingAudio || output.TtsBusy || output.IsStreaming; }
+            catch (Exception error) { FailOutput(output, error); return false; }
         }
     }
 
@@ -302,7 +309,7 @@ public sealed class VoiceHost : IAsyncDisposable
         try
         {
             await StopAsync().ConfigureAwait(false);
-            Start(settings);
+            lock (_outputLifecycle) Start(settings);
             return State;
         }
         finally
@@ -314,6 +321,7 @@ public sealed class VoiceHost : IAsyncDisposable
     private void Start(Settings.RuntimeSettings settings)
     {
         _stop = new CancellationTokenSource();
+        Volatile.Write(ref _outputFaulted, 0);
 
         // Output starts first: the input half's wake tone writes into the sink, and an input built before output
         // would never see the sink (_sink is still null), silently losing the tone. There is no dependency the
@@ -382,7 +390,7 @@ public sealed class VoiceHost : IAsyncDisposable
             async utterance => await EnqueueAsync(utterance).ConfigureAwait(false),
             log: VoiceLog,
             wakeTone: _sink is null ? null : PlayWakeTone,
-            onBargeIn: () => _output?.StopPlayback());
+            onBargeIn: InterruptOutput);
 
         try
         {
@@ -424,7 +432,10 @@ public sealed class VoiceHost : IAsyncDisposable
     /// </summary>
     private void PlayWakeTone()
     {
-        var sink = _sink;
+        if (Volatile.Read(ref _outputFaulted) != 0) return;
+        IAudioSink? sink;
+        VoiceOutputHalf? output;
+        lock (_outputLifecycle) { sink = _sink; output = _output; }
         if (sink is null)
         {
             return;
@@ -440,7 +451,8 @@ public sealed class VoiceHost : IAsyncDisposable
             buffer[i] = (float)(amplitude * Math.Sin(2 * Math.PI * freq * phase / rate));
         }
 
-        sink.Enqueue(buffer, rate);
+        try { sink.Start(); sink.Enqueue(buffer, rate); }
+        catch (Exception error) { if (output is not null) FailOutput(output, error); }
     }
 
     private void StartOutput(Settings.RuntimeSettings settings)
@@ -466,6 +478,7 @@ public sealed class VoiceHost : IAsyncDisposable
         }
         catch (Exception error)
         {
+            Volatile.Write(ref _outputFaulted, 1);
             _outputState = new VoiceHalfState(false, $"打开输出设备失败：{error.Message}", null, 0);
             return;
         }
@@ -477,6 +490,7 @@ public sealed class VoiceHost : IAsyncDisposable
         }
         catch (Exception error)
         {
+            Volatile.Write(ref _outputFaulted, 1);
             _sink.Dispose();
             _sink = null;
             _tts.Dispose();
@@ -490,8 +504,8 @@ public sealed class VoiceHost : IAsyncDisposable
         _toneSampleRate = outputSetting.SampleRate;
 
         _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate);
-        _outputLoop = RunOutputAsync(_stop!.Token);
         _outputState = new VoiceHalfState(true, "运行中", _sink.DeviceName, 0);
+        _outputLoop = RunOutputAsync(_stop!.Token);
     }
 
     /// <summary>Drives the capture pipeline and keeps the reported utterance count current.</summary>
@@ -569,9 +583,10 @@ public sealed class VoiceHost : IAsyncDisposable
     /// </summary>
     private async Task RunOutputAsync(CancellationToken ct)
     {
+        var output = _output!;
         var from = (await _context.Session.ProjectAsync(ct).ConfigureAwait(false)).LastSeq;
 
-        while (!ct.IsCancellationRequested)
+        while (!ct.IsCancellationRequested && Volatile.Read(ref _outputFaulted) == 0)
         {
             try
             {
@@ -579,8 +594,8 @@ public sealed class VoiceHost : IAsyncDisposable
 
                 // Approval speech is not tied to a session event, so nothing else in this loop would synthesize
                 // it. Playing here also means a prompt queued while the loop was idle is heard within one poll.
-                await _output!.PlayPendingAsync(ct).ConfigureAwait(false);
-                _outputState = _outputState with { Count = _output.Items.Count };
+                await _output!.PlayPendingAsync(ct, DrainApprovalCues).ConfigureAwait(false);
+                _outputState = _outputState with { Count = _output.TotalCount };
 
                 await foreach (var e in _context.Session.ReadAsync(from + 1, 100, ct).ConfigureAwait(false))
                 {
@@ -594,7 +609,7 @@ public sealed class VoiceHost : IAsyncDisposable
                     // What the live text already put in the speaker's mouth is not said again.
                     var rest = _liveSpeech.TakeRemainder(e.Body ?? string.Empty);
 
-                    if (string.IsNullOrWhiteSpace(rest) && !_output!.IsStreaming && _output.Segmenter.IsEmpty)
+                    if (string.IsNullOrWhiteSpace(rest) && !_output!.IsStreaming && _output.SentencesEmpty)
                     {
                         continue;
                     }
@@ -604,8 +619,8 @@ public sealed class VoiceHost : IAsyncDisposable
                     // The answer's confirmation or a newly arrived prompt goes in before this reply is
                     // synthesized, so the reply cannot start speaking over the decision it just caused.
                     DrainApprovalCues();
-                    await _output.FlushTurnAsync(ct).ConfigureAwait(false);
-                    _outputState = _outputState with { Count = _output.Items.Count };
+                    await _output.FlushTurnAsync(ct, DrainApprovalCues).ConfigureAwait(false);
+                    _outputState = _outputState with { Count = _output.TotalCount };
                 }
 
                 await SpeakLiveAsync(from, ct).ConfigureAwait(false);
@@ -630,9 +645,8 @@ public sealed class VoiceHost : IAsyncDisposable
             }
             catch (Exception error)
             {
-                // A failed synthesis is reported by the half itself; the loop must keep the other half alive.
-                _outputState = _outputState with { Reason = $"播放出错：{error.Message}" };
-                await Task.Delay(OutputPollInterval, ct).ConfigureAwait(false);
+                FailOutput(output, error);
+                return;
             }
         }
     }
@@ -656,8 +670,8 @@ public sealed class VoiceHost : IAsyncDisposable
 
         _output!.BeginStream();
         _output.OnText(chunk, lastSeq);
-        await _output.PlayPendingAsync(ct).ConfigureAwait(false);
-        _outputState = _outputState with { Count = _output.Items.Count };
+        await _output.PlayPendingAsync(ct, DrainApprovalCues).ConfigureAwait(false);
+        _outputState = _outputState with { Count = _output.TotalCount };
     }
 
     /// <summary>
@@ -812,7 +826,7 @@ public sealed class VoiceHost : IAsyncDisposable
     {
         var input = _input;
         var output = _output;
-        if (input is null || output is null)
+        if (input is null || output is null || Volatile.Read(ref _outputFaulted) != 0)
         {
             return;
         }
@@ -847,7 +861,7 @@ public sealed class VoiceHost : IAsyncDisposable
     {
         var input = _input;
         var output = _output;
-        if (input is null || output is null)
+        if (input is null || output is null || Volatile.Read(ref _outputFaulted) != 0)
         {
             return false;
         }
@@ -917,6 +931,31 @@ public sealed class VoiceHost : IAsyncDisposable
 
     private sealed record ResultCue(string Text) : ApprovalCue;
 
+    private void InterruptOutput()
+    {
+        if (Volatile.Read(ref _outputFaulted) != 0) return;
+        VoiceOutputHalf? output;
+        lock (_outputLifecycle) output = _output;
+        try { output?.StopPlayback(); }
+        catch (Exception error) { if (output is not null) FailOutput(output, error); }
+    }
+
+    private void FailOutput(VoiceOutputHalf output, Exception error)
+    {
+        lock (_outputLifecycle)
+        {
+            if (!ReferenceEquals(output, _output) || Interlocked.Exchange(ref _outputFaulted, 1) != 0) return;
+            output.Enabled = false;
+            try { output.StopPlayback(); }
+            catch (Exception stopError) { VoiceLog($"voice: stopping failed output: {stopError.Message}"); }
+            _input?.SetApprovalListening(false);
+            _playbackGate.TryRelease(new GateConditions(false, false, false, true, true, false, false), Environment.TickCount64 / 1000.0);
+            _playbackGate.ResetSkipped();
+            _outputState = _outputState with { Running = false, Reason = $"播放出错：{error.GetBaseException().Message}", Count = output.TotalCount };
+            VoiceLog(_outputState.Reason);
+        }
+    }
+
     private async Task StopAsync()
     {
         if (_stop is null)
@@ -946,31 +985,34 @@ public sealed class VoiceHost : IAsyncDisposable
         // The halves dispose the devices and clients they were given. The individual disposals below are the
         // safety net for a half that was never built: StartInput/StartOutput can fail after opening a device but
         // before constructing the half, and that device still has to be released.
-        _input?.Dispose();
-        _output?.Dispose();
-        _source?.Dispose();
-        _sink?.Dispose();
-        _asr?.Dispose();
-        _tts?.Dispose();
-        _stop.Dispose();
+        lock (_outputLifecycle)
+        {
+            _input?.Dispose();
+            _output?.Dispose();
+            _source?.Dispose();
+            _sink?.Dispose();
+            _asr?.Dispose();
+            _tts?.Dispose();
+            _stop.Dispose();
 
-        _stop = null;
-        _inputLoop = null;
-        _outputLoop = null;
-        _approvalLoop = null;
-        _input = null;
-        _output = null;
-        _source = null;
-        _sink = null;
-        _asr = null;
-        _tts = null;
+            _stop = null;
+            _inputLoop = null;
+            _outputLoop = null;
+            _approvalLoop = null;
+            _input = null;
+            _output = null;
+            _source = null;
+            _sink = null;
+            _asr = null;
+            _tts = null;
 
-        // Cues are host-scoped: the approvals they refer to are not. A restart re-reads what is still pending
-        // and announces it again, which is what a person who just enabled the speaker needs to hear.
-        _approvalCues.Clear();
-        _announced.Clear();
-        _wasSpeaking = false;
-        Volatile.Write(ref _quietAtSeconds, 0);
+            // Cues are host-scoped: the approvals they refer to are not. A restart re-reads what is still pending
+            // and announces it again, which is what a person who just enabled the speaker needs to hear.
+            _approvalCues.Clear();
+            _announced.Clear();
+            _wasSpeaking = false;
+            Volatile.Write(ref _quietAtSeconds, 0);
+        }
     }
 
     public async ValueTask DisposeAsync()

@@ -1,8 +1,6 @@
 name: ci
 
-# Pull requests and pushes run the same gate the release job trusts: docs/CSS contracts, build, unit tests,
-# smoke plus capability baseline, frontend typecheck/unit/contract tests, and the production frontend build.
-# The Rust shell is exercised by the release build; SKIP_SHELL keeps this job from paying for a second compile.
+# The shell job separately tests Rust and builds the pet-disabled variant.
 
 on:
   pull_request:
@@ -24,6 +22,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -42,3 +42,39 @@ jobs:
         env:
           SKIP_SHELL: 1
         run: bash scripts/ci.sh
+
+  shell:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm --prefix ui ci
+      - run: dotnet publish src/Partner.Api -c Release -r win-x64 --self-contained true -o src/Partner.Api/bin/Release/net10.0/win-x64/publish -v q --nologo
+      - run: npm --prefix ui run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build and check pet-disabled frontend
+        env:
+          PARTNER_PET: '0'
+        run: |
+          npm --prefix ui run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/check-live2d-bundle.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile pet-disabled shell
+        env:
+          PARTNER_PET: '0'
+        run: cargo build --manifest-path src-tauri/Cargo.toml
