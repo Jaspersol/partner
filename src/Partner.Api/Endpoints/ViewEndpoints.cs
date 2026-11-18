@@ -918,7 +918,7 @@ public static class ViewEndpoints
 
         app.MapPut("/api/settings", async (
             RuntimeSettings incoming, ApiContext ctx, ConsumerHost consumer, VoiceHost voice,
-            LocalEngineHost localEngines, ServiceHost services, CancellationToken ct) =>
+            LocalEngineHost localEngines, VoiceStartup voiceStartup, ServiceHost services, CancellationToken ct) =>
         {
             if (incoming.Revision is null)
             {
@@ -965,12 +965,6 @@ public static class ViewEndpoints
                 consumer.ReloadSkills();
             }
 
-            // Local engines own the child processes behind the voice HTTP clients: a command/port/switch edit
-            // converges them here (matches() leaves a correctly running one alone).
-            if (before.Local != stored.Local)
-            {
-                await localEngines.ReconfigureAsync(stored.Local).ConfigureAwait(false);
-            }
 
             // Shrinking the window leaves history that no longer fits, so it is folded here: waiting for the next
             // turn would send an over-long conversation to the model first.
@@ -985,10 +979,10 @@ public static class ViewEndpoints
 
             // Avoid interrupting a healthy utterance on unrelated saves. A failed playback device is retried
             // even when the saved settings are unchanged, so the user can recover after reconnecting it.
-            if (voice.OutputFaulted || before.Input != stored.Input || before.Output != stored.Output
+            if (voice.OutputFaulted || before.Local != stored.Local || before.Input != stored.Input || before.Output != stored.Output
                 || before.Asr != stored.Asr || before.Tts != stored.Tts)
             {
-                await voice.ReconfigureAsync(stored).ConfigureAwait(false);
+                await voiceStartup.ReconfigureAsync().ConfigureAwait(false);
             }
 
             // A settings PUT that actually carries a services section converges the listeners too. An absent

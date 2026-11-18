@@ -43,6 +43,7 @@ The installer carries only two small server scripts. Runtimes and models are not
 - The settings page displays engine readiness and missing files without changing settings on open. Click “Check” to fill in detected engine paths, then save to apply them; you can also choose an existing engine directory manually.
 - Default paths are stored relative to the app directory, so moving or reinstalling the app needs no settings change.
 - Switching an engine off ends its process (the whole tree) and returns all VRAM and RAM.
+- The API listens first, then warms enabled local engines in parallel. Settings and history remain available during loading. `/api/health` means the API is reachable, not that models are ready; `/api/voice/local` and `/api/voice` report engine and voice-path startup, readiness, and failures. A live process whose health check times out is not ready. Saving settings cancels superseded warmup, and shutdown stops warmup and child processes.
 
 Download URLs can be overridden with `PARTNER_ENGINE_TTS_URL`, `PARTNER_ENGINE_KWS_URL` (and the matching `_SHA256`).
 One engine may span several archives: a GitHub release asset may not reach 2 GiB and TTS does not fit in one, so the app fetches them in order and unpacks each into the same folder.

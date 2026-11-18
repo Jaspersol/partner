@@ -27,56 +27,63 @@ public sealed class LocalEngineHost : IAsyncDisposable
     private ManagedEngine? _tts;
     private ManagedEngine? _kws;
     private bool _disposed;
+    private LocalSettings? _desired;
 
     /// <param name="appDir">Relative command and working-directory paths are resolved against it. The engine module
     /// lives beside the app directory and settings store relative paths, so moving or reinstalling the app keeps
     /// them valid. Null = paths are used as-is.</param>
     public LocalEngineHost(string? appDir = null) => _appDir = appDir;
 
-    public LocalEnginesState State => new(
-        _tts?.State ?? new LocalEngineState(false, "未托管", null),
-        _kws?.State ?? new LocalEngineState(false, "未托管", null));
+    public LocalEnginesState State => _desired is { } settings ? StateFor(settings) : new(
+        _tts?.State ?? new LocalEngineState(false, "未启用", null),
+        _kws?.State ?? new LocalEngineState(false, "未启用", null));
+
+    public void SetDesired(LocalSettings settings) => _desired = settings;
+
+    public LocalEnginesState StateFor(LocalSettings settings) => new(
+        StateFor(_tts, settings.Tts), StateFor(_kws, settings.Kws));
+
+    private static LocalEngineState StateFor(ManagedEngine? engine, LocalEngineSettings settings) =>
+        !settings.Enabled ? new LocalEngineState(false, "未启用", null)
+        : engine is null || !engine.Matches(settings) ? new LocalEngineState(false, "启动中", null)
+        : engine.State;
 
     /// <summary>Applies the local section: stops engines whose config changed or disabled, starts the enabled ones.</summary>
-    public async Task<LocalEnginesState> ReconfigureAsync(LocalSettings settings)
+    public async Task<LocalEnginesState> ReconfigureAsync(LocalSettings settings, CancellationToken cancellationToken = default, Func<Task>? changed = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        SetDesired(settings);
 
-        await _gate.WaitAsync().ConfigureAwait(false);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            // Both engines converge at once: each start waits for its own /health, so one after the other cost
-            // the sum of the two. The results are stored even when one side throws, so a started process is
-            // never left untracked.
-            var ttsApply = ApplyAsync(_tts, settings.Tts, "TTS", _appDir);
-            var kwsApply = ApplyAsync(_kws, settings.Kws, "KWS/ASR", _appDir);
-            try
+            async Task ApplyOneAsync(bool tts)
             {
-                await Task.WhenAll(ttsApply, kwsApply).ConfigureAwait(false);
-            }
-            catch
-            {
-                if (ttsApply.IsCompletedSuccessfully)
+                var wanted = tts ? settings.Tts : settings.Kws;
+                var name = tts ? "TTS" : "KWS/ASR";
+                var current = tts ? _tts : _kws;
+                if (current is not null && current.Matches(wanted) && current.State.Running)
                 {
-                    _tts = ttsApply.Result;
+                    if (!tts) await PushKeywordsAsync(current, cancellationToken).ConfigureAwait(false);
+                    return;
                 }
-
-                if (kwsApply.IsCompletedSuccessfully)
+                if (current is not null) await current.StopAsync(name).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                var engine = !wanted.Enabled ? null : string.IsNullOrWhiteSpace(wanted.Command)
+                    ? ManagedEngine.NotStarted(wanted, "未配置可执行文件")
+                    : ManagedEngine.NotStarted(wanted, "启动中");
+                if (tts) _tts = engine; else _kws = engine;
+                if (changed is not null) await changed().ConfigureAwait(false);
+                if (engine is not null && wanted.Enabled && !string.IsNullOrWhiteSpace(wanted.Command))
                 {
-                    _kws = kwsApply.Result;
+                    await engine.StartAsync(name, _appDir, cancellationToken, changed).ConfigureAwait(false);
+                    if (!tts && engine.State.Running) await PushKeywordsAsync(engine, cancellationToken).ConfigureAwait(false);
+                    if (changed is not null) await changed().ConfigureAwait(false);
                 }
-
-                throw;
             }
-
-            _tts = ttsApply.Result;
-            _kws = kwsApply.Result;
-            if (_kws is { IsRunning: true })
-            {
-                await PushKeywordsAsync(_kws).ConfigureAwait(false);
-            }
+            await Task.WhenAll(ApplyOneAsync(true), ApplyOneAsync(false)).ConfigureAwait(false);
             return State;
         }
         finally
@@ -85,31 +92,6 @@ public sealed class LocalEngineHost : IAsyncDisposable
         }
     }
 
-    /// <summary>Idempotent convergence: a correctly-running engine is left alone. Keywords are pushed only while
-    /// the engine is alive, so after a mid-session restart (Exited → next Reconfigure) _keywordsSynced resets with
-    /// the new instance and they are pushed again.</summary>
-    private static async Task<ManagedEngine?> ApplyAsync(ManagedEngine? current, LocalEngineSettings wanted, string name, string? appDir)
-    {
-        // Same config and live process: do nothing — saving settings must not churn a running engine.
-        if (current is not null && current.Matches(wanted) && current.IsRunning)
-        {
-            return current;
-        }
-
-        if (current is not null)
-        {
-            await current.StopAsync(name).ConfigureAwait(false);
-        }
-
-        if (!wanted.Enabled || string.IsNullOrWhiteSpace(wanted.Command))
-        {
-            return wanted.Enabled
-                ? ManagedEngine.NotStarted(wanted, "未配置可执行文件")
-                : null;
-        }
-
-        return await ManagedEngine.StartAsync(wanted, name, appDir).ConfigureAwait(false);
-    }
 
     /// <summary>
     /// Keyword push. Only when the configured Keywords are non-empty — a table swap makes the engine rebuild its
@@ -118,7 +100,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
     /// thrown: an unsynced keyword list must not 500 the settings save, the engine still shows as running, and the
     /// next config change retries.
     /// </summary>
-    private static async Task PushKeywordsAsync(ManagedEngine engine)
+    private static async Task PushKeywordsAsync(ManagedEngine engine, CancellationToken cancellationToken)
     {
         var keywords = engine.SettingsSnapshot.Keywords;
         if (keywords.Count == 0 || engine.KeywordsSynced)
@@ -137,7 +119,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
             using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
             using var response = await http.PutAsync(
                 $"http://127.0.0.1:{engine.SettingsSnapshot.Port}/keywords",
-                content).ConfigureAwait(false);
+                content, cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
                 engine.KeywordsSynced = true;
@@ -149,7 +131,7 @@ public sealed class LocalEngineHost : IAsyncDisposable
                     $"LocalEngineHost: KWS 词表下发失败 HTTP {(int)response.StatusCode} {body}");
             }
         }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+        catch (Exception error) when (!cancellationToken.IsCancellationRequested && (error is HttpRequestException or TaskCanceledException))
         {
             Console.Error.WriteLine($"LocalEngineHost: KWS 词表下发失败 {error.Message}");
         }
@@ -172,7 +154,6 @@ public sealed class LocalEngineHost : IAsyncDisposable
         finally
         {
             _gate.Release();
-            _gate.Dispose();
         }
     }
 
@@ -244,9 +225,10 @@ public sealed class LocalEngineHost : IAsyncDisposable
         public static ManagedEngine NotStarted(LocalEngineSettings settings, string reason) =>
             new(settings, new LocalEngineState(false, reason, null));
 
-        public static async Task<ManagedEngine> StartAsync(LocalEngineSettings settings, string name, string? appDir)
+        public async Task StartAsync(string name, string? appDir, CancellationToken cancellationToken, Func<Task>? changed)
         {
-            var engine = new ManagedEngine(settings, new LocalEngineState(false, "启动中", null));
+            var engine = this;
+            var settings = _settings;
             var startInfo = new ProcessStartInfo
             {
                 FileName = ResolveCommand(appDir, settings.Command) ?? string.Empty,
@@ -270,14 +252,14 @@ public sealed class LocalEngineHost : IAsyncDisposable
                 {
                     process.Dispose();
                     engine.State = new LocalEngineState(false, $"启动失败（Start 返回 false）", null);
-                    return engine;
+                    return;
                 }
             }
             catch (Exception error) when (error is Win32Exception or InvalidOperationException)
             {
                 process.Dispose();
                 engine.State = new LocalEngineState(false, $"启动失败：{error.Message}", null);
-                return engine;
+                return;
             }
 
             engine._process = process;
@@ -287,21 +269,25 @@ public sealed class LocalEngineHost : IAsyncDisposable
             engine._job = EngineJob.Create(process, name);
             var pid = process.Id;
 
-            // An engine crash must report a reason: exit reports the exit code, only survival counts as running.
-            // Readiness returns early, though — an engine up in 1 s returns in 1 s instead of always sleeping the
-            // full ReadyTimeoutSeconds (default 30 s; the two engines start serially).
-            var grace = TimeSpan.FromSeconds(Math.Clamp(settings.ReadyTimeoutSeconds, 1, 30));
-            var ready = await WaitUntilReadyAsync(process, settings.Port, grace).ConfigureAwait(false);
-            engine.State = ready
-                ? new LocalEngineState(true, "运行中", pid)
-                : new LocalEngineState(false, $"进程已退出（代码 {process.ExitCode}）", null);
-
-            // A process that dies later in the session must be visible too. The exit event clears the state's
-            // liveness without blocking the calling thread.
-            process.EnableRaisingEvents = true;
-            process.Exited += (_, _) => engine.State = new LocalEngineState(false, $"进程已退出（代码 {engine.SafeExitCode()}）", null);
-
-            return engine;
+            try
+            {
+                engine.State = new LocalEngineState(false, "启动中", pid);
+                if (changed is not null) await changed().ConfigureAwait(false);
+                var grace = TimeSpan.FromSeconds(Math.Clamp(settings.ReadyTimeoutSeconds, 1, 30));
+                var ready = await WaitUntilReadyAsync(process, settings.Port, grace, cancellationToken).ConfigureAwait(false);
+                engine.State = ready
+                    ? new LocalEngineState(true, "运行中", pid)
+                    : process.HasExited
+                        ? new LocalEngineState(false, $"进程已退出（代码 {process.ExitCode}）", null)
+                        : new LocalEngineState(false, "启动失败：健康检查超时", pid);
+                process.Exited += (_, _) => engine.State = new LocalEngineState(false, $"进程已退出（代码 {engine.SafeExitCode()}）", null);
+                process.EnableRaisingEvents = true;
+            }
+            catch
+            {
+                await StopAsync(name).ConfigureAwait(false);
+                throw;
+            }
         }
 
         /// <summary>
@@ -309,11 +295,11 @@ public sealed class LocalEngineHost : IAsyncDisposable
         /// immediately; the bound is the configured grace. With no port there is nothing to probe, so it degrades
         /// to sleeping the full grace and only checking the process did not exit.
         /// </summary>
-        private static async Task<bool> WaitUntilReadyAsync(Process process, int port, TimeSpan timeout)
+        private static async Task<bool> WaitUntilReadyAsync(Process process, int port, TimeSpan timeout, CancellationToken cancellationToken)
         {
             if (port <= 0)
             {
-                await Task.Delay(timeout).ConfigureAwait(false);
+                await Task.Delay(timeout, cancellationToken).ConfigureAwait(false);
                 return !process.HasExited;
             }
 
@@ -333,22 +319,21 @@ public sealed class LocalEngineHost : IAsyncDisposable
 
                 try
                 {
-                    using var response = await http.GetAsync("health").ConfigureAwait(false);
+                    using var response = await http.GetAsync("health", cancellationToken).ConfigureAwait(false);
                     if (response.IsSuccessStatusCode)
                     {
                         return true;
                     }
                 }
-                catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+                catch (Exception error) when (!cancellationToken.IsCancellationRequested && (error is HttpRequestException or TaskCanceledException))
                 {
                     // Not listening / not ready yet; keep polling.
                 }
 
-                await Task.Delay(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
             }
 
-            // Still no /health at the bound: if the process is alive, report running rather than falsely claim a crash.
-            return !process.HasExited;
+            return false;
         }
 
         public async Task StopAsync(string name)

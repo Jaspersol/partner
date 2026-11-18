@@ -506,7 +506,7 @@ public sealed record LocalEngineSettings : IEquatable<LocalEngineSettings>
 
     public int Port { get; init; }
 
-    /// <summary>Grace period after process start before the first requests may be sent; slower engines will see connection failures and retries.</summary>
+    /// <summary>Maximum wait for a successful local engine health check before startup is reported as failed.</summary>
     public int ReadyTimeoutSeconds { get; init; } = 30;
 
     /// <summary>

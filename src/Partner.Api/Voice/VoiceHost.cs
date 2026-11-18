@@ -247,12 +247,18 @@ public sealed class VoiceHost : IAsyncDisposable
     private IAudioSink? _sink;
     private IAsrClient? _asr;
     private ITtsClient? _tts;
-    private CancellationTokenSource? _stop;
+    private CancellationTokenSource? _inputStop;
+    private CancellationTokenSource? _outputStop;
     private Task? _inputLoop;
     private Task? _outputLoop;
     private Task? _approvalLoop;
     private VoiceInputState _inputState = VoiceState.Idle.Input;
     private VoiceHalfState _outputState = VoiceState.Idle.Output;
+    private LocalEngineHost? _localEngines;
+    private Settings.RuntimeSettings? _appliedSettings;
+    private bool _inputBlocked;
+    private bool _outputBlocked;
+    private bool _disposed;
     private int _outputFaulted;
 
     /// <summary>The playback sample rate configured in output settings. The wake tone is synthesized at this rate
@@ -266,7 +272,26 @@ public sealed class VoiceHost : IAsyncDisposable
         _live = live;
     }
 
-    public VoiceState State => new(_inputState, _outputState);
+    public VoiceState State
+    {
+        get
+        {
+            var input = _inputState;
+            var output = _outputState;
+            var settings = _appliedSettings;
+            if (settings is not null && _localEngines is not null)
+            {
+                var engines = _localEngines.StateFor(settings.Local);
+                if (settings.Input.Enabled && settings.Local.Kws.Enabled && !engines.Kws.Running)
+                    input = new VoiceInputState(false, $"本地 KWS/ASR：{engines.Kws.Reason}", null, 0);
+                if (settings.Output.Enabled && settings.Local.Tts.Enabled && UsesEngine(settings.Tts.BaseUrl, settings.Local.Tts.Port) && !engines.Tts.Running)
+                    output = new VoiceHalfState(false, $"本地 TTS：{engines.Tts.Reason}", null, 0);
+            }
+            return new VoiceState(input, output);
+        }
+    }
+
+    internal void TrackLocalEngines(LocalEngineHost engines) => _localEngines = engines;
 
     /// <summary>Whether saving settings should retry a failed playback device.</summary>
     public bool OutputFaulted => Volatile.Read(ref _outputFaulted) != 0;
@@ -300,16 +325,47 @@ public sealed class VoiceHost : IAsyncDisposable
         return new VoiceHost(context, components, live);
     }
 
-    /// <summary>Applies settings: stops whatever is running, then starts whichever halves are usable.</summary>
-    public async Task<VoiceState> ReconfigureAsync(Settings.RuntimeSettings settings)
+    /// <summary>Applies settings and readiness, restarting only the voice halves whose dependencies changed.</summary>
+    public async Task<VoiceState> ReconfigureAsync(Settings.RuntimeSettings settings, LocalEnginesState? engines = null, bool retryFaulted = true)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
         await _reconfigure.WaitAsync().ConfigureAwait(false);
         try
         {
-            await StopAsync().ConfigureAwait(false);
-            lock (_outputLifecycle) Start(settings);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var previous = _appliedSettings;
+            var outputBlocked = settings.Local.Tts.Enabled && UsesEngine(settings.Tts.BaseUrl, settings.Local.Tts.Port)
+                && engines is not null && !engines.Tts.Running;
+            var inputBlocked = settings.Local.Kws.Enabled && engines is not null && !engines.Kws.Running;
+            var changeOutput = previous is null || previous.Output != settings.Output || previous.Tts != settings.Tts
+                || previous.Local.Tts != settings.Local.Tts || _outputBlocked != outputBlocked || (retryFaulted && OutputFaulted);
+            var changeInput = previous is null || previous.Input != settings.Input || previous.Asr != settings.Asr
+                || previous.Local.Kws != settings.Local.Kws || _inputBlocked != inputBlocked;
+            if (changeOutput) await StopOutputAsync().ConfigureAwait(false);
+            if (changeInput) await StopInputAsync().ConfigureAwait(false);
+            _appliedSettings = settings;
+            _outputBlocked = outputBlocked;
+            _inputBlocked = inputBlocked;
+            if (changeOutput)
+            {
+                _outputStop = new CancellationTokenSource();
+                Volatile.Write(ref _outputFaulted, 0);
+                lock (_outputLifecycle)
+                {
+                    if (outputBlocked && settings.Output.Enabled)
+                        _outputState = new VoiceHalfState(false, $"本地 TTS：{engines!.Tts.Reason}", null, 0);
+                    else StartOutput(settings);
+                    StartApproval();
+                }
+            }
+            if (changeInput)
+            {
+                _inputStop = new CancellationTokenSource();
+                if (inputBlocked && settings.Input.Enabled)
+                    _inputState = new VoiceInputState(false, $"本地 KWS/ASR：{engines!.Kws.Reason}", null, 0);
+                else StartInput(settings);
+            }
             return State;
         }
         finally
@@ -318,18 +374,10 @@ public sealed class VoiceHost : IAsyncDisposable
         }
     }
 
-    private void Start(Settings.RuntimeSettings settings)
-    {
-        _stop = new CancellationTokenSource();
-        Volatile.Write(ref _outputFaulted, 0);
 
-        // Output starts first: the input half's wake tone writes into the sink, and an input built before output
-        // would never see the sink (_sink is still null), silently losing the tone. There is no dependency the
-        // other way, so this order must not change.
-        StartOutput(settings);
-        StartApproval();
-        StartInput(settings);
-    }
+    private static bool UsesEngine(string? address, int port) =>
+        Uri.TryCreate(address, UriKind.Absolute, out var uri)
+        && uri.IsLoopback && uri.Port == port;
 
     /// <summary>
     /// Watches the approval queue and queues a spoken prompt for every new request. It runs only when voice
@@ -348,7 +396,7 @@ public sealed class VoiceHost : IAsyncDisposable
             return;
         }
 
-        _approvalLoop = RunApprovalAsync(_stop!.Token);
+        _approvalLoop = RunApprovalAsync(_outputStop!.Token);
     }
 
     private void StartInput(Settings.RuntimeSettings settings)
@@ -389,7 +437,7 @@ public sealed class VoiceHost : IAsyncDisposable
             _playbackGate,
             async utterance => await EnqueueAsync(utterance).ConfigureAwait(false),
             log: VoiceLog,
-            wakeTone: _sink is null ? null : PlayWakeTone,
+            wakeTone: PlayWakeTone,
             onBargeIn: InterruptOutput);
 
         try
@@ -408,7 +456,7 @@ public sealed class VoiceHost : IAsyncDisposable
             return;
         }
 
-        _inputLoop = RunInputAsync(_stop!.Token);
+        _inputLoop = RunInputAsync(_inputStop!.Token);
         _inputState = new VoiceInputState(true, "运行中", _source.DeviceName, 0);
     }
 
@@ -505,7 +553,7 @@ public sealed class VoiceHost : IAsyncDisposable
 
         _output = new VoiceOutputHalf(outputSetting, _sink, _tts, _playbackGate);
         _outputState = new VoiceHalfState(true, "运行中", _sink.DeviceName, 0);
-        _outputLoop = RunOutputAsync(_stop!.Token);
+        _outputLoop = RunOutputAsync(_outputStop!.Token);
     }
 
     /// <summary>Drives the capture pipeline and keeps the reported utterance count current.</summary>
@@ -956,58 +1004,50 @@ public sealed class VoiceHost : IAsyncDisposable
         }
     }
 
-    private async Task StopAsync()
+    private static async Task AwaitLoopAsync(Task? loop)
     {
-        if (_stop is null)
-        {
-            return;
-        }
+        if (loop is null) return;
+        try { await loop.ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+    }
 
-        await _stop.CancelAsync().ConfigureAwait(false);
+    private async Task StopInputAsync()
+    {
+        if (_inputStop is null) return;
+        await _inputStop.CancelAsync().ConfigureAwait(false);
+        await AwaitLoopAsync(_inputLoop).ConfigureAwait(false);
+        _input?.Dispose();
+        _source?.Dispose();
+        _asr?.Dispose();
+        _inputStop.Dispose();
+        _inputStop = null;
+        _inputLoop = null;
+        _input = null;
+        _source = null;
+        _asr = null;
+    }
 
-        foreach (var loop in new[] { _inputLoop, _outputLoop, _approvalLoop })
-        {
-            if (loop is null)
-            {
-                continue;
-            }
-
-            try
-            {
-                await loop.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected: the loop was waiting.
-            }
-        }
-
-        // The halves dispose the devices and clients they were given. The individual disposals below are the
-        // safety net for a half that was never built: StartInput/StartOutput can fail after opening a device but
-        // before constructing the half, and that device still has to be released.
+    private async Task StopOutputAsync()
+    {
+        if (_outputStop is null) return;
+        await _outputStop.CancelAsync().ConfigureAwait(false);
+        await AwaitLoopAsync(_outputLoop).ConfigureAwait(false);
+        await AwaitLoopAsync(_approvalLoop).ConfigureAwait(false);
         lock (_outputLifecycle)
         {
-            _input?.Dispose();
+            _input?.SetApprovalListening(false);
+            _playbackGate.TryRelease(new GateConditions(false, false, false, true, true, false, false), Environment.TickCount64 / 1000.0);
+            _playbackGate.ResetSkipped();
             _output?.Dispose();
-            _source?.Dispose();
             _sink?.Dispose();
-            _asr?.Dispose();
             _tts?.Dispose();
-            _stop.Dispose();
-
-            _stop = null;
-            _inputLoop = null;
+            _outputStop.Dispose();
+            _outputStop = null;
             _outputLoop = null;
             _approvalLoop = null;
-            _input = null;
             _output = null;
-            _source = null;
             _sink = null;
-            _asr = null;
             _tts = null;
-
-            // Cues are host-scoped: the approvals they refer to are not. A restart re-reads what is still pending
-            // and announces it again, which is what a person who just enabled the speaker needs to hear.
             _approvalCues.Clear();
             _announced.Clear();
             _wasSpeaking = false;
@@ -1015,17 +1055,24 @@ public sealed class VoiceHost : IAsyncDisposable
         }
     }
 
+    private async Task StopAsync()
+    {
+        await StopInputAsync().ConfigureAwait(false);
+        await StopOutputAsync().ConfigureAwait(false);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _reconfigure.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (_disposed) return;
+            _disposed = true;
             await StopAsync().ConfigureAwait(false);
         }
         finally
         {
             _reconfigure.Release();
-            _reconfigure.Dispose();
         }
     }
 }
