@@ -70,7 +70,23 @@ pub(crate) fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                     }
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                // Do not leave the main window visible while the backend finishes graceful shutdown.
+                if let Some(window) = app.get_webview_window(MAIN_LABEL) {
+                    if let Err(error) = window.hide() {
+                        append_api_log("shell", &format!("the main window could not be hidden: {error}"));
+                    }
+                }
+                // Hide the native icon before Exit starts the potentially slow sidecar shutdown. Removing the
+                // resource does not change the saved preference, and is harmless if it was already removed.
+                if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                    if let Err(error) = tray.set_visible(false) {
+                        append_api_log("shell", &format!("the tray icon could not be hidden: {error}"));
+                    }
+                }
+                drop(app.remove_tray_by_id(TRAY_ID));
+                app.exit(0);
+            },
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

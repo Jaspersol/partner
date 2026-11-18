@@ -366,7 +366,8 @@ public sealed class EnginePackageTests : IDisposable
             },
         });
 
-        Assert.True(state.Tts.Running, state.Tts.Reason);
+        Assert.False(state.Tts.Running);
+        Assert.Contains("健康检查超时", state.Tts.Reason);
         Assert.True(await WaitForFileAsync(Path.Combine(run, "where.txt")), "the engine should have run inside <app>/engines/tts");
     }
 

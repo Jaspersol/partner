@@ -38,11 +38,10 @@ public static class ApiHost
         var voice = VoiceHost.Create(context, components ?? new WasapiVoiceComponents(), () => consumer.LiveAssistant);
         var package = enginePackage ?? new EnginePackage(EnginePackage.ResolveAppDir(), workspace);
         var localEngines = new LocalEngineHost(package.AppDir);
+        localEngines.SetDesired(context.Settings.Load().Local);
         var updateService = updates ?? new UpdateService();
+        var voiceStartup = new VoiceStartup(context, voice, localEngines);
 
-        // The engines are separate processes that wait on their own /health, and nothing below needs them until
-        // the voice halves are configured, so they warm up while the model loop and the scheduler are set up.
-        var enginesReady = localEngines.ReconfigureAsync(context.Settings.Load().Local);
 
         // The store ages whether or not a model is configured: the TTL and promotion rules do not need one.
         var maintenance = new MemoryMaintenanceService(context.Memory, clock);
@@ -68,9 +67,6 @@ public static class ApiHost
         // After the consumer is configured, so the first item a due task enqueues has somewhere to go.
         context.StartScheduler();
 
-        await enginesReady.ConfigureAwait(false);
-
-        await voice.ReconfigureAsync(context.Settings.Load()).ConfigureAwait(false);
 
         var builder = WebApplication.CreateBuilder();
         // Polling makes per-request Information logs noise.
@@ -89,6 +85,8 @@ public static class ApiHost
         builder.Services.AddSingleton(package);
         builder.Services.AddSingleton(updateService);
         builder.Services.AddSingleton(maintenance);
+        builder.Services.AddSingleton(voiceStartup);
+        builder.Services.AddSingleton<IHostedService>(voiceStartup);
         builder.Services.AddSingleton(services);
         builder.Services.AddSingleton<IHostedService>(services);
 
@@ -109,6 +107,7 @@ public static class ApiHost
             .AllowAnyMethod()));
 
         var app = builder.Build();
+        app.Lifetime.ApplicationStarted.Register(voiceStartup.Start);
 
         // Order matters twice over: CORS first so a preflight is answered (preflights carry no credentials and
         // would otherwise be rejected with 401), then the token check before anything is reachable.
@@ -129,5 +128,103 @@ public static class ApiHost
         UpdateEndpoints.Map(app);
 
         return (app, context, consumer, voice, localEngines, maintenance);
+    }
+}
+
+/// <summary>Serializes startup and settings changes, cancelling superseded warmups before applying the latest settings.</summary>
+public sealed class VoiceStartup : IHostedService
+{
+    private readonly ApiContext _context;
+    private readonly VoiceHost _voice;
+    private readonly LocalEngineHost _engines;
+    private readonly object _sync = new();
+    private CancellationTokenSource? _cancel;
+    private Task _work = Task.CompletedTask;
+    private bool _started;
+    private bool _stopping;
+
+    public VoiceStartup(ApiContext context, VoiceHost voice, LocalEngineHost engines)
+    {
+        _context = context;
+        _voice = voice;
+        _engines = engines;
+        voice.TrackLocalEngines(engines);
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        // ApplicationStarted fires only after the server has bound its listener.
+        return Task.CompletedTask;
+    }
+
+    public void Start()
+    {
+        lock (_sync) { _started = true; ScheduleLocked(); }
+    }
+
+    public Task ReconfigureAsync()
+    {
+        lock (_sync) { return _started && !_stopping ? ScheduleLocked() : Task.CompletedTask; }
+    }
+
+    private Task ScheduleLocked()
+    {
+        if (_stopping) return Task.CompletedTask;
+        var previousCancel = _cancel;
+        previousCancel?.Cancel();
+        _engines.SetDesired(_context.Settings.Load().Local);
+        var previous = _work;
+        var cancel = new CancellationTokenSource();
+        _cancel = cancel;
+        var configured = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _work = Task.Run(async () =>
+        {
+            try
+            {
+                await previous.ConfigureAwait(false);
+                previousCancel?.Dispose();
+                cancel.Token.ThrowIfCancellationRequested();
+                var settings = _context.Settings.Load();
+                using var refreshGate = new SemaphoreSlim(1, 1);
+                (bool Tts, bool Kws)? applied = null;
+                async Task RefreshAsync()
+                {
+                    await refreshGate.WaitAsync(cancel.Token).ConfigureAwait(false);
+                    try
+                    {
+                        var state = _engines.StateFor(settings.Local);
+                        var readiness = (state.Tts.Running, state.Kws.Running);
+                        if (applied == readiness) return;
+                        await _voice.ReconfigureAsync(settings, state, retryFaulted: applied is null).ConfigureAwait(false);
+                        applied = readiness;
+                    }
+                    finally { refreshGate.Release(); }
+                }
+                await RefreshAsync().ConfigureAwait(false);
+                configured.TrySetResult(true);
+                await _engines.ReconfigureAsync(settings.Local, cancel.Token, RefreshAsync).ConfigureAwait(false);
+                await RefreshAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancel.IsCancellationRequested) { }
+            catch (Exception error) { Console.Error.WriteLine($"Voice startup: {error}"); }
+            finally { configured.TrySetResult(false); }
+        });
+        return configured.Task;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        Task work;
+        CancellationTokenSource? cancel;
+        lock (_sync)
+        {
+            _stopping = true;
+            cancel = _cancel;
+            _cancel = null;
+            cancel?.Cancel();
+            work = _work;
+        }
+        await work.ConfigureAwait(false);
+        cancel?.Dispose();
     }
 }
