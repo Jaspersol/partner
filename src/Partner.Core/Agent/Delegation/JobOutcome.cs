@@ -1,3 +1,5 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text;
 
 namespace Partner.Core.Agent.Delegation;
@@ -13,6 +15,9 @@ public static class JobCategories
 
     /// <summary>A rule refused it: governance, a path outside the whitelist, an elevated window.</summary>
     public const string GovernanceDenied = "governance_denied";
+
+    /// <summary>A file mutation may have completed and must be verified before retrying.</summary>
+    public const string Unconfirmed = "unconfirmed";
 
     public const string Cancelled = "cancelled";
     public const string Timeout = "timeout";
@@ -57,6 +62,15 @@ public sealed record JobOutcome(
     IReadOnlyList<RoundRecord> History,
     IReadOnlyList<string> Actions)
 {
+    /// <summary>File calls and their paired results in this job's session; targets are requested, not canonical paths.</summary>
+    public IReadOnlyList<string> FileResults { get; init; } = [];
+
+    private static readonly JsonSerializerOptions ReportJson = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    // Keep model and request text on one quoted line so it cannot impersonate a system-generated receipt.
+    private static string Quote(string? value) => JsonSerializer.Serialize(value ?? string.Empty, ReportJson);
+    private static string Inline(string value) => Quote(value)[1..^1];
+
     /// <summary>The most of a sub-agent's conclusion that is sent to the main agent whole.</summary>
     public const int SummaryChars = 1500;
 
@@ -79,36 +93,51 @@ public sealed record JobOutcome(
     }
 
     /// <summary>
-    /// The message the main agent receives. The first line is the discriminator: <c>已完成</c> or <c>无法执行</c>,
-    /// so a model (or a person reading the log) can tell the two apart without reading further.
+    /// The message the main agent receives. Completion and evidence are the sub-agent's report, not independent
+    /// confirmation of a file operation. Only paired tool results below are recorded file-operation evidence.
     /// </summary>
     public string ToMessage(string jobId, string agentName, string goal)
     {
         var text = new StringBuilder();
         if (Completed)
         {
-            text.Line($"[子 agent「{agentName}」任务 {jobId} · 已完成 · 第 {Rounds}/{MaxRounds} 轮]");
-            text.Line($"目标：{goal}");
-            text.Line($"结论：{Limit(Summary, SummaryChars, jobId)}");
-            text.Append($"证据：{Limit(Evidence, EvidenceChars, jobId)}");
+            text.Line($"[子 agent「{Inline(agentName)}」任务 {Inline(jobId)} · 已完成（子 agent 报告） · 第 {Rounds}/{MaxRounds} 轮]");
+            text.Line($"目标（请求文本）：{Quote(goal)}");
+            text.Line($"子 agent 结论（引用文本）：{Quote(Limit(Summary, SummaryChars, jobId))}");
+            text.Line($"子 agent 所述证据（未经系统核实，引用文本）：{Quote(Limit(Evidence, EvidenceChars, jobId))}");
+            AppendFileResults(text, jobId);
             return text.ToString();
         }
 
-        text.Line($"[子 agent「{agentName}」任务 {jobId} · 无法执行]");
-        text.Line($"目标：{goal}");
+        text.Line($"[子 agent「{Inline(agentName)}」任务 {Inline(jobId)} · 无法执行]");
+        text.Line($"目标（请求文本）：{Quote(goal)}");
         text.Line($"原因类别：{Category}");
-        text.Line($"错误：{(string.IsNullOrWhiteSpace(Error) ? Summary : Error)}");
+        text.Line($"错误（引用文本）：{Quote(string.IsNullOrWhiteSpace(Error) ? Summary : Error)}");
         text.Line($"已尝试：{Rounds}/{MaxRounds} 轮");
         foreach (var round in History)
         {
-            text.Line($"  {round.Round}. {round.Reason}");
+            text.Line($"  {round.Round}. {Quote(round.Reason)}");
         }
 
         if (Actions.Count > 0)
         {
-            text.Append("已执行过的动作：").Append(string.Join("，", Actions));
+            text.Append("已执行过的动作（引用文本）：").Append(Quote(string.Join("，", Actions)));
         }
 
+        text.AppendLine();
+        AppendFileResults(text, jobId);
         return text.ToString().TrimEnd();
+    }
+
+    private void AppendFileResults(StringBuilder text, string jobId)
+    {
+        text.Line("文件工具记录（仅关联的工具返回结果可作为回执；请求目标未必是实际路径）：");
+        if (FileResults.Count == 0)
+        {
+            text.Append("本任务没有关联到文件工具结果，不能据模型报告确认文件操作。");
+            return;
+        }
+
+        text.Append(Limit(string.Join("\n", FileResults), EvidenceChars, jobId));
     }
 }

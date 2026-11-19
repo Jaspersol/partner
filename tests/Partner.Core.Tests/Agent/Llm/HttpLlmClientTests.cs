@@ -180,6 +180,44 @@ public sealed class HttpLlmClientTests
             ApiKey = "secret",
         });
 
+    [Fact]
+    public async Task Parallel_results_remain_paired_after_budget_folding_and_image_replay()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}""");
+        var history = new List<LlmMessage>
+        {
+            new("user", "look"),
+            new("assistant", "checking", new[]
+            {
+                new LlmToolCall("one", "clock", "{}"),
+                new LlmToolCall("two", "clock", "{\"zone\":\"local\"}"),
+            }),
+            new("tool", new string('x', 4000), ToolCallId: "one", Name: "clock"),
+            new("user", "image from one", Images: new[] { "data:image/png;base64,AAAA" }),
+            new("tool", "second result", ToolCallId: "two", Name: "clock"),
+            new("user", "continue"),
+        };
+        Assert.Equal(1, Partner.Core.Agent.ToolResultBudget.CollapseOlder(
+            history, history.Count, 100, new Partner.Core.Memory.ApproximateTokenCounter()));
+
+        await Build(handler).CompleteAsync(new LlmRequest(history, Array.Empty<ToolSpec>(), MaxTokens: 123));
+
+        using var body = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal(123, body.RootElement.GetProperty("max_tokens").GetInt32());
+        var messages = body.RootElement.GetProperty("messages");
+        var calls = messages[1].GetProperty("tool_calls");
+        Assert.Equal("one", calls[0].GetProperty("id").GetString());
+        Assert.Equal("two", calls[1].GetProperty("id").GetString());
+        Assert.Equal("one", messages[2].GetProperty("tool_call_id").GetString());
+        Assert.Contains("已折叠", messages[2].GetProperty("content").GetString());
+        Assert.Equal("two", messages[3].GetProperty("tool_call_id").GetString());
+        Assert.Equal("second result", messages[3].GetProperty("content").GetString());
+        Assert.Equal("user", messages[4].GetProperty("role").GetString());
+        Assert.Equal("image_url", messages[4].GetProperty("content")[1].GetProperty("type").GetString());
+        Assert.Equal("continue", messages[5].GetProperty("content").GetString());
+    }
+
     private static string Frame(string json) => "data: " + json;
 
     [Fact]

@@ -27,24 +27,9 @@ public sealed partial class SubAgentHost
             Journal("started", job, agent.Name);
             (session, _) = JsonlSessionStore.Open(Path.Combine(_workspace, "agents", agent.Id, job.Id), _clock);
 
-            var report = new TaskReportTool();
             var tools = new InMemoryToolRegistry();
-            tools.Register(report);
-
-            // One branch per scenario, and the tool set is the scenario's whole definition: a job runs under the
-            // wording and the tools it started with, so this switch and AgentScenarios.All have to move together.
-            switch (agent.Scenario)
-            {
-                case AgentScenarios.Desktop:
-                    DesktopToolSet.Register(tools, _context, settings, binding.SupportsImages);
-                    break;
-                case AgentScenarios.WebSearch:
-                    WebToolSet.Register(tools, _context);
-                    break;
-                default:
-                    FileToolSet.Register(tools, settings, _workspace);
-                    break;
-            }
+            var report = AgentRouting.RegisterScenarioTools(
+                agent.Scenario, tools, _context, settings, binding.SupportsImages, _workspace, agent.Id);
 
             // The prompt is read once, here: a job runs under the wording it started with, and an edit made
             // while it works is for the next one.
@@ -53,7 +38,7 @@ public sealed partial class SubAgentHost
                 ContextWindowTokens = binding.ContextTokens,
                 MaxTokens = binding.MaxTokens,
                 SessionId = $"agent:{job.Id}",
-                BaseSystemPrompt = AgentRouting.SubAgentPrompt(agent),
+                BaseSystemPrompt = AgentRouting.SubAgentPrompt(agent, settings),
                 // The settings number, when there is one, is the budget for every family of tools this agent holds.
                 MaxSteps = agent.MaxSteps ?? new AgentTurnOptions().MaxSteps,
                 ToolStepBudgets = agent.MaxSteps is { } steps
@@ -66,21 +51,23 @@ public sealed partial class SubAgentHost
                 options.MaxTokens,
                 binding.Tokens,
                 options.BaseSystemPrompt,
-                _context.Media);
+                _context.Media,
+                reservedTokens: () => ToolResultBudget.SchemaTokens(tools.Specs, binding.Tokens));
 
             var origin = $"子 agent「{agent.Name}」：{Short(job.Goal)}";
             var runner = new AgentTurnRunner(
                 session,
                 binding.Llm,
                 new ObservedToolRegistry(tools, job.SetActivity),
-                new DesktopGovernance(_context),
-                new LeaseGrantingApprovalHandler(new OriginApprovalHandler(_context.Approvals, origin), _context.TaskLeases),
+                new DesktopGovernance(_context, scenario: agent.Scenario, agentId: agent.Id, windowTitles: settings.Desktop.AllowedWindowTitles),
+                new LeaseGrantingApprovalHandler(new OriginApprovalHandler(_context.Approvals, origin, $"子 agent「{agent.Name}」"), _context.TaskLeases),
                 new HookRegistry(),
                 assembler,
                 options,
                 stream: null,
                 failures: _failures,
-                clock: _clock);
+                clock: _clock,
+                tokens: binding.Tokens);
 
             var engine = new JobEngine(runner, session, report, ExtraTerminal, _clock);
             outcome = await engine

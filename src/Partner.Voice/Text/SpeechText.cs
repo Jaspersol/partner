@@ -1,11 +1,11 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Partner.Voice.Text;
 
 /// <summary>
-/// Strips everything a speech engine would read out loud verbatim: emoji, Markdown
-/// emphasis/list/heading markers, links (keeping the label), code fences and inline code.
-/// Without this the model's formatting is dictated character by character.
+/// Strips emoji, Markdown markers, link destinations, raw web URLs, and fenced code
+/// from text sent to a speech engine while retaining link labels and inline code.
 /// </summary>
 public static class TtsTextCleaner
 {
@@ -18,20 +18,21 @@ public static class TtsTextCleaner
 
         var result = new StringBuilder(text.Length);
         var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        var inFence = false;
+        char fence = '\0';
 
         foreach (var raw in lines)
         {
             var line = raw.Trim();
 
             // Code fences: the whole block is dropped, not read aloud.
-            if (line.StartsWith("```", StringComparison.Ordinal))
+            if (line.StartsWith("```", StringComparison.Ordinal) || line.StartsWith("~~~", StringComparison.Ordinal))
             {
-                inFence = !inFence;
+                if (fence == '\0') fence = line[0];
+                else if (fence == line[0]) fence = '\0';
                 continue;
             }
 
-            if (inFence)
+            if (fence != '\0')
             {
                 continue;
             }
@@ -47,6 +48,9 @@ public static class TtsTextCleaner
 
             // Links: keep the label, drop the URL.
             line = StripLinks(line);
+            // Raw URLs and Markdown autolinks have no useful spoken label.
+            line = Regex.Replace(line, @"<?https?://[^\s<>()\[\]，。！？；：]*[^\s<>()\[\].,!?;:，。！？；：]>?", string.Empty, RegexOptions.IgnoreCase);
+
 
             // Emphasis and inline code markers.
             line = line.Replace("**", string.Empty, StringComparison.Ordinal)
@@ -223,7 +227,7 @@ public sealed class SpeechSegmenter
         var previous = -1;
         for (var i = 0; i < text.Length; i++)
         {
-            if (Array.IndexOf(SentenceEndings, text[i]) < 0)
+            if (!IsSentenceEnding(text, i))
             {
                 continue;
             }
@@ -248,6 +252,12 @@ public sealed class SpeechSegmenter
 
         // 2) Too long: the last sentence ending (a short one — the loop above rejected every longer candidate),
         //    then a soft break, then a hard cut at the cap so the engine is never handed a wall of text.
+        // A trailing dot may be the start of a decimal or filename extension in the next streamed fragment.
+        if (text.Length == _maxChars && text[^1] == '.')
+        {
+            return false;
+        }
+
         if (text.Length < _maxChars)
         {
             return false;
@@ -275,13 +285,25 @@ public sealed class SpeechSegmenter
     {
         for (var i = limit - 1; i >= 0; i--)
         {
-            if (Array.IndexOf(SentenceEndings, text[i]) >= 0)
+            if (IsSentenceEnding(text, i))
             {
                 return i + 1;
             }
         }
 
         return -1;
+    }
+
+    private static bool IsSentenceEnding(string text, int index)
+    {
+        if (Array.IndexOf(SentenceEndings, text[index]) < 0)
+        {
+            return false;
+        }
+
+        // Wait for the next streaming fragment before deciding whether a dot ends a sentence.
+        // A dot followed by an ASCII letter or digit belongs to a filename or decimal instead.
+        return text[index] != '.' || (index + 1 < text.Length && !char.IsAsciiLetterOrDigit(text[index + 1]));
     }
 
     /// <summary>

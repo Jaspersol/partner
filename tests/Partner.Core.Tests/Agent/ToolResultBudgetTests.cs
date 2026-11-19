@@ -119,6 +119,36 @@ public sealed class ToolResultBudgetTests : IDisposable
     }
 
     [Fact]
+    public async Task Oversized_file_page_does_not_expose_a_misleading_next_offset()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, "large.txt"), new string('甲', 30000));
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var llm = new SnapshotLlm(
+                new LlmResponse(null, [new LlmToolCall("c1", "file_read", "{\"path\":\"large.txt\",\"offset\":100,\"limit\":20000}")], "tool_calls"),
+                Done());
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new Partner.Core.Agent.Files.FileReadTool(new Partner.Core.Agent.Files.FileAccessPolicy([_dir])));
+            var runner = new AgentTurnRunner(store, llm, tools,
+                new AllowListGovernance(["file_read"]), new DenyAllApprovalHandler(), new HookRegistry(),
+                options: new AgentTurnOptions { ContextWindowTokens = 8192, MaxTokens = 1024 }, tokens: _counter);
+
+            await runner.RunAsync(Claimed());
+
+            var result = Assert.Single(llm.Requests[1], message => message.Role == "tool");
+            Assert.Contains("result_too_large:", result.Content);
+            Assert.Contains("相同 path 和 offset", result.Content);
+            Assert.DoesNotContain("offset=20100", result.Content);
+            var logged = new List<SessionEvent>();
+            await foreach (var entry in store.ReadAllAsync()) logged.Add(entry);
+            var toolResult = Assert.Single(logged, entry => entry.Kind == SessionEventKind.ToolResult);
+            Assert.Contains("result_too_large:", toolResult.Body);
+        }
+    }
+
+    [Fact]
     public async Task Older_tool_results_are_folded_once_the_conversation_nears_the_window()
     {
         var (store, _) = JsonlSessionStore.Open(_dir);

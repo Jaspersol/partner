@@ -106,6 +106,65 @@ public sealed class AnthropicLlmClientTests
         Assert.Equal("12:34", toolResult.GetProperty("content")[0].GetProperty("content").GetString());
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("42")]
+    public async Task Non_object_tool_arguments_are_sent_as_an_empty_object(string arguments)
+    {
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"type":"message","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}""");
+        await Build(handler).CompleteAsync(Request(
+            new LlmMessage("user", "time?"),
+            new LlmMessage("assistant", null, new[] { new LlmToolCall("one", "clock", arguments) }),
+            new LlmMessage("tool", "invalid arguments", ToolCallId: "one")));
+
+        using var body = JsonDocument.Parse(handler.RequestBody!);
+        var input = body.RootElement.GetProperty("messages")[1].GetProperty("content")[0].GetProperty("input");
+        Assert.Equal(JsonValueKind.Object, input.ValueKind);
+        Assert.Empty(input.EnumerateObject());
+    }
+
+    [Fact]
+    public async Task Parallel_results_precede_images_after_budget_folding()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"type":"message","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}""");
+        var history = new List<LlmMessage>
+        {
+            new("user", "look"),
+            new("assistant", "checking", new[]
+            {
+                new LlmToolCall("one", "clock", "{}"),
+                new LlmToolCall("two", "clock", "{\"zone\":\"local\"}"),
+            }),
+            new("tool", new string('x', 4000), ToolCallId: "one", Name: "clock"),
+            new("user", "image from one", Images: new[] { "data:image/png;base64,AAAA" }),
+            new("tool", "second result", ToolCallId: "two", Name: "clock"),
+            new("user", "continue"),
+        };
+        Assert.Equal(1, Partner.Core.Agent.ToolResultBudget.CollapseOlder(
+            history, history.Count, 100, new Partner.Core.Memory.ApproximateTokenCounter()));
+
+        await Build(handler).CompleteAsync(new LlmRequest(history, Array.Empty<ToolSpec>(), MaxTokens: 123));
+
+        using var body = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal(123, body.RootElement.GetProperty("max_tokens").GetInt32());
+        var messages = body.RootElement.GetProperty("messages");
+        var calls = messages[1].GetProperty("content");
+        Assert.Equal("one", calls[1].GetProperty("id").GetString());
+        Assert.Equal("two", calls[2].GetProperty("id").GetString());
+        var results = messages[2].GetProperty("content");
+        Assert.Equal("tool_result", results[0].GetProperty("type").GetString());
+        Assert.Equal("one", results[0].GetProperty("tool_use_id").GetString());
+        Assert.Contains("已折叠", results[0].GetProperty("content").GetString());
+        Assert.Equal("tool_result", results[1].GetProperty("type").GetString());
+        Assert.Equal("two", results[1].GetProperty("tool_use_id").GetString());
+        Assert.Equal("second result", results[1].GetProperty("content").GetString());
+        Assert.Equal("image", results[3].GetProperty("type").GetString());
+        Assert.Equal("continue", results[4].GetProperty("text").GetString());
+    }
+
     [Fact]
     public async Task Consecutive_user_turns_are_merged_into_one()
     {

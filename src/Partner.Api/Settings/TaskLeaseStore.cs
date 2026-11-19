@@ -40,7 +40,8 @@ public sealed class TaskLeaseStore
     private static readonly IReadOnlySet<string> EveryActKind = new HashSet<string>(
         Enum.GetNames<ActionKind>(), StringComparer.Ordinal);
 
-    private readonly Dictionary<string, TaskLeaseState> _leases = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (TaskLeaseState State, Func<bool>? IsStillAuthorized)> _leases = new(StringComparer.Ordinal);
+    private readonly object _gate = new();
     private readonly TimeProvider _clock;
 
     public TaskLeaseStore(TimeProvider? clock = null)
@@ -52,20 +53,22 @@ public sealed class TaskLeaseStore
     /// Records what was just approved. Called only from the approval path after a human said yes, so the
     /// window and kind come from the call the human read on the banner.
     /// </summary>
-    public void Grant(string entityId, string argumentsJson, int? steps = null, TimeSpan? ttl = null)
+    public void Grant(string entityId, string argumentsJson, int? steps = null, TimeSpan? ttl = null, Func<bool>? isStillAuthorized = null)
     {
         if (string.IsNullOrWhiteSpace(entityId))
-        {
             return;
-        }
 
-        var now = _clock.GetUtcNow();
-        _leases[entityId] = new TaskLeaseState(
-            entityId,
-            EveryActKind,
-            steps ?? DefaultSteps,
-            now + (ttl ?? DefaultTtl));
+        lock (_gate)
+        {
+            // A stale approval must not replace a concurrent valid grant.
+            if (isStillAuthorized is not null && !isStillAuthorized())
+                return;
+            var now = _clock.GetUtcNow();
+            _leases[entityId] = (new TaskLeaseState(
+                entityId, EveryActKind, steps ?? DefaultSteps, now + (ttl ?? DefaultTtl)), isStillAuthorized);
+        }
     }
+
 
     /// <summary>
     /// Whether this action may run under the grant the human gave, spending one step of it. Called from
@@ -78,43 +81,52 @@ public sealed class TaskLeaseStore
             return (false, "没有 entityId，本动作不在任何租约之内", 0);
         }
 
-        if (!_leases.TryGetValue(entityId, out var lease))
+        lock (_gate)
         {
-            return (false, $"没有 '{entityId}' 的任务租约", 0);
+            if (!_leases.TryGetValue(entityId, out var entry))
+                return (false, $"没有 '{entityId}' 的任务租约", 0);
+            if (entry.IsStillAuthorized is not null && !entry.IsStillAuthorized())
+            {
+                _leases.Remove(entityId);
+                return (false, "任务租约的授权已变更", 0);
+            }
+            var lease = entry.State;
+            var now = _clock.GetUtcNow();
+            if (now >= lease.ExpiresAt)
+            {
+                _leases.Remove(entityId);
+                return (false, "任务租约已过期", 0);
+            }
+
+            if (lease.RemainingSteps <= 0)
+            {
+                _leases.Remove(entityId);
+                return (false, "任务租约的步数已用完", 0);
+            }
+
+            if (!lease.Kinds.Contains(kind))
+                return (false, $"'{kind}' 不在本租约允许的动作里", lease.RemainingSteps);
+
+            var remaining = lease.RemainingSteps - 1;
+            _leases[entityId] = (lease with { RemainingSteps = remaining }, entry.IsStillAuthorized);
+
+            return (true, remaining > 0
+                ? $"任务租约内（剩余 {remaining} 步）"
+                : "任务租约内（最后一步）", remaining);
         }
-
-        var now = _clock.GetUtcNow();
-        if (now > lease.ExpiresAt)
-        {
-            _leases.Remove(entityId);
-            return (false, "任务租约已过期", 0);
-        }
-
-        if (lease.RemainingSteps <= 0)
-        {
-            _leases.Remove(entityId);
-            return (false, "任务租约的步数已用完", 0);
-        }
-
-        if (!lease.Kinds.Contains(kind))
-        {
-            return (false, $"'{kind}' 不在本租约允许的动作里", lease.RemainingSteps);
-        }
-
-        var remaining = lease.RemainingSteps - 1;
-        _leases[entityId] = lease with { RemainingSteps = remaining };
-
-        return (true, remaining > 0
-            ? $"任务租约内（剩余 {remaining} 步）"
-            : "任务租约内（最后一步）", remaining);
     }
 
     /// <summary>Peeks without spending: what the UI would show as "currently granted".</summary>
-    public IReadOnlyList<TaskLeaseState> Snapshot() =>
-        _leases.Values
-            .Where(lease => lease.ExpiresAt > _clock.GetUtcNow() && lease.RemainingSteps > 0)
-            .OrderBy(lease => lease.EntityId, StringComparer.Ordinal)
-            .ToList();
+    public IReadOnlyList<TaskLeaseState> Snapshot()
+    {
+        lock (_gate)
+            return _leases.Values
+                .Where(entry => (entry.IsStillAuthorized is null || entry.IsStillAuthorized())
+                    && entry.State.ExpiresAt > _clock.GetUtcNow() && entry.State.RemainingSteps > 0)
+                .Select(entry => entry.State)
+                .OrderBy(lease => lease.EntityId, StringComparer.Ordinal)
+                .ToList();
+    }
 
     /// <summary>
     /// Reads the window and kind a call was aimed at, from its arguments. Tolerates malformed JSON by

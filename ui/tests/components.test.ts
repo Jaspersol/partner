@@ -57,6 +57,28 @@ describe('approval banner', () => {
     expect(wrapper.find('[data-test="approval-hint"]').text()).toContain('无人应答即拒绝')
   })
 
+  it.each(['file_write', 'file_edit'])('shows only the target, origin and relevant risk for %s', (toolName) => {
+    const path = `D:\\work\\${'long-directory-'.repeat(10)}\\a.txt`
+    const request = { ...pending, toolName, origin: '文件子 agent', arguments: JSON.stringify({
+      path, preview: '私密正文', oldPreview: '旧正文', newPreview: '新正文', kind: '私密参数', entityId: '104d4',
+    }) }
+    const wrapper = mount(ApprovalBanner, { props: { pending: [request], desktop } })
+    expect(wrapper.text()).toContain(path)
+    expect(wrapper.text()).toContain('文件子 agent')
+    expect(wrapper.text()).toContain('仅批准本次')
+    expect(wrapper.text()).not.toContain('私密正文')
+    expect(wrapper.text()).not.toContain('旧正文')
+    expect(wrapper.text()).not.toContain('新正文')
+    expect(wrapper.text()).not.toContain('私密参数')
+    expect(wrapper.text()).not.toContain('网易云音乐')
+    expect(wrapper.find('[data-test="approval-hint"]').text()).not.toContain('窗口')
+    if (toolName === 'file_edit') {
+      expect(wrapper.text()).toContain('读取版本不一致时，不会提交')
+    } else {
+      expect(wrapper.text()).not.toContain('读取版本不一致时，不会提交')
+    }
+  })
+
   it('reads a timed-task request as when and what, not as a desktop action', async () => {
     const create = {
       ...pending,
@@ -220,6 +242,192 @@ describe('event list', () => {
     expect(card.attributes('data-status')).toBe('failed')
     expect(card.find('summary').text()).toContain('失败')
     expect(card.text()).toContain('approval denied')
+  })
+
+  it('uses the paired file tool result, not the assistant claim, for the card status', () => {
+    const claimOnly = mount(EventList, { props: { selectedSeq: null, items: [
+      { ...baseItem, seq: 1, kind: 'User', body: '创建文件' },
+      { ...baseItem, seq: 2, kind: 'Assistant', body: '文件已创建' },
+    ] } })
+    expect(claimOnly.text()).toContain('文件已创建')
+    expect(claimOnly.find('[data-tool=file_write]').exists()).toBe(false)
+
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        active: true,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'file-1', name: 'file_write', args: '{}' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body: JSON.stringify({ path: 'C:\\safe\\file.txt', approval: 'denied', status: 'denied', bytes: null, version: null, message: null }), meta: { id: 'file-1', name: 'file_write', ok: 'false' } },
+          { ...baseItem, seq: 3, kind: 'Assistant', body: '文件已创建' },
+        ],
+      },
+    })
+
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe('denied')
+    expect(wrapper.find('[data-tool=file_write]').text()).toContain('C:\\\\safe\\\\file.txt')
+  })
+
+  it.each([
+    ['failed', 'failed'],
+    ['denied', 'denied'],
+    ['not_started', 'not_started'],
+    ['unconfirmed', 'unconfirmed'],
+  ])('renders structured write state %s', (state, expected) => {
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, items: [
+        { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'write-1', name: 'file_write', args: '{}' } },
+        { ...baseItem, seq: 2, kind: 'ToolResult', body: JSON.stringify({ path: 'C:\\safe\\file.txt', approval: 'approved', status: state, bytes: null, version: null, message: null }), meta: { id: 'write-1', name: 'file_write', ok: 'false' } },
+      ] },
+    })
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe(expected)
+    expect(wrapper.find('[data-tool=file_write]').text()).toContain('C:\\\\safe\\\\file.txt')
+  })
+
+  it('does not infer success from an old wrapped write result', () => {
+    const wrapper = mount(EventList, { props: { selectedSeq: null, items: [
+      { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'write-1', name: 'file_write', args: '{}' } },
+      { ...baseItem, seq: 2, kind: 'ToolResult', body: JSON.stringify({ path: 'C:\\safe\\file.txt', approval: 'approved', result: 'created' }), meta: { id: 'write-1', name: 'file_write', ok: 'true' } },
+    ] } })
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe('unconfirmed')
+  })
+
+  it.each([
+    [JSON.stringify({ path: 'C:\\safe\\file.txt', approval: 'approved', status: 'unconfirmed', bytes: null, version: null, message: 'verify before retrying' }), 'unconfirmed'],
+    ['timeout after 30s; status unconfirmed, verify before retrying', 'unconfirmed'],
+    ['created', 'unconfirmed'],
+  ])('shows an unconfirmed receipt rather than a failed file delivery: %s', (body, status) => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        active: true,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'file-1', name: 'file_write', args: '{}' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body, meta: { id: 'file-1', name: 'file_write', ok: 'false' } },
+          { ...baseItem, seq: 3, kind: 'Assistant', body: '文件已创建' },
+        ],
+      },
+    })
+    const card = wrapper.find('[data-tool=file_write]')
+    expect(card.attributes('data-status')).toBe(status)
+    expect(card.find('summary').text()).toContain('状态未确认')
+    expect(card.text()).toContain('重试前请先确认实际状态')
+  })
+
+  it('keeps orphan and incomplete receipts honest without mistaking approval timeout for execution', () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolResult', body: 'timeout after 30s; status unconfirmed, verify before retrying', meta: { name: 'file_write', ok: 'false' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body: 'approval canceled or timed out; tool was not started', meta: { name: 'desktop_act', ok: 'false' } },
+          { ...baseItem, seq: 3, kind: 'ToolResult', body: 'unknown', meta: { name: 'agent_delegate' } },
+          { ...baseItem, seq: 4, kind: 'ToolResult', body: 'timeout after 30s; status unconfirmed, verify before retrying', meta: { name: 'read', ok: 'true' } },
+        ],
+      },
+    })
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe('unconfirmed')
+    expect(wrapper.find('[data-tool=desktop_act]').attributes('data-status')).toBe('failed')
+    expect(wrapper.find('[data-tool=agent_delegate]').attributes('data-status')).toBe('unconfirmed')
+    expect(wrapper.find('[data-tool=read]').attributes('data-status')).toBe('ok')
+  })
+
+  it('does not confirm a file operation without a result paired to its call', () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        active: true,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'call-1', name: 'file_write', args: '{}' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body: 'created', meta: { id: 'other', name: 'file_write', ok: 'true' } },
+          { ...baseItem, seq: 3, kind: 'Assistant', body: '文件已创建' },
+        ],
+      },
+    })
+    const cards = wrapper.findAll('[data-tool=file_write]')
+    expect(cards).toHaveLength(2)
+    expect(cards.map((card) => card.attributes('data-status'))).toEqual(['unconfirmed', 'unconfirmed'])
+  })
+
+  it('confirms a file operation only from its paired successful result', () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_edit', meta: { id: 'edit-1', name: 'file_edit', args: '{}' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body: JSON.stringify({ path: 'C:\\safe\\file.txt', approval: 'approved', status: 'success', bytes: 3, version: 'a'.repeat(64), message: null }), meta: { id: 'edit-1', name: 'file_edit', ok: 'true' } },
+        ],
+      },
+    })
+    expect(wrapper.find('[data-tool=file_edit]').attributes('data-status')).toBe('ok')
+  })
+
+  it('does not attach a different file tool result even when the call id matches', () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_edit', meta: { id: 'edit-1', name: 'file_edit', args: '{}' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body: 'created', meta: { id: 'edit-1', name: 'file_write', ok: 'true' } },
+        ],
+      },
+    })
+    expect(wrapper.find('[data-tool=file_edit]').attributes('data-status')).toBe('unconfirmed')
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe('unconfirmed')
+  })
+
+  it('does not correlate file receipts with unrelated or ambiguous calls', () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'clock', meta: { id: 'cross', name: 'clock' } },
+          { ...baseItem, seq: 2, kind: 'ToolResult', body: 'created', meta: { id: 'cross', name: 'file_write', ok: 'true' } },
+          { ...baseItem, seq: 3, kind: 'ToolCall', body: 'file_edit', meta: { id: 'duplicate', name: 'file_edit' } },
+          { ...baseItem, seq: 4, kind: 'ToolCall', body: 'file_edit', meta: { id: 'duplicate', name: 'file_edit' } },
+          { ...baseItem, seq: 5, kind: 'ToolResult', body: 'updated', meta: { id: 'duplicate', name: 'file_edit', ok: 'true' } },
+          { ...baseItem, seq: 6, kind: 'ToolCall', body: 'file_write', meta: { id: '', name: 'file_write' } },
+          { ...baseItem, seq: 7, kind: 'ToolResult', body: 'created', meta: { id: '', name: 'file_write', ok: 'true' } },
+          { ...baseItem, seq: 8, kind: 'ToolCall', body: 'file_read', meta: { id: 'repeated-result', name: 'file_read' } },
+          { ...baseItem, seq: 9, kind: 'ToolResult', body: 'read', meta: { id: 'repeated-result', name: 'file_read', ok: 'true' } },
+          { ...baseItem, seq: 10, kind: 'ToolResult', body: 'read again', meta: { id: 'repeated-result', name: 'file_read', ok: 'true' } },
+        ],
+      },
+    })
+    for (const card of wrapper.findAll('[data-tool^=file_]')) {
+      expect(card.attributes('data-status')).toBe('unconfirmed')
+    }
+    expect(wrapper.find('[data-tool=clock]').attributes('data-status')).toBe('running')
+  })
+
+  it('shows only an outstanding trailing file call in a busy turn as running', async () => {
+    const wrapper = mount(EventList, {
+      props: {
+        selectedSeq: null,
+        busy: true,
+        active: true,
+        items: [
+          { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_edit', meta: { id: 'old', name: 'file_edit' } },
+          { ...baseItem, seq: 2, kind: 'Assistant', body: 'previous turn' },
+          { ...baseItem, seq: 3, kind: 'ToolCall', body: 'file_write', meta: { id: 'current', name: 'file_write' } },
+        ],
+      },
+    })
+    expect(wrapper.find('[data-tool=file_edit]').attributes('data-status')).toBe('unconfirmed')
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe('running')
+    await wrapper.setProps({ busy: false })
+    expect(wrapper.find('[data-tool=file_write]').attributes('data-status')).toBe('unconfirmed')
+  })
+
+  it('does not treat a filtered call as running or pair an ambiguous filtered receipt', () => {
+    const call = { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'id', name: 'file_write' } }
+    const result = { ...baseItem, seq: 2, kind: 'ToolResult', body: 'created', meta: { id: 'id', name: 'file_write', ok: 'true' } }
+    const duplicate = { ...baseItem, seq: 3, kind: 'ToolResult', body: 'created again', meta: { id: 'id', name: 'file_write', ok: 'true' } }
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, busy: true, items: [call, result], correlationItems: [call, result, duplicate] },
+    })
+    expect(wrapper.findAll('[data-tool=file_write]').map((card) => card.attributes('data-status')))
+      .toEqual(['unconfirmed', 'unconfirmed'])
   })
 
   it('shows a call that has not come back yet as in flight', async () => {
@@ -963,7 +1171,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
       agents: { main: { prompt: null }, subAgents: [] },
-      files: { enabled: false, roots: [] },
+      files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       memory: { embeddings: false },
       pet: PET_SETTINGS,
@@ -986,7 +1194,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
       scenarios: [],
       problems: [],
       limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
-      files: { enabled: false, roots: [] },
+      files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
       desktopEnabled: false,
       webEnabled: false,
     })),
@@ -997,7 +1205,7 @@ function stubApi(overrides: Partial<PartnerApiSurface> = {}): PartnerApiSurface 
         scenarios: [],
         problems: [],
         limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
-        files: { enabled: false, roots: [] },
+        files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
         desktopEnabled: false,
       webEnabled: false,
       },

@@ -8,8 +8,6 @@ using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Skills;
 using Partner.Core.Agent.Mcp;
 using Partner.Core.Agent.Tools;
-using Partner.Core.Agent.Web;
-using Partner.Desktop.Tools;
 using Partner.Core.Hosting;
 using Partner.Core.Memory;
 using Partner.Core.Sessions;
@@ -17,10 +15,10 @@ using Partner.Core.Agent.Delegation;
 
 namespace Partner.Api;
 
-/// <summary>One tool the model can call, with the decision governance will apply to it.</summary>
+/// <summary>One exposed tool and its baseline governance decision; arguments and leases may change a call.</summary>
 public sealed record ToolExposure(string Name, string Decision);
 
-/// <summary>The tools a sub-agent's job gets for one scenario, with the decision governance will apply to each.</summary>
+/// <summary>The tools a sub-agent's job gets for one scenario, with baseline governance decisions.</summary>
 public sealed record AgentToolExposure(string Scenario, string Agent, IReadOnlyList<ToolExposure> Tools);
 
 public sealed record ConsumerState(
@@ -39,9 +37,8 @@ public sealed record ConsumerState(
 /// <c>/api/consumer</c>.
 /// </para>
 /// <para>
-/// Configuration can change at runtime, so the loop is replaceable: <see cref="ReconfigureAsync"/> stops the
-/// current one and starts another. A settings edit that changed the model without restarting the loop would
-/// leave the UI describing a configuration that is not in effect.
+/// Endpoint changes replace the loop; capability and scenario changes instead publish a new tool snapshot
+/// for the next turn while current calls remain subject to live governance.
 /// </para>
 /// </summary>
 public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
@@ -49,6 +46,9 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private readonly ApiContext _context;
     private readonly string _workspace;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly object _startupGate = new();
+    private CancellationTokenSource? _startup;
 
     private TurnLoop? _loop;
     private CancellationTokenSource? _stop;
@@ -57,20 +57,21 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     private ILlmClient? _llm;
     private IReadOnlyList<string> _toolNames = Array.Empty<string>();
     private DesktopGovernance? _governance;
+    private sealed record TurnSnapshot(AgentTurnRunner Runner, SessionWindowContextAssembler Assembler, IReadOnlyList<string> Names, Func<int> SchemaTokens, RuntimeSettings Settings);
+    private readonly object _snapshotGate = new();
+    private TurnSnapshot? _turnSnapshot;
+    private Func<RuntimeSettings, TurnSnapshot>? _buildTurnSnapshot;
     private string _reason = "未启动";
 
     /// <summary>The main model's window, kept so a sub-agent that follows the main model gets the same numbers.</summary>
     private int _mainContextTokens = 128000;
     private int _mainMaxTokens = 32000;
 
-    /// <summary>
-    /// The MCP servers this consumer started, kept so a reconfigure can stop them.
-    /// <para>
-    /// Held on the host rather than dropped after registration: a client that is never stopped leaves a child
-    /// process behind on every settings save, and those accumulate.
-    /// </para>
-    /// </summary>
+    // Connections and descriptors outlive a consumer loop rebuild, but not a server configuration change.
     private readonly List<IMcpClient> _mcpClients = new();
+    private McpSettings? _connectedMcpSettings;
+    private IReadOnlyList<McpAttempt> _mcpAttempts = Array.Empty<McpAttempt>();
+    internal Func<McpServerConfig, IMcpClient> McpClientFactory { get; set; } = config => new StdioMcpClient(config);
 
     /// <summary>Why MCP is not running, in the terms a person can act on. Null when nothing is configured.</summary>
     public string? McpNote { get; private set; }
@@ -168,7 +169,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         Tools: _toolNames
             .Select(name => new ToolExposure(
                 name,
-                (_governance?.Decide(name, "{}").Decision ?? ToolDecision.Deny).ToString().ToLowerInvariant()))
+                ToolStatus(name)))
             .ToList(),
         AgentTools: SubAgentTools());
 
@@ -188,25 +189,33 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         return AgentRouting.Effective(settings)
             .Select(route =>
             {
-                // One branch per scenario, mirroring the tool set the job runner registers for it: reporting the
-                // web-search agent's tools through the default branch would tell a person it can read files.
-                var names = route.Scenario.Key switch
-                {
-                    AgentScenarios.Desktop => DesktopToolCatalog.All
-                        .Where(name => name != "desktop_screenshot" || (route.Agent.Model?.SupportsImages ?? settings.Model.SupportsImages))
-                        .ToList(),
-                    AgentScenarios.WebSearch => new List<string> { WebSearchTool.Name, WebFetchTool.Name },
-                    _ => new List<string> { "file_list", "file_read" },
-                };
+                var names = AgentRouting.ScenarioTools(
+                    route.Scenario.Key, settings,
+                    route.Agent.Model?.SupportsImages ?? settings.Model.SupportsImages);
 
                 return new AgentToolExposure(
                     route.Scenario.Key,
                     route.Agent.Name,
                     names.Select(name => new ToolExposure(
                         name,
-                        _governance.Decide(name, "{}").Decision.ToString().ToLowerInvariant())).ToList());
+                        ToolStatus(name))).ToList());
             })
             .ToList();
+    }
+
+    private string ToolStatus(string name)
+    {
+        if (_governance is null) return "deny";
+        var decision = _governance.Summarize(name).Decision;
+        if (decision != ToolDecision.Deny)
+        {
+            var settings = _context.Settings.Load();
+            if (name == "desktop_act" && ApprovalGears.Normalize(settings.Desktop.Approval) != ApprovalGears.None)
+                return "conditional";
+            if (name == "web_fetch" && ApprovalGears.Normalize(settings.Desktop.Approval) == ApprovalGears.All)
+                return "conditional";
+        }
+        return decision.ToString().ToLowerInvariant();
     }
 
     public static ConsumerHost Create(ApiContext context, string workspace)
@@ -222,7 +231,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// </summary>
     public ITokenCounter Tokens { get; private set; } = new ApproximateTokenCounter();
 
-    private int _toolSchemaTokens;
+    private Func<int> _toolSchemaTokens = static () => 0;
 
     /// <summary>What the model is writing right now, for the session view to show as it grows.</summary>
     public LiveAssistant? LiveAssistant
@@ -304,7 +313,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             settings.Model.ContextTokens,
             settings.Model.MaxTokens,
             Tokens,
-            reservedTokens: () => Volatile.Read(ref _toolSchemaTokens));
+            reservedTokens: Volatile.Read(ref _toolSchemaTokens));
 
         return await assembler.MeasureAsync(ct).ConfigureAwait(false);
     }
@@ -403,34 +412,68 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// <paramref name="injected"/> is used verbatim when present — it is how tests and diagnostics supply a
     /// scripted model, and it has no endpoint to build a client from.
     /// </summary>
-    public async Task<ConsumerState> ReconfigureAsync(ModelConfig? config, string reason, ILlmClient? injected = null)
+    public async Task<ConsumerState> ReconfigureAsync(ModelConfig? config, string reason, ILlmClient? injected = null, CancellationToken ct = default)
     {
-        await _gate.WaitAsync().ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        using var startup = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
+        lock (_startupGate)
+        {
+            _startup?.Cancel();
+            _startup = startup;
+        }
+
         try
         {
-            // Before the tool table is rebuilt: a job holds the one it was started with.
-            await _agents.CancelAllAsync().ConfigureAwait(false);
-            await StopAsync().ConfigureAwait(false);
-
-            if (config is null && injected is null)
+            await _gate.WaitAsync(startup.Token).ConfigureAwait(false);
+            try
             {
-                _reason = reason;
-                _model = null;
-                _toolNames = Array.Empty<string>();
-                _governance = null;
+                // Before the tool table is rebuilt: a job holds the one it was started with.
+                await _agents.CancelAllAsync().ConfigureAwait(false);
+                await StopAsync().ConfigureAwait(false);
+
+                if (config is null && injected is null)
+                {
+                    await StopMcpAsync().ConfigureAwait(false);
+                    _reason = reason;
+                    _model = null;
+                    _toolNames = Array.Empty<string>();
+                    _governance = null;
+                    return State;
+                }
+
+                try
+                {
+                    await StartAsync(config, reason, injected, startup.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    await StopAsync().ConfigureAwait(false);
+                    await StopMcpAsync().ConfigureAwait(false);
+                    _http?.Dispose();
+                    _http = null;
+                    _llm = null;
+                    _model = null;
+                    _toolNames = Array.Empty<string>();
+                    _governance = null;
+                    throw;
+                }
                 return State;
             }
-
-            Start(config, reason, injected);
-            return State;
+            finally
+            {
+                _gate.Release();
+            }
         }
         finally
         {
-            _gate.Release();
+            lock (_startupGate)
+            {
+                if (ReferenceEquals(_startup, startup)) _startup = null;
+            }
         }
     }
 
-    private void Start(ModelConfig? config, string reason, ILlmClient? injected)
+    private async Task StartAsync(ModelConfig? config, string reason, ILlmClient? injected, CancellationToken ct)
     {
         ILlmClient llm;
 
@@ -472,90 +515,100 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         _mainContextTokens = turnOptions.ContextWindowTokens;
         _mainMaxTokens = turnOptions.MaxTokens;
 
-        // Built here rather than left to the runner's default: the assembler is the one that can reach the
-        // media store, so it is the one that attaches the input's images.
-        var assembler = new SessionWindowContextAssembler(
-            _context.Session,
-            turnOptions.ContextWindowTokens,
-            turnOptions.MaxTokens,
-            Tokens,
-            turnOptions.BaseSystemPrompt,
-            _context.Media,
-            turnOptions.PromptSource,
-            reservedTokens: () => Volatile.Read(ref _toolSchemaTokens));
-
         var settings = _context.Settings.Load();
-        var tools = new InMemoryToolRegistry();
+        var mcpTools = new InMemoryToolRegistry();
+        await RegisterMcpToolsAsync(mcpTools, settings.Mcp, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
 
-        // Desktop tools are registered only by the desktop sub-agent: the main agent hands desktop work to it
-        // and never holds the tools itself. File tools stay with the main agent only while no enabled sub-agent
-        // has taken them ("no scenario configured" = main does it).
-        if (AgentRouting.MainOwnsFiles(settings))
+        var tokens = Tokens;
+        var governance = new DesktopGovernance(_context, mainAgent: true);
+        _governance = new DesktopGovernance(_context);
+        var hooks = TurnHooks(_workspace);
+
+        TurnSnapshot BuildSnapshot(RuntimeSettings current)
         {
-            FileToolSet.Register(tools, settings, _workspace);
+            var tools = new InMemoryToolRegistry();
+            if (AgentRouting.MainOwnsFiles(current))
+                AgentRouting.RegisterFamily(AgentScenarios.FileRead, tools, _context, current, current.Model.SupportsImages, _workspace);
+            if (AgentRouting.MainOwnsWeb(current))
+                AgentRouting.RegisterFamily(AgentScenarios.WebSearch, tools, _context, current, current.Model.SupportsImages, _workspace);
+            foreach (var spec in mcpTools.Specs)
+                tools.Register(mcpTools.Find(spec.Name)!);
+            AgentRouting.RegisterMainTools(tools, _context, _agents, current);
+
+            Func<int> schemaTokens = () => ToolResultBudget.SchemaTokens(tools.Specs, tokens);
+            var assembler = new SessionWindowContextAssembler(
+                _context.Session, turnOptions.ContextWindowTokens, turnOptions.MaxTokens, tokens,
+                turnOptions.BaseSystemPrompt, _context.Media, turnOptions.PromptSource, reservedTokens: schemaTokens);
+            var runner = new AgentTurnRunner(
+                _context.Session, llm, tools, governance,
+                new LeaseGrantingApprovalHandler(_context.Approvals, _context.TaskLeases),
+                hooks, assembler: assembler, options: turnOptions, stream: this,
+                failures: _failures, clock: _clock, tokens: tokens);
+            return new TurnSnapshot(runner, assembler, tools.Specs.Select(spec => spec.Name).ToArray(), schemaTokens, current);
         }
 
-        // On by default: web search ships enabled, so out of the box these two tools are the main agent's. They
-        // move to a web-search sub-agent the moment one is created and enabled.
-        if (AgentRouting.MainOwnsWeb(settings))
-        {
-            WebToolSet.Register(tools, _context);
-        }
-
-        RegisterMcpTools(tools, settings.Mcp);
-
-        // Always the main agent's, and not behind a switch: timed tasks are part of the product, not a capability
-        // that reaches outside it. What guards them is governance (creating and deleting ask a human).
-        tools.Register(new ScheduleCreateTool(_context));
-        tools.Register(new ScheduleListTool(_context));
-        tools.Register(new ScheduleDeleteTool(_context));
-
-        var routes = AgentRouting.Effective(settings);
-        if (routes.Count > 0)
-        {
-            tools.Register(new AgentDelegateTool(_agents, AgentRouting.DelegationScenarios(settings)));
-            tools.Register(new AgentJobStatusTool(_agents));
-            tools.Register(new AgentJobCancelTool(_agents));
-        }
-
-        _toolNames = tools.Specs.Select(spec => spec.Name).ToList();
-
-        // The definitions ride on every request; the window has that much less room for history.
-        Volatile.Write(ref _toolSchemaTokens, ToolResultBudget.SchemaTokens(tools.Specs, Tokens));
-
-        var governance = new DesktopGovernance(_context);
-        _governance = governance;
-
-        var runner = new AgentTurnRunner(
-            _context.Session,
-            llm,
-            tools,
-            // Fail-closed and live: the desktop tools answer to the current approval gear, and anything that is
-            // not a desktop tool is denied because nothing else is registered.
-            governance,
-            // Approval, intercepted: a granted desktop action also opens its continuing grant on the same
-            // window, which is what turns "approve each of 24 clicks" into "approve the window". The wrap
-            // forwards everything else unchanged.
-            new LeaseGrantingApprovalHandler(_context.Approvals, _context.TaskLeases),
-            TurnHooks(_workspace),
-            assembler: assembler,
-            options: turnOptions,
-            stream: this,
-            failures: _failures,
-            clock: _clock,
-            tokens: Tokens);
+        _buildTurnSnapshot = BuildSnapshot;
+        PublishTurnSnapshot(BuildSnapshot(settings));
 
         _loop = new TurnLoop(
             _context.Queue,
-            runner,
+            () => SnapshotForTurn().Runner,
             _context.Session,
-            afterTurn: ct => CompactIfNeededAsync(assembler, ct),
+            afterTurn: ct => CompactIfNeededAsync(Volatile.Read(ref _turnSnapshot)!.Assembler, ct),
             onSettled: RecordScheduledRunAsync);
         _stop = new CancellationTokenSource();
         _running = _loop.RunAsync(_stop.Token);
         _llm = llm;
         _model = injected is not null ? injected.GetType().Name : config!.Model;
         _reason = reason;
+    }
+
+    private void PublishTurnSnapshot(TurnSnapshot snapshot)
+    {
+        _toolNames = snapshot.Names;
+        Volatile.Write(ref _toolSchemaTokens, snapshot.SchemaTokens);
+        Volatile.Write(ref _turnSnapshot, snapshot);
+    }
+
+    private TurnSnapshot SnapshotForTurn()
+    {
+        lock (_snapshotGate)
+        {
+            var snapshot = _turnSnapshot!;
+            var settings = _context.Settings.Load();
+            if (AgentRouting.ToolTableDiffers(snapshot.Settings, settings)
+                || snapshot.Settings.Model.SupportsImages != settings.Model.SupportsImages)
+            {
+                snapshot = _buildTurnSnapshot!(settings);
+                PublishTurnSnapshot(snapshot);
+            }
+            return snapshot;
+        }
+    }
+
+    /// <summary>Updates future turns without stopping the consumer, model or MCP processes.</summary>
+    public async Task RefreshToolsAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            lock (_snapshotGate)
+            {
+                if (_buildTurnSnapshot is { } build)
+                {
+                    var settings = _context.Settings.Load();
+                    var current = _turnSnapshot;
+                    if (current is null || AgentRouting.ToolTableDiffers(current.Settings, settings)
+                        || current.Settings.Model.SupportsImages != settings.Model.SupportsImages)
+                        PublishTurnSnapshot(build(settings));
+                }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     /// <summary>
@@ -609,53 +662,80 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// server that refused.
     /// </para>
     /// </summary>
-    private void RegisterMcpTools(InMemoryToolRegistry tools, McpSettings settings)
+    private async Task RegisterMcpToolsAsync(InMemoryToolRegistry tools, McpSettings settings, CancellationToken ct)
     {
-        McpNote = null;
-
-        if (!settings.Enabled || settings.Servers.Count == 0)
+        if (_connectedMcpSettings is null
+            || _connectedMcpSettings.Enabled != settings.Enabled
+            || !_connectedMcpSettings.Servers.SequenceEqual(settings.Servers))
         {
-            return;
+            await StopMcpAsync().ConfigureAwait(false);
+            if (settings.Enabled && settings.Servers.Count > 0)
+            {
+                await ConnectMcpServersAsync(settings, ct).ConfigureAwait(false);
+            }
+            _connectedMcpSettings = settings;
         }
-
-        // Every server is started and asked for its tools at once: each one is a child process with its own
-        // handshake, and doing them one after another made startup the sum of all of them instead of the slowest.
-        // Results are consumed in settings order below, so tool registration and failure notes read as before.
-        var attempts = settings.Servers
-            .Select(server => Task.Run(() => ConnectMcpAsync(server)))
-            .ToArray();
-        Task.WaitAll(attempts);
 
         var failures = new List<string>();
-
-        foreach (var (server, attempt) in settings.Servers.Zip(attempts, (server, task) => (server, task.Result)))
+        foreach (var (server, attempt) in settings.Servers.Zip(_mcpAttempts))
         {
             if (attempt.Client is null)
-            {
                 failures.Add($"{server.Name}: {attempt.StartError}");
-                continue;
-            }
-
-            _mcpClients.Add(attempt.Client);
-
-            if (attempt.ListError is not null)
-            {
+            else if (attempt.ListError is not null)
                 failures.Add($"{server.Name}: tools/list 失败（{attempt.ListError}）");
-                continue;
-            }
-
-            foreach (var descriptor in attempt.Tools)
-            {
-                // Namespaced so two servers can offer the same tool name without one shadowing the other,
-                // and so a reader can tell where a tool came from.
-                tools.Register(new NamespacedMcpTool(attempt.Client, server.Name, descriptor));
-            }
         }
 
-        if (failures.Count > 0)
+        // Names use an underscore separator, so (server=a_b, tool=c) and
+        // (server=a, tool=b_c) collide. Never let registration silently replace
+        // one server's tool with another, especially when the name is allowlisted.
+        var discovered = settings.Servers.Zip(_mcpAttempts)
+            .Where(pair => pair.Second.Client is not null && pair.Second.ListError is null)
+            .SelectMany(pair => pair.Second.Tools.Select(descriptor =>
+                (Server: pair.First.Name, Client: pair.Second.Client!, Descriptor: descriptor,
+                    Name: NamespacedMcpTool.Name(pair.First.Name, descriptor.Name))))
+            .ToArray();
+        var collisions = discovered.GroupBy(item => item.Name, StringComparer.Ordinal)
+            .Where(group => group.Skip(1).Any())
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        if (collisions.Count > 0)
+            failures.Add($"MCP 工具名称冲突，已拒绝：{string.Join("、", collisions.OrderBy(name => name, StringComparer.Ordinal))}");
+        McpNote = failures.Count == 0 ? null : string.Join("；", failures);
+        foreach (var item in discovered)
         {
-            McpNote = string.Join("；", failures);
+            if (!collisions.Contains(item.Name))
+                tools.Register(new NamespacedMcpTool(item.Client, item.Server, item.Descriptor));
         }
+    }
+
+    private async Task ConnectMcpServersAsync(McpSettings settings, CancellationToken ct)
+    {
+        // Connect in parallel, but preserve settings order for registration and diagnostics.
+        var attempts = settings.Servers.Select(server => Task.Run(() => ConnectMcpAsync(server, ct))).ToArray();
+        McpAttempt[] results;
+        try
+        {
+            results = await Task.WhenAll(attempts).ConfigureAwait(false);
+        }
+        catch
+        {
+            // WhenAll has observed every attempt; successful siblings still own live clients.
+            foreach (var task in attempts)
+            {
+                if (task.Status == TaskStatus.RanToCompletion && task.Result.Client is { } client)
+                {
+                    _mcpClients.Add(client);
+                }
+            }
+
+            throw;
+        }
+        foreach (var result in results)
+        {
+            if (result.Client is not null) _mcpClients.Add(result.Client);
+        }
+
+        _mcpAttempts = results;
     }
 
     private sealed record McpAttempt(
@@ -664,13 +744,13 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         IReadOnlyList<McpToolDescriptor> Tools,
         string? ListError);
 
-    /// <summary>One server's start and tool listing, never throwing: the caller reports what went wrong.</summary>
-    private static async Task<McpAttempt> ConnectMcpAsync(McpServerSettings server)
+    /// <summary>One server's start and tool listing; cancellation is propagated to the assembler.</summary>
+    private async Task<McpAttempt> ConnectMcpAsync(McpServerSettings server, CancellationToken ct)
     {
-        IMcpClient client;
+        IMcpClient? client = null;
         try
         {
-            client = new StdioMcpClient(new McpServerConfig
+            client = McpClientFactory(new McpServerConfig
             {
                 Name = server.Name,
                 Command = server.Command,
@@ -680,16 +760,27 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 StartTimeout = TimeSpan.FromSeconds(Math.Max(1, server.StartTimeoutSeconds)),
             });
 
-            await client.StartAsync().ConfigureAwait(false);
+            await client.StartAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            if (client is not null) await DisposeMcpClientAsync(client).ConfigureAwait(false);
+            throw;
         }
         catch (Exception error)
         {
+            if (client is not null) await DisposeMcpClientAsync(client).ConfigureAwait(false);
             return new McpAttempt(null, error.Message, Array.Empty<McpToolDescriptor>(), null);
         }
 
         try
         {
-            return new McpAttempt(client, null, await client.ListToolsAsync().ConfigureAwait(false), null);
+            return new McpAttempt(client, null, await client.ListToolsAsync(ct).ConfigureAwait(false), null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await DisposeMcpClientAsync(client).ConfigureAwait(false);
+            throw;
         }
         catch (Exception error)
         {
@@ -711,10 +802,25 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
                 Console.Error.WriteLine($"mcp server did not stop cleanly: {error.Message}");
             }
 
-            await client.DisposeAsync().ConfigureAwait(false);
+            await DisposeMcpClientAsync(client).ConfigureAwait(false);
         }
 
         _mcpClients.Clear();
+        _mcpAttempts = Array.Empty<McpAttempt>();
+        _connectedMcpSettings = null;
+        McpNote = null;
+    }
+
+    private static async Task DisposeMcpClientAsync(IMcpClient client)
+    {
+        try
+        {
+            await client.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine($"mcp server did not dispose cleanly: {error.Message}");
+        }
     }
 
     /// <summary>
@@ -744,19 +850,20 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             _loop = null;
             _http = null;
         }
+        _buildTurnSnapshot = null;
+        Volatile.Write(ref _turnSnapshot, null);
 
-        // Outside the guard on purpose: a consumer that never started still may have started servers, and a
-        // child process left behind is invisible until someone notices the machine is busy.
-        await StopMcpAsync().ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
+        await _shutdown.CancelAsync().ConfigureAwait(false);
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             await _agents.DisposeAsync().ConfigureAwait(false);
             await StopAsync().ConfigureAwait(false);
+            await StopMcpAsync().ConfigureAwait(false);
 
             foreach (var client in _subClients.Values)
             {
@@ -766,6 +873,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         finally
         {
             _gate.Release();
+            _shutdown.Dispose();
             _gate.Dispose();
         }
     }

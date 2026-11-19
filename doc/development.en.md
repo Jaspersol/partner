@@ -16,6 +16,8 @@ The layers only talk over HTTP with a Bearer token. Every endpoint requires it, 
 
 Settings reads use an in-process snapshot. Manual edits to workspace `settings/runtime.json` are not picked up automatically; restart the API to load them. Invalid JSON at startup falls back to safe defaults and is rewritten on the next successful save. `GET /api/settings` returns a `revision` that whole-document `PUT /api/settings` must include: a missing revision returns 400 and a stale one returns 409. Clients should retain unsaved edits and reload to resolve the conflict. Failed commits do not advance the revision; revisions are only valid for the current process.
 
+Tool `decision` values in `GET /api/consumer` are `deny`, `allow`, `ask`, or `conditional`. `conditional` means the actual decision depends on call arguments, session provenance, or a lease; it is not an approval.
+
 ## Full check
 
 ```bash
@@ -93,7 +95,7 @@ The measuring environment and the initial event counts of the generated data wer
 dotnet run --project src/Partner.Api -- "D:/tmp/ws" 5280
 ```
 
-The first argument is the workspace, the second the port. Do not add `--urls`; it would be taken as the workspace path. Without a token, one is printed to stdout once at start-up:
+The first argument is the workspace, the second the port. The API resolves the workspace to an absolute path; on Windows the launch argument can use `/`, but file tool targets still require `\`. Do not add `--urls`; it would be taken as the workspace path. Without a token, one is printed to stdout once at start-up:
 
 ```
 partner-api listening on http://127.0.0.1:5280

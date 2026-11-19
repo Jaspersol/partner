@@ -18,6 +18,7 @@ import { t } from './i18n'
 import { getSidecarDiagnostic, petSupported, retrySidecar, type SidecarDiagnostic } from './shellPrefs'
 import { useRailOnlyMode } from './narrow'
 import { isPageHidden } from './pageVisibility'
+import { showToast } from './toast'
 import { applyReducedTransparency, applyTheme, nextTheme, readReducedTransparency, readTheme, type Theme } from './theme'
 import SideBar, { type NavItem } from './components/SideBar.vue'
 import { setGearLabels } from './gears'
@@ -231,7 +232,9 @@ async function cancelJob(jobId: string) {
   }
 
   try {
-    await api.value.cancelAgentJob(jobId)
+    if (!await api.value.cancelAgentJob(jobId)) {
+      showToast(t('子任务已完成，无法取消'), 'error')
+    }
   } catch (failure) {
     connectionError.value = String(failure)
   }

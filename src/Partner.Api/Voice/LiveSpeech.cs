@@ -77,22 +77,51 @@ internal sealed class LiveSpeech
     /// <summary>Index just past the last boundary at or after <paramref name="from"/>, or -1.</summary>
     private static int LastBoundary(string text, int from)
     {
-        for (var i = text.Length - 1; i >= from; i--)
+        var last = -1;
+        char fence = '\0';
+        var inUrl = false;
+        var lineStart = true;
+        for (var i = 0; i < text.Length; i++)
         {
+            if (lineStart)
+            {
+                var start = i;
+                while (start < text.Length && text[start] is ' ' or '\t') start++;
+                if (start + 2 < text.Length && text[start] is '`' or '~'
+                    && text[start + 1] == text[start] && text[start + 2] == text[start])
+                {
+                    var end = text.IndexOf('\n', start);
+                    if (end < 0) break;
+                    if (fence == '\0') fence = text[start];
+                    else if (fence == text[start]) fence = '\0';
+                    i = end;
+                    lineStart = true;
+                    inUrl = false;
+                    if (fence == '\0' && i >= from) last = i + 1;
+                    continue;
+                }
+                lineStart = false;
+            }
+
             var c = text[i];
-
-            if (Array.IndexOf(Boundaries, c) >= 0)
+            if (c == '\n') lineStart = true;
+            if (fence != '\0') continue;
+            if (!inUrl && (text.AsSpan(i).StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                || text.AsSpan(i).StartsWith("http://", StringComparison.OrdinalIgnoreCase)))
             {
-                return i + 1;
+                inUrl = true;
+                i += text[i + 4] == 's' || text[i + 4] == 'S' ? 7 : 6;
+                continue;
             }
-
-            // A full stop ends a sentence only when followed by a space: "3.5" and "v1.2" must stay whole.
-            if (c == '.' && i + 1 < text.Length && char.IsWhiteSpace(text[i + 1]))
+            if (inUrl)
             {
-                return i + 1;
+                if (!char.IsWhiteSpace(c) && c is not ('，' or '。' or '！' or '？' or '；' or '：' or '<' or '>' or '(' or ')' or '[' or ']'))
+                    continue;
+                inUrl = false;
             }
+            if (i >= from && (Array.IndexOf(Boundaries, c) >= 0
+                || (c == '.' && i + 1 < text.Length && char.IsWhiteSpace(text[i + 1])))) last = i + 1;
         }
-
-        return -1;
+        return last;
     }
 }

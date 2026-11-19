@@ -16,6 +16,8 @@
 
 設定讀取使用程序內快照；手動修改工作區 `settings/runtime.json` 不會自動生效，重新啟動 API 後才會讀取。啟動時 JSON 損壞會使用安全預設值，下次成功儲存時重寫檔案。`GET /api/settings` 回傳 `revision`，整份 `PUT /api/settings` 必須帶上該版本：缺少時回傳 400，過期時回傳 409；用戶端應保留未儲存的編輯，重新讀取後處理衝突。提交失敗不會推進版本；版本只在目前程序內有效。
 
+`GET /api/consumer` 的工具 `decision` 為 `deny`、`allow`、`ask` 或 `conditional`；`conditional` 表示實際決定取決於呼叫參數、工作階段來源或租約，不代表已批准。
+
 ## 完整檢查
 
 ```bash
@@ -93,7 +95,7 @@ dotnet run -c Release --project tools/SessionProjectionBenchmark -- measure /tmp
 dotnet run --project src/Partner.Api -- "D:/tmp/ws" 5280
 ```
 
-第一個參數是工作區，第二個是連接埠。不要加 `--urls`，它會被當成工作區路徑。沒提供權杖時，啟動會在 stdout 印出一次：
+第一個參數是工作區，第二個是連接埠。API 會把工作區轉成絕對路徑；Windows 啟動參數可用 `/`，但檔案工具的目標路徑仍須使用 `\`。不要加 `--urls`，它會被當成工作區路徑。沒提供權杖時，啟動會在 stdout 印出一次：
 
 ```
 partner-api listening on http://127.0.0.1:5280

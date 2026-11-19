@@ -16,7 +16,7 @@ import MarkdownBody from './MarkdownBody.vue'
 const props = defineProps<{
   name: string
   args: string
-  status: 'running' | 'ok' | 'failed'
+  status: 'running' | 'ok' | 'failed' | 'denied' | 'not_started' | 'unconfirmed' | 'timeout'
   result: string | null
 }>()
 
@@ -24,6 +24,10 @@ const STATUS_LABEL: Record<string, string> = {
   running: tr('进行中'),
   ok: tr('完成'),
   failed: tr('失败'),
+  denied: tr('已拒绝'),
+  not_started: tr('未开始'),
+  unconfirmed: tr('状态未确认'),
+  timeout: tr('超时，状态未确认'),
 }
 
 const appearance = computed(() => toolAppearance(props.name))
@@ -64,6 +68,8 @@ const argsPretty = computed(() => {
       <span class="args">{{ argsSummary }}</span>
       <span class="status" :class="status">{{ t(STATUS_LABEL[status] ?? '') }}</span>
     </summary>
+
+    <p v-if="status === 'unconfirmed' || status === 'timeout'" class="unconfirmed-note">{{ t('操作可能仍会完成，重试前请先确认实际状态。') }}</p>
 
     <div class="section">
       <span class="tool-section-label">{{ t('参数') }}</span>
@@ -211,6 +217,16 @@ summary::-webkit-details-marker {
 
 .status.failed {
   color: var(--error);
+}
+
+.status.unconfirmed, .status.timeout {
+  color: var(--warning, var(--text));
+}
+
+.unconfirmed-note {
+  margin: 0 0 var(--space-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
 }
 
 @keyframes pulse-dot {

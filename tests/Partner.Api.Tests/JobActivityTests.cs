@@ -6,13 +6,13 @@ namespace Partner.Api.Tests;
 /// <summary>While a sub-agent works, its job says which tool it is inside.</summary>
 public sealed class JobActivityTests
 {
-    private sealed class SlowTool : ITimedTool
+    private sealed class SlowTool(string name = "web_fetch") : ITimedTool
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public ToolSpec Spec { get; } = new("web_fetch", "fetch", "{\"type\":\"object\"}");
+        public ToolSpec Spec { get; } = new(name, "fetch", "{\"type\":\"object\"}");
 
         public TimeSpan Timeout => TimeSpan.FromSeconds(45);
 
@@ -43,6 +43,70 @@ public sealed class JobActivityTests
 
         tool.Release.SetResult();
         await running;
+        Assert.Null(job.View().Activity);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Concurrent_calls_keep_a_running_tool_visible_until_all_finish(bool firstFinishesFirst)
+    {
+        var job = NewJob();
+        var inner = new InMemoryToolRegistry();
+        var first = new SlowTool("first");
+        var second = new SlowTool("second");
+        inner.Register(first);
+        inner.Register(second);
+        var registry = new ObservedToolRegistry(inner, job.SetActivity);
+
+        var firstCall = registry.Find("first")!.InvokeAsync("{}");
+        await first.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondCall = registry.Find("second")!.InvokeAsync("{}");
+        await second.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal("second", job.View().Activity);
+
+        if (firstFinishesFirst)
+        {
+            first.Release.SetResult();
+            await firstCall;
+            Assert.Equal("second", job.View().Activity);
+            second.Release.SetResult();
+            await secondCall;
+        }
+        else
+        {
+            second.Release.SetResult();
+            await secondCall;
+            Assert.Equal("first", job.View().Activity);
+            first.Release.SetResult();
+            await firstCall;
+        }
+
+        Assert.Null(job.View().Activity);
+    }
+
+    [Fact]
+    public async Task Cancelling_one_call_preserves_the_other_calls_activity()
+    {
+        var job = NewJob();
+        var inner = new InMemoryToolRegistry();
+        var first = new SlowTool("first");
+        var second = new SlowTool("second");
+        inner.Register(first);
+        inner.Register(second);
+        var registry = new ObservedToolRegistry(inner, job.SetActivity);
+        using var cancellation = new CancellationTokenSource();
+
+        var firstCall = registry.Find("first")!.InvokeAsync("{}");
+        await first.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var secondCall = registry.Find("second")!.InvokeAsync("{}", cancellation.Token);
+        await second.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => secondCall);
+        Assert.Equal("first", job.View().Activity);
+
+        first.Release.SetResult();
+        await firstCall;
         Assert.Null(job.View().Activity);
     }
 

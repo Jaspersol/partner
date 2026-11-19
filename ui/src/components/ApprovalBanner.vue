@@ -15,7 +15,19 @@ const emit = defineEmits<{ answer: [approvalId: string, approved: boolean] }>()
 
 const current = computed(() => props.pending[0] ?? null)
 
+const file = computed(() => {
+  const name = current.value?.toolName
+  if (name !== 'file_write' && name !== 'file_edit') return null
+  try {
+    const args = JSON.parse(current.value?.arguments ?? '{}') as Record<string, unknown>
+    return { edit: name === 'file_edit', path: typeof args.path === 'string' ? args.path : '' }
+  } catch {
+    return { edit: name === 'file_edit', path: '' }
+  }
+})
+
 const target = computed(() => {
+  if (file.value) return ''
   const args = current.value?.arguments ?? ''
   const id = /"entityId"\s*:\s*"([^"]+)"/.exec(args)?.[1]
   if (id === undefined) {
@@ -64,7 +76,7 @@ const schedule = computed(() => {
 })
 
 const kind = computed(() =>
-  schedule.value ? '' : (/"kind"\s*:\s*"([^"]+)"/.exec(current.value?.arguments ?? '')?.[1] ?? ''),
+  schedule.value || file.value ? '' : (/"kind"\s*:\s*"([^"]+)"/.exec(current.value?.arguments ?? '')?.[1] ?? ''),
 )
 
 /** Grant size is the server's semantics; 10 matches the store default when no desktop state exists yet. */
@@ -78,6 +90,7 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
         <Icon name="shield" :size="16" class="approval-icon" />
         <span class="title">{{ schedule ? (schedule.verb === 'create' ? t('模型请求创建定时任务') : t('模型请求删除定时任务')) : t('模型请求执行动作') }}</span>
         <span v-if="current.origin" class="origin" data-test="approval-origin">{{ t('来自 {origin}', { origin: current.origin }) }}</span>
+        <span v-else-if="file" class="origin" data-test="approval-origin">{{ t('来自 {origin}', { origin: t('主助手') }) }}</span>
       </div>
       <div class="approval-what">
         <strong data-test="approval-tool">{{ current.toolName }}</strong>
@@ -89,12 +102,18 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
         {{ t('到点会把这句话当作你发的消息交给助手：') }}<q>{{ schedule.message }}</q>
       </p>
       <p v-else-if="schedule" class="schedule-what break" data-test="approval-schedule">{{ t('任务 {id}，删除后不可恢复。', { id: schedule.id }) }}</p>
+      <div v-else-if="file" class="file-preview" data-test="approval-file">
+        <div>{{ t('目标 {target}', { target: file.path }) }}</div>
+        <div v-if="file.edit">{{ t('文件内容与读取版本不一致时，不会提交。') }}</div>
+        <strong>{{ t('仅批准本次') }}</strong>
+      </div>
       <code v-else class="break args">{{ current.arguments }}</code>
     </div>
     <div class="approval-actions">
       <HintTip v-if="schedule" align="end" data-test="approval-hint">
         {{ t('无人应答即拒绝。定时任务到点后，助手会照这句话去做，可以随时在「定时」页删除。') }}
       </HintTip>
+      <HintTip v-else-if="file" align="end" data-test="approval-hint">{{ t('无人应答即拒绝；仅批准本次。') }}</HintTip>
       <HintTip v-else align="end" data-test="approval-hint">
         {{ t('无人应答即拒绝。允许后，助手可以在这个窗口上继续操作 {grantSteps} 步；危险类的动作仍然逐次询问。', { grantSteps: grantSteps }) }}
       </HintTip>
@@ -161,6 +180,8 @@ const grantSteps = computed(() => props.desktop?.stepsPerGrant ?? 10)
   overflow: hidden;
 }
 
+
+.file-preview { min-inline-size: 0; overflow-wrap: anywhere; }
 .schedule-what {
   margin: 0;
   font-size: var(--fs-ui);

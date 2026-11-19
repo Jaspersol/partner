@@ -623,6 +623,7 @@ defineExpose({ refresh, focusSearch })
       <div class="g-page chat">
         <EventList
           :items="visible"
+          :correlation-items="view?.items ?? []"
           :selected-seq="selectedSeq"
           :latest-from-seq="conversation?.latestFromSeq ?? null"
           :withdrawn="withdrawn !== null"

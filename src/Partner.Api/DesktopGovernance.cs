@@ -5,13 +5,11 @@ using Partner.Desktop.Tools;
 namespace Partner.Api;
 
 /// <summary>
-/// Governance for the tools this host exposes, reading the approval gear as it is <b>now</b> rather than as it
-/// was when the consumer started.
+/// Governance reads current permissions on every call. A turn or job keeps its exposed tool table, while
+/// capability and scenario ownership changes prevent subsequent calls through an older table. Pending
+/// approvals are invalidated when settings change.
 /// <para>
-/// The gear is a decision, not a capability: switching it must not restart a running turn, and it must not
-/// tear down a consumer that was started with an injected client (tests, diagnostics) where a restart has no
-/// model to start from. Enabling a capability still rebuilds the tool table at start — that one changes what
-/// exists.
+/// The approval gear is a live decision, not a capability that requires rebuilding the consumer.
 /// </para>
 /// <para>
 /// Fail-closed like every other governance: a tool this host does not know is denied rather than allowed by
@@ -19,16 +17,74 @@ namespace Partner.Api;
 /// allow list says otherwise. The gear itself covers every tool that acts, not only the desktop's.
 /// </para>
 /// </summary>
-public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
+public sealed class DesktopGovernance(ApiContext context, bool mainAgent = false, string? scenario = null, string? agentId = null, IReadOnlyList<string>? windowTitles = null) : IToolGovernance
 {
     private readonly ApiContext _context = context ?? throw new ArgumentNullException(nameof(context));
+
+    /// <summary>
+    /// The baseline decision for a tool table, not a decision on a particular call. In particular it must not
+    /// consume a task lease or record an act; arguments, shortcuts and existing leases can change a real call.
+    /// </summary>
+    public GovernanceDecision Summarize(string toolName)
+    {
+        if (toolName != "desktop_act")
+        {
+            return Decide(toolName, "{}");
+        }
+
+        var settings = _context.Settings.Load();
+        if (!OwnsTool(settings, toolName))
+            return new GovernanceDecision(ToolDecision.Deny, "工具的场景归属已变更");
+        var desktop = settings.Desktop;
+        if (!desktop.Enabled)
+        {
+            return new GovernanceDecision(ToolDecision.Deny, "桌面能力未启用");
+        }
+
+        var gear = ApprovalGears.Normalize(desktop.Approval);
+        return gear == ApprovalGears.All
+            ? new GovernanceDecision(ToolDecision.Ask, "桌面动作通常需要人工批准，实际决定取决于动作和租约")
+            : new GovernanceDecision(ToolDecision.Allow, "桌面动作的实际决定取决于动作和租约");
+    }
 
     public GovernanceDecision Decide(string toolName, string argumentsJson)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        var (settings, revision) = _context.Settings.Snapshot();
+        if (!OwnsTool(settings, toolName))
+            return new GovernanceDecision(ToolDecision.Deny, "工具的场景归属已变更");
+        var decision = DecideCore(toolName, argumentsJson, settings);
+        return decision with { IsStillAuthorized = () => _context.Settings.Snapshot().Revision == revision };
+    }
 
-        // Read once: every branch below answers to the same gear.
-        var desktop = _context.Settings.Load().Desktop;
+    private bool OwnsTool(RuntimeSettings settings, string toolName)
+    {
+        var kind = Agents.AgentRouting.ClassifyNativeTool(toolName);
+        if (mainAgent)
+            return kind switch
+            {
+                Agents.AgentRouting.NativeToolKind.Desktop => false,
+                Agents.AgentRouting.NativeToolKind.File => Agents.AgentRouting.MainOwnsFiles(settings),
+                Agents.AgentRouting.NativeToolKind.Web => Agents.AgentRouting.MainOwnsWeb(settings),
+                _ => true,
+            };
+        if (scenario is null || agentId is null || kind is not (Agents.AgentRouting.NativeToolKind.File
+            or Agents.AgentRouting.NativeToolKind.Web or Agents.AgentRouting.NativeToolKind.Desktop))
+            return true;
+        // Desktop tools hold the window policy they started with. Do not let an old job use that policy
+        // after it changes; a new job receives the updated one without restarting the consumer.
+        if (kind == Agents.AgentRouting.NativeToolKind.Desktop && windowTitles is not null
+            && !windowTitles.SequenceEqual(settings.Desktop.AllowedWindowTitles, StringComparer.Ordinal))
+            return false;
+        var route = Agents.AgentRouting.Find(settings, scenario);
+        return route is not null && route.Agent.Id == agentId
+            && Agents.AgentRouting.ScenarioTools(scenario, settings,
+                route.Agent.Model?.SupportsImages ?? settings.Model.SupportsImages).Contains(toolName, StringComparer.Ordinal);
+    }
+
+    private GovernanceDecision DecideCore(string toolName, string argumentsJson, RuntimeSettings settings)
+    {
+        var desktop = settings.Desktop;
         var gear = ApprovalGears.Normalize(desktop.Approval);
 
         if (NamespacedMcpTool.TryUnprefix(toolName, out _, out _))
@@ -47,25 +103,26 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
                 : new GovernanceDecision(ToolDecision.Ask, $"'{toolName}' 需要人工批准（外部进程）");
         }
 
+        var kind = Agents.AgentRouting.ClassifyNativeTool(toolName);
+
         // The delegation tools and the sub-agent's report tool only move words: starting a job does nothing to
         // the machine, and the job's own tools answer to this same governance when they run.
-        if (toolName is Agents.AgentDelegateTool.ToolName or Agents.AgentJobStatusTool.ToolName
-            or Agents.AgentJobCancelTool.ToolName or Partner.Core.Agent.Delegation.TaskReportTool.ToolName)
+        if (kind == Agents.AgentRouting.NativeToolKind.Information)
         {
             return new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 只传递信息");
         }
 
         // Timed tasks. Reading them is harmless.
-        if (toolName == Agents.ScheduleListTool.ToolName)
+        if (kind == Agents.AgentRouting.NativeToolKind.ScheduleList)
         {
             return new GovernanceDecision(ToolDecision.Allow, "'schedule_list' 只读");
         }
 
         // Creating can be undone by deleting; deleting cannot. So the dangerous gear asks for the delete, and
         // only the strictest gear asks for both.
-        if (toolName is Agents.ScheduleCreateTool.ToolName or Agents.ScheduleDeleteTool.ToolName)
+        if (kind is Agents.AgentRouting.NativeToolKind.ScheduleCreate or Agents.AgentRouting.NativeToolKind.ScheduleDelete)
         {
-            var deleting = toolName == Agents.ScheduleDeleteTool.ToolName;
+            var deleting = kind == Agents.AgentRouting.NativeToolKind.ScheduleDelete;
             var asks = deleting ? gear != ApprovalGears.None : gear == ApprovalGears.All;
 
             if (!asks)
@@ -80,9 +137,14 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
                     : "'schedule_create' 会让助手之后按时收到一条消息并照做，需要你批准");
         }
 
+        if (toolName is "file_write" or "file_edit")
+            return Agents.AgentRouting.FileWriteAvailable(settings)
+                ? new GovernanceDecision(ToolDecision.Ask, "文件写入或编辑每次都需要人工批准")
+                : new GovernanceDecision(ToolDecision.Deny, "文件写入未启用或不可用");
+
         // Reading is read-only and never asks, like the desktop's own reads; what bounds it is the directory
         // whitelist inside the tool. The switch is checked live so turning files off takes effect at once.
-        if (toolName is "file_list" or "file_read")
+        if (kind == Agents.AgentRouting.NativeToolKind.File)
         {
             return _context.Settings.Load().Files.Enabled
                 ? new GovernanceDecision(ToolDecision.Allow, $"'{toolName}' 只读，限定在允许的目录内")
@@ -92,12 +154,12 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
         // Web access: read-only on other people's servers, so it never asks on its own — but a search sends the
         // query, and therefore the user's own words, to a third party, while a fetch is the model choosing a
         // destination. The switch covers both, and both read it live so turning it off takes effect at once.
-        if (toolName is Partner.Core.Agent.Web.WebSearchTool.Name or Partner.Core.Agent.Web.WebFetchTool.Name)
+        if (kind == Agents.AgentRouting.NativeToolKind.Web)
         {
             return WebDecision(toolName, argumentsJson, gear);
         }
 
-        if (!DesktopToolCatalog.All.Contains(toolName, StringComparer.Ordinal))
+        if (kind != Agents.AgentRouting.NativeToolKind.Desktop)
         {
             return new GovernanceDecision(ToolDecision.Deny, $"'{toolName}' 不是桌面工具（fail-closed）");
         }
@@ -105,6 +167,13 @@ public sealed class DesktopGovernance(ApiContext context) : IToolGovernance
         if (!desktop.Enabled)
         {
             return new GovernanceDecision(ToolDecision.Deny, "桌面能力未启用");
+        }
+
+        if (toolName == "desktop_exec")
+        {
+            return desktop.ExecEnabled
+                ? new GovernanceDecision(ToolDecision.Ask, "执行命令具有系统权限，每次都需要人工批准")
+                : new GovernanceDecision(ToolDecision.Deny, "命令执行未启用");
         }
 
         // Reads never ask; actions ask by gear; what leaves the GUI asks unless the gear says nothing does.

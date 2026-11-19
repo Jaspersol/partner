@@ -96,6 +96,20 @@ public sealed class ToolGovernanceTests
     }
 
     [Fact]
+    public void InMemoryToolRegistry_SpecSnapshotRemainsUnchangedAfterRegistration()
+    {
+        var registry = new InMemoryToolRegistry();
+        registry.Register(new FakeTool("first"));
+        var before = registry.Specs;
+
+        registry.Register(new FakeTool("second"));
+
+        Assert.Equal(new[] { "first" }, before.Select(spec => spec.Name));
+        Assert.Equal(new[] { "first", "second" }, registry.Specs.Select(spec => spec.Name));
+        Assert.Throws<NotSupportedException>(() => ((IList<ToolSpec>)before)[0] = registry.Specs[1]);
+    }
+
+    [Fact]
     public async Task DenyAllApprovalHandler_NeverApproves()
     {
         IApprovalHandler handler = new DenyAllApprovalHandler();

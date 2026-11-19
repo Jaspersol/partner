@@ -29,11 +29,16 @@ public sealed class DesktopExecTool : ITool
     private const int MaxOutputChars = 8000;
 
     private readonly TimeSpan _timeout;
+    private readonly Func<bool>? _isEnabled;
 
     /// <param name="timeout">
     /// Overridable so the timeout itself is testable.
     /// </param>
-    public DesktopExecTool(TimeSpan? timeout = null) => _timeout = timeout ?? DefaultTimeout;
+    public DesktopExecTool(TimeSpan? timeout = null, Func<bool>? isEnabled = null)
+    {
+        _timeout = timeout ?? DefaultTimeout;
+        _isEnabled = isEnabled;
+    }
 
     public ToolSpec Spec { get; } = new(
         "desktop_exec",
@@ -60,6 +65,13 @@ public sealed class DesktopExecTool : ITool
     /// </summary>
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
+        using var mutation = await DesktopMutationLock.AcquireAsync(ct).ConfigureAwait(false);
+        if (_isEnabled is not null && !_isEnabled())
+        {
+            return new ToolResult(false, "命令执行已关闭");
+        }
+
+
         var arguments = Json.Deserialize<ExecArguments>(argumentsJson);
         if (arguments is null || string.IsNullOrWhiteSpace(arguments.Command))
         {
@@ -89,11 +101,18 @@ public sealed class DesktopExecTool : ITool
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(_timeout);
 
+        if (_isEnabled is not null && !_isEnabled())
+        {
+            return new ToolResult(false, "命令执行已关闭");
+        }
+        DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
+
         try
         {
+            ct.ThrowIfCancellationRequested();
             process.Start();
         }
-        catch (Exception error)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
             return new ToolResult(false, $"无法启动命令：{error.Message}");
         }
@@ -111,7 +130,7 @@ public sealed class DesktopExecTool : ITool
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
             await Task.WhenAll(outTask, errTask).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             KillQuietly(process);
 
@@ -124,6 +143,10 @@ public sealed class DesktopExecTool : ITool
             // read that still will not return cannot reintroduce the hang this method exists to prevent.
             ClosePipes(process);
             await WaitForDrainsAsync(outTask, errTask).ConfigureAwait(false);
+            // Keep the lock until the command has actually exited, even if its caller stopped waiting.
+            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+
 
             // Whatever arrived before the deadline is the evidence for why the model reached for this
             // command, so it is reported rather than thrown away.
@@ -277,7 +300,7 @@ public sealed class DesktopClipboardGetTool : ITool
             var text = await Clipboard.ReadAsync(ct).ConfigureAwait(false);
             return new ToolResult(true, string.IsNullOrEmpty(text) ? "(剪贴板为空或不是文本)" : text);
         }
-        catch (Exception error)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
             return new ToolResult(false, $"读取剪贴板失败：{error.Message}");
         }
@@ -285,7 +308,7 @@ public sealed class DesktopClipboardGetTool : ITool
 }
 
 /// <summary>Writes the clipboard. Changes what the user will paste next, so it is a dangerous tool.</summary>
-public sealed class DesktopClipboardSetTool : ITool
+public sealed class DesktopClipboardSetTool(Func<bool>? isEnabled = null) : ITool
 {
     public ToolSpec Spec { get; } = new(
         "desktop_clipboard_set",
@@ -296,6 +319,13 @@ public sealed class DesktopClipboardSetTool : ITool
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
+        using var mutation = await DesktopMutationLock.AcquireAsync(ct).ConfigureAwait(false);
+        if (isEnabled is not null && !isEnabled())
+        {
+            return new ToolResult(false, "桌面能力未启用");
+        }
+
+
         var arguments = Json.Deserialize<ClipboardArguments>(argumentsJson);
         if (arguments?.Text is null)
         {
@@ -304,10 +334,10 @@ public sealed class DesktopClipboardSetTool : ITool
 
         try
         {
-            await Clipboard.WriteAsync(arguments.Text, ct).ConfigureAwait(false);
+            await Clipboard.WriteAsync(arguments.Text, ct, isEnabled).ConfigureAwait(false);
             return new ToolResult(true, $"已写入剪贴板（{arguments.Text.Length} 字符）");
         }
-        catch (Exception error)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
             return new ToolResult(false, $"写入剪贴板失败：{error.Message}");
         }
@@ -358,12 +388,18 @@ internal static class Clipboard
         }
     }
 
-    public static async Task WriteAsync(string text, CancellationToken ct)
+    public static async Task WriteAsync(string text, CancellationToken ct, Func<bool>? isEnabled)
     {
         await RetryAsync(() => NativeMethods.OpenClipboard(0), ct).ConfigureAwait(false);
 
         try
         {
+            ct.ThrowIfCancellationRequested();
+            if (isEnabled is not null && !isEnabled())
+            {
+                throw new InvalidOperationException("桌面能力未启用");
+            }
+            DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
             NativeMethods.EmptyClipboard();
 
             var bytes = (text.Length + 1) * 2;
@@ -407,6 +443,7 @@ internal static class Clipboard
     {
         for (var tries = 0; tries < 20; tries++)
         {
+            ct.ThrowIfCancellationRequested();
             if (attempt())
             {
                 return;

@@ -396,7 +396,8 @@ public sealed class DesktopActTool(
     DesktopAutomation automation,
     DesktopToolPolicy policy,
     IMediaStore media,
-    bool supportsImages = true) : ITool
+    bool supportsImages = true,
+    Func<bool>? isEnabled = null) : ITool
 {
     public ToolSpec Spec { get; } = new(
         "desktop_act",
@@ -447,6 +448,13 @@ public sealed class DesktopActTool(
 
     public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
     {
+        using var mutation = await DesktopMutationLock.AcquireAsync(ct).ConfigureAwait(false);
+        if (isEnabled is not null && !isEnabled())
+        {
+            return DesktopResultContract.Refuse(DesktopResultContract.PolicyDenied, "桌面能力未启用");
+        }
+
+
         var arguments = Json.Deserialize<DesktopActArguments>(argumentsJson);
         if (arguments is null)
         {
@@ -692,6 +700,12 @@ public sealed class DesktopActTool(
             && kind is (ActionKind.KeyPress or ActionKind.TypeText)
             && !DesktopAutomation.IsDomElementOf(element, entityId))
         {
+            if (isEnabled is not null && !isEnabled())
+            {
+                return DesktopResultContract.Refuse(DesktopResultContract.PolicyDenied, "桌面能力未启用");
+            }
+            DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
+
             if (automation.EnsureElementFocus(entityId, element.ElementId, element.IdentityDigest, ct) is { } focusRefusal)
             {
                 return DesktopResultContract.Refuse(DesktopResultContract.CodeForRefusal(focusRefusal), focusRefusal);
@@ -773,6 +787,12 @@ public sealed class DesktopActTool(
             ToX = arguments.ToX ?? 0,
             ToY = arguments.ToY ?? 0,
         };
+
+        if (isEnabled is not null && !isEnabled())
+        {
+            return DesktopResultContract.Refuse(DesktopResultContract.PolicyDenied, "桌面能力未启用");
+        }
+        DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
 
         var actWatch = System.Diagnostics.Stopwatch.StartNew();
         var action = await automation.ActAsync(entityId, kind, parameters, ct).ConfigureAwait(false);

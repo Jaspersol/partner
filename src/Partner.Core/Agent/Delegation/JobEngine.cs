@@ -55,6 +55,7 @@ public sealed partial class JobEngine(
         var history = new List<RoundRecord>();
         var allActions = new Dictionary<string, int>(StringComparer.Ordinal);
         var allKinds = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+        var fileResults = new List<string>();
         var feedback = (string?)null;
         var started = 0;
 
@@ -67,7 +68,8 @@ public sealed partial class JobEngine(
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
 
         JobOutcome Failed(string category, string error, string summary) => new(
-            false, category, summary, null, Truncate(error), started, maxRounds, history, Describe(allActions, allKinds));
+            false, category, summary, null, Truncate(error), started, maxRounds, history, Describe(allActions, allKinds))
+            { FileResults = fileResults.ToArray() };
 
         for (var round = 1; round <= maxRounds; round++)
         {
@@ -117,6 +119,7 @@ public sealed partial class JobEngine(
             }
 
             var facts = await ReadRoundAsync(before, ct).ConfigureAwait(false);
+            fileResults.AddRange(facts.FileResults);
             foreach (var (name, count) in facts.Calls)
             {
                 allActions[name] = allActions.GetValueOrDefault(name) + count;
@@ -132,13 +135,14 @@ public sealed partial class JobEngine(
             }
 
             var reported = report.Latest;
-            if (reported is { Success: true })
+            if (reported is { Success: true } && facts.Terminal is null)
             {
                 var done = new RoundRecord(round, true, "成功", string.Empty, facts.Actions);
                 history.Add(done);
                 roundFinished?.Invoke(done);
                 return new JobOutcome(
-                    true, null, reported.Summary, reported.Evidence, null, round, maxRounds, history, Describe(allActions, allKinds));
+                    true, null, reported.Summary, reported.Evidence, null, round, maxRounds, history, Describe(allActions, allKinds))
+                    { FileResults = fileResults.ToArray() };
             }
 
             var lastError = reported?.Error ?? facts.LastFailure ?? string.Empty;

@@ -148,7 +148,7 @@ const SETTINGS_FIXTURE: SettingsView = {
   mcp: { enabled: false, servers: [], allowedTools: [] },
   skills: { disabled: [] },
   agents: { main: { prompt: null }, subAgents: [] },
-  files: { enabled: false, roots: [] },
+  files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
   memory: { embeddings: false },
   pet: PET_FIXTURE,
@@ -199,7 +199,7 @@ const AGENTS_FIXTURE: AgentsView = {
   ],
   problems: [],
   limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
-  files: { enabled: true, roots: ['D:/资料'] },
+  files: { enabled: true, roots: ['D:/资料'], writeEnabled: false, writeRoots: [] },
   desktopEnabled: true,
   webEnabled: false,
 }
@@ -2610,7 +2610,7 @@ describe('settings view', () => {
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
       agents: { main: { prompt: null }, subAgents: [] },
-      files: { enabled: false, roots: [] },
+      files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       memory: { embeddings: false },
       pet: PET_FIXTURE,
@@ -2641,7 +2641,7 @@ describe('settings view', () => {
       mcp: { enabled: false, servers: [], allowedTools: [] },
       skills: { disabled: [] },
       agents: { main: { prompt: null }, subAgents: [] },
-      files: { enabled: false, roots: [] },
+      files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
       web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
       memory: { embeddings: false },
       pet: PET_FIXTURE,
@@ -2793,7 +2793,7 @@ describe('settings view', () => {
         mcp: { enabled: false, servers: [], allowedTools: [] },
         skills: { disabled: [] },
         agents: { main: { prompt: null }, subAgents: [] },
-        files: { enabled: false, roots: [] },
+        files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
         web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
         memory: { embeddings: false },
         pet: PET_FIXTURE,
@@ -2891,7 +2891,7 @@ describe('settings view', () => {
             mcp: { enabled: false, servers: [], allowedTools: [] },
             skills: { disabled: [] },
             agents: { main: { prompt: null }, subAgents: [] },
-            files: { enabled: false, roots: [] },
+            files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
             web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
             memory: { embeddings: false },
             pet: PET_FIXTURE,
@@ -3056,7 +3056,7 @@ describe('settings view', () => {
             { id: 'agent-a1', name: '读文件的', enabled: true, scenario: 'file-read', prompt: '只读。', maxRounds: 2, model: { protocol: 'openai', baseUrl: 'http://x/v1', model: 'm', apiKeySet: true, timeoutSeconds: 60, contextTokens: 8192, maxTokens: 1024, supportsImages: false, reasoningEffort: 'medium' } },
           ],
         },
-        files: { enabled: true, roots: ['D:/资料', 'E:/扫描'] },
+        files: { enabled: true, roots: ['D:/资料', 'E:/扫描'], writeEnabled: true, writeRoots: ['D:/资料'] },
         web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
         memory: { embeddings: false },
         pet: PET_FIXTURE,
@@ -3073,7 +3073,7 @@ describe('settings view', () => {
     expect(calls.saves[0]?.agents.main.prompt).toBe('你是我的人。')
     expect(calls.saves[0]?.agents.subAgents.map((agent) => agent.id)).toEqual(['desktop', 'agent-a1'])
     expect(calls.saves[0]?.agents.subAgents[1]?.prompt).toBe('只读。')
-    expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料', 'E:/扫描'] })
+    expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料', 'E:/扫描'], writeEnabled: true, writeRoots: ['D:/资料'] })
   })
 
   it('offers the file whitelist, and saves the directories it was given', async () => {
@@ -3084,18 +3084,27 @@ describe('settings view', () => {
     // Off by default, and the note says what the list means rather than leaving it to be guessed. It lives in
     // the card heading's hover mark now, so it is asked for rather than printed over the form.
     expect(wrapper.find<HTMLInputElement>('[data-test="files-enabled"]').element.checked).toBe(false)
-    expect(wrapper.find('[data-test="files-whitelist-hint"]').text()).toContain('只能读')
+    const hint = wrapper.find('[data-test="files-whitelist-hint"]').text()
+    expect(hint).toContain('原生文件读取默认关闭')
+    expect(hint).toContain('读取白名单')
+    expect(hint).toContain('桌面应用、命令和 MCP 不受此白名单限制')
+    expect(wrapper.find('[data-test="files-content-hint"]').text()).toContain('模型上下文和会话记录')
+    expect(wrapper.find<HTMLInputElement>('[data-test="files-write-enabled"]').element.checked).toBe(false)
+    expect(wrapper.text()).toContain('仅支持 Windows 本地 NTFS')
 
     await wrapper.find('[data-test="files-enabled"]').setValue(true)
     await wrapper.find('[data-test="files-root-add"]').trigger('click')
     await wrapper.findAll<HTMLInputElement>('[data-test="files-root"]')[0].setValue('D:/资料')
     await wrapper.find('[data-test="files-root-add"]').trigger('click')
     await wrapper.findAll<HTMLInputElement>('[data-test="files-root"]')[1].setValue('  ')
+    await wrapper.find('[data-test="files-write-enabled"]').setValue(true)
+    await wrapper.find('[data-test="files-write-root-add"]').trigger('click')
+    await wrapper.find<HTMLInputElement>('[data-test="files-write-root"]').setValue(' D:/资料 ')
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
 
     // The blank row is dropped rather than sent: the server would reject the whole save over an empty path.
-    expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料'] })
+    expect(calls.saves[0]?.files).toEqual({ enabled: true, roots: ['D:/资料'], writeEnabled: true, writeRoots: ['D:/资料'] })
   })
 
   it('says where a query goes before it says anything else about web search', async () => {
@@ -3215,6 +3224,18 @@ describe('settings view', () => {
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
     expect(calls.saves[0]?.desktop.inputMode).toBe('auto')
+  })
+
+  it('keeps command execution off by default and saves its independent switch', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    const toggle = wrapper.find<HTMLInputElement>('[data-test="desktop-exec-enabled"]')
+    expect(toggle.element.checked).toBe(false)
+    await toggle.setValue(true)
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.desktop.execEnabled).toBe(true)
   })
   it('mounts skills, MCP and agent inside the page, one at a time, and hides its own Save bar for them', async () => {
     window.localStorage.removeItem('partner.settings.section')
@@ -3792,7 +3813,7 @@ describe('prompts view', () => {
     const { stub } = createStub({
       agents: vi.fn(async () => ({
         ...AGENTS_FIXTURE,
-        files: { enabled: false, roots: [] },
+        files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
         webEnabled: true,
         scenarios: AGENTS_FIXTURE.scenarios.map((scenario) =>
           scenario.key === 'file-read' ? { ...scenario, available: false } : scenario,

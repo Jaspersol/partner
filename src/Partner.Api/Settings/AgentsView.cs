@@ -66,7 +66,7 @@ public sealed record AgentsView(
 
         return new AgentsView(
             new MainAgentView(settings.Agents.Main.Prompt, AgentPrompts.MainDefault, main, PromptSize.Estimate(main)),
-            settings.Agents.SubAgents.Select(agent => SubAgent(agent)).ToList(),
+            settings.Agents.SubAgents.Select(agent => SubAgent(agent, settings)).ToList(),
             AgentScenarios.All.Select(scenario =>
             {
                 var owner = settings.Agents.Owner(scenario.Key);
@@ -88,9 +88,9 @@ public sealed record AgentsView(
             settings.Web.Enabled);
     }
 
-    private static SubAgentView SubAgent(SubAgentSettings agent)
+    private static SubAgentView SubAgent(SubAgentSettings agent, RuntimeSettings settings)
     {
-        var prompt = AgentRouting.SubAgentPrompt(agent);
+        var prompt = AgentRouting.SubAgentPrompt(agent, settings);
 
         return new SubAgentView(
             agent.Id,

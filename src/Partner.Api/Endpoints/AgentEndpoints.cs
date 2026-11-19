@@ -42,13 +42,9 @@ public static class AgentEndpoints
                 return Results.BadRequest(new { error = invalid.Message, errors = invalid.Errors });
             }
 
-            // Only what changes the main agent's tool table restarts the consumer; a prompt, a name, a round
-            // count or a sub-agent's model is read when a turn or a job starts.
+            // Jobs take their own snapshot; a main-agent exposure change affects only future turns.
             if (AgentRouting.ToolTableDiffers(before!, stored))
-            {
-                var (config, reason) = ModelConfig.Resolve(stored);
-                await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
-            }
+                await consumer.RefreshToolsAsync().ConfigureAwait(false);
 
             return Results.Ok(new { agents = AgentsView.From(stored), consumer = consumer.State });
             }

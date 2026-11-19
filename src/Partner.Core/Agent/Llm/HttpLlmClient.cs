@@ -617,7 +617,7 @@ public sealed class HttpLlmClient : ILlmClient, ITokenCounter, IModelCatalog
 
     private RequestBody BuildBody(LlmRequest request, bool requireToolCall = false) => new(
         _options.Model,
-        request.Messages.Select(message => ToMessage(message, _options.PromptCacheMarkers)).ToList(),
+        LlmConversation.OrderToolResults(request.Messages).Select(message => ToMessage(message, _options.PromptCacheMarkers)).ToList(),
         request.Tools.Count == 0
             ? null
             : request.Tools.Select(tool => new ToolPayload(

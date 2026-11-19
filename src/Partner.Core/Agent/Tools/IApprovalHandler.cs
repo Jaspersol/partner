@@ -12,6 +12,13 @@ public interface IApprovalHandler
     Task<bool> RequestAsync(string toolName, string argumentsJson, CancellationToken ct = default);
 }
 
+/// <summary>Receives an approval only after the runner accepts it for execution.</summary>
+public interface IAcceptedApprovalHandler
+{
+    /// <summary>Records continuing authorization bound to the decision that was approved.</summary>
+    void Accept(string toolName, string argumentsJson, Func<bool>? isStillAuthorized);
+}
+
 /// <summary>
 /// Default approval channel for headless environments: never approves. No side effects, never blocks.
 /// </summary>

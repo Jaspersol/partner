@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Partner.Core.Agent.Tools;
 
 namespace Partner.Api.Voice;
@@ -50,6 +51,8 @@ internal static class ApprovalSpeech
         ["agent_job_cancel"] = "取消子任务",
         ["file_read"] = "读取文件",
         ["file_list"] = "列出文件",
+        ["file_write"] = "新建文件",
+        ["file_edit"] = "编辑文件",
     };
 
     // Approval is the irreversible direction, so only the phrases the prompt actually teaches are accepted.
@@ -74,9 +77,12 @@ internal static class ApprovalSpeech
     };
 
     /// <summary>The one or two sentences read out when a request arrives.</summary>
-    public static string Prompt(PendingApproval request)
+    public static string Prompt(PendingApproval request, IReadOnlyList<PendingApproval>? pending = null)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        if (request.ToolName is "file_write" or "file_edit")
+            return FilePrompt(request, pending);
 
         var label = Label(request.ToolName);
         var who = string.IsNullOrWhiteSpace(request.Origin)
@@ -84,6 +90,49 @@ internal static class ApprovalSpeech
             : $"{Shorten(request.Origin!)}。";
 
         return $"{who}需要你批准：{label}。说「批准执行」或「拒绝执行」。";
+    }
+
+    private static string FilePrompt(PendingApproval request, IReadOnlyList<PendingApproval>? pending)
+    {
+        var path = FilePath(request);
+        var parts = path?.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries);
+        var target = "请查看界面确认完整目标";
+        if (parts is { Length: > 0 })
+        {
+            var others = (pending ?? []).Where(p => p.ApprovalId != request.ApprovalId
+                && p.ToolName is "file_write" or "file_edit")
+                .Select(FilePath).Where(p => p is not null)
+                .Select(p => p!.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries)).ToArray();
+            for (var count = 1; count <= parts.Length; count++)
+            {
+                var suffix = string.Join("/", parts[^count..]);
+                if (suffix.Length > 40) break;
+                if (others.All(other => other.Length < count ||
+                    !string.Equals(string.Join("/", other[^count..]), suffix, StringComparison.OrdinalIgnoreCase)))
+                {
+                    target = $"目标是{suffix}，请查看界面确认完整路径";
+                    break;
+                }
+            }
+        }
+
+        var risk = request.ToolName == "file_edit"
+            ? "文件内容与读取版本不一致时，不会提交。"
+            : string.Empty;
+        var who = string.IsNullOrWhiteSpace(request.Origin) ? "主助手" : Shorten(request.Origin!);
+        return $"{who}请求{Label(request.ToolName)}。{target}。{risk}仅批准本次。说「批准执行」或「拒绝执行」。";
+    }
+
+    private static string? FilePath(PendingApproval request)
+    {
+        try
+        {
+            using var json = JsonDocument.Parse(request.ArgumentsJson);
+            return json.RootElement.ValueKind == JsonValueKind.Object
+                && json.RootElement.TryGetProperty("path", out var path) && path.ValueKind == JsonValueKind.String
+                ? path.GetString() : null;
+        }
+        catch (JsonException) { return null; }
     }
 
     /// <summary>What is said after the answer was accepted.</summary>

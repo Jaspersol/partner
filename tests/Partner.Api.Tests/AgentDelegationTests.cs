@@ -33,11 +33,14 @@ internal sealed class RoutingLlm : ILlmClient
 internal sealed class GatedLlm(ScriptedLlmClient inner) : ILlmClient
 {
     private readonly TaskCompletionSource _gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task Started => _started.Task;
 
     public void Release() => _gate.TrySetResult();
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
     {
+        _started.TrySetResult();
         await _gate.Task.WaitAsync(ct).ConfigureAwait(false);
         return await inner.CompleteAsync(request, ct).ConfigureAwait(false);
     }
@@ -61,6 +64,9 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
     }
 
     protected override string WorkspaceName => "partner-delegation-tests";
+
+    // A launcher may pass forward slashes even though native file-tool arguments require backslashes.
+    protected override string WorkspaceArgument => OperatingSystem.IsWindows() ? _workspace.Replace('\\', '/') : _workspace;
 
     protected override ILlmClient? Llm => _llm;
 
@@ -101,8 +107,7 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
             }
             : settings.Agents;
 
-        // Written directly, not through PUT /api/settings: that endpoint rebuilds the consumer from the stored
-        // model section, and this host has no stored model — only the scripted one injected below.
+        // Set up the requested fixture configuration before starting its injected model.
         _context.Settings.Save(settings with { Files = new FilesSettings { Enabled = true, Roots = [_data] }, Agents = agents });
         await _consumer.ReconfigureAsync(config: null, "test", _llm);
     }
@@ -139,6 +144,154 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
 
     private Task SendAsync(string text) => _http.PostAsJsonAsync("/api/input", new { source = "Text", payload = text });
 
+    [Theory]
+    [InlineData("approve")]
+    [InlineData("deny")]
+    [InlineData("revoke")]
+    public async Task Main_file_write_requires_approval_and_records_no_content(string decision)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        _data = Path.Combine(Path.GetTempPath(), "partner-write-integration", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_data);
+        var settings = _context.Settings.Load();
+        _context.Settings.Save(settings with
+        {
+            Files = new FilesSettings { Enabled = true, Roots = [_data], WriteEnabled = true, WriteRoots = [_data] },
+        });
+        await _consumer.ReconfigureAsync(config: null, "test", _llm);
+        var path = Path.Combine(_data, "created.txt");
+        const string content = "private-write-content";
+        _llm.Main = new ScriptedLlmClient([
+            Call("write-1", "file_write", JsonSerializer.Serialize(new { path, content })),
+            Say("写入处理结束")]);
+
+        await SendAsync("新建文件");
+        await WaitAsync(() => Task.FromResult(_context.Approvals.Pending.Any(p => p.ToolName == "file_write")), "file write approval");
+        var request = Assert.Single(_context.Approvals.Pending, p => p.ToolName == "file_write");
+        using var approval = JsonDocument.Parse(request.ArgumentsJson);
+        Assert.Equal(path, approval.RootElement.GetProperty("path").GetString(), ignoreCase: true);
+        Assert.Single(approval.RootElement.EnumerateObject());
+        Assert.DoesNotContain(content, request.ArgumentsJson, StringComparison.Ordinal);
+        var speech = Partner.Api.Voice.ApprovalSpeech.Prompt(request);
+        Assert.Contains("created.txt", speech, StringComparison.Ordinal);
+        Assert.Contains("仅批准本次", speech, StringComparison.Ordinal);
+        Assert.DoesNotContain(content, speech, StringComparison.Ordinal);
+        if (decision == "revoke")
+            _context.Settings.Save(_context.Settings.Load() with
+            {
+                Files = _context.Settings.Load().Files with { WriteEnabled = false },
+            });
+        Assert.True(_context.Approvals.Answer(request.ApprovalId, decision != "deny"));
+        await WaitForAssistantAsync("写入处理结束");
+
+        var succeeded = decision == "approve";
+        Assert.Equal(succeeded, File.Exists(path));
+        if (succeeded) Assert.Equal(content, await File.ReadAllTextAsync(path));
+        var events = await EventsAsync();
+        var call = Assert.Single(events, e => e.Kind == SessionEventKind.ToolCall && e.Meta?["id"] == "write-1");
+        var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult && e.Meta?["id"] == "write-1");
+        Assert.Equal("{}", call.Meta!["args"]);
+        Assert.Equal(succeeded ? "true" : "false", result.Meta!["ok"]);
+        using var receipt = JsonDocument.Parse(result.Body);
+        Assert.Equal(path, receipt.RootElement.GetProperty("path").GetString(), ignoreCase: true);
+        Assert.Equal(succeeded ? "success" : "denied", receipt.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(events, e => e.Body.Contains(content, StringComparison.Ordinal)
+            || (e.Meta?.Values.Any(v => v.Contains(content, StringComparison.Ordinal)) ?? false));
+    }
+
+    [Theory]
+    [InlineData("approve")]
+    [InlineData("deny")]
+    [InlineData("revoke")]
+    [InlineData("conflict")]
+    public async Task Main_file_edit_requires_approval_and_redacts_text(string decision)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        _data = Path.Combine(Path.GetTempPath(), "partner-edit-integration", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_data);
+        var target = Path.Combine(_data, "edit.txt");
+        const string original = "private-original";
+        const string replacement = "private-replacement";
+        await File.WriteAllTextAsync(target, original);
+        var version = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(target))).ToLowerInvariant();
+        var settings = _context.Settings.Load();
+        _context.Settings.Save(settings with { Files = new FilesSettings
+        {
+            Enabled = true, Roots = [_data], WriteEnabled = true, WriteRoots = [_data],
+        } });
+        await _consumer.ReconfigureAsync(config: null, "test", _llm);
+        _llm.Main = new ScriptedLlmClient([
+            Call("edit-1", "file_edit", JsonSerializer.Serialize(new
+            {
+                path = target, old_text = original, new_text = replacement, expected_version = version,
+            })),
+            Say("编辑处理结束")]);
+        await SendAsync("编辑文件");
+        await WaitAsync(() => Task.FromResult(_context.Approvals.Pending.Any(p => p.ToolName == "file_edit")), "file edit approval");
+        var request = Assert.Single(_context.Approvals.Pending, p => p.ToolName == "file_edit");
+        using var preview = JsonDocument.Parse(request.ArgumentsJson);
+        Assert.Contains("读取版本不一致时，不会提交", preview.RootElement.GetProperty("risk").GetString(), StringComparison.Ordinal);
+        Assert.Equal(target, preview.RootElement.GetProperty("path").GetString(), ignoreCase: true);
+        Assert.Equal(2, preview.RootElement.EnumerateObject().Count());
+        Assert.DoesNotContain(original, request.ArgumentsJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(replacement, request.ArgumentsJson, StringComparison.Ordinal);
+        var speech = Partner.Api.Voice.ApprovalSpeech.Prompt(request);
+        Assert.Contains("读取版本不一致时，不会提交", speech, StringComparison.Ordinal);
+        Assert.DoesNotContain(original, speech, StringComparison.Ordinal);
+        Assert.DoesNotContain(replacement, speech, StringComparison.Ordinal);
+        if (decision == "revoke")
+            _context.Settings.Save(_context.Settings.Load() with { Files = _context.Settings.Load().Files with { WriteEnabled = false } });
+        if (decision == "conflict")
+            await File.WriteAllTextAsync(target, "external change");
+        Assert.True(_context.Approvals.Answer(request.ApprovalId, decision != "deny"));
+        await WaitForAssistantAsync("编辑处理结束");
+        Assert.Equal(decision == "approve" ? replacement : decision == "conflict" ? "external change" : original,
+            await File.ReadAllTextAsync(target));
+        var events = await EventsAsync();
+        var call = Assert.Single(events, e => e.Kind == SessionEventKind.ToolCall && e.Meta?["id"] == "edit-1");
+        var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult && e.Meta?["id"] == "edit-1");
+        Assert.Equal("{}", call.Meta!["args"]);
+        Assert.Equal(decision == "approve" ? "true" : "false", result.Meta!["ok"]);
+        using var receipt = JsonDocument.Parse(result.Body);
+        Assert.Equal(target, receipt.RootElement.GetProperty("path").GetString(), ignoreCase: true);
+        Assert.Equal(decision == "approve" ? "success" : decision == "conflict" ? "failed" : "denied",
+            receipt.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(events, e => e.Body.Contains(original, StringComparison.Ordinal)
+            || e.Body.Contains(replacement, StringComparison.Ordinal)
+            || (e.Meta?.Values.Any(v => v.Contains(original, StringComparison.Ordinal) || v.Contains(replacement, StringComparison.Ordinal)) ?? false));
+    }
+
+    [Fact]
+    public async Task File_write_belongs_to_file_subagent_and_its_approval_names_origin()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        await EnableReaderAsync();
+        var settings = _context.Settings.Load();
+        _context.Settings.Save(settings with { Files = settings.Files with { WriteEnabled = true, WriteRoots = [_data] } });
+        await _consumer.ReconfigureAsync(config: null, "test", _llm);
+        var target = Path.Combine(_data, "delegated.txt");
+        var arguments = JsonSerializer.Serialize(new { path = target, content = "delegated-private" });
+        _llm.Main = new ScriptedLlmClient([
+            Call("main-write", "file_write", arguments),
+            Delegate("delegate", "新建文件"),
+            Say("已委派"),
+            Say("委派完成")]);
+        _llm.Sub = new ScriptedLlmClient([
+            Call("sub-write", "file_write", arguments),
+            Report("report", true, "文件已新建"),
+            Say("完成")]);
+        await SendAsync("请新建文件");
+        await WaitAsync(() => Task.FromResult(_context.Approvals.Pending.Any(p => p.ToolName == "file_write")), "subagent file approval");
+        var request = Assert.Single(_context.Approvals.Pending, p => p.ToolName == "file_write");
+        Assert.NotNull(request.Origin);
+        Assert.True(_context.Approvals.Answer(request.ApprovalId, true));
+        await WaitAsync(() => Task.FromResult(File.Exists(target)), "subagent file creation");
+        Assert.Equal("delegated-private", await File.ReadAllTextAsync(target));
+        var events = await EventsAsync();
+        var mainResult = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult && e.Meta?["id"] == "main-write");
+        Assert.Equal("false", mainResult.Meta!["ok"]);
+    }
+
     [Fact]
     public async Task A_delegated_job_reports_back_as_a_new_turn_and_stays_out_of_the_main_session()
     {
@@ -158,6 +311,8 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         Assert.StartsWith("[子 agent「文件阅读」任务", report.Body, StringComparison.Ordinal);
         Assert.Contains("已完成", report.Body.Split('\n')[0], StringComparison.Ordinal);
         Assert.Contains("文件内容：你好，世界", report.Body, StringComparison.Ordinal);
+        Assert.Contains("file_read，调用 ID \"s1\"", report.Body, StringComparison.Ordinal);
+        Assert.Contains("工具结果：成功", report.Body, StringComparison.Ordinal);
 
         var called = events.Where(e => e.Kind == SessionEventKind.ToolCall).Select(e => e.Meta!["name"]).ToList();
         Assert.Equal(["agent_delegate"], called);
@@ -467,7 +622,7 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
 
         await SendAsync("第一句");
         await WaitForAssistantAsync("一");
-        Assert.Equal(AgentPrompts.MainDefault, _llm.Main.Requests[0].Messages[0].Content);
+        Assert.StartsWith(AgentPrompts.MainDefault, _llm.Main.Requests[0].Messages[0].Content);
 
         // The reply is in the log a moment before the loop counts the turn as handled; wait for the count, or the
         // "nothing restarted" comparison below races it.
@@ -485,7 +640,80 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
 
         await SendAsync("第二句");
         await WaitForAssistantAsync("二");
-        Assert.Equal("你是小克，说话简短。", _llm.Main.Requests[1].Messages[0].Content);
+        Assert.StartsWith("你是小克，说话简短。", _llm.Main.Requests[1].Messages[0].Content);
+    }
+
+    [Fact]
+    public async Task Capability_and_image_settings_do_not_replace_the_injected_consumer()
+    {
+        _llm.Main = new ScriptedLlmClient([Say("热更新之前"), Say("热更新之后")]);
+        await SendAsync("第一回合");
+        await WaitForAssistantAsync("热更新之前");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_consumer.State.Stats.Handled >= 1)));
+        var before = _context.Settings.Load();
+        var response = await _http.PutSettingsAsync(new
+        {
+            web = new { enabled = !before.Web.Enabled },
+            model = new { supportsImages = !before.Model.SupportsImages },
+        });
+        response.EnsureSuccessStatusCode();
+        Assert.True(_consumer.State.Running);
+        Assert.True(_consumer.State.Stats.Handled >= 1);
+        await SendAsync("第二回合");
+        await WaitForAssistantAsync("热更新之后");
+        Assert.Equal(!before.Web.Enabled, _llm.Main.Requests[1].Tools.Any(tool => tool.Name == "web_search"));
+    }
+
+    [Fact]
+    public async Task Changing_scenario_ownership_updates_the_next_turn_without_restarting_the_consumer()
+    {
+        await EnableReaderAsync(withReader: false);
+        _llm.Main = new ScriptedLlmClient([Say("先前快照"), Say("新的快照")]);
+        await SendAsync("第一回合");
+        await WaitForAssistantAsync("先前快照");
+        Assert.True(await Eventually.IsTrueAsync(() => Task.FromResult(_consumer.State.Stats.Handled >= 1)));
+        Assert.Contains(_llm.Main.Requests[0].Tools, tool => tool.Name == "file_read");
+
+        var settings = _context.Settings.Load();
+        var saved = await _http.PutAsJsonAsync("/api/agents", settings.Agents with
+        {
+            SubAgents = [.. settings.Agents.SubAgents, new SubAgentSettings { Id = "reader", Name = "文件阅读", Scenario = AgentScenarios.FileRead }],
+        });
+        saved.EnsureSuccessStatusCode();
+        Assert.True(_consumer.State.Running);
+        Assert.True(_consumer.State.Stats.Handled >= 1);
+
+        await SendAsync("第二回合");
+        await WaitForAssistantAsync("新的快照");
+        Assert.DoesNotContain(_llm.Main.Requests[1].Tools, tool => tool.Name == "file_read");
+        Assert.Contains(_llm.Main.Requests[1].Tools, tool => tool.Name == "agent_delegate");
+    }
+
+    [Fact]
+    public async Task A_running_job_cannot_call_a_family_after_losing_its_scenario()
+    {
+        await EnableReaderAsync();
+        var gated = new GatedLlm(new ScriptedLlmClient([
+            Call("s1", "file_read", """{"path":"a.txt"}"""),
+            Report("s2", false, "没有权限"), Say("完成") ]));
+        _llm.Sub = gated;
+        _llm.Main = new ScriptedLlmClient([Say("收到报告")]);
+        Assert.True(_consumer.Agents.Start("file-read", "读取 a.txt", null).Started);
+        await gated.Started.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var settings = _context.Settings.Load();
+        var saved = await _http.PutAsJsonAsync("/api/agents", settings.Agents with
+        {
+            SubAgents = settings.Agents.SubAgents.Select(agent => agent.Id == "reader" ? agent with { Enabled = false } : agent).ToArray(),
+        });
+        saved.EnsureSuccessStatusCode();
+        gated.Release();
+        await WaitForAssistantAsync("收到报告");
+
+        var job = Assert.Single(_consumer.Agents.Jobs());
+        var events = await _consumer.Agents.ReadSessionAsync(job.Id, CancellationToken.None);
+        Assert.Contains(events!, e => e.Kind == SessionEventKind.ToolResult && e.Body.Contains("denied", StringComparison.Ordinal));
+        Assert.DoesNotContain(events!, e => e.Kind == SessionEventKind.ToolResult && e.Body.Contains("你好，世界", StringComparison.Ordinal));
     }
 
     [Fact]

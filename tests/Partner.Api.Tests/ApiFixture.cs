@@ -26,6 +26,8 @@ public abstract class ApiFixture : IAsyncLifetime
     /// <summary>Names the throwaway directory, so a leftover one says which suite wrote it.</summary>
     protected abstract string WorkspaceName { get; }
 
+    protected virtual string WorkspaceArgument => _workspace;
+
     /// <summary>The model the tests run against; null means no model is configured.</summary>
     protected virtual ILlmClient? Llm => null;
 
@@ -53,7 +55,7 @@ public abstract class ApiFixture : IAsyncLifetime
         try
         {
             (app, context, consumer, voice, localEngines, _) = await ApiHost.BuildAsync(
-                _workspace, _port, _token, clock: null, llm: Llm, components: Components);
+                WorkspaceArgument, _port, _token, clock: null, llm: Llm, components: Components);
         }
         finally
         {

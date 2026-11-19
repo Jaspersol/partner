@@ -65,7 +65,7 @@ const SETTINGS = {
   skills: { disabled: [] },
   // Carried by the settings page untouched; the prompts page owns them.
   agents: { main: { prompt: null }, subAgents: [] },
-  files: { enabled: false, roots: [] },
+  files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
   web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] },
   memory: { embeddings: false },
   // Off with nothing imported: a fresh install. The pet window is not part of this fake.
@@ -147,7 +147,7 @@ const AGENTS = {
   ],
   problems: [],
   limits: { maxRounds: 10, defaultMaxRounds: 5, promptTokens: 8192 },
-  files: { enabled: false, roots: [] },
+  files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
   desktopEnabled: true,
   webEnabled: true,
 }
@@ -442,6 +442,28 @@ describe('app shell', () => {
 
     expect(cancelled).toHaveLength(1)
     expect(cancelled[0]).toContain('/api/agent-jobs/job-1/cancel')
+  })
+
+  it('reports a job that finished before the status bar cancellation', async () => {
+    const job = {
+      id: 'job-1', agentId: 'desktop', agentName: '桌面操控', scenario: 'desktop', goal: '放歌',
+      status: 'running', round: 1, maxRounds: 5, startedAt: '2026-10-18T10:00:00+00:00',
+      finishedAt: null, category: null, summary: null, error: null, rounds: [],
+    }
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (path.includes('/api/agent-jobs/')) return new Response(null, { status: 404 })
+      const body = path.includes('/api/agent-jobs') ? { jobs: [job] } : respond(path)
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }) as unknown as typeof fetch
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.find('[data-test="status-job-cancel"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('子任务已完成，无法取消')
+    wrapper.unmount()
   })
 
   it('renders no job indicator when nothing is delegated', async () => {
