@@ -12,7 +12,7 @@ namespace Partner.Desktop.Tools;
 /// itself. The window must be one an observation returned and the policy allows.
 /// </para>
 /// </summary>
-public sealed class DesktopWindowTool(DesktopAutomation automation, DesktopToolPolicy policy) : ITool
+public sealed class DesktopWindowTool(DesktopAutomation automation, DesktopToolPolicy policy, Func<bool>? isEnabled = null) : ITool
 {
     public const string ToolName = "desktop_window";
 
@@ -39,7 +39,18 @@ public sealed class DesktopWindowTool(DesktopAutomation automation, DesktopToolP
         },"required":["entityId","action"],"additionalProperties":false}
         """);
 
-    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    {
+        using var mutation = await DesktopMutationLock.AcquireAsync(ct).ConfigureAwait(false);
+        if (isEnabled is not null && !isEnabled())
+        {
+            return new ToolResult(false, "桌面能力未启用");
+        }
+
+        return await InvokeCoreAsync(argumentsJson, ct).ConfigureAwait(false);
+    }
+
+    private Task<ToolResult> InvokeCoreAsync(string argumentsJson, CancellationToken ct)
     {
         WindowArguments? arguments;
         try
@@ -75,6 +86,12 @@ public sealed class DesktopWindowTool(DesktopAutomation automation, DesktopToolP
         var handle = (nint)raw;
         bool ok;
         string done;
+
+        if (isEnabled is not null && !isEnabled())
+        {
+            return Task.FromResult(new ToolResult(false, "桌面能力未启用"));
+        }
+        DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
 
         switch (arguments.Action.ToLowerInvariant())
         {

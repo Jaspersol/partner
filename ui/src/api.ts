@@ -443,10 +443,12 @@ export interface AgentsSettings {
   subAgents: SubAgentSettings[]
 }
 
-/** The file-reading capability: off by default, and a whitelist rather than a blacklist. */
+/** Native file access settings; creation is separately controlled and off by default. */
 export interface FilesSettings {
   enabled: boolean
   roots: string[]
+  writeEnabled: boolean
+  writeRoots: string[]
 }
 
 /**
@@ -824,6 +826,7 @@ export interface UpdateDownload {
  */
 export interface DesktopSettings {
   enabled: boolean
+  execEnabled?: boolean
   leaseTtlMs: number
   /** 'none' | 'dangerous' | 'all' — see ApprovalGear. */
   approval: string
@@ -845,13 +848,14 @@ export const INPUT_MODES = [
 
 /** The three approval gears, in the order the UI offers them. */
 export const APPROVAL_GEARS = [
-  { value: 'none', label: tr('不审批'), hint: tr('模型直接动手，不留问') },
-  { value: 'dangerous', label: tr('危险指令审批'), hint: tr('执行命令 / 启动程序 / 写剪贴板 / 删除定时任务要批准') },
+  { value: 'none', label: tr('不审批'), hint: tr('普通桌面动作不审批；命令执行仍逐次审批') },
+  { value: 'dangerous', label: tr('危险指令审批'), hint: tr('启动程序 / 写剪贴板 / 删除定时任务要批准；命令执行始终逐次审批') },
   { value: 'all', label: tr('全部审批'), hint: tr('每个动作都要批准（看屏幕不算）：点击、创建定时任务、打开没见过的网址') },
 ] as const
 
 export interface DesktopState {
   enabled: boolean
+  execEnabled?: boolean
   leaseTtlMs: number
   approval: string
   allowedWindowTitles: string[]
@@ -927,10 +931,10 @@ export interface SubmitResult {
   deduplicated: boolean
 }
 
-/** One tool the model can call, with what governance will do about it. */
+/** One exposed tool. `conditional` means the actual decision depends on the call, not that it is approved. */
 export interface ToolExposure {
   name: string
-  decision: 'allow' | 'ask' | string
+  decision: 'allow' | 'ask' | 'deny' | 'conditional' | (string & {})
 }
 
 export interface ConsumerState {

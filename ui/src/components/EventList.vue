@@ -13,6 +13,8 @@ import ThinkingRow from './ThinkingRow.vue'
 
 const props = defineProps<{
   items: SessionItem[]
+  /** Unfiltered events provide the evidence for receipt uniqueness and the current tool batch. */
+  correlationItems?: SessionItem[] | undefined
   selectedSeq: number | null
   /**
    * The first seq of the latest conversation, from `conversation.latestFromSeq`. Delete is offered only for
@@ -46,13 +48,44 @@ const emit = defineEmits<{
  */
 type Row =
   | { kind: 'event'; item: SessionItem; selectable: boolean }
-  | { kind: 'tool'; seq: number; name: string; args: string; status: 'running' | 'ok' | 'failed'; result: string | null }
+  | { kind: 'tool'; seq: number; name: string; args: string; status: 'running' | 'ok' | 'failed' | 'denied' | 'not_started' | 'unconfirmed' | 'timeout'; result: string | null }
   | { kind: 'thinking'; key: string; body: string; running: boolean; since: string | null }
   | { kind: 'recall'; seq: number; body: string }
   | { kind: 'fold'; key: string; open: boolean; label: string }
 
 /** A tool call and its result, already paired. */
 type ToolRow = Extract<Row, { kind: 'tool' }>
+const isFileTool = (name: string) => ['file_list', 'file_read', 'file_write', 'file_edit'].includes(name)
+const isFileMutation = (name: string) => name === 'file_write' || name === 'file_edit'
+
+function writeReceipt(item: SessionItem): { status: ToolRow['status']; path: string | null } {
+  try {
+    const receipt: unknown = JSON.parse(item.body)
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) throw new Error('invalid receipt')
+    const value = receipt as Record<string, unknown>
+    const path = typeof value.path === 'string' ? value.path : null
+    if (value.status === 'success' && item.meta?.ok === 'true' && value.approval === 'approved' && path?.trim()) return { status: 'ok', path }
+    if (item.meta?.ok === 'false') {
+      if (value.status === 'failed') return { status: 'failed', path }
+      if (value.status === 'denied') return { status: 'denied', path }
+      if (value.status === 'not_started') return { status: 'not_started', path }
+    }
+    return { status: 'unconfirmed', path }
+  } catch {
+    return { status: 'unconfirmed', path: null }
+  }
+}
+
+
+/** Only the tool receipt determines the outcome; a timeout does not establish that a side effect failed. */
+function receiptStatus(item: SessionItem): ToolRow['status'] {
+  if (isFileMutation(item.meta?.name ?? '')) return writeReceipt(item).status
+  if (item.meta?.ok === 'true') return 'ok'
+  if (item.meta?.ok !== 'false') return 'unconfirmed'
+  if (item.body.startsWith('timeout after ') && item.body.includes('; status unconfirmed')) return 'timeout'
+  if (item.body.startsWith('canceled; status unconfirmed') || item.body.startsWith('canceled before completion; status unconfirmed')) return 'unconfirmed'
+  return 'failed'
+}
 
 /**
  * Folds the log into rows: pairs each tool call with its result, and keeps a result whose call is missing.
@@ -67,20 +100,36 @@ type ToolRow = Extract<Row, { kind: 'tool' }>
 const allRows = computed<Row[]>(() => {
   const out: Row[] = []
   const openCallAt = new Map<string, number>()
-
+  // A reused or empty ID cannot identify a particular file operation, even when names match.
+  const callCounts = new Map<string, number>()
+  const resultCounts = new Map<string, number>()
+  const evidence = props.correlationItems ?? props.items
+  for (const item of evidence) {
+    const id = item.meta?.id
+    if (!id || !id.trim()) continue
+    const counts = item.kind === 'ToolCall' ? callCounts : item.kind === 'ToolResult' ? resultCounts : null
+    if (counts) counts.set(id, (counts.get(id) ?? 0) + 1)
+  }
+  // Only the trailing tool batch can be in flight in the current running turn.
+  let trailingTools = evidence.length
+  while (trailingTools > 0 && ['ToolCall', 'ToolResult'].includes(evidence[trailingTools - 1]!.kind)) trailingTools--
+  const trailingSeqs = new Set(evidence.slice(trailingTools).map((item) => item.seq))
+ 
   for (const item of props.items) {
     if (item.kind === 'ToolCall') {
       out.push({
         kind: 'tool',
         seq: item.seq,
         name: item.meta?.name ?? item.body,
-        args: item.meta?.args ?? '{}',
-        status: 'running',
+        args: isFileMutation(item.meta?.name ?? item.body) ? '{}' : (item.meta?.args ?? '{}'),
+        status: isFileTool(item.meta?.name ?? item.body)
+          ? (props.busy && trailingSeqs.has(item.seq) && !!item.meta?.id?.trim() && callCounts.get(item.meta.id) === 1 && !resultCounts.has(item.meta.id) ? 'running' : 'unconfirmed')
+          : 'running',
         result: null,
       })
 
       const id = item.meta?.id
-      if (id !== undefined) {
+      if (id && id.trim()) {
         openCallAt.set(id, out.length - 1)
       }
 
@@ -89,15 +138,19 @@ const allRows = computed<Row[]>(() => {
 
     if (item.kind === 'ToolResult') {
       const id = item.meta?.id
-      const at = id === undefined ? undefined : openCallAt.get(id)
+      const at = id && id.trim() ? openCallAt.get(id) : undefined
+      const call = at === undefined ? undefined : out[at] as ToolRow
+      const fileInvolved = isFileTool(call?.name ?? '') || isFileTool(item.meta?.name ?? '')
+      const matches = !fileInvolved || (id !== undefined && callCounts.get(id) === 1 && resultCounts.get(id) === 1 && item.meta?.name === call?.name)
 
-      if (id !== undefined && at !== undefined) {
+      if (id && at !== undefined && matches) {
+        const receipt = isFileMutation(call!.name) ? writeReceipt(item) : null
         out[at] = {
           kind: 'tool',
           seq: (out[at] as ToolRow).seq,
           name: (out[at] as ToolRow).name,
-          args: (out[at] as ToolRow).args,
-          status: item.meta?.ok === 'true' ? 'ok' : 'failed',
+          args: receipt?.path ? JSON.stringify({ path: receipt.path }) : (out[at] as ToolRow).args,
+          status: receipt?.status ?? receiptStatus(item),
           result: item.body,
         }
         openCallAt.delete(id)
@@ -110,7 +163,7 @@ const allRows = computed<Row[]>(() => {
         seq: item.seq,
         name: item.meta?.name ?? 'tool',
         args: '{}',
-        status: item.meta?.ok === 'true' ? 'ok' : 'failed',
+        status: isFileTool(item.meta?.name ?? '') && receiptStatus(item) === 'ok' ? 'unconfirmed' : receiptStatus(item),
         result: item.body,
       })
       continue
@@ -545,7 +598,7 @@ function rowSeq(index: number): number | null {
           @click="toggleFold(row.key)"
         >
           <Icon name="chevron-down" :size="14" class="fold-chevron" />
-          <span class="fold-title">{{ row.open ? t('收起过程') : t('已完成') }}</span>
+          <span class="fold-title">{{ row.open ? t('收起过程') : t('过程') }}</span>
           <span class="fold-label">{{ row.label }}</span>
         </button>
 

@@ -559,13 +559,6 @@ public static class ViewEndpoints
                 ? Results.Conflict(new { error = "子 agent 还有任务在进行：等它汇报，或先取消任务，再删除或撤回" })
                 : null;
 
-    /// <summary>
-    /// Whether the desktop section changed in a way the running consumer cannot absorb: the tool table and the
-    /// window policy are built at start, the approval gear is read per call.
-    /// </summary>
-    private static bool DesktopNeedsRestart(DesktopSettings before, DesktopSettings after) =>
-        before.Enabled != after.Enabled
-        || !before.AllowedWindowTitles.SequenceEqual(after.AllowedWindowTitles, StringComparer.Ordinal);
 
     /// <summary>
     /// Whether the MCP section changed in a way the running consumer cannot absorb.
@@ -943,20 +936,17 @@ public static class ViewEndpoints
                 return Results.Conflict(new { error = conflict.Message, revision = conflict.CurrentRevision });
             }
 
-            // The model section must take effect now rather than at the next restart. Other sections can change
-            // without interrupting a turn in flight.
-            //
-            // The desktop section is the exception: it decides which tools are registered and with which window
-            // policy, both built when the consumer starts. The approval gear is *not* part of that — governance
-            // reads it live. MCP has the same shape: the server list decides which processes exist, the allow
-            // list does not, so only the former restarts.
-            if (ModelConfig.Differs(before.Model, stored.Model)
-                || DesktopNeedsRestart(before.Desktop, stored.Desktop)
-                || McpNeedsRestart(before.Mcp, stored.Mcp)
-                || AgentRouting.ToolTableDiffers(before, stored))
+            // Only endpoint/client or MCP process changes rebuild the consumer. Exposure changes publish
+            // a new tool table for the next turn while live governance revokes old grants immediately.
+            if (ModelConfig.Differs(before.Model, stored.Model) || McpNeedsRestart(before.Mcp, stored.Mcp))
             {
                 var (config, reason) = ModelConfig.Resolve(stored);
                 await consumer.ReconfigureAsync(config, reason).ConfigureAwait(false);
+            }
+            else if (AgentRouting.ToolTableDiffers(before, stored)
+                || before.Model.SupportsImages != stored.Model.SupportsImages)
+            {
+                await consumer.RefreshToolsAsync().ConfigureAwait(false);
             }
 
             // The deny list is read when skills are loaded, so a change has to be loaded again to reach the next turn.

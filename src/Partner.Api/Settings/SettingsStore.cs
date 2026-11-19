@@ -84,6 +84,20 @@ public sealed class SettingsStore
         }
     }
 
+    /// <summary>Serializes an approved file commit with settings publication. The commit must be synchronous.</summary>
+    internal bool TryCommitFileWrite(RuntimeSettings approvedSnapshot, Func<RuntimeSettings, bool> isAuthorized, Action commit, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            _snapshot ??= Freeze(ReadFile());
+            if (!ReferenceEquals(_snapshot, approvedSnapshot) || !isAuthorized(_snapshot))
+                return false;
+            ct.ThrowIfCancellationRequested();
+            commit();
+            return true;
+        }
+    }
+
     /// <summary>Explicitly reloads hand-edited settings; malformed JSON uses the safe defaults.</summary>
     public RuntimeSettings Reload()
     {
@@ -116,7 +130,7 @@ public sealed class SettingsStore
             ReasoningLabels = FrozenMap(settings.Model.ReasoningLabels),
         },
         Desktop = settings.Desktop with { AllowedWindowTitles = FrozenList(settings.Desktop.AllowedWindowTitles) },
-        Files = settings.Files with { Roots = FrozenList(settings.Files.Roots) },
+        Files = settings.Files with { Roots = FrozenList(settings.Files.Roots), WriteRoots = FrozenList(settings.Files.WriteRoots) },
         Web = settings.Web with { DisabledEngines = FrozenList(settings.Web.DisabledEngines) },
         Skills = settings.Skills with { Disabled = FrozenList(settings.Skills.Disabled) },
         Agents = settings.Agents with { SubAgents = FrozenList(settings.Agents.SubAgents) },

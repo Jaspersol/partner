@@ -1,5 +1,9 @@
 using Partner.Api.Settings;
 using Partner.Core.Agent;
+using Partner.Core.Agent.Delegation;
+using Partner.Core.Agent.Tools;
+using Partner.Core.Agent.Web;
+using Partner.Desktop.Tools;
 
 namespace Partner.Api.Agents;
 
@@ -29,6 +33,105 @@ public static class AgentRouting
         _ => false,
     };
 
+    internal enum NativeToolKind { Unknown, Desktop, File, Web, Information, ScheduleList, ScheduleCreate, ScheduleDelete }
+
+    private sealed record CommonTool(string Name, NativeToolKind Kind, Func<ApiContext, SubAgentHost, RuntimeSettings, ITool> Create);
+
+    private static readonly CommonTool[] MainTools =
+    [
+        new(ScheduleCreateTool.ToolName, NativeToolKind.ScheduleCreate, (context, _, _) => new ScheduleCreateTool(context)),
+        new(ScheduleListTool.ToolName, NativeToolKind.ScheduleList, (context, _, _) => new ScheduleListTool(context)),
+        new(ScheduleDeleteTool.ToolName, NativeToolKind.ScheduleDelete, (context, _, _) => new ScheduleDeleteTool(context)),
+        new(AgentDelegateTool.ToolName, NativeToolKind.Information, (_, host, settings) => new AgentDelegateTool(host, DelegationScenarios(settings))),
+        new(AgentJobStatusTool.ToolName, NativeToolKind.Information, (_, host, _) => new AgentJobStatusTool(host)),
+        new(AgentJobCancelTool.ToolName, NativeToolKind.Information, (_, host, _) => new AgentJobCancelTool(host)),
+    ];
+
+    internal static NativeToolKind ClassifyNativeTool(string name)
+    {
+        if (name == TaskReportTool.ToolName) return NativeToolKind.Information;
+        foreach (var binding in MainTools)
+            if (binding.Name == name) return binding.Kind;
+        foreach (var family in ToolFamilies)
+        {
+            if (family.AllNames.Contains(name, StringComparer.Ordinal))
+                return family.Kind;
+        }
+        return NativeToolKind.Unknown;
+    }
+
+    internal static void RegisterMainTools(InMemoryToolRegistry tools, ApiContext context, SubAgentHost host, RuntimeSettings settings)
+    {
+        var delegates = Effective(settings).Count > 0;
+        foreach (var binding in MainTools)
+        {
+            if (binding.Kind == NativeToolKind.Information && !delegates) continue;
+            var tool = binding.Create(context, host, settings);
+            if (tool.Spec.Name != binding.Name)
+                throw new InvalidOperationException($"Tool registration does not match the catalogue for '{binding.Name}'.");
+            tools.Register(tool);
+        }
+    }
+
+    internal static TaskReportTool RegisterScenarioTools(
+        string scenario, InMemoryToolRegistry tools, ApiContext context, RuntimeSettings settings,
+        bool supportsImages, string workspace, string? agentId = null)
+    {
+        // Validate the scenario before mutating the registry.
+        _ = Family(scenario);
+        var report = new TaskReportTool();
+        tools.Register(report);
+        RegisterFamily(scenario, tools, context, settings, supportsImages, workspace, agentId);
+        return report;
+    }
+
+    // The same family binding supplies status names and the existing factory. The factory remains the
+    // authority for construction; checking its output prevents status and the running table from drifting.
+    private sealed record ToolFamily(
+        string Scenario,
+        NativeToolKind Kind,
+        IReadOnlyList<string> AllNames,
+        Action<InMemoryToolRegistry, ApiContext, RuntimeSettings, bool, string, string?> Register)
+    {
+        public IEnumerable<string> Names(RuntimeSettings settings, bool supportsImages) => AllNames
+            .Where(name => name is not ("file_write" or "file_edit") || FileWriteAvailable(settings))
+            .Where(name => name != "desktop_screenshot" || supportsImages)
+            .Where(name => name != "desktop_exec" || settings.Desktop.ExecEnabled);
+    }
+
+    private static readonly ToolFamily[] ToolFamilies =
+    [
+        new(AgentScenarios.Desktop, NativeToolKind.Desktop,
+            DesktopToolCatalog.All,
+            (tools, context, settings, supportsImages, _, _) => DesktopToolSet.Register(tools, context, settings, supportsImages)),
+        new(AgentScenarios.FileRead, NativeToolKind.File,
+            ["file_list", "file_read", "file_write", "file_edit"],
+            (tools, context, settings, _, workspace, agentId) => FileToolSet.Register(tools, context.Settings, settings, workspace, agentId)),
+        new(AgentScenarios.WebSearch, NativeToolKind.Web,
+            [WebSearchTool.Name, WebFetchTool.Name],
+            (tools, context, _, _, _, _) => WebToolSet.Register(tools, context)),
+    ];
+
+    private static ToolFamily Family(string scenario) =>
+        ToolFamilies.FirstOrDefault(family => family.Scenario == scenario)
+        ?? throw new ArgumentOutOfRangeException(nameof(scenario), scenario, "Unknown agent scenario");
+
+    /// <summary>The native tools exposed to a job, including its report tool.</summary>
+    public static IReadOnlyList<string> ScenarioTools(string scenario, RuntimeSettings settings, bool supportsImages) =>
+        Family(scenario).Names(settings, supportsImages).Prepend(TaskReportTool.ToolName).ToArray();
+
+    internal static void RegisterFamily(
+        string scenario, InMemoryToolRegistry tools, ApiContext context, RuntimeSettings settings,
+        bool supportsImages, string workspace, string? agentId = null)
+    {
+        var family = Family(scenario);
+        var count = tools.Specs.Count;
+        family.Register(tools, context, settings, supportsImages, workspace, agentId);
+        var registered = tools.Specs.Skip(count).Select(spec => spec.Name);
+        if (!family.Names(settings, supportsImages).ToHashSet(StringComparer.Ordinal).SetEquals(registered))
+            throw new InvalidOperationException($"Tool registration does not match the catalogue for '{scenario}'.");
+    }
+
     /// <summary>The scenarios the main agent may delegate: owned by an enabled sub-agent, capability on.</summary>
     public static IReadOnlyList<AgentRoute> Effective(RuntimeSettings settings) =>
         AgentScenarios.All
@@ -43,6 +146,10 @@ public static class AgentRouting
     /// <summary>The main agent reads files itself only when files are on and no enabled sub-agent has taken them.</summary>
     public static bool MainOwnsFiles(RuntimeSettings settings) =>
         settings.Files.Enabled && settings.Agents.Owner(AgentScenarios.FileRead) is not { Enabled: true };
+
+    internal static bool FileWriteAvailable(RuntimeSettings settings) => OperatingSystem.IsWindows()
+        && settings.Files.Enabled && settings.Files.WriteEnabled
+        && settings.Files.Roots.Count > 0 && settings.Files.WriteRoots.Count > 0;
 
     /// <summary>
     /// The same rule for the web tools: the main agent searches and fetches only while no enabled sub-agent has
@@ -60,7 +167,9 @@ public static class AgentRouting
     /// </summary>
     public static bool ToolTableDiffers(RuntimeSettings before, RuntimeSettings after) =>
         before.Desktop.Enabled != after.Desktop.Enabled
-        || before.Files != after.Files
+        || before.Desktop.ExecEnabled != after.Desktop.ExecEnabled
+        || before.Files.Enabled != after.Files.Enabled
+        || FileWriteAvailable(before) != FileWriteAvailable(after)
         || !Effective(before).Select(route => route.Scenario.Key).SequenceEqual(Effective(after).Select(route => route.Scenario.Key))
         || MainOwnsFiles(before) != MainOwnsFiles(after)
         // Only the web switch and who owns the tools are here. The proxy, the budget, the result count and the
@@ -77,17 +186,22 @@ public static class AgentRouting
             : AgentPrompts.MainDefault;
         var block = AgentPrompts.DelegationBlock(DelegationScenarios(settings));
 
-        return block.Length == 0 ? body : body + "\n\n" + block;
+        var write = MainOwnsFiles(settings) && FileWriteAvailable(settings) ? "\n\n" + AgentPrompts.FileWriteGuidance : "";
+        return body + "\n\n" + AgentPrompts.FileToolBoundary + write + (block.Length == 0 ? "" : "\n\n" + block);
     }
 
     /// <summary>A sub-agent's prompt: the person's text (or the scenario's default), then the report contract.</summary>
-    public static string SubAgentPrompt(SubAgentSettings agent)
+    public static string SubAgentPrompt(SubAgentSettings agent, RuntimeSettings settings)
     {
         var body = agent.Prompt is { } custom && !string.IsNullOrWhiteSpace(custom)
             ? custom
             : AgentScenarios.Find(agent.Scenario)?.DefaultPrompt ?? string.Empty;
 
-        return body + "\n\n" + AgentPrompts.ReportContract(agent.MaxRounds);
+        var ownsWrite = agent.Scenario == AgentScenarios.FileRead && FileWriteAvailable(settings)
+            && settings.Agents.Owner(AgentScenarios.FileRead) is { Enabled: true } owner
+            && string.Equals(owner.Id, agent.Id, StringComparison.Ordinal);
+        var write = ownsWrite ? "\n\n" + AgentPrompts.FileWriteGuidance : "";
+        return body + "\n\n" + AgentPrompts.FileToolBoundary + write + "\n\n" + AgentPrompts.ReportContract(agent.MaxRounds);
     }
 
     public static IReadOnlyList<DelegationScenario> DelegationScenarios(RuntimeSettings settings) =>

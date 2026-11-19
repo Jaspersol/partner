@@ -407,7 +407,7 @@ public sealed class AnthropicLlmClient : ILlmClient, ITokenCounter, IModelCatalo
 
     private MessagesBody BuildBody(LlmRequest request, bool stream)
     {
-        var (system, messages) = BuildConversation(request.Messages);
+        var (system, messages) = BuildConversation(LlmConversation.OrderToolResults(request.Messages));
         var maxTokens = request.MaxTokens ?? _options.MaxOutputTokens ?? DefaultMaxTokens;
         if (maxTokens <= 0)
         {
@@ -433,7 +433,7 @@ public sealed class AnthropicLlmClient : ILlmClient, ITokenCounter, IModelCatalo
     /// are two user messages here and one turn on the wire.
     /// </summary>
     private (object? System, IReadOnlyList<OutboundMessage> Messages) BuildConversation(
-        IReadOnlyList<LlmMessage> source)
+        IEnumerable<LlmMessage> source)
     {
         var systems = new List<string>();
         var turns = new List<MutableTurn>();
@@ -524,7 +524,9 @@ public sealed class AnthropicLlmClient : ILlmClient, ITokenCounter, IModelCatalo
         {
             using var document = JsonDocument.Parse(
                 string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson);
-            return document.RootElement.Clone();
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? document.RootElement.Clone()
+                : JsonSerializer.SerializeToElement(new { });
         }
         catch (JsonException)
         {

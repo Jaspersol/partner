@@ -32,6 +32,7 @@ Tool names get the prefix `mcp_{server}_`, so two servers with the same tool nam
 |---|---|
 | Server list | Restarts the consumer; child processes start again |
 | Skip-approval list | No restart; applies on the next call |
+| Other changes that rebuild the consumer | Reuse connections and tool descriptions when MCP server configuration is unchanged; disabling MCP, changing server configuration, or stopping the consumer closes them |
 
 ## When something fails
 

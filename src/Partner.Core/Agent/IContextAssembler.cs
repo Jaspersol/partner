@@ -335,8 +335,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// <summary>
     /// A historic tool call's arguments, kept valid JSON. The wire field is a string that the provider parses:
     /// cutting it mid-string (as <see cref="Trim"/> does for prose) makes a strict endpoint reject the whole
-    /// request — llama.cpp answers HTTP 500 before generation. Long string values are shortened instead, and an
-    /// already-unparseable entry becomes <c>{}</c> so one bad turn cannot wedge every later turn.
+    /// request — llama.cpp answers HTTP 500 before generation. Long string values are shortened instead; malformed
+    /// JSON and non-object inputs become <c>{}</c> so historic calls also satisfy providers requiring an object.
     /// </summary>
     internal static string TraceArguments(string? json)
     {
@@ -348,6 +348,11 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         try
         {
             using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return "{}";
+            }
+
             if (json.Length <= TraceChars)
             {
                 return json;

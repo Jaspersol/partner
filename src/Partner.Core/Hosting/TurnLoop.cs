@@ -34,7 +34,7 @@ public sealed record TurnLoopStats(int Completed, int Failed, int Canceled, int 
 public sealed class TurnLoop
 {
     private readonly IInputQueue _queue;
-    private readonly AgentTurnRunner _runner;
+    private readonly Func<AgentTurnRunner> _runner;
     private readonly ISessionStore _session;
 
     private int _completed;
@@ -51,6 +51,17 @@ public sealed class TurnLoop
     public TurnLoop(
         IInputQueue queue,
         AgentTurnRunner runner,
+        ISessionStore session,
+        Func<CancellationToken, Task>? afterTurn = null,
+        Func<InputItem, InputItemStatus, string?, Task>? onSettled = null)
+        : this(queue, () => runner, session, afterTurn, onSettled)
+    {
+        ArgumentNullException.ThrowIfNull(runner);
+    }
+
+    public TurnLoop(
+        IInputQueue queue,
+        Func<AgentTurnRunner> runner,
         ISessionStore session,
         Func<CancellationToken, Task>? afterTurn = null,
         Func<InputItem, InputItemStatus, string?, Task>? onSettled = null)
@@ -160,14 +171,15 @@ public sealed class TurnLoop
 
         try
         {
-            var running = _runner.RunAsync(item, turn.Token);
+            var runner = _runner();
+            var running = runner.RunAsync(item, turn.Token);
 
             // Waited on with a bound rather than awaited outright. Cancelling the token does <i>not</i> bring
             // back a turn parked on an await that ignores it, so `await running` would keep waiting for exactly
             // the case this exists to catch. Waiting on the pair means the loop gives up on schedule whether or
             // not the turn is listening.
             var finished = await Task
-                .WhenAny(running, Task.Delay(_runner.TurnTimeout, CancellationToken.None))
+                .WhenAny(running, Task.Delay(runner.TurnTimeout, CancellationToken.None))
                 .ConfigureAwait(false);
 
             if (finished != running)
@@ -178,7 +190,7 @@ public sealed class TurnLoop
                 Forget(running);
 
                 Interlocked.Increment(ref _failed);
-                var overran = $"回合超过 {_runner.TurnTimeout.TotalSeconds:0} 秒未结束，已中止"
+                var overran = $"回合超过 {runner.TurnTimeout.TotalSeconds:0} 秒未结束，已中止"
                     + "（多半是某个工具或模型调用没有返回；请看会话里最后一个 tool/call 定位）";
                 await _queue.CompleteAsync(item.ItemId, InputItemStatus.Failed, overran).ConfigureAwait(false);
                 return new Settled(InputItemStatus.Failed, overran);

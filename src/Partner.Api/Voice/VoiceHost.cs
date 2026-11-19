@@ -802,7 +802,7 @@ public sealed class VoiceHost : IAsyncDisposable
                     }
 
                     output.Say(
-                        ApprovalSpeech.Prompt(announce.Request),
+                        ApprovalSpeech.Prompt(announce.Request, _context.Approvals.Pending),
                         SpeechKind.ApprovalPrompt,
                         announce.Request.ApprovalId,
                         priority: true,

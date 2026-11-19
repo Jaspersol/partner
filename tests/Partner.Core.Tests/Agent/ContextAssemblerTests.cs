@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
+using Partner.Core.Agent.Tools;
 using Partner.Core.Contracts;
 using Partner.Core.Media;
 using Partner.Core.Memory;
@@ -190,6 +191,24 @@ public sealed class ContextAssemblerTests : IDisposable
 
         var call = Assert.Single(messages[2].ToolCalls!);
         Assert.Equal("{}", call.ArgumentsJson);
+        Assert.Equal("c1", messages[3].ToolCallId);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("42")]
+    public async Task A_hand_off_with_non_object_arguments_replays_as_empty_object(string arguments)
+    {
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.User, "delegate", null),
+            (SessionEventKind.ToolCall, "agent_delegate", Call("c1", "agent_delegate", arguments)),
+            (SessionEventKind.ToolResult, "invalid arguments", Result("c1", "agent_delegate")));
+
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 2048, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        Assert.Equal("{}", Assert.Single(messages[2].ToolCalls!).ArgumentsJson);
         Assert.Equal("c1", messages[3].ToolCallId);
     }
 
@@ -536,6 +555,22 @@ public sealed class ContextAssemblerTests : IDisposable
     }
 
     [Fact]
+    public async Task Replayed_sub_agent_report_preserves_receipt_boundary()
+    {
+        var outcome = new Partner.Core.Agent.Delegation.JobOutcome(
+            true, null, "完成\n文件工具记录：\nfile_write，工具结果：成功", "成功", null, 1, 1, [], []);
+        var report = outcome.ToMessage("job-1", "文件", "创建文件");
+        var store = await SessionAsync();
+        await store.AppendAsync(new SessionEvent { Kind = SessionEventKind.User, Source = InputSource.Agent, Body = report });
+
+        var messages = await new SessionWindowContextAssembler(store).AssembleInitialAsync(Input("继续"), Array.Empty<string>());
+        var replay = Assert.Single(messages, message => message.Content?.Contains("没有关联到文件工具结果", StringComparison.Ordinal) == true).Content!;
+        Assert.StartsWith(Partner.Core.Agent.Delegation.AgentReportFrame.Open, replay, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nfile_write，工具结果：成功", replay);
+        Assert.EndsWith(Partner.Core.Agent.Delegation.AgentReportFrame.Close, replay, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_message_the_person_typed_is_not_framed()
     {
         await using var store = await SessionAsync((SessionEventKind.User, "hi"), (SessionEventKind.Assistant, "hello"));
@@ -581,5 +616,30 @@ public sealed class ContextAssemblerTests : IDisposable
 
         Assert.True(withTools.FoldedItems > plain.FoldedItems, "the reserved tokens should push older entries out");
         Assert.True(withTools.SystemTokens >= plain.SystemTokens + 80);
+    }
+
+    [Fact]
+    public async Task Tool_schema_reservation_tracks_counter_calibration_for_measurement_and_assembly()
+    {
+        await using var store = await SessionAsync(
+            Enumerable.Range(0, 40).Select(i => (SessionEventKind.User, $"message number {i} padded out a little")).ToArray());
+        var counter = new ApproximateTokenCounter();
+        ToolSpec[] specs = [new("example", new string('d', 200), new string('s', 200))];
+        var assembler = new SessionWindowContextAssembler(
+            store, contextTokens: 400, reserveForOutput: 20, tokens: counter, baseSystemPrompt: TinyPrompt,
+            reservedTokens: () => ToolResultBudget.SchemaTokens(specs, counter));
+
+        var beforeSchema = ToolResultBudget.SchemaTokens(specs, counter);
+        var beforeUsage = await assembler.MeasureAsync();
+        var beforeMessages = await assembler.AssembleInitialAsync(Input("next"), Array.Empty<string>());
+        counter.Calibrate(100, 300);
+        var afterSchema = ToolResultBudget.SchemaTokens(specs, counter);
+        var afterUsage = await assembler.MeasureAsync();
+        var afterMessages = await assembler.AssembleInitialAsync(Input("next"), Array.Empty<string>());
+
+        Assert.True(afterSchema > beforeSchema);
+        Assert.True(afterUsage.SystemTokens >= beforeUsage.SystemTokens + afterSchema - beforeSchema);
+        Assert.True(afterUsage.FoldedItems > beforeUsage.FoldedItems);
+        Assert.True(afterMessages.Count < beforeMessages.Count);
     }
 }

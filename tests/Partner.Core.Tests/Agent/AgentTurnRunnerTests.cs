@@ -19,6 +19,39 @@ internal sealed class FakeTool(string name, Func<string, CancellationToken, Task
             : impl(argumentsJson, ct);
 }
 
+internal sealed class PreparedWriteTestTool(ToolResult? result = null) : IPreparedFileWriteTool
+{
+    private readonly ToolResult? _result = result;
+    public int Commits { get; private set; }
+    public int Disposals { get; private set; }
+    public ToolSpec Spec { get; } = new("file_write", "test", "{\"type\":\"object\"}");
+    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
+        throw new InvalidOperationException("must use prepared operation");
+    public IPreparedFileWrite Prepare(string argumentsJson, CancellationToken ct) => new Operation(this);
+
+    private sealed class Operation(PreparedWriteTestTool owner) : IPreparedFileWrite
+    {
+        public string TargetPath => "C:\\safe\\new.txt";
+        public string ApprovalJson => "{\"path\":\"C:\\\\safe\\\\new.txt\"}";
+        public Task<ToolResult> CommitAsync(CancellationToken ct)
+        {
+            owner.Commits++;
+            return Task.FromResult(owner._result ?? new ToolResult(true, "created"));
+        }
+        public void Dispose() => owner.Disposals++;
+    }
+}
+
+internal sealed class RecordingWriteApproval(bool answer) : IApprovalHandler
+{
+    public List<string> Requests { get; } = new();
+    public Task<bool> RequestAsync(string toolName, string argumentsJson, CancellationToken ct = default)
+    {
+        Requests.Add(argumentsJson);
+        return Task.FromResult(answer);
+    }
+}
+
 internal sealed class RecordingHook(
     AgentPhase phase,
     string name,
@@ -146,6 +179,34 @@ public sealed class AgentTurnRunnerTests : IDisposable
             stream,
             failures);
 
+    private sealed class UnknownDecisionGovernance : IToolGovernance
+    {
+        public GovernanceDecision Decide(string toolName, string argumentsJson) => new((ToolDecision)999, "unknown");
+    }
+
+    [Fact]
+    public async Task An_unknown_governance_decision_never_executes_the_tool()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var calls = 0;
+            var registry = new InMemoryToolRegistry();
+            registry.Register(new FakeTool("action", (_, _) =>
+            {
+                calls++;
+                return Task.FromResult(new ToolResult(true, "executed"));
+            }));
+            var llm = new ScriptedLlmClient([Call("c1", "action"), Say("done")]);
+
+            await Build(store, llm, registry, new UnknownDecisionGovernance()).RunAsync(Claimed());
+
+            Assert.Equal(0, calls);
+            var result = Assert.Single(await RawAsync(store), e => e.Kind == SessionEventKind.ToolResult);
+            Assert.StartsWith("denied: unknown governance decision", result.Body);
+        }
+    }
+
     /// <summary>Collects what the runner reports while the model is still writing.</summary>
     private sealed class RecordingStream : IAssistantStream
     {
@@ -270,6 +331,158 @@ public sealed class AgentTurnRunnerTests : IDisposable
             Assert.False(SessionEventKind.Thinking.IsContent());
         }
     }
+
+    [Theory]
+    [InlineData("file_write", "{\"path\":\"a.txt\",\"content\":\"write-secret\"}", "write-secret")]
+    [InlineData("file_edit", "{\"path\":\"a.txt\",\"old_text\":\"old-secret\",\"new_text\":\"new-secret\"}", "secret")]
+    [InlineData("file_write", "{broken write-secret", "write-secret")]
+    public async Task Unavailable_file_mutations_do_not_persist_arguments(string name, string args, string secret)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var llm = new ScriptedLlmClient(new[] { Call("mutation-1", name, args), Say("not performed") });
+            await Build(store, llm).RunAsync(Claimed());
+        }
+
+        // Read the durable session again, not the in-flight model conversation.
+        var (reopened, _) = JsonlSessionStore.Open(_dir);
+        await using (reopened)
+        {
+            var events = await RawAsync(reopened);
+            var call = Assert.Single(events, e => e.Kind == SessionEventKind.ToolCall);
+            var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal("{}", call.Meta!["args"]);
+            Assert.Equal("mutation-1", call.Meta["id"]);
+            Assert.Equal(call.Meta["id"], result.Meta!["id"]);
+            Assert.Equal("false", result.Meta["ok"]);
+            Assert.DoesNotContain(events, e => e.Body.Contains(secret, StringComparison.Ordinal)
+                || (e.Meta?.Values.Any(value => value.Contains(secret, StringComparison.Ordinal)) ?? false));
+
+            var view = await reopened.ProjectAsync();
+            Assert.Equal("mutation-1", Assert.Single(view.Items, e => e.Kind == SessionEventKind.ToolCall).Meta!["id"]);
+            Assert.Equal("mutation-1", Assert.Single(view.Items, e => e.Kind == SessionEventKind.ToolResult).Meta!["id"]);
+
+            var messages = await new SessionWindowContextAssembler(reopened, contextTokens: 2048, reserveForOutput: 64)
+                .AssembleInitialAsync(Claimed("next"), Array.Empty<string>());
+            Assert.DoesNotContain(messages, m => (m.Content?.Contains(secret, StringComparison.Ordinal) ?? false)
+                || (m.ToolCalls?.Any(c => c.ArgumentsJson.Contains(secret, StringComparison.Ordinal)) ?? false));
+        }
+    }
+
+    [Theory]
+    [InlineData("file_write")]
+    [InlineData("file_edit")]
+    public async Task Registered_file_mutations_cannot_bypass_the_missing_secure_pipeline(string name)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var calls = 0;
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool(name, (args, _) =>
+            {
+                calls++;
+                return Task.FromResult(new ToolResult(true, args));
+            }));
+            var llm = new ScriptedLlmClient(new[]
+            {
+                Call("mutation-1", name, "{\"content\":\"private-content\"}"),
+                Say("not performed"),
+            });
+
+            await Build(store, llm, tools, new AllowListGovernance(new[] { name })).RunAsync(Claimed());
+
+            Assert.Equal(0, calls);
+            var events = await RawAsync(store);
+            var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
+            using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
+            Assert.Equal("not_started", receipt.RootElement.GetProperty("status").GetString());
+            Assert.Equal("false", result.Meta!["ok"]);
+            Assert.DoesNotContain(events, e => e.Body.Contains("private-content", StringComparison.Ordinal)
+                || (e.Meta?.Values.Any(value => value.Contains("private-content", StringComparison.Ordinal)) ?? false));
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Prepared_file_write_always_asks_and_persists_no_preview(bool approved)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var writer = new PreparedWriteTestTool();
+            var tools = new InMemoryToolRegistry();
+            tools.Register(writer);
+            var approval = new RecordingWriteApproval(approved);
+            var llm = new ScriptedLlmClient(new[]
+            {
+                Call("write-1", "file_write", "{\"path\":\"C:\\\\safe\\\\new.txt\",\"content\":\"private-content\"}"),
+                Say("done"),
+            });
+            await Build(store, llm, tools, new AllowListGovernance(new[] { "file_write" }), approval).RunAsync(Claimed());
+
+            Assert.Single(approval.Requests);
+            Assert.DoesNotContain("private-content", approval.Requests[0]);
+            Assert.Equal(approved ? 1 : 0, writer.Commits);
+            Assert.Equal(1, writer.Disposals);
+            var events = await RawAsync(store);
+            var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal(approved ? "true" : "false", result.Meta!["ok"]);
+            using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
+            Assert.Equal(approved ? "success" : "denied", receipt.RootElement.GetProperty("status").GetString());
+            Assert.Equal("C:\\safe\\new.txt", receipt.RootElement.GetProperty("path").GetString());
+            Assert.Contains(approved ? "approved" : "denied", result.Body);
+            Assert.DoesNotContain(events, e => e.Body.Contains("private-content", StringComparison.Ordinal)
+                || (e.Meta?.Values.Any(value => value.Contains("private-content", StringComparison.Ordinal)) ?? false));
+        }
+    }
+
+    [Theory]
+    [InlineData("conflict: target already exists", "failed")]
+    [InlineData("file write status unconfirmed; verify before retrying", "unconfirmed")]
+    [InlineData("denied: file write authorization changed", "denied")]
+    public async Task Prepared_write_records_commit_outcome_without_tool_text(string content, string status)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new PreparedWriteTestTool(new ToolResult(false, content)));
+            var llm = new ScriptedLlmClient([Call("write-1", "file_write", "{\"content\":\"private-content\"}"), Say("done")]);
+            await Build(store, llm, tools, new AllowListGovernance(["file_write"]), new RecordingWriteApproval(true)).RunAsync(Claimed());
+            var events = await RawAsync(store);
+            var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
+            using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
+            Assert.Equal(status, receipt.RootElement.GetProperty("status").GetString());
+            Assert.Equal("C:\\safe\\new.txt", receipt.RootElement.GetProperty("path").GetString());
+            Assert.DoesNotContain("private-content", result.Body);
+        }
+    }
+
+    [Fact]
+    public async Task Refused_write_cannot_be_retried_in_the_same_turn()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var writer = new PreparedWriteTestTool();
+            var tools = new InMemoryToolRegistry();
+            tools.Register(writer);
+            var approval = new RecordingWriteApproval(false);
+            var llm = new ScriptedLlmClient([
+                Call("first", "file_write", "{}"), Call("retry", "file_write", "{}"), Say("done")]);
+            await Build(store, llm, tools, new AllowListGovernance(["file_write"]), approval).RunAsync(Claimed());
+            Assert.Single(approval.Requests);
+            Assert.Equal(0, writer.Commits);
+            var events = await RawAsync(store);
+            var retry = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult && e.Meta?.GetValueOrDefault("id") == "retry");
+            using var receipt = System.Text.Json.JsonDocument.Parse(retry.Body);
+            Assert.Equal("not_started", receipt.RootElement.GetProperty("status").GetString());
+        }
+    }
+
 
     [Fact]
     public async Task A_failing_tool_is_counted_by_reason_not_by_call()

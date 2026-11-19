@@ -20,6 +20,7 @@ speakers ← ordered playback ← TTS ← sentence split ← new assistant reply
 - "Interrupt the assistant by speaking": speak for about half a second while it talks and it stops. There is no echo cancellation, so use it with headphones.
 - If the playback device fails, read-aloud stops and the microphone is released. Save voice settings to reopen the device; if reopening fails, save again after the device is available.
 - Sentence split: a sentence ending (period, question mark, exclamation mark, …) cuts the text, but a fragment shorter than "Shortest sentence" (default 10 characters) is not read on its own — it is joined to what follows. Text with no punctuation is cut after "Characters before a forced break" (default 40), preferring the last sentence ending, then a soft break (comma, space), then the cap.
+- Before speech, fenced code blocks and raw web URLs are removed while link labels are retained. Live output waits for a fence to close or a URL to end before processing it. The displayed original remains available to copy.
 
 ## Two ways to connect
 
@@ -74,7 +75,7 @@ With the KWS engine on, voice input waits for the wake word: the microphone keep
 
 With voice output on, a request that needs your approval is read aloud. With voice input on as well, it can be answered by voice.
 
-- The prompt names the tool and the asker (a sub-agent's name is included); raw arguments are never read, so paths and clipboard contents do not reach the speaker.
+- Prompts name the tool and asker without reading raw arguments or file contents. For file approvals, speech uses an identifiable filename, adds directories when pending targets have the same name, and directs you to the screen if a short identification is not possible. Edit prompts explain that the edit is not applied if the file no longer matches the version that was read; the screen shows the full path.
 - The prompt is inserted after the sentence currently playing and before assistant sentences that have not started. An approval lives for 120 seconds, so waiting behind a whole reply can outlive it.
 - While the approval is pending and the speaker is idle, the microphone keeps transcribing without a wake word: say "批准执行" (approve) or "拒绝执行" (deny). The prompt does not have to finish first, and the request stays answerable for as long as it exists.
 - With a wake word configured, the bypass applies only to those two commands. Other speech captured while waiting, without a wake word, is not queued. Without a wake word configured, ordinary speech still behaves as a message.

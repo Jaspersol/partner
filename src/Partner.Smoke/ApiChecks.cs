@@ -800,7 +800,7 @@ internal static partial class Program
                 Directory.CreateDirectory(Path.Combine(grantWorkspace, "settings"));
                 await File.WriteAllTextAsync(
                     Path.Combine(grantWorkspace, "settings", "runtime.json"),
-                    """{"model":{"supportsImages":false},"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
+                    """{"model":{"supportsImages":false},"desktop":{"enabled":true,"execEnabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
 
                 using var grantWindow = OwnedWindow.Create(GrantProbeTitle, showWithoutActivating: true);
 
@@ -950,7 +950,7 @@ internal static partial class Program
                 Directory.CreateDirectory(Path.Combine(desktopWorkspace, "settings"));
                 await File.WriteAllTextAsync(
                     Path.Combine(desktopWorkspace, "settings", "runtime.json"),
-                    """{"desktop":{"enabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
+                    """{"desktop":{"enabled":true,"execEnabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
 
                 var desktopPort = FreePort();
                 var desktopToken = TokenAuth.Generate();
@@ -1005,8 +1005,8 @@ internal static partial class Program
 
                     await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
                     var gearNone = await ExposedToolsAsync();
-                    Check("desktop: the open gear asks for nothing",
-                        gearNone.All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
+                    Check("desktop: commands still ask under the open gear",
+                        gearNone.Contains("desktop_exec:ask") && gearNone.Where(tool => !tool.StartsWith("desktop_exec:", StringComparison.Ordinal)).All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
                         string.Join(",", gearNone));
 
                     await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "all" });

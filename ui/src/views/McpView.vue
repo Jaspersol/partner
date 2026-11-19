@@ -178,6 +178,7 @@ defineExpose({ refresh, hasUnsavedChanges })
           </span>
           <input v-model="form.enabled" type="checkbox" class="g-switch" role="switch" data-test="mcp-enabled" />
         </label>
+        <p class="summary-line">{{ t('MCP 服务以系统权限运行，不继承文件白名单；免审批清单不是文件授权。需要系统级隔离时请使用系统安全措施。') }}</p>
 
         <p class="summary-line">
           <span data-test="mcp-summary">{{ t('{count} 个服务 · {state}', { count: form.servers.length, state: form.enabled ? t('已启用') : t('未启用') }) }}</span>

@@ -182,6 +182,23 @@ public sealed class ScheduleToolTests : ApiFixture
         }
     }
 
+    [Fact]
+    public void Native_information_tools_are_allowed_but_unknown_names_are_denied()
+    {
+        var governance = new DesktopGovernance(_context);
+        foreach (var name in new[] { "agent_delegate", "agent_job_status", "agent_job_cancel", "task_report" })
+        {
+            Assert.Equal(ToolDecision.Allow, governance.Decide(name, "{}").Decision);
+            Assert.Equal(ToolDecision.Allow, governance.Summarize(name).Decision);
+        }
+
+        foreach (var name in new[] { "agent_job_unknown", "task_report_extra", "schedule_list_extra", "file_read_extra", "desktop_unknown" })
+        {
+            Assert.Equal(ToolDecision.Deny, governance.Decide(name, "{}").Decision);
+            Assert.Equal(ToolDecision.Deny, governance.Summarize(name).Decision);
+        }
+    }
+
     private void SaveGear(string gear)
     {
         var settings = _context.Settings.Load();

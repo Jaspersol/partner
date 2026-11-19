@@ -56,6 +56,33 @@ public sealed class LiveSpeechTests
         Assert.Equal("接着说。", live.NextChunk("i1", "接着说。"));
     }
 
+    [Theory]
+    [InlineData("```")]
+    [InlineData("~~~")]
+    public void Does_not_send_a_partial_code_fence_to_speech(string fence)
+    {
+        var live = new LiveSpeech();
+        var prefix = $"先说结论。\n{fence}bash\necho secret!\n";
+        Assert.Equal("先说结论。\n", live.NextChunk("i1", prefix));
+        Assert.Null(live.NextChunk("i1", prefix + "more secret?\n"));
+        var chunk = live.NextChunk("i1", prefix + $"more secret?\n{fence}\n完成。")!;
+        var spoken = Partner.Voice.Text.TtsTextCleaner.Clean(chunk);
+        Assert.DoesNotContain("secret", spoken);
+        Assert.Contains("完成", spoken);
+    }
+
+    [Fact]
+    public void Does_not_split_a_url_at_query_punctuation()
+    {
+        var live = new LiveSpeech();
+        const string prefix = "请查看 https://example.com/path?";
+        Assert.Null(live.NextChunk("i1", prefix));
+        var chunk = live.NextChunk("i1", prefix + "secret=value。")!;
+        var spoken = Partner.Voice.Text.TtsTextCleaner.Clean(chunk);
+        Assert.DoesNotContain("secret", spoken);
+        Assert.DoesNotContain("example", spoken);
+    }
+
     [Fact]
     public void A_stale_prefix_of_a_finished_step_is_ignored_too()
     {

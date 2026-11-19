@@ -159,8 +159,10 @@ public sealed class AgentTurnRunner
             session,
             _options.ContextWindowTokens,
             _options.MaxTokens,
+            tokens: _tokens,
             baseSystemPrompt: _options.BaseSystemPrompt,
-            promptSource: _options.PromptSource);
+            promptSource: _options.PromptSource,
+            reservedTokens: () => ToolResultBudget.SchemaTokens(_tools.Specs, _tokens));
 
         // Optional: a caller that wants the summary supplies a log, and one that does not pays nothing for it.
         _failures = failures;
@@ -242,14 +244,6 @@ public sealed class AgentTurnRunner
                     .AssembleInitialAsync(item, ctx.InjectedPrompts, ctx.InjectedLabels, ct)
                     .ConfigureAwait(false)).ToList();
 
-                // What the tool loop may grow the conversation to: the assembler only fitted the history the turn
-                // started from; from here every tool result is appended by this loop, so this loop prices them.
-                var promptBudget = Math.Max(
-                    1,
-                    ContextBudget.PromptBudget(_options.ContextWindowTokens, _options.MaxTokens)
-                        - ToolResultBudget.SchemaTokens(_tools.Specs, _tokens));
-                var resultCap = ToolResultBudget.ResultCap(promptBudget);
-
                 // Where the newest step begins. Older tool results may be folded; this step's never are.
                 var protectFrom = conversation.Count;
 
@@ -260,6 +254,7 @@ public sealed class AgentTurnRunner
                 // of appending a second copy.
                 var userLoggedHere = messageAlreadyLogged;
                 var systemLogged = false;
+                var fileRetryBlocked = false;
 
                 // The budget the toolset earns: a desktop turn gets room to look-act-look dozens of times,
                 // a plain chat turn never notices the difference (it ends when the answer is written).
@@ -268,6 +263,11 @@ public sealed class AgentTurnRunner
                 while (steps < budget)
                 {
                     ct.ThrowIfCancellationRequested();
+                    var schemaTokens = ToolResultBudget.SchemaTokens(_tools.Specs, _tokens);
+                    var promptBudget = Math.Max(1,
+                        ContextBudget.PromptBudget(_options.ContextWindowTokens, _options.MaxTokens)
+                        - schemaTokens);
+                    var resultCap = ToolResultBudget.ResultCap(promptBudget);
 
                     steps++;
                     await _session.AppendAsync(Event(SessionEventKind.StepStart, item.Source, $"step {steps}", item), ct)
@@ -305,6 +305,8 @@ public sealed class AgentTurnRunner
                     // Every step of this turn uses the gear the message carried, so a tool loop cannot
                     // silently drop back to the global default halfway through.
                     ToolResultBudget.CollapseOlder(conversation, protectFrom, promptBudget, _tokens);
+
+                    ToolMetrics.RecordSchemaTokens(schemaTokens);
 
                     var request = new LlmRequest(
                         conversation,
@@ -369,21 +371,31 @@ public sealed class AgentTurnRunner
                                 {
                                     ["id"] = call.Id,
                                     ["name"] = call.Name,
-                                    ["args"] = call.ArgumentsJson,
+                                    // These names may be hallucinated even while no write tool is registered.
+                                    // Never persist unvalidated mutation arguments, including malformed JSON.
+                                    ["args"] = call.Name is "file_write" or "file_edit" ? "{}" : call.ArgumentsJson,
                                 }), ct).ConfigureAwait(false);
                         }
 
-                        var results = await ExecuteToolsAsync(response.ToolCalls, ct).ConfigureAwait(false);
+                        var results = await ExecuteToolsAsync(response.ToolCalls, ct, fileRetryBlocked).ConfigureAwait(false);
 
                         for (var i = 0; i < response.ToolCalls.Count; i++)
                         {
                             var call = response.ToolCalls[i];
                             // Capped before it is logged as well as before it is sent: the next turn replays this
                             // log, and one oversized entry would make the assembler drop everything older.
-                            var result = results[i] with
+                            var cappedContent = ToolResultBudget.Clamp(results[i].Content, resultCap, _tokens);
+                            var pageDropped = call.Name == "file_read" && results[i].Ok
+                                && cappedContent != results[i].Content;
+                            var result = pageDropped
+                                ? new ToolResult(false, "result_too_large: 文件读取结果超过上下文预算，本页内容未返回。请用相同 path 和 offset、较小的 limit 重新读取；不要跳到下一页。")
+                                : results[i] with { Content = cappedContent };
+                            ToolMetrics.RecordOutcome(call.Name, result);
+                            if (ToolMetrics.ResultTokensEnabled)
                             {
-                                Content = ToolResultBudget.Clamp(results[i].Content, resultCap, _tokens),
-                            };
+                                ToolMetrics.RecordResultTokens(call.Name, _tokens.Count(result.Content));
+                            }
+
 
                             await _session.AppendAsync(
                                 Event(SessionEventKind.ToolResult, item.Source, result.Content, item, new Dictionary<string, string>
@@ -391,7 +403,7 @@ public sealed class AgentTurnRunner
                                     ["id"] = call.Id,
                                     ["name"] = call.Name,
                                     ["ok"] = result.Ok ? "true" : "false",
-                                }), ct).ConfigureAwait(false);
+                                }), CancellationToken.None).ConfigureAwait(false);
 
                             // Counted here, not in the tool: `Ok == false` means the call did not happen the way
                             // it was asked to. A command that ran and exited non-zero is a *result*, not a broken
@@ -421,6 +433,17 @@ public sealed class AgentTurnRunner
                                     $"以下是工具 '{call.Name}' 返回的图片（共 {result.Images.Count} 张）。",
                                     Images: result.Images));
                             }
+                        }
+                        fileRetryBlocked |= response.ToolCalls.Select((call, i) => (call, result: results[i]))
+                            .Any(pair => (pair.call.Name is "file_write" or "file_edit") && StopsFileRetry(pair.result));
+                        // Once dispatched, record every outcome even if the caller canceled: completed side
+                        // effects must not disappear from the session, and unfinished ones remain uncertain.
+                        ct.ThrowIfCancellationRequested();
+                        // A delegated turn must stop before the model can retry a refusal or uncertain side effect.
+                        if (item.Source == InputSource.Agent && fileRetryBlocked)
+                        {
+                            reason = TurnEndReason.Completed;
+                            break;
                         }
                     }
 
@@ -569,7 +592,8 @@ public sealed class AgentTurnRunner
     /// </summary>
     private async Task<IReadOnlyList<ToolResult>> ExecuteToolsAsync(
         IReadOnlyList<LlmToolCall> calls,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool fileRetryBlocked)
     {
         // One budget for the dispatch rather than one per call: see ToolDispatchTimeout. It also covers the
         // approval wait, so a step cannot sit on a question that nobody is going to answer.
@@ -579,16 +603,24 @@ public sealed class AgentTurnRunner
 
         var gate = new SemaphoreSlim(Math.Max(1, _options.MaxParallelToolCalls));
         var tasks = new Task<ToolResult>[calls.Count];
+        var starts = new bool[calls.Count];
+        var startsLock = new object();
 
         for (var i = 0; i < calls.Count; i++)
         {
             var call = calls[i];
+            if (fileRetryBlocked && (call.Name is "file_write" or "file_edit"))
+            {
+                tasks[i] = Task.FromResult(FileWriteAudit(null, "blocked", "not_started"));
+                continue;
+            }
+            var index = i;
             tasks[i] = Task.Run(async () =>
             {
                 await gate.WaitAsync(token).ConfigureAwait(false);
                 try
                 {
-                    return await ExecuteOneAsync(call, token).ConfigureAwait(false);
+                    return await ExecuteMeasuredAsync(call, token, starts, startsLock, index).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -597,41 +629,72 @@ public sealed class AgentTurnRunner
             }, CancellationToken.None);
         }
 
+        var all = Task.WhenAll(tasks);
+        var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellationRegistration = ct.Register(static state => ((TaskCompletionSource)state!).TrySetResult(), canceled);
+
         try
         {
             // Bounded <i>wait</i>, not just a cancelled token. Cancelling asks a tool to stop; it does not make
             // a tool parked on something unbounded come back, and `Task.WhenAll` returns only when the slowest
             // call does. So the aggregate is waited on alongside the clock: whichever arrives first decides.
-            var all = Task.WhenAll(tasks);
-            var finished = await Task
-                .WhenAny(all, Task.Delay(_options.ToolDispatchTimeout, CancellationToken.None))
-                .ConfigureAwait(false);
+            // The aggregate also owns the gate's lifetime, including after a bounded wait returns.
+            var finished = await Task.WhenAny(
+                all,
+                Task.Delay(_options.ToolDispatchTimeout, CancellationToken.None),
+                canceled.Task).ConfigureAwait(false);
 
-            if (finished != all)
+            if (finished != all || ct.IsCancellationRequested)
             {
+                // Freeze the start boundary before taking the snapshot. A late approval or a queued
+                // call cannot begin a side effect after it has been reported as not started.
+                dispatch.Cancel();
                 foreach (var task in tasks)
                 {
                     Forget(task);
                 }
 
-                // Whatever finished in time is still a real answer and is kept: reporting a timeout for a
-                // call that happened would be a lie to the model.
-                return Settled(tasks, calls, $"timeout after {_options.ToolDispatchTimeout.TotalSeconds:0}s: ");
+                lock (startsLock)
+                {
+                    return Settled(tasks, calls, starts, ct.IsCancellationRequested
+                        ? "canceled"
+                        : $"timeout after {_options.ToolDispatchTimeout.TotalSeconds:0}s");
+                }
             }
 
             await all.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Cancellation never fabricates success.
-            return calls.Select(c => new ToolResult(false, $"canceled before completion: {c.Name}")).ToList();
+            lock (startsLock)
+            {
+                return Settled(tasks, calls, starts, ct.IsCancellationRequested
+                    ? "canceled"
+                    : $"timeout after {_options.ToolDispatchTimeout.TotalSeconds:0}s");
+            }
+        }
+        finally
+        {
+            _ = DisposeGateWhenCompleteAsync(all, gate);
+        }
+
+        return Settled(tasks, calls, starts, "no result");
+    }
+
+    internal static async Task DisposeGateWhenCompleteAsync(Task all, SemaphoreSlim gate)
+    {
+        try
+        {
+            await all.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The dispatch observes its own failures; after a timeout this also observes the aggregate.
         }
         finally
         {
             gate.Dispose();
         }
-
-        return Settled(tasks, calls, "no result for ");
     }
 
     /// <summary>
@@ -646,21 +709,47 @@ public sealed class AgentTurnRunner
             TaskScheduler.Default);
 
     /// <summary>Reads results in <b>model order</b> — completion order is irrelevant to the conversation.</summary>
-    private static IReadOnlyList<ToolResult> Settled(Task<ToolResult>[] tasks, IReadOnlyList<LlmToolCall> calls, string missing)
+    private static IReadOnlyList<ToolResult> Settled(Task<ToolResult>[] tasks, IReadOnlyList<LlmToolCall> calls, bool[] starts, string missing)
     {
         var results = new List<ToolResult>(calls.Count);
         for (var i = 0; i < tasks.Length; i++)
         {
             results.Add(tasks[i].IsCompletedSuccessfully
                 ? tasks[i].Result
-                : new ToolResult(false, missing + calls[i].Name));
+                : calls[i].Name is "file_write" or "file_edit"
+                    ? FileWriteAudit(null, "unknown", starts[i] ? "unconfirmed" : "not_started")
+                    : new ToolResult(false, starts[i]
+                        ? $"{missing}; status unconfirmed, the operation may still complete; verify before retrying: {calls[i].Name}"
+                        : $"{missing}; tool was not started: {calls[i].Name}"));
         }
 
         return results;
     }
 
-    private async Task<ToolResult> ExecuteOneAsync(LlmToolCall call, CancellationToken ct)
+    private async Task<ToolResult> ExecuteMeasuredAsync(LlmToolCall call, CancellationToken ct, bool[] starts, object startsLock, int index)
     {
+        var measure = ToolMetrics.DurationEnabled;
+        var started = measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        try
+        {
+            return await ExecuteOneAsync(call, ct, starts, startsLock, index).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (measure)
+                ToolMetrics.RecordDuration(call.Name, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        }
+    }
+
+    private async Task<ToolResult> ExecuteOneAsync(LlmToolCall call, CancellationToken ct, bool[] starts, object startsLock, int index)
+    {
+        if (call.Name is "file_write" or "file_edit")
+        {
+            if (_tools.Find(call.Name) is not IPreparedFileWriteTool writer)
+                return FileWriteAudit(null, "not_requested", "not_started");
+            return await ExecuteFileWriteAsync(writer, call, ct, starts, startsLock, index).ConfigureAwait(false);
+        }
+
         var tool = _tools.Find(call.Name);
         if (tool is null)
         {
@@ -668,6 +757,7 @@ public sealed class AgentTurnRunner
         }
 
         var decision = _governance.Decide(call.Name, call.ArgumentsJson);
+        var acceptedApproval = false;
         switch (decision.Decision)
         {
             case ToolDecision.Deny:
@@ -680,8 +770,30 @@ public sealed class AgentTurnRunner
                 using (var question = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     question.CancelAfter(_options.ApprovalTimeout);
-                    approved = await _approval.RequestAsync(call.Name, call.ArgumentsJson, question.Token)
-                        .ConfigureAwait(false);
+                    var measureApproval = ToolMetrics.ApprovalWaitEnabled;
+                    var approvalStarted = measureApproval ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                    Task<bool>? approvalTask = null;
+                    try
+                    {
+                        approvalTask = _approval.RequestAsync(call.Name, call.ArgumentsJson, question.Token);
+                        approved = await approvalTask.WaitAsync(question.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (question.IsCancellationRequested)
+                    {
+                        // The handler may ignore cancellation and fail after we stop waiting.
+                        if (approvalTask is not null) Forget(approvalTask);
+                        return new ToolResult(false, "approval canceled or timed out; tool was not started");
+                    }
+                    finally
+                    {
+                        if (measureApproval)
+                            ToolMetrics.RecordApprovalWait(call.Name, System.Diagnostics.Stopwatch.GetElapsedTime(approvalStarted).TotalMilliseconds);
+                    }
+
+                    if (question.IsCancellationRequested)
+                    {
+                        return new ToolResult(false, "approval canceled or timed out; tool was not started");
+                    }
                 }
 
                 if (!approved)
@@ -689,11 +801,24 @@ public sealed class AgentTurnRunner
                     return new ToolResult(false, $"approval denied: {decision.Reason}");
                 }
 
+                acceptedApproval = true;
                 break;
 
             case ToolDecision.Allow:
-            default:
                 break;
+
+            default:
+                return new ToolResult(false, "denied: unknown governance decision");
+        }
+        if (decision.IsStillAuthorized is { } isStillAuthorized && !isStillAuthorized())
+            return new ToolResult(false, "denied: authorization changed before the tool started");
+        // Synchronize the last cancellation check with the dispatch snapshot.
+        lock (startsLock)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (acceptedApproval && _approval is IAcceptedApprovalHandler accepted)
+                accepted.Accept(call.Name, call.ArgumentsJson, decision.IsStillAuthorized);
+            starts[index] = true;
         }
 
         // A tool with a time budget of its own is given that budget (never less than the default), so the runner
@@ -705,17 +830,148 @@ public sealed class AgentTurnRunner
 
         try
         {
+            using var authorization = ToolExecutionAuthorization.Enter(decision.IsStillAuthorized);
             return await tool.InvokeAsync(call.ArgumentsJson, timeout.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             // Per-tool timeout: fed back as a result, the turn continues.
-            return new ToolResult(false, $"timeout after {limit.TotalSeconds:0.#}s");
+            return new ToolResult(false, $"timeout after {limit.TotalSeconds:0.#}s; status unconfirmed, verify before retrying");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(ct);
         }
         catch (Exception ex)
         {
             return new ToolResult(false, $"error: {ex.Message}");
         }
+    }
+
+    private async Task<ToolResult> ExecuteFileWriteAsync(IPreparedFileWriteTool writer, LlmToolCall call,
+        CancellationToken ct, bool[] starts, object startsLock, int index)
+    {
+        var decision = _governance.Decide(call.Name, "{}");
+        if (decision.Decision is not (ToolDecision.Allow or ToolDecision.Ask))
+            return FileWriteAudit(null, "not_requested", "denied");
+        string? target = null;
+        var approval = "not_requested";
+
+        try
+        {
+            using var operation = writer.Prepare(call.ArgumentsJson, ct);
+            target = operation.TargetPath;
+            using var question = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            question.CancelAfter(_options.ApprovalTimeout);
+            var measure = ToolMetrics.ApprovalWaitEnabled;
+            var started = measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            Task<bool>? pending = null;
+            bool approved;
+            try
+            {
+                pending = _approval.RequestAsync(call.Name, operation.ApprovalJson, question.Token);
+                approval = "pending";
+                approved = await pending.WaitAsync(question.Token).ConfigureAwait(false);
+                if (question.IsCancellationRequested)
+                    return FileWriteAudit(target, "canceled", "not_started");
+            }
+            catch (OperationCanceledException) when (question.IsCancellationRequested)
+            {
+                if (pending is not null) Forget(pending);
+                return FileWriteAudit(target, "canceled", "not_started");
+            }
+            finally
+            {
+                if (measure)
+                    ToolMetrics.RecordApprovalWait(call.Name, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            }
+
+            if (!approved)
+                return FileWriteAudit(target, "denied", "denied");
+            approval = "approved";
+            if (decision.IsStillAuthorized is { } authorized && !authorized())
+                return FileWriteAudit(target, approval, "denied");
+            lock (startsLock)
+            {
+                ct.ThrowIfCancellationRequested();
+                starts[index] = true;
+            }
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(_options.ToolTimeout);
+            var committed = await operation.CommitAsync(timeout.Token).ConfigureAwait(false);
+            var status = committed.Ok ? "success"
+                : committed.Content.StartsWith("denied:", StringComparison.Ordinal) ? "denied"
+                : committed.Content.Contains("status unconfirmed", StringComparison.Ordinal) ? "unconfirmed"
+                : "failed";
+            return FileWriteAudit(target, approval, status, committed);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return FileWriteAudit(target, approval, starts[index] ? "unconfirmed" : "not_started");
+        }
+        catch (Partner.Core.Agent.Files.FileEditConflictException) when (call.Name == "file_edit")
+        {
+            return FileWriteAudit(target, approval, "failed");
+        }
+        catch (Partner.Core.Agent.Files.FileEditMatchException) when (call.Name == "file_edit")
+        {
+            return FileWriteAudit(target, approval, "failed");
+        }
+        catch (Exception)
+        {
+            return FileWriteAudit(target, approval, starts[index] ? "unconfirmed" : "failed");
+        }
+    }
+
+    private static bool StopsFileRetry(ToolResult result)
+    {
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(result.Content);
+            return json.RootElement.TryGetProperty("status", out var status)
+                && status.ValueKind == System.Text.Json.JsonValueKind.String
+                && status.GetString() is "denied" or "unconfirmed";
+        }
+        catch (System.Text.Json.JsonException) { return true; }
+    }
+
+    private static ToolResult FileWriteAudit(string? target, string approval, string status, ToolResult? committed = null)
+    {
+        // Only copy the explicitly safe commit metadata, never arbitrary tool text or mutation inputs.
+        long? bytes = null;
+        string? version = null;
+        if (status == "success" && committed is not null)
+        {
+            try
+            {
+                using var json = System.Text.Json.JsonDocument.Parse(committed.Content);
+                var root = json.RootElement;
+                if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    if (root.TryGetProperty("bytes", out var count) && count.ValueKind == System.Text.Json.JsonValueKind.Number && count.TryGetInt64(out var value)) bytes = value;
+                    if (root.TryGetProperty("version", out var hash) && hash.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var text = hash.GetString();
+                        if (text is { Length: 64 } && text.All(Uri.IsHexDigit)) version = text;
+                    }
+                }
+            }
+            catch (System.Text.Json.JsonException) { }
+        }
+        return new ToolResult(status == "success", System.Text.Json.JsonSerializer.Serialize(new
+        {
+            path = target, approval, status, bytes, version,
+            message = status == "unconfirmed" ? "verify before retrying"
+                : approval == "blocked" ? "not started: previous write was denied or unconfirmed; verify before retrying" : null,
+        }));
     }
 
     private static SessionEvent Event(

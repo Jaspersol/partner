@@ -384,6 +384,39 @@ public sealed class SpeechTextTests
         Assert.Equal(new[] { "I paid 3 dollars for it.", "然后我回家了，路上很堵。" }, ready);
     }
 
+    [Theory]
+    [InlineData("流速为每分钟 2.", "5 升。", "流速为每分钟 2.5 升。")]
+    [InlineData("修改 C:\\notes\\plan.", "txt 失败。", "修改 C:\\notes\\plan.txt 失败。")]
+    [InlineData("当前目录的 .", "txt 文件。", "当前目录的 .txt 文件。")]
+    public void Streaming_dot_waits_for_decimal_or_filename_extension(string first, string second, string expected)
+    {
+        var segmenter = new SpeechSegmenter(maxChars: 100, minSentenceChars: 1);
+
+        Assert.Empty(segmenter.Push(first));
+        Assert.Equal(new[] { expected }, segmenter.Push(second));
+        Assert.Empty(segmenter.Flush());
+    }
+
+    [Fact]
+    public void A_dot_at_the_cap_waits_for_the_next_fragment()
+    {
+        var segmenter = new SpeechSegmenter(maxChars: 10, minSentenceChars: 1);
+
+        Assert.Empty(segmenter.Push("速度为 2.".PadLeft(10, '水')));
+        var ready = segmenter.Push("5 升。");
+        Assert.DoesNotContain(ready, part => part.EndsWith("2.", StringComparison.Ordinal));
+        Assert.DoesNotContain(ready, part => part.StartsWith("5", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_trailing_sentence_dot_is_flushed()
+    {
+        var segmenter = new SpeechSegmenter(minSentenceChars: 1);
+
+        Assert.Empty(segmenter.Push("The answer is 42."));
+        Assert.Equal(new[] { "The answer is 42." }, segmenter.Flush());
+    }
+
     [Fact]
     public void Long_unpunctuated_text_is_cut_at_a_soft_break_then_hard()
     {
@@ -430,6 +463,27 @@ public sealed class SpeechTextTests
         Assert.DoesNotContain("var x = 1;", cleaned, StringComparison.Ordinal);
         Assert.DoesNotContain("#", cleaned, StringComparison.Ordinal);
         Assert.DoesNotContain("🎉", cleaned, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cleaner_keeps_spoken_summary_and_omits_raw_urls_and_fenced_code()
+    {
+        const string reply = """
+            已找到结果，耗时 2.5 秒。链接如下：
+            https://example.com/a/long/path?key=value。
+            <https://example.org/docs>
+            [参考资料](https://example.net/page)
+            ~~~bash
+            curl https://example.com/private
+            ~~~
+            后续步骤已说明。
+            """;
+
+        var cleaned = TtsTextCleaner.Clean(reply);
+
+        Assert.Equal("已找到结果，耗时 2.5 秒。链接如下： 。 参考资料 后续步骤已说明。", cleaned);
+        Assert.DoesNotContain("https://", cleaned, StringComparison.Ordinal);
+        Assert.DoesNotContain("curl", cleaned, StringComparison.Ordinal);
     }
 
     [Fact]

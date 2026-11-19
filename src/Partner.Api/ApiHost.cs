@@ -29,6 +29,10 @@ public static class ApiHost
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
 
+        // Native file writes validate the workspace as a protected directory with strict DOS syntax.
+        // Normalize this host-owned path, not paths supplied by the model.
+        workspace = Path.GetFullPath(workspace);
+
         var context = await ApiContext.OpenAsync(workspace, clock, port).ConfigureAwait(false);
         var consumer = ConsumerHost.Create(context, workspace);
 

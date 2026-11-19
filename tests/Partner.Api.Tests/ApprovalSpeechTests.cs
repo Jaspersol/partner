@@ -70,6 +70,32 @@ public sealed class ApprovalSpeechTests
     }
 
     [Fact]
+    public void File_prompt_disambiguates_names_without_reading_content_or_long_paths()
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var first = new PendingApproval("1", "file_edit",
+            """{"path":"C:\\long\\one\\same.txt","oldPreview":"private-old","newPreview":"private-new"}""",
+            now, now.AddMinutes(2), "文件助手");
+        var other = first with { ApprovalId = "2", ArgumentsJson = """{"path":"C:\\long\\two\\same.txt"}""" };
+        var unique = ApprovalSpeech.Prompt(first, [first]);
+        Assert.Contains("same.txt", unique, StringComparison.Ordinal);
+        Assert.DoesNotContain("long", unique, StringComparison.Ordinal);
+        var ambiguous = ApprovalSpeech.Prompt(first, [first, other]);
+        Assert.Contains("one/same.txt", ambiguous, StringComparison.Ordinal);
+        Assert.Contains("读取版本不一致时，不会提交", ambiguous, StringComparison.Ordinal);
+        Assert.Contains("仅批准本次", ambiguous, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-old", ambiguous, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-new", ambiguous, StringComparison.Ordinal);
+        var same = first with { ApprovalId = "3" };
+        Assert.Contains("查看界面", ApprovalSpeech.Prompt(first, [first, same]), StringComparison.Ordinal);
+        var longName = first with { ToolName = "file_write", ArgumentsJson = System.Text.Json.JsonSerializer.Serialize(new { path = "C:\\dir\\" + new string('x', 80), content = "private-body" }) };
+        var longPrompt = ApprovalSpeech.Prompt(longName, [longName]);
+        Assert.Contains("查看界面", longPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-body", longPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('x', 80), longPrompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void An_unknown_tool_is_named_rather_than_guessed_at()
     {
         Assert.Equal("mystery_tool", ApprovalSpeech.Label("mystery_tool"));

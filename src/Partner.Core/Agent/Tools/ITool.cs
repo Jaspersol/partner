@@ -28,3 +28,17 @@ public interface ITimedTool : ITool
     /// <summary>The longest this call may run. Only ever extends the runner's default, never shortens it.</summary>
     TimeSpan Timeout { get; }
 }
+
+/// <summary>A file creation tool that binds approval to a prepared, immutable operation.</summary>
+public interface IPreparedFileWriteTool : ITool
+{
+    IPreparedFileWrite Prepare(string argumentsJson, CancellationToken ct);
+}
+
+/// <summary>A prepared file creation; disposal releases its resources and removes staging files.</summary>
+public interface IPreparedFileWrite : IDisposable
+{
+    string TargetPath { get; }
+    string ApprovalJson { get; }
+    Task<ToolResult> CommitAsync(CancellationToken ct);
+}

@@ -122,6 +122,23 @@ public static partial class AgentsValidation
             }
         }
 
+        if (settings.Files.WriteEnabled)
+        {
+            if (settings.Files.WriteRoots.Count == 0)
+            {
+                errors.Add("新建文件已开启，但没有配置允许写入的目录");
+            }
+
+            foreach (var root in settings.Files.WriteRoots)
+            {
+                var known = stored?.Files.WriteRoots.Contains(root, StringComparer.OrdinalIgnoreCase) == true;
+                if (!Path.IsPathRooted(root) || (!known && !Directory.Exists(root)))
+                {
+                    errors.Add($"允许写入的目录 '{root}' 必须是已存在的绝对路径");
+                }
+            }
+        }
+
         return errors;
     }
 

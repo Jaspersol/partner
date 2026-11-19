@@ -184,6 +184,9 @@ public sealed record DesktopSettings
     /// <summary>Whether the desktop capability is exposed to the model.</summary>
     public bool Enabled { get; init; }
 
+    /// <summary>Expose command execution separately from desktop control; every command still requires approval.</summary>
+    public bool ExecEnabled { get; init; }
+
     /// <summary>Base lease lifetime in milliseconds: how long after an observation actions may still rely on it. Bounded by policy.</summary>
     public int LeaseTtlMs { get; init; } = 15_000;
 
@@ -220,12 +223,13 @@ public sealed record DesktopSettings
     public bool Equals(DesktopSettings? other) =>
         other is not null
         && Enabled == other.Enabled
+        && ExecEnabled == other.ExecEnabled
         && LeaseTtlMs == other.LeaseTtlMs
         && Approval == other.Approval
         && InputMode == other.InputMode
         && AllowedWindowTitles.SequenceEqual(other.AllowedWindowTitles, StringComparer.Ordinal);
 
-    public override int GetHashCode() => HashCode.Combine(Enabled, LeaseTtlMs, Approval, InputMode, AllowedWindowTitles.Count);
+    public override int GetHashCode() => HashCode.Combine(Enabled, ExecEnabled, LeaseTtlMs, Approval, InputMode, AllowedWindowTitles.Count);
 }
 
 /// <summary>The three approval gears, in the order the UI offers them.</summary>

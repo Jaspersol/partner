@@ -42,15 +42,18 @@ public sealed class DesktopLaunchTool : ITool
     /// and it can change while the process runs.
     /// </summary>
     private readonly Func<InputMode>? _inputMode;
+    private readonly Func<bool>? _isEnabled;
 
     public DesktopLaunchTool(
         IReadOnlyList<string>? startMenuRoots = null,
         CdpRegistry? ports = null,
-        Func<InputMode>? inputMode = null)
+        Func<InputMode>? inputMode = null,
+        Func<bool>? isEnabled = null)
     {
         _roots = startMenuRoots ?? DefaultRoots;
         _ports = ports;
         _inputMode = inputMode;
+        _isEnabled = isEnabled;
     }
 
     public ToolSpec Spec { get; } = new(
@@ -68,8 +71,21 @@ public sealed class DesktopLaunchTool : ITool
         },"required":["target"],"additionalProperties":false}
         """);
 
-    public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+    public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
+        InvokeCoreAsync(argumentsJson, null, ct);
+
+    public Task<ToolResult> InvokeWhenEnabledAsync(string argumentsJson, Func<bool> isEnabled, CancellationToken ct = default) =>
+        InvokeCoreAsync(argumentsJson, isEnabled, ct);
+
+    private async Task<ToolResult> InvokeCoreAsync(string argumentsJson, Func<bool>? isEnabled, CancellationToken ct)
     {
+        using var mutation = await DesktopMutationLock.AcquireAsync(ct).ConfigureAwait(false);
+        if ((_isEnabled is not null && !_isEnabled()) || (isEnabled is not null && !isEnabled()))
+        {
+            return new ToolResult(false, "桌面能力未启用");
+        }
+
+
         var arguments = Json.Deserialize<LaunchArguments>(argumentsJson);
         if (arguments is null || string.IsNullOrWhiteSpace(arguments.Target))
         {
@@ -86,9 +102,9 @@ public sealed class DesktopLaunchTool : ITool
 
         try
         {
-            return await LaunchAsync(target, resolved.Value, arguments.Arguments, ct).ConfigureAwait(false);
+            return await LaunchAsync(target, resolved.Value, arguments.Arguments, isEnabled, ct).ConfigureAwait(false);
         }
-        catch (Exception error)
+        catch (Exception error) when (error is not OperationCanceledException)
         {
             return new ToolResult(false, $"启动失败：{error.Message}");
         }
@@ -135,6 +151,7 @@ public sealed class DesktopLaunchTool : ITool
         string target,
         (string Path, string? Note) resolved,
         string? arguments,
+        Func<bool>? isEnabled,
         CancellationToken ct)
     {
         var background = (_inputMode?.Invoke() ?? InputMode.Foreground) != InputMode.Foreground;
@@ -156,7 +173,7 @@ public sealed class DesktopLaunchTool : ITool
 
         if (background)
         {
-            return await LaunchInBackgroundAsync(target, resolved, commandLine, chromium, port, ct).ConfigureAwait(false);
+            return await LaunchInBackgroundAsync(target, resolved, commandLine, chromium, port, isEnabled, ct).ConfigureAwait(false);
         }
 
         var info = new ProcessStartInfo(resolved.Path)
@@ -168,6 +185,12 @@ public sealed class DesktopLaunchTool : ITool
         {
             info.Arguments = commandLine;
         }
+
+        if ((_isEnabled is not null && !_isEnabled()) || (isEnabled is not null && !isEnabled()))
+        {
+            return new ToolResult(false, "桌面能力未启用");
+        }
+        DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
 
         using var started = Process.Start(info);
 
@@ -204,6 +227,7 @@ public sealed class DesktopLaunchTool : ITool
         string? commandLine,
         bool chromium,
         int port,
+        Func<bool>? isEnabled,
         CancellationToken ct)
     {
         // Behind other windows a browser decides it is covered and stops painting; keep it rendering so its
@@ -214,6 +238,12 @@ public sealed class DesktopLaunchTool : ITool
         }
 
         var before = BackgroundLaunch.Snapshot.Take();
+        if ((_isEnabled is not null && !_isEnabled()) || (isEnabled is not null && !isEnabled()))
+        {
+            return new ToolResult(false, "桌面能力未启用");
+        }
+        DesktopMutationLock.ThrowIfCancelledOrUnauthorized(ct);
+
         var processId = BackgroundLaunch.Start(resolved.Path, commandLine);
 
         // Settled alongside the port wait rather than after it: the window appears while the port is still
@@ -221,16 +251,28 @@ public sealed class DesktopLaunchTool : ITool
         var settling = BackgroundLaunch.SettleAsync(before, processId, ct);
 
         var opened = false;
-        if (chromium && processId != 0 && _ports is not null)
+        try
         {
-            opened = await _ports.WaitForPortAsync(processId, port, ct).ConfigureAwait(false);
-            if (opened)
+            if (chromium && processId != 0 && _ports is not null)
             {
-                _ports.Register(processId, port);
+                opened = await _ports.WaitForPortAsync(processId, port, ct).ConfigureAwait(false);
+                if (opened)
+                {
+                    _ports.Register(processId, port);
+                }
             }
+        }
+        catch
+        {
+            // Settling can still move windows after the port wait fails or is cancelled. Do not release
+            // the desktop to another action until that work has stopped as well.
+            try { await settling.ConfigureAwait(false); }
+            catch { /* Preserve the port wait failure. */ }
+            throw;
         }
 
         var placement = BackgroundLaunch.Describe(await settling.ConfigureAwait(false));
+        ct.ThrowIfCancellationRequested();
         var result = BuildResult(target, resolved.Note, processId, chromium, opened, chromium ? port : 0);
 
         return new ToolResult(result.Ok, $"{result.Content}\n{placement}");

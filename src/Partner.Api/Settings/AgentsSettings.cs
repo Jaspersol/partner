@@ -151,8 +151,15 @@ public sealed record FilesSettings
     /// <summary>Directories the file tools may read under. Empty means nothing is reachable.</summary>
     public IReadOnlyList<string> Roots { get; init; } = Array.Empty<string>();
 
-    public bool Equals(FilesSettings? other) =>
-        other is not null && Enabled == other.Enabled && Roots.SequenceEqual(other.Roots, StringComparer.OrdinalIgnoreCase);
+    /// <summary>Permission for create-only file operations; off by default.</summary>
+    public bool WriteEnabled { get; init; }
 
-    public override int GetHashCode() => HashCode.Combine(Enabled, Roots.Count);
+    /// <summary>Independent directories for file creation. Empty grants no write access.</summary>
+    public IReadOnlyList<string> WriteRoots { get; init; } = Array.Empty<string>();
+
+    public bool Equals(FilesSettings? other) =>
+        other is not null && Enabled == other.Enabled && Roots.SequenceEqual(other.Roots, StringComparer.OrdinalIgnoreCase)
+        && WriteEnabled == other.WriteEnabled && WriteRoots.SequenceEqual(other.WriteRoots, StringComparer.OrdinalIgnoreCase);
+
+    public override int GetHashCode() => HashCode.Combine(Enabled, Roots.Count, WriteEnabled, WriteRoots.Count);
 }

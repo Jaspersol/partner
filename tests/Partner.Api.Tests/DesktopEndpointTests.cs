@@ -1,6 +1,16 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Partner.Api.Agents;
+using Partner.Api.Settings;
+using Partner.Core.Agent;
+using Partner.Core.Agent.Hooks;
+using Partner.Core.Agent.Llm;
+using Partner.Core.Agent.Tools;
+using Partner.Core.Contracts;
+using Partner.Core.Memory;
+using Partner.Core.Queue;
+using Partner.Core.Sessions;
 
 namespace Partner.Api.Tests;
 
@@ -10,6 +20,33 @@ namespace Partner.Api.Tests;
 /// </summary>
 public sealed partial class ViewEndpointsTests
 {
+    [Theory]
+    [InlineData(AgentScenarios.Desktop, false, false)]
+    [InlineData(AgentScenarios.Desktop, false, true)]
+    [InlineData(AgentScenarios.Desktop, true, false)]
+    [InlineData(AgentScenarios.Desktop, true, true)]
+    [InlineData(AgentScenarios.FileRead, false, false)]
+    [InlineData(AgentScenarios.WebSearch, false, false)]
+    public void Scenario_registration_matches_catalogue(string scenario, bool images, bool exec)
+    {
+        var settings = _context.Settings.Load();
+        settings = settings with { Desktop = settings.Desktop with { ExecEnabled = exec } };
+        var tools = new InMemoryToolRegistry();
+
+        AgentRouting.RegisterScenarioTools(scenario, tools, _context, settings, images, _workspace);
+
+        Assert.Equal(AgentRouting.ScenarioTools(scenario, settings, images), tools.Specs.Select(spec => spec.Name));
+    }
+
+    [Fact]
+    public void Unknown_scenario_does_not_mutate_the_registry()
+    {
+        var tools = new InMemoryToolRegistry();
+        Assert.Throws<ArgumentOutOfRangeException>(() => AgentRouting.RegisterScenarioTools(
+            "unknown", tools, _context, _context.Settings.Load(), false, _workspace));
+        Assert.Empty(tools.Specs);
+    }
+
     /// <summary>
     /// The desktop sub-agent's tools with the decision governance will make for each, read off /api/consumer.
     /// The main agent holds none of them, so they are reported under <c>agentTools</c>.
@@ -113,11 +150,20 @@ public sealed partial class ViewEndpointsTests
         var on = await _http.GetFromJsonAsync<JsonElement>("/api/consumer");
         var mainTools = on.GetProperty("tools").EnumerateArray().Select(tool => tool.GetProperty("name").GetString()!).ToList();
         Assert.Contains("agent_delegate", mainTools);
+        Assert.Contains("agent_job_status", mainTools);
+        Assert.Contains("agent_job_cancel", mainTools);
+        Assert.Contains("schedule_create", mainTools);
+        Assert.Contains("schedule_list", mainTools);
+        Assert.Contains("schedule_delete", mainTools);
+        var governance = new Partner.Api.DesktopGovernance(_context);
+        foreach (var name in mainTools)
+            Assert.NotEqual(Partner.Core.Agent.Tools.ToolDecision.Deny, governance.Summarize(name).Decision);
         Assert.DoesNotContain(mainTools, name => name.StartsWith("desktop_", StringComparison.Ordinal));
 
         var tools = (await DesktopToolsAsync()).Select(tool => tool.Name + ":" + tool.Decision).ToList();
         Assert.Contains("desktop_observe:allow", tools);
-        Assert.Contains("desktop_act:ask", tools);
+        Assert.Contains("desktop_act:conditional", tools);
+        Assert.DoesNotContain(tools, tool => tool.StartsWith("desktop_exec:", StringComparison.Ordinal));
 
         await _http.PutSettingsAsync(new
         {
@@ -144,13 +190,13 @@ public sealed partial class ViewEndpointsTests
         await _http.PutSettingsAsync(new
         {
             model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
-            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            desktop = new { enabled = true, execEnabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
         });
 
         var all = await ToolsAsync();
         Assert.Contains("desktop_observe:allow", all);
         Assert.Contains("desktop_clipboard_get:allow", all);
-        Assert.Contains("desktop_act:ask", all);
+        Assert.Contains("desktop_act:conditional", all);
         Assert.Contains("desktop_exec:ask", all);
         Assert.Contains("desktop_window:ask", all);
 
@@ -159,7 +205,7 @@ public sealed partial class ViewEndpointsTests
         Assert.Equal(HttpStatusCode.OK, middle.StatusCode);
 
         var dangerous = await ToolsAsync();
-        Assert.Contains("desktop_act:allow", dangerous);
+        Assert.Contains("desktop_act:conditional", dangerous);
         Assert.Contains("desktop_window:allow", dangerous);
         Assert.Contains("desktop_clipboard_get:allow", dangerous);
         Assert.Contains("desktop_exec:ask", dangerous);
@@ -170,8 +216,10 @@ public sealed partial class ViewEndpointsTests
         await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
 
         var none = await ToolsAsync();
-        Assert.All(none, tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
-        Assert.Equal(8, none.Count);
+        Assert.Contains("desktop_exec:ask", none);
+        Assert.All(none.Where(tool => !tool.StartsWith("desktop_exec:", StringComparison.Ordinal)), tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
+        Assert.Contains("task_report:allow", none);
+        Assert.Equal(9, none.Count);
 
         var bogus = await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "whatever" });
         Assert.Equal(HttpStatusCode.BadRequest, bogus.StatusCode);
@@ -184,6 +232,15 @@ public sealed partial class ViewEndpointsTests
         // about the model — not always, and not never.
         async Task<List<string>> ToolsAsync() =>
             (await DesktopToolsAsync()).Select(tool => tool.Name).ToList();
+        async Task AssertMatchesRegistryAsync()
+        {
+            var current = _context.Settings.Load();
+            var owner = current.Agents.Owner(AgentScenarios.Desktop)!;
+            var registry = new InMemoryToolRegistry();
+            AgentRouting.RegisterScenarioTools(AgentScenarios.Desktop, registry, _context, current,
+                owner.Model?.SupportsImages ?? current.Model.SupportsImages, _workspace, owner.Id);
+            Assert.Equal(registry.Specs.Select(spec => spec.Name), await ToolsAsync());
+        }
 
         await _http.PutSettingsAsync(new
         {
@@ -192,6 +249,7 @@ public sealed partial class ViewEndpointsTests
         });
 
         Assert.DoesNotContain("desktop_screenshot", await ToolsAsync());
+        await AssertMatchesRegistryAsync();
 
         await _http.PutSettingsAsync(new
         {
@@ -201,12 +259,35 @@ public sealed partial class ViewEndpointsTests
 
         var withImages = await ToolsAsync();
         Assert.Contains("desktop_screenshot", withImages);
+        await AssertMatchesRegistryAsync();
         // Looking is free whatever the gear says.
         var screenshot = (await DesktopToolsAsync()).First(tool => tool.Name == "desktop_screenshot");
         Assert.Equal("allow", screenshot.Decision);
 
         var settings = await _http.GetFromJsonAsync<JsonElement>("/api/settings");
         Assert.True(settings.GetProperty("model").GetProperty("supportsImages").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Reading_consumer_status_does_not_record_desktop_actions()
+    {
+        await _http.PutSettingsAsync(new
+        {
+            model = new { baseUrl = "http://127.0.0.1:9/v1", model = "m" },
+            desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        var before = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+        var tools = await DesktopToolsAsync();
+        await DesktopToolsAsync();
+        var after = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
+
+        Assert.Contains(tools, tool => tool.Name == "desktop_act");
+        Assert.Contains(tools, tool => tool.Name == "task_report");
+        foreach (var field in new[] { "leases", "leaseAsked", "leaseGearAllow" })
+        {
+            Assert.Equal(before.GetProperty(field).GetRawText(), after.GetProperty(field).GetRawText());
+        }
     }
 
     [Fact]
@@ -230,6 +311,162 @@ public sealed partial class ViewEndpointsTests
             var after = await _http.GetFromJsonAsync<JsonElement>("/api/desktop/telemetry");
             Assert.True(after.GetProperty("leaseAsked").GetInt32() > before.GetProperty("leaseAsked").GetInt32(),
                 $"leaseAsked={after.GetProperty("leaseAsked").GetInt32()}");
+        }
+        finally
+        {
+            await _http.PutSettingsAsync(new
+            {
+                desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+        }
+    }
+
+    private sealed class QueuedDesktopTool : ITool
+    {
+        public ToolSpec Spec { get; } = new("desktop_window", "test", "{\"type\":\"object\"}");
+        public TaskCompletionSource Queued { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Executed { get; private set; }
+
+        public async Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default)
+        {
+            Queued.SetResult();
+            using var mutation = await Partner.Desktop.Tools.DesktopMutationLock.AcquireAsync(ct);
+            Executed = true;
+            return new ToolResult(true, "executed");
+        }
+    }
+
+    [Fact]
+    public async Task Runner_carries_the_desktop_decision_to_the_queued_mutation()
+    {
+        await _http.PutSettingsAsync(new
+        {
+            desktop = new { enabled = true, approval = "none", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+        var dir = Path.Combine(Path.GetTempPath(), "partner-tests", Guid.NewGuid().ToString("n"));
+        try
+        {
+            var (store, _) = JsonlSessionStore.Open(dir);
+            await using (store)
+            {
+                var tool = new QueuedDesktopTool();
+                var tools = new InMemoryToolRegistry();
+                tools.Register(tool);
+                var llm = new ScriptedLlmClient([
+                    new LlmResponse(null, [new LlmToolCall("1", "desktop_window", "{}")], "tool_calls"),
+                    new LlmResponse("done", [], "stop"),
+                ]);
+                var runner = new AgentTurnRunner(store, llm, tools, new Partner.Api.DesktopGovernance(_context),
+                    new DenyAllApprovalHandler(), new HookRegistry(), tokens: new ApproximateTokenCounter());
+                using var held = await Partner.Desktop.Tools.DesktopMutationLock.AcquireAsync();
+                var turn = runner.RunAsync(new InputItem
+                {
+                    ItemId = Guid.NewGuid().ToString(), Seq = 1, Status = InputItemStatus.Running,
+                    Source = InputSource.Text, Payload = "test", IdempotencyKey = Guid.NewGuid().ToString(),
+                });
+                await tool.Queued.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await _http.PutSettingsAsync(new
+                {
+                    desktop = new { enabled = true, approval = "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+                });
+                held.Dispose();
+                await turn.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(tool.Executed);
+            }
+        }
+        finally
+        {
+            await _http.PutSettingsAsync(new
+            {
+                desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Desktop_governance_rejects_main_and_stale_scenario_ownership()
+    {
+        await _http.PutSettingsAsync(new
+        {
+            desktop = new { enabled = true, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+        var main = new Partner.Api.DesktopGovernance(_context, mainAgent: true);
+        var stale = new Partner.Api.DesktopGovernance(_context, scenario: AgentScenarios.Desktop, agentId: "removed-agent");
+        Assert.Equal(ToolDecision.Deny, main.Decide("desktop_act", "{}").Decision);
+        Assert.Equal(ToolDecision.Deny, main.Summarize("desktop_act").Decision);
+        Assert.Equal(ToolDecision.Deny, stale.Decide("desktop_act", "{}").Decision);
+        Assert.Equal(ToolDecision.Deny, stale.Summarize("desktop_act").Decision);
+    }
+
+    [Theory]
+    [InlineData("none", false)]
+    [InlineData("all", false)]
+    [InlineData("all", true)]
+    public async Task Queued_desktop_decisions_are_rejected_after_settings_change_without_spending_another_lease(
+        string gear, bool useLease)
+    {
+        await _http.PutSettingsAsync(new
+        {
+            desktop = new { enabled = true, approval = gear, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+
+        const string args = """{"entityId":"ff","kind":"LeftClick","x":1,"y":1}""";
+        try
+        {
+            if (useLease)
+                _context.TaskLeases.Grant("ff", args);
+            var decision = new Partner.Api.DesktopGovernance(_context).Decide("desktop_act", args);
+            Assert.Equal(useLease || gear == "none" ? Partner.Core.Agent.Tools.ToolDecision.Allow : Partner.Core.Agent.Tools.ToolDecision.Ask, decision.Decision);
+            Assert.NotNull(decision.IsStillAuthorized);
+            var remaining = useLease ? _context.TaskLeases.Snapshot().Single(lease => lease.EntityId == "ff").RemainingSteps : 0;
+
+            using var held = await Partner.Desktop.Tools.DesktopMutationLock.AcquireAsync();
+            var queued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var action = Task.Run(async () =>
+            {
+                using var authorization = Partner.Core.Agent.Tools.ToolExecutionAuthorization.Enter(decision.IsStillAuthorized);
+                queued.SetResult();
+                using var mutation = await Partner.Desktop.Tools.DesktopMutationLock.AcquireAsync();
+                return true;
+            });
+            await queued.Task;
+            await _http.PutSettingsAsync(new
+            {
+                desktop = new { enabled = true, approval = gear == "all" ? "none" : "all", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+            // Returning to the original gear must not revive the old decision.
+            await _http.PutSettingsAsync(new
+            {
+                desktop = new { enabled = true, approval = gear, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+            held.Dispose();
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await action);
+            Assert.Contains("设置已变化", error.Message, StringComparison.Ordinal);
+            if (useLease)
+                Assert.Equal(remaining, _context.TaskLeases.Snapshot().Single(lease => lease.EntityId == "ff").RemainingSteps);
+        }
+        finally
+        {
+            await _http.PutSettingsAsync(new
+            {
+                desktop = new { enabled = false, leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+            });
+        }
+    }
+
+    [Fact]
+    public async Task Unchanged_desktop_decision_remains_authorized_inside_the_mutation_lock()
+    {
+        await _http.PutSettingsAsync(new
+        {
+            desktop = new { enabled = true, approval = "none", leaseTtlMs = 15000, allowedWindowTitles = Array.Empty<string>() },
+        });
+        try
+        {
+            var decision = new Partner.Api.DesktopGovernance(_context).Decide("desktop_window", "{}");
+            using var authorization = Partner.Core.Agent.Tools.ToolExecutionAuthorization.Enter(decision.IsStillAuthorized);
+            using var mutation = await Partner.Desktop.Tools.DesktopMutationLock.AcquireAsync();
         }
         finally
         {

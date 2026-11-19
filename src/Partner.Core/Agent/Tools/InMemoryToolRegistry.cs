@@ -11,6 +11,7 @@ public sealed class InMemoryToolRegistry : IToolRegistry
 {
     private readonly List<ITool> _tools = [];
     private readonly Dictionary<string, ITool> _byName = new(StringComparer.Ordinal);
+    private IReadOnlyList<ToolSpec>? _specs;
 
     /// <summary>Creates an empty registry.</summary>
     public InMemoryToolRegistry()
@@ -18,7 +19,7 @@ public sealed class InMemoryToolRegistry : IToolRegistry
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<ToolSpec> Specs => _tools.Select(t => t.Spec).ToArray();
+    public IReadOnlyList<ToolSpec> Specs => _specs ??= Array.AsReadOnly(_tools.Select(t => t.Spec).ToArray());
 
     /// <inheritdoc />
     public ITool? Find(string name) => _byName.TryGetValue(name, out var tool) ? tool : null;
@@ -36,5 +37,6 @@ public sealed class InMemoryToolRegistry : IToolRegistry
 
         _byName.Add(name, tool);
         _tools.Add(tool);
+        _specs = null;
     }
 }

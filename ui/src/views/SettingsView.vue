@@ -104,7 +104,7 @@ const form = reactive<RuntimeSettings>({
     kws: { enabled: false, command: 'engines/kws-asr/python/python.exe', arguments: ['asr-server.py', '--port', '{port}'], workingDirectory: 'engines/kws-asr', port: 45103, readyTimeoutSeconds: 30, keywords: [] as string[] },
   },
   model: { protocol: 'openai', baseUrl: null, model: null, timeoutSeconds: 120, contextTokens: 128000, maxTokens: 32000, supportsImages: false, reasoningEffort: 'medium', reasoningGears: [...DEFAULT_REASONING_GEARS], reasoningLabels: {} },
-  desktop: { enabled: false, leaseTtlMs: 15000, approval: 'all', inputMode: 'foreground', allowedWindowTitles: [] as string[] },
+  desktop: { enabled: false, execEnabled: false, leaseTtlMs: 15000, approval: 'all', inputMode: 'foreground', allowedWindowTitles: [] as string[] },
 
   // Carried through untouched so the two capability pages' state survives a save made here. Not editable on
   // this page: a server row and a skill row need more room than a card in a settings form gives them.
@@ -118,7 +118,7 @@ const form = reactive<RuntimeSettings>({
   // Also carried, not edited: the prompts page owns the agents section. Dropping it here would reset every
   // prompt and sub-agent the next time anyone saved a voice setting.
   agents: { main: { prompt: null }, subAgents: [] },
-  files: { enabled: false, roots: [] },
+  files: { enabled: false, roots: [], writeEnabled: false, writeRoots: [] },
 
   // The one section here that defaults to ON, and the one that sends what you typed off this machine. The
   // default is deliberate (not an oversight): the search is useless if nobody ever finds the switch, and the
@@ -383,6 +383,7 @@ function apply(settings: RuntimeSettings & { rebaseGuard?: string; model: { apiK
   keywordDrafts.value = { tts: form.local.tts.keywords.join(','), kws: form.local.kws.keywords.join(',') }
   Object.assign(form.desktop, {
     enabled: settings.desktop?.enabled ?? false,
+    execEnabled: settings.desktop?.execEnabled ?? false,
     leaseTtlMs: settings.desktop?.leaseTtlMs ?? 15000,
     approval: settings.desktop?.approval ?? 'all',
     inputMode: settings.desktop?.inputMode ?? 'foreground',
@@ -404,7 +405,7 @@ function apply(settings: RuntimeSettings & { rebaseGuard?: string; model: { apiK
   })
 
   applyCarried(settings)
-  form.files = { enabled: settings.files?.enabled ?? false, roots: [...(settings.files?.roots ?? [])] }
+  form.files = { enabled: settings.files?.enabled ?? false, roots: [...(settings.files?.roots ?? [])], writeEnabled: settings.files?.writeEnabled ?? false, writeRoots: [...(settings.files?.writeRoots ?? [])] }
 
   // A response from an older build carries no `web` at all; the fallback is the same default the section
   // starts from, so saving from a stale page writes back what the switch is showing rather than turning the
@@ -756,7 +757,7 @@ async function persist() {
     agents: form.agents,
     // A row left blank is not a directory. Sending it would have the server reject the whole save over an
     // empty string the person never meant to add.
-    files: { enabled: form.files.enabled, roots: form.files.roots.map((root) => root.trim()).filter((root) => root !== '') },
+    files: { enabled: form.files.enabled, roots: form.files.roots.map((root) => root.trim()).filter((root) => root !== ''), writeEnabled: form.files.writeEnabled, writeRoots: form.files.writeRoots.map((root) => root.trim()).filter((root) => root !== '') },
     // An empty string means unset, not a proxy named ""; otherwise this field blocks the whole save.
     web: {
       enabled: form.web.enabled,
@@ -2014,13 +2015,13 @@ defineExpose({ refresh, hasUnsavedChanges })
             <!-- The one sentence on this page that is not behind an ⓘ. A hover is a good place for a footnote and a
                  bad place for the fact that this capability acts on your computer. -->
             <p class="callout" data-test="desktop-callout">
-              {{ t('开启后，助手可以观察你的窗口，并申请控制鼠标键盘。每一步都需要你批准。') }}
+              {{ t('开启后，助手可以观察窗口并操作鼠标键盘；审批取决于当前挡位。') }}
             </p>
 
             <div class="g-card">
               <SettingRow :label="t('允许助手操作电脑')">
                 <template #hint>
-                  {{ t('默认关闭。开启后助手能看你的窗口，并申请点击、按键；每个动作都要你点「允许」，没人回应就当拒绝。关闭时助手根本拿不到这些工具。') }}
+                  {{ t('默认关闭。开启后助手能观察窗口并操作鼠标键盘；审批取决于当前挡位，无人回应即拒绝。关闭时助手拿不到这些工具。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.desktop.enabled" data-test="desktop-enabled" />
               </SettingRow>
@@ -2028,6 +2029,13 @@ defineExpose({ refresh, hasUnsavedChanges })
                 {{ t('还需要启用「桌面操控」子 agent，助手才能使用这个能力。') }}
                 <button class="ghost" data-test="desktop-agent-fix" @click="choose('agents')">{{ t('去启用') }}</button>
               </p>
+              <SettingRow :label="t('允许执行系统命令')">
+                <template #hint>
+                  {{ t('默认关闭，需同时启用电脑操控。启用后每条命令都需要批准，不受审批挡位或窗口授权影响。命令以系统权限访问文件，不受文件白名单约束。') }}
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.desktop.execEnabled" data-test="desktop-exec-enabled" />
+              </SettingRow>
+              <p class="warn-line">{{ t('通过窗口操作的应用也能按系统权限访问文件，不受文件白名单约束；需要系统级隔离时请使用系统安全措施。') }}</p>
               <SettingRow :label="t('只允许操作这些窗口')">
                 <template #hint>
                   {{ t('填窗口标题里的关键词，用逗号分隔，不分大小写；留空表示不限制。真正拦住动作的是你的批准，这里只是缩小范围。') }}
@@ -2096,7 +2104,8 @@ defineExpose({ refresh, hasUnsavedChanges })
             <div class="g-card">
               <SettingRow :label="t('允许助手读取文件')">
                 <template #hint>
-                  <span data-test="files-whitelist-hint">{{ t('只读，默认关闭。助手只能读下面列出的文件夹和里面的所有内容，其他位置它看不到。') }}</span>
+                  <span data-test="files-whitelist-hint">{{ t('原生文件读取默认关闭，只能访问读取白名单中获准的内容。桌面应用、命令和 MCP 不受此白名单限制。') }}</span>
+                  <span data-test="files-content-hint"> {{ t('读取的文件内容会进入模型上下文和会话记录。') }}</span>
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.files.enabled" data-test="files-enabled" />
               </SettingRow>
@@ -2132,6 +2141,25 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <button class="ghost add" data-test="files-root-add" @click="form.files.roots = [...form.files.roots, '']">
                   <Icon name="plus" :size="14" /> {{ t('添加文件夹') }}
                 </button>
+              </div>
+
+              <SettingRow :label="t('允许新建和编辑文件')">
+                <template #hint>
+                  <span>{{ t('默认关闭。仅支持 Windows 本地 NTFS，目标须同时位于读取和写入白名单内，每次都须批准。新建不覆盖已有文件；编辑仅支持 UTF-8 并复查预期版本，但外部进程在复查与替换之间修改的内容可能被覆盖。') }}</span>
+                </template>
+                <input type="checkbox" class="g-switch" role="switch" v-model="form.files.writeEnabled" data-test="files-write-enabled" />
+              </SettingRow>
+              <div class="folders" data-test="files-write-roots">
+                <div class="folders-head"><h3>{{ t('可写入的文件夹') }}</h3><HintTip align="end">{{ t('填完整路径，一行一个。') }}</HintTip></div>
+                <p v-if="form.files.writeRoots.length === 0" class="muted">{{ t('还没有文件夹。开启后至少添加一个，否则无法保存。') }}</p>
+                <div v-for="(root, index) in form.files.writeRoots" :key="index" class="folder-row">
+                  <Icon name="folder" :size="16" class="folder-icon" />
+                  <input type="text" :value="root" :aria-label="t('第 {v} 个可写入的文件夹', { v: index + 1 })" :placeholder="t('D:/资料')" data-test="files-write-root" @input="form.files.writeRoots[index] = ($event.target as HTMLInputElement).value" />
+                  <button class="ghost icon-only" :aria-label="t('移除第 {v} 个文件夹', { v: index + 1 })" :title="t('移除')" data-test="files-write-root-remove" @click="form.files.writeRoots = form.files.writeRoots.filter((_, at) => at !== index)">
+                    <Icon name="x" :size="14" /><span class="sr-only">{{ t('移除') }}</span>
+                  </button>
+                </div>
+                <button class="ghost add" data-test="files-write-root-add" @click="form.files.writeRoots = [...form.files.writeRoots, '']"><Icon name="plus" :size="14" /> {{ t('添加文件夹') }}</button>
               </div>
             </div>
           </section>

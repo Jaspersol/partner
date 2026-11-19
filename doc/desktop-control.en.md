@@ -11,9 +11,12 @@ Lets the model see windows, press controls, type and launch programs. Off by def
 "Settings → Computer control":
 
 - **Let the assistant operate the computer**: the master switch.
+- **Allow system commands**: a separate switch, off by default; desktop control must also be enabled. Every command requires approval regardless of the approval level or window lease.
 - **Only these windows**: a window allowlist; empty means no limit.
 - **Take over the screen?**: foreground / auto / background, see "Background input" below.
 - For screenshots, turn on "Can see images" under "Settings → Chat model". Text-only models do not get the screenshot tool.
+
+GUI applications, commands, and external MCP processes access files with their system permissions, not the native file-tool allowlist. The MCP no-approval list is not file authorization. Use system security measures for system-level isolation; command string filtering is not a sandbox. If a native file tool is unavailable or fails, explain the problem and adjust permission, target, or parameters rather than bypassing it through these entry points.
 
 ## Tools
 
@@ -40,11 +43,13 @@ Switch them from the drop-down in the chat input area; they apply immediately:
 
 | Level | Desktop actions |
 |---|---|
-| No approval | Never asks |
+| No approval | Ordinary desktop actions do not ask; commands always ask individually |
 | Approve risky actions | Asks for running commands, launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) |
 | Approve everything (default) | Asks for every UI action; observing and screenshots never ask |
 
 The approval prompt appears just above the chat input; no answer means denied. Under "Approve everything", one approval lets the same window continue for 10 more steps (within 10 minutes); commands, launches, clipboard writes and system shortcuts still ask every time, and a system shortcut does not spend the lease.
+
+Desktop mutations are serialized within this process. Each governance decision is bound to the settings revision: any settings save or reload while approval or execution is pending invalidates the action, even if the approval level is subsequently restored. Start it again under the current settings and obtain approval if required. The check under the lock does not spend another task-lease step. Disabling desktop access also rejects actions that have not started. A timeout does not prove an action did not happen: observe the current state before deciding whether to retry.
 
 ## Guardrails
 

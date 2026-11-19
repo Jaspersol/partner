@@ -79,9 +79,6 @@ public sealed record ModelConfig(
         // reach the running runner, which only happens through a restart.
         || left.ContextTokens != right.ContextTokens
         || left.MaxTokens != right.MaxTokens
-        // Whether the model takes pictures decides which tools exist (the screenshot fallback), and the tool
-        // table is built at start — so this belongs with the rest of what a restart is for.
-        || left.SupportsImages != right.SupportsImages
         // The thinking gear is part of the client the consumer builds, so it takes a restart like the rest of
         // the endpoint's shape — unlike the desktop approval gear, which governance reads live.
         || !string.Equals(

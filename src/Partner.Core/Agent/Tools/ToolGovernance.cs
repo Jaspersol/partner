@@ -19,7 +19,37 @@ public enum ToolDecision
 /// </summary>
 /// <param name="Decision">The decision.</param>
 /// <param name="Reason">The non-empty reason.</param>
-public sealed record GovernanceDecision(ToolDecision Decision, string Reason);
+public sealed record GovernanceDecision(ToolDecision Decision, string Reason)
+{
+    /// <summary>Optional side-effect-free check of the decision's settings snapshot at execution time.</summary>
+    public Func<bool>? IsStillAuthorized { get; init; }
+}
+
+/// <summary>Flows a call's authorization to the point where its side effect is serialized.</summary>
+public static class ToolExecutionAuthorization
+{
+    private static readonly AsyncLocal<Func<bool>?> Current = new();
+
+    public static IDisposable Enter(Func<bool>? isStillAuthorized)
+    {
+        var previous = Current.Value;
+        Current.Value = isStillAuthorized;
+        return new Scope(previous);
+    }
+
+    public static void ThrowIfChanged()
+    {
+        if (Current.Value is { } check && !check())
+        {
+            throw new InvalidOperationException("设置已变化，原审批不再有效；动作未执行，请重新发起");
+        }
+    }
+
+    private sealed class Scope(Func<bool>? previous) : IDisposable
+    {
+        public void Dispose() => Current.Value = previous;
+    }
+}
 
 /// <summary>
 /// Tool governance: decides allow, ask, or deny <b>before</b> the tool actually runs.

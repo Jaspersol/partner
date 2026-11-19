@@ -24,6 +24,7 @@ public static class DesktopEndpoints
             return Results.Ok(new
             {
                 enabled = settings.Enabled,
+                execEnabled = settings.ExecEnabled,
                 leaseTtlMs = settings.LeaseTtlMs,
                 approval = settings.Approval,
                 inputMode = settings.InputMode,
@@ -187,6 +188,12 @@ public static class DesktopEndpoints
                     error = $"kind 必须是 {string.Join(" / ", Enum.GetNames<ActionKind>())}",
                 });
             }
+            using var mutation = await Partner.Desktop.Tools.DesktopMutationLock.AcquireAsync(ct).ConfigureAwait(false);
+            disabled = DisabledReason(ctx);
+            if (disabled is not null)
+            {
+                return Results.BadRequest(new { error = disabled });
+            }
 
             var seenElement = request.ElementId is { Length: > 0 } elementId
                 ? ctx.Desktop.LastObservation?.FindElement(elementId)
@@ -249,7 +256,7 @@ public static class DesktopEndpoints
                 return Results.BadRequest(new { error = disabled });
             }
 
-            var tool = new Partner.Desktop.Tools.DesktopLaunchTool();
+            var tool = new Partner.Desktop.Tools.DesktopLaunchTool(isEnabled: () => DisabledReason(ctx) is null);
             var result = await tool
                 .InvokeAsync(JsonSerializer.Serialize(new { target = request.Target, arguments = request.Arguments }), ct)
                 .ConfigureAwait(false);
