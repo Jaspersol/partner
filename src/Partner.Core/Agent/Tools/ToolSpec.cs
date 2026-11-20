@@ -17,4 +17,12 @@ public sealed record ToolSpec(string Name, string Description, string Parameters
 /// Pictures to show the model, as data URIs. A tool result is text in the log, so the bytes travel beside it:
 /// the log keeps the id, the request carries the pixels. Only ever set when the configured model takes images.
 /// </param>
-public sealed record ToolResult(bool Ok, string Content, IReadOnlyList<string>? Images = null);
+/// <param name="RequiresIntactContent">Whether truncation would invalidate a cursor or other result metadata.</param>
+public sealed record ToolResult(bool Ok, string Content, IReadOnlyList<string>? Images = null, bool RequiresIntactContent = false)
+{
+    /// <summary>Native HTTP status observation, never part of the model-visible tool text.</summary>
+    public HttpCheckEvidence? CheckEvidence { get; init; }
+}
+
+/// <summary>An http-status-v1 observation: the SHA-256 target key and HTTP status.</summary>
+public sealed record HttpCheckEvidence(string Target, int Status);

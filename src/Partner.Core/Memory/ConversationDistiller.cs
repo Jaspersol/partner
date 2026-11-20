@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace Partner.Core.Memory;
 
 /// <summary>One thing worth remembering, before it becomes a record.</summary>
@@ -52,9 +50,9 @@ public static class ConversationDistiller
         "thank", "thanks", "ok", "okay", "got it", "hi", "hello", "bye",
     };
 
-    /// <summary>What to remember from one turn: the user's message and the assistant's reply.</summary>
+    /// <summary>Remembers the user's own statement, never the assistant's interpretation of it.</summary>
     /// <param name="userText">What the person said this turn.</param>
-    /// <param name="assistantText">What the model answered, which often names the thing in play.</param>
+    /// <param name="assistantText">What the model answered.</param>
     /// <param name="sourceEventSeq">The event the exchange starts at.</param>
     /// <param name="now">Injected rather than read from the clock, so a test can date a record.</param>
     public static DistilledMemory? Distill(
@@ -69,24 +67,24 @@ public static class ConversationDistiller
             return null;
         }
 
-        if (IsSelfReferential(user) || IsChitchat(user))
+        if (IsSelfReferential(user) || IsChitchat(user) || IsQuestionOrRequest(user))
         {
             return null;
         }
 
-        // A question with no answer attached is a question, not a fact.
+        // Do not retain an incomplete exchange.
         var answer = (assistantText ?? string.Empty).Trim();
         if (answer.Length == 0)
         {
             return null;
         }
 
-        var body = answer.Length >= user.Length ? answer : $"{user}\n{answer}";
+        var body = user;
         body = body.Length <= MaxBodyLength ? body : body[..MaxBodyLength] + "…";
 
         return new DistilledMemory(
             body,
-            Importance: Importance(user, answer),
+            Importance: Importance(user),
             Veracity: 1.0,
             SourceEventSeq: sourceEventSeq);
     }
@@ -103,12 +101,21 @@ public static class ConversationDistiller
         return Chitchat.Any(phrase => trimmed.Equals(phrase, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static bool IsQuestionOrRequest(string text) =>
+        text.Contains('？') || text.Contains('?')
+        || new[] { "怎么", "如何", "是否", "能否", "请问", "多少", "什么", "哪儿", "哪里", "哪个", "吗", "帮我", "请帮", "点一下" }
+            .Any(marker => text.Contains(marker, StringComparison.Ordinal))
+        || new[] { "请", "检查", "查看", "查询", "执行", "重启", "启动", "停止", "删除", "删掉", "打开", "关闭" }
+            .Any(marker => text.StartsWith(marker, StringComparison.Ordinal))
+        || new[] { "how ", "what ", "when ", "where ", "why ", "can you ", "please ", "check ", "run ", "restart ", "delete " }
+            .Any(marker => text.StartsWith(marker, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     /// How much a turn shapes later ones, read off its own wording. A stated preference, an ongoing project, or
     /// an instruction to always do something outweighs an answer to a one-off question. Nothing here guesses at
     /// importance from length.
     /// </summary>
-    private static double Importance(string user, string answer)
+    private static double Importance(string user)
     {
         var score = 0.4;
 
@@ -121,13 +128,10 @@ public static class ConversationDistiller
             }
         }
 
-        foreach (var marker in new[] { "总是", "不要", "必须", "只能", "注意", "注意：" })
+        if (new[] { "总是", "不要", "必须", "只能", "注意" }
+            .Any(marker => user.Contains(marker, StringComparison.Ordinal)))
         {
-            if (answer.Contains(marker, StringComparison.Ordinal))
-            {
-                score += 0.1;
-                break;
-            }
+            score += 0.1;
         }
 
         return Math.Clamp(score, 0.0, 1.0);

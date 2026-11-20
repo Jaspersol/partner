@@ -3,6 +3,14 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Partner.Core.Contracts;
 using Partner.Core.Sessions;
+using Partner.Api.Agents;
+using Partner.Core.Agent;
+using Partner.Core.Agent.Hooks;
+using Partner.Core.Agent.Llm;
+using Partner.Core.Agent.Tools;
+using Partner.Core.Memory;
+using Partner.Core.Queue;
+using System.Text.RegularExpressions;
 
 namespace Partner.Api.Tests;
 
@@ -37,6 +45,247 @@ public sealed partial class ViewEndpointsTests
             FileShare.ReadWrite);
         using var reader = new StreamReader(stream);
         return await reader.ReadToEndAsync();
+    }
+
+    [Fact]
+    public async Task History_tool_reads_compacted_sources_but_not_withdrawn_sources()
+    {
+        var visible = await SeedAsync("old E_ACCESSDENIED detail");
+        var withdrawn = await SeedAsync("withdrawn E_ACCESSDENIED secret");
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Edit, Source = InputSource.Text, EditedFromSeq = visible,
+            Body = "revised E_ACCESSDENIED detail",
+        });
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Summary, Source = InputSource.Text, Body = "summary",
+            Meta = new Dictionary<string, string> { ["compactedRanges"] = $"[[{visible},{withdrawn}]]" },
+        });
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Retract, Source = InputSource.Text, Body = "withdrawn",
+            Meta = new Dictionary<string, string> { ["fromSeq"] = withdrawn.ToString(), ["toSeq"] = withdrawn.ToString() },
+        });
+        var legacy = await SeedAsync("legacy E_ACCESSDENIED detail");
+        var legacySummary = await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Summary, Source = InputSource.Text, Body = "old summary",
+            Meta = new Dictionary<string, string> { ["coveredFrom"] = legacy.ToString(), ["coveredTo"] = legacy.ToString() },
+        });
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Retract, Source = InputSource.Text,
+            Body = $"compacted #{legacy}..{legacy} into #{legacySummary}",
+            Meta = new Dictionary<string, string> { ["fromSeq"] = legacy.ToString(), ["toSeq"] = legacy.ToString() },
+        });
+        var disguised = await SeedAsync("hidden E_ACCESSDENIED detail");
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Retract, Source = InputSource.Text,
+            Body = $"compacted #{disguised}..{disguised} into #{legacySummary}",
+            Meta = new Dictionary<string, string> { ["fromSeq"] = disguised.ToString(), ["toSeq"] = disguised.ToString() },
+        });
+
+        var tool = new SessionHistoryTool(_context.Session);
+        var search = await tool.InvokeAsync("{\"query\":\"e_accessdenied\"}");
+        Assert.Contains($"Seq={visible}", search.Content);
+        Assert.Contains($"Seq={legacy}", search.Content);
+        Assert.DoesNotContain($"Seq={disguised}", search.Content);
+        Assert.Contains("revised E_ACCESSDENIED", search.Content);
+        Assert.DoesNotContain("withdrawn", search.Content);
+        var read = await tool.InvokeAsync($"{{\"seq\":{visible}}}");
+        Assert.Contains("revised E_ACCESSDENIED detail", read.Content);
+        var hidden = await tool.InvokeAsync($"{{\"seq\":{withdrawn}}}");
+        Assert.DoesNotContain("E_ACCESSDENIED", hidden.Content);
+        var hiddenDisguised = await tool.InvokeAsync($"{{\"seq\":{disguised}}}");
+        Assert.DoesNotContain("E_ACCESSDENIED", hiddenDisguised.Content);
+    }
+
+    private sealed class HistoryPagingLlm(long seq) : ILlmClient
+    {
+        public List<List<LlmMessage>> Requests { get; } = new();
+
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct = default)
+        {
+            Requests.Add(request.Messages.ToList());
+            var step = Requests.Count;
+            string? args = step switch
+            {
+                1 => JsonSerializer.Serialize(new { seq }),
+                2 => JsonSerializer.Serialize(new { seq, offset = int.Parse(Regex.Match(
+                    Requests[1].Single(m => m.Role == "tool" && m.ToolCallId == "history-1").Content!, @"nextOffset=(\d+)").Groups[1].Value) }),
+                3 or 4 => "{\"query\":\"E_ACCESSDENIED\"}",
+                _ => null,
+            };
+            return Task.FromResult(args is null
+                ? new LlmResponse("done", [], "stop")
+                : new LlmResponse(null, [new LlmToolCall($"history-{step}", "session_history", args)], "tool_calls"));
+        }
+    }
+
+    [Fact]
+    public async Task History_pages_fit_runner_budget_and_search_ignores_own_receipts()
+    {
+        var body = string.Concat(Enumerable.Range(0, 3000).Select(i => (char)('一' + i % 100)));
+        var seq = await SeedAsync(body);
+        var original = await SeedAsync("original E_ACCESSDENIED");
+        var other = await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.ToolResult, Source = InputSource.Text, Body = "other E_ACCESSDENIED",
+            Meta = new Dictionary<string, string> { ["name"] = "other_tool" },
+        });
+        for (var i = 0; i < 9; i++)
+            await _context.Session.AppendAsync(new SessionEvent
+            {
+                Kind = SessionEventKind.ToolResult, Source = InputSource.Text, Body = "receipt E_ACCESSDENIED",
+                Meta = new Dictionary<string, string> { ["name"] = "session_history" },
+            });
+
+        var llm = new HistoryPagingLlm(seq);
+        var tools = new InMemoryToolRegistry();
+        tools.Register(new SessionHistoryTool(_context.Session));
+        var counter = new ApproximateTokenCounter();
+        var options = new AgentTurnOptions { ContextWindowTokens = 4096, MaxTokens = 1024, MaxSteps = 8 };
+        var runner = new AgentTurnRunner(_context.Session, llm, tools,
+            new AllowListGovernance(["session_history"]), new DenyAllApprovalHandler(), new HookRegistry(),
+            options: options, tokens: counter);
+        await runner.RunAsync(new InputItem
+        {
+            ItemId = "history-test", Seq = 1, Status = InputItemStatus.Running, Source = InputSource.Text,
+            Payload = "read history", IdempotencyKey = "text:history-test",
+        });
+
+        var first = llm.Requests[1].Single(m => m.Role == "tool" && m.ToolCallId == "history-1").Content!;
+        var second = llm.Requests[2].Single(m => m.Role == "tool" && m.ToolCallId == "history-2").Content!;
+        var firstEnd = int.Parse(Regex.Match(first, @"nextOffset=(\d+)").Groups[1].Value);
+        var secondEnd = int.Parse(Regex.Match(second, @"nextOffset=(\d+)").Groups[1].Value);
+        Assert.Equal(body[..firstEnd], first[(first.IndexOf('\n') + 1)..]);
+        Assert.Equal(body[firstEnd..secondEnd], second[(second.IndexOf('\n') + 1)..]);
+        var cap = ToolResultBudget.ResultCap(Math.Max(1,
+            ContextBudget.PromptBudget(options.ContextWindowTokens, options.MaxTokens) - ToolResultBudget.SchemaTokens(tools.Specs, counter)));
+        Assert.True(counter.Count(first) <= cap);
+        Assert.True(counter.Count(second) <= cap);
+        var search = llm.Requests[4].Single(m => m.Role == "tool" && m.ToolCallId == "history-4").Content!;
+        Assert.Contains($"Seq={original}", search);
+        Assert.Contains($"Seq={other}", search);
+        Assert.DoesNotContain("receipt E_ACCESSDENIED", search);
+        Assert.Equal(2, Regex.Matches(search, "E_ACCESSDENIED").Count);
+    }
+
+    [Fact]
+    public async Task History_page_that_cannot_fit_does_not_advance()
+    {
+        var seq = await SeedAsync("some history");
+        var result = await new SessionHistoryTool(_context.Session).InvokeAsync(
+            $"{{\"seq\":{seq}}}", 1, new ApproximateTokenCounter());
+        Assert.False(result.Ok);
+        Assert.Contains("本页未返回", result.Content);
+        Assert.DoesNotContain("nextOffset=", result.Content);
+    }
+
+    private sealed class HistoryClock(DateTimeOffset now, TimeZoneInfo zone) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+        public override TimeZoneInfo LocalTimeZone => zone;
+    }
+
+    [Fact]
+    public async Task History_day_uses_original_event_time_visible_edits_and_exclusive_pages()
+    {
+        var zone = TimeZoneInfo.CreateCustomTimeZone("history-test", TimeSpan.FromHours(2), "history-test", "history-test");
+        var clock = new HistoryClock(new DateTimeOffset(2025, 4, 3, 23, 0, 0, TimeSpan.Zero), zone);
+        var tool = new SessionHistoryTool(_context.Session, clock);
+        async Task<long> Add(string body, DateTimeOffset at) => await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Text, Body = body, At = at,
+        });
+        var outside = await Add("needle previous day", new DateTimeOffset(2025, 4, 2, 21, 59, 59, TimeSpan.Zero));
+        var edited = await Add("original", new DateTimeOffset(2025, 4, 2, 22, 0, 0, TimeSpan.Zero));
+        var withdrawn = await Add("needle withdrawn", new DateTimeOffset(2025, 4, 3, 8, 0, 0, TimeSpan.Zero));
+        var expected = new List<long> { edited };
+        for (var i = 0; i < 9; i++)
+            expected.Add(await Add($"needle {i}", new DateTimeOffset(2025, 4, 3, 9, i, 0, TimeSpan.Zero)));
+        var nextDay = await Add("needle next day", new DateTimeOffset(2025, 4, 3, 22, 0, 0, TimeSpan.Zero));
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Edit, Source = InputSource.Text, EditedFromSeq = edited, Body = "needle revised",
+            At = new DateTimeOffset(2025, 4, 4, 12, 0, 0, TimeSpan.Zero),
+        });
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Summary, Source = InputSource.Text, Body = "needle summary control",
+            Meta = new Dictionary<string, string> { ["compactedRanges"] = $"[[{edited},{withdrawn}]]" },
+        });
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.Retract, Source = InputSource.Text, Body = "withdrawn",
+            Meta = new Dictionary<string, string> { ["fromSeq"] = withdrawn.ToString(), ["toSeq"] = withdrawn.ToString() },
+        });
+        await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.ToolResult, Source = InputSource.Text, Body = "needle receipt",
+            At = new DateTimeOffset(2025, 4, 3, 10, 0, 0, TimeSpan.Zero),
+            Meta = new Dictionary<string, string> { ["name"] = "session_history" },
+        });
+
+        var counter = new ApproximateTokenCounter();
+        var first = await tool.InvokeAsync("{\"day\":\"yesterday\",\"query\":\"needle\"}", 1000, counter);
+        Assert.True(first.Ok);
+        Assert.Contains("日期=2025-04-03", first.Content);
+        Assert.DoesNotContain($"Seq={outside} ", first.Content);
+        Assert.DoesNotContain($"Seq={nextDay} ", first.Content);
+        Assert.DoesNotContain($"Seq={withdrawn} ", first.Content);
+        Assert.DoesNotContain("needle receipt", first.Content);
+        Assert.DoesNotContain("needle summary control", first.Content);
+        var cursor = long.Parse(Regex.Match(first.Content, @"beforeSeq=(\d+)").Groups[1].Value);
+        var second = await tool.InvokeAsync($"{{\"day\":\"2025-04-03\",\"query\":\"needle\",\"beforeSeq\":{cursor}}}", 1000, counter);
+        var found = Regex.Matches(first.Content + "\n" + second.Content, @"(?:^|\n)Seq=(\d+)")
+            .Select(m => long.Parse(m.Groups[1].Value)).ToArray();
+        Assert.Equal(expected.OrderDescending(), found.OrderDescending());
+        var budget = counter.Count(first.Content) - 1;
+        var limited = await tool.InvokeAsync("{\"day\":\"2025-04-03\",\"query\":\"needle\"}", budget, counter);
+        Assert.True(limited.Ok);
+        Assert.True(counter.Count(limited.Content) <= budget);
+        var limitedEntries = Regex.Matches(limited.Content, @"(?:^|\n)Seq=(\d+)");
+        var limitedCursor = long.Parse(Regex.Match(limited.Content, @"beforeSeq=(\d+)").Groups[1].Value);
+        Assert.Equal(long.Parse(limitedEntries[limitedEntries.Count - 1].Groups[1].Value), limitedCursor);
+        var continuation = await tool.InvokeAsync($"{{\"day\":\"2025-04-03\",\"query\":\"needle\",\"beforeSeq\":{limitedCursor}}}", 1000, counter);
+        var combined = Regex.Matches(limited.Content + "\n" + continuation.Content, @"(?:^|\n)Seq=(\d+)")
+            .Select(m => long.Parse(m.Groups[1].Value)).ToArray();
+        Assert.Equal(expected.OrderDescending(), combined.OrderDescending());
+        Assert.Contains("needle revised", second.Content);
+        var read = await tool.InvokeAsync($"{{\"seq\":{edited}}}");
+        Assert.Contains("needle revised", read.Content);
+        var tiny = await tool.InvokeAsync("{\"day\":\"2025-04-03\"}", 1, counter);
+        Assert.False(tiny.Ok);
+        Assert.DoesNotContain("beforeSeq=", tiny.Content);
+        var empty = await tool.InvokeAsync("{\"day\":\"2025-04-01\"}");
+        Assert.Contains("没有匹配结果", empty.Content);
+        Assert.Contains("日期=2025-04-01", empty.Content);
+    }
+
+    [Fact]
+    public async Task History_day_uses_local_midnights_across_daylight_saving()
+    {
+        var startRule = TimeZoneInfo.TransitionTime.CreateFloatingDateRule(new DateTime(1, 1, 1, 2, 0, 0), 3, 2, DayOfWeek.Sunday);
+        var endRule = TimeZoneInfo.TransitionTime.CreateFloatingDateRule(new DateTime(1, 1, 1, 2, 0, 0), 11, 1, DayOfWeek.Sunday);
+        var rule = TimeZoneInfo.AdjustmentRule.CreateAdjustmentRule(new DateTime(2025, 1, 1), new DateTime(2025, 12, 31), TimeSpan.FromHours(1), startRule, endRule);
+        var zone = TimeZoneInfo.CreateCustomTimeZone("history-dst", TimeSpan.FromHours(-5), "history-dst", "standard", "daylight", [rule]);
+        var inside = await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Text, Body = "inside DST day",
+            At = new DateTimeOffset(2025, 3, 10, 3, 59, 0, TimeSpan.Zero),
+        });
+        var outside = await _context.Session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Text, Body = "outside DST day",
+            At = new DateTimeOffset(2025, 3, 10, 4, 0, 0, TimeSpan.Zero),
+        });
+        var tool = new SessionHistoryTool(_context.Session, new HistoryClock(DateTimeOffset.UtcNow, zone));
+        var result = await tool.InvokeAsync("{\"day\":\"2025-03-09\"}");
+        Assert.Contains($"Seq={inside} ", result.Content);
+        Assert.DoesNotContain($"Seq={outside} ", result.Content);
     }
 
     [Fact]

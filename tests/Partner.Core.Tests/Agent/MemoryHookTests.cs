@@ -1,3 +1,5 @@
+using Partner.Core.Agent;
+using Partner.Core.Queue;
 using Partner.Core.Agent.Hooks;
 using Partner.Core.Contracts;
 using Partner.Core.Memory;
@@ -156,9 +158,8 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
-    public async Task A_tool_only_turn_is_remembered_from_a_successful_act()
+    public async Task A_tool_success_receipt_does_not_become_a_fact()
     {
-        // Desktop answers in tool results, not prose; this path is what turns a successful act into a memory.
         var (session, memory) = Open();
         await session.AppendAsync(new SessionEvent
         {
@@ -178,15 +179,12 @@ public sealed class MemoryHookTests : IDisposable
 
         await new MemoryDistilHook(memory, session).RunAsync(Context("播放器里点一下播放"), default);
 
-        var record = Assert.Single(await memory.ListAsync());
-        Assert.Contains("播放", record.Body, StringComparison.Ordinal);
+        Assert.Empty(await memory.ListAsync());
     }
 
     [Fact]
-    public async Task A_background_act_is_remembered_like_any_other_successful_act()
+    public async Task A_background_tool_receipt_does_not_become_a_fact()
     {
-        // A click carried by a page's debug protocol reports a different success phrase, which the memory
-        // filter must also accept.
         var (session, memory) = Open();
         await session.AppendAsync(new SessionEvent
         {
@@ -205,7 +203,7 @@ public sealed class MemoryHookTests : IDisposable
 
         await new MemoryDistilHook(memory, session).RunAsync(Context("播放器里点一下播放"), default);
 
-        Assert.Single(await memory.ListAsync());
+        Assert.Empty(await memory.ListAsync());
     }
 
     [Fact]
@@ -299,19 +297,89 @@ public sealed class MemoryHookTests : IDisposable
     }
 
     [Fact]
-    public async Task A_memory_from_a_turn_the_prompt_still_carries_is_not_injected()
+    public async Task Short_reference_recalls_using_visible_human_history_only()
     {
-        // Memory is written at the end of every turn, so the exchange right above is already in the store when
-        // the next prompt is built. Recalling it would send the same statement twice.
         var (session, memory) = Open();
-        await ExchangeAsync(session, "我不太喜欢被打断", "明白，以后不打断你");
-        await new MemoryDistilHook(memory, session).RunAsync(Context("我不太喜欢被打断"), default);
-        Assert.Single(await memory.ListAsync());
+        await ExchangeAsync(session, "部署遇到凤凰故障", "我来看看");
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Agent, Body = "麒麟报告",
+        });
+        await memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "human", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "凤凰故障需要检查网络",
+        });
+        await memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "agent", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "麒麟报告需要检查磁盘",
+        });
+        var assembler = new SessionWindowContextAssembler(session, contextTokens: 2000, reserveForOutput: 100,
+            baseSystemPrompt: "assistant", memory: memory);
+        var item = new InputItem { Source = InputSource.Text, Payload = "上次那个" };
+        var result = await assembler.AssemblePlannedAsync(item, Array.Empty<string>());
 
-        var ctx = Context("我不太喜欢被打断");
-        await new MemoryRecallHook(memory, session).RunAsync(ctx, default);
+        Assert.Contains("凤凰故障", result.Recall!, StringComparison.Ordinal);
+        Assert.DoesNotContain("麒麟报告", result.Recall!, StringComparison.Ordinal);
+        Assert.EndsWith("上次那个", result.Messages[^1].Content, StringComparison.Ordinal);
+    }
 
-        Assert.Empty(ctx.InjectedPrompts);
+    [Fact]
+    public void Query_supplement_is_limited_and_does_not_expand_explicit_objects()
+    {
+        var history = new[] { new string('甲', 250), new string('乙', 250), "第三条" };
+        var expanded = MemoryRecallQuery.Supplement("按之前的", history);
+        Assert.StartsWith("按之前的\n", expanded, StringComparison.Ordinal);
+        Assert.Equal(300, expanded.Length);
+        Assert.DoesNotContain("第三条", expanded, StringComparison.Ordinal);
+        Assert.Equal("检查 v1", MemoryRecallQuery.Supplement("检查 v1", history));
+        Assert.Equal("之前的数据库", MemoryRecallQuery.Supplement("之前的数据库", history));
+    }
+
+    [Fact]
+    public async Task Recall_excludes_only_history_actually_sent()
+    {
+        var (session, memory) = Open();
+        var oldSeq = await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Text,
+            Body = "alpha old " + new string('x', 3000),
+            Meta = new Dictionary<string, string> { ["itemId"] = "old" },
+        });
+        var recentSeq = await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Text, Body = "alpha recent history",
+            Meta = new Dictionary<string, string> { ["itemId"] = "recent" },
+        });
+        await session.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.System, Source = InputSource.Text, Body = "stale recall marker",
+            Meta = new Dictionary<string, string> { ["label"] = "recall", ["itemId"] = "recent" },
+        });
+        await memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "old", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "alpha old memory", SourceEventSeq = oldSeq,
+        });
+        await memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "recent", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "alpha recent memory", SourceEventSeq = recentSeq,
+        });
+        var item = new InputItem
+        {
+            ItemId = "next", Seq = 1, Status = InputItemStatus.Running, Source = InputSource.Text,
+            Payload = "alpha", IdempotencyKey = "text:next",
+        };
+        var assembler = new SessionWindowContextAssembler(session, contextTokens: 400, reserveForOutput: 40,
+            baseSystemPrompt: "assistant", memory: memory);
+        var messages = await assembler.AssembleInitialAsync(item, Array.Empty<string>());
+
+        Assert.Contains(messages, m => m.Content == "alpha recent history");
+        Assert.DoesNotContain(messages, m => m.Content != null && m.Content.Contains("stale recall marker", StringComparison.Ordinal));
+        Assert.Contains("alpha old memory", messages[^1].Content!, StringComparison.Ordinal);
+        Assert.DoesNotContain("alpha recent memory", messages[^1].Content!, StringComparison.Ordinal);
     }
 
     [Fact]

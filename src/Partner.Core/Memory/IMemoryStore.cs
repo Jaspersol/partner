@@ -43,11 +43,20 @@ public sealed record RecallFilter
     /// <summary>Leave out records whose origin is one of these (e.g. this service's own summaries).</summary>
     public IReadOnlySet<string>? ExcludeOrigins { get; init; }
 
+    /// <summary>Optional context-expanded query for candidate retrieval; the query argument remains the current input.</summary>
+    public string? SupplementaryQuery { get; init; }
+
     /// <summary>Overrides the store's default hit count for <c>InjectAsync</c>.</summary>
     public int? Limit { get; init; }
 
     /// <summary>Overrides the store's <c>InjectionTokenLimit</c> for <c>InjectAsync</c>.</summary>
     public int? TokenLimit { get; init; }
+
+    /// <summary>Whether the store's own injection limit also caps an explicit token limit.</summary>
+    public bool UseStoreInjectionLimit { get; init; } = true;
+
+    /// <summary>Prices the rendered injection, including any surrounding prompt text.</summary>
+    public Func<IReadOnlyList<MemoryHit>, bool, int>? RenderedTokenCost { get; init; }
 
     /// <summary>
     /// False skips the <c>last_recalled_at</c> write. A pass-through service's recall must not move the main

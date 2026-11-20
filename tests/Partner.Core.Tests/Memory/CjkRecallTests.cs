@@ -87,22 +87,20 @@ public sealed class CjkRecallTests : IDisposable
     }
 
     [Fact]
-    public async Task A_mixed_record_supersedes_an_english_one_through_its_english_half()
+    public async Task A_mixed_record_does_not_supersede_a_similar_english_one()
     {
         await using var store = Open();
         await store.WriteAsync(Rec(
             "old",
             "stage the staging cluster with terraform and then restart the gateway service"));
 
-        // The newcomer is mostly the same claim plus a Chinese word. With the index chosen by script, the
-        // candidate lookup would only see bigrams and find nothing to retire.
+        // Shared words do not establish that these statements concern the same fact.
         await store.WriteAsync(Rec(
             "new",
             "部署 stage the staging cluster with terraform and then restart the gateway daemon"));
 
-        var superseded = await store.GetAsync("old");
-        Assert.NotNull(superseded!.ValidTo);
-        Assert.Equal("new", superseded.SupersededBy);
+        Assert.Null((await store.GetAsync("old"))!.ValidTo);
+        Assert.Null((await store.GetAsync("new"))!.ValidTo);
     }
 
     [Fact]

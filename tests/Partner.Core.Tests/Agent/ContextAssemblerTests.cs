@@ -79,6 +79,22 @@ public sealed class ContextAssemblerTests : IDisposable
     }
 
     [Fact]
+    public async Task Main_context_and_measurement_exclude_complete_legacy_scheduled_turns()
+    {
+        var store = await SessionAsync((SessionEventKind.User, "ordinary question"), (SessionEventKind.Assistant, "ordinary answer"));
+        var before = await new SessionWindowContextAssembler(store, baseSystemPrompt: TinyPrompt).MeasureAsync();
+        await store.AppendAsync(new SessionEvent { Kind = SessionEventKind.User, Source = InputSource.Schedule, Body = "scheduled instruction" });
+        await store.AppendAsync(new SessionEvent { Kind = SessionEventKind.Assistant, Source = InputSource.Text, Body = "scheduled answer" });
+        var assembler = new SessionWindowContextAssembler(store, baseSystemPrompt: TinyPrompt);
+        var messages = await assembler.AssembleInitialAsync(Input("next"), Array.Empty<string>());
+        var text = string.Join("\n", messages.Select(m => m.Content));
+        Assert.Contains("ordinary answer", text);
+        Assert.DoesNotContain("scheduled instruction", text);
+        Assert.DoesNotContain("scheduled answer", text);
+        Assert.Equal(before.UsedTokens, (await assembler.MeasureAsync()).UsedTokens);
+    }
+
+    [Fact]
     public async Task Tool_calls_are_shown_in_the_view_but_never_sent_to_the_model()
     {
         var store = await SessionAsync(
@@ -145,6 +161,28 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.Contains("desktop", call.ArgumentsJson, StringComparison.Ordinal);
         Assert.Equal("c1", messages[3].ToolCallId);
         Assert.Equal("handed over as job-1", messages[3].Content);
+    }
+
+    [Fact]
+    public async Task Shared_history_pricing_uses_rendered_trace_and_system_text()
+    {
+        var args = JsonSerializer.Serialize(new { goal = new string('走', 1000) });
+        var store = await SessionWithMetaAsync(
+            (SessionEventKind.User, "delegate", null),
+            (SessionEventKind.System, "history note", null),
+            (SessionEventKind.ToolCall, "agent_delegate", Call("c1", "agent_delegate", args)),
+            (SessionEventKind.ToolResult, new string('结', 1000), Result("c1", "agent_delegate")));
+        var view = await store.ProjectAsync();
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: 4096, reserveForOutput: 64)
+            .AssembleInitialAsync(Input("next"), Array.Empty<string>());
+        var call = view.Items.Single(e => e.Kind == SessionEventKind.ToolCall);
+        var result = view.Items.Single(e => e.Kind == SessionEventKind.ToolResult);
+        var system = view.Items.Single(e => e.Kind == SessionEventKind.System);
+
+        Assert.Equal(messages.SelectMany(m => m.ToolCalls ?? []).Single().ArgumentsJson,
+            SessionWindowContextAssembler.CostText(call));
+        Assert.Equal(messages.Single(m => m.Role == "tool").Content, SessionWindowContextAssembler.CostText(result));
+        Assert.Contains(SessionWindowContextAssembler.CostText(system), messages[0].Content!, StringComparison.Ordinal);
     }
 
     [Fact]

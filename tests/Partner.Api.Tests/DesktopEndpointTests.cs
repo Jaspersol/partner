@@ -194,7 +194,7 @@ public sealed partial class ViewEndpointsTests
             .Select(tool => tool.GetProperty("name").GetString()!)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
-        Assert.Equal(new[] { "schedule_create", "schedule_delete", "schedule_list", "web_fetch", "web_search" }, left);
+        Assert.Equal(new[] { "schedule_create", "schedule_delete", "schedule_list", "session_history", "web_fetch", "web_search" }, left);
         Assert.Empty(await DesktopToolsAsync());
     }
 
