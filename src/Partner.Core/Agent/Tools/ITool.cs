@@ -18,6 +18,12 @@ public interface ITool
     Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default);
 }
 
+/// <summary>A tool that needs the runner's actual per-result budget to produce a complete result.</summary>
+public interface IResultBudgetTool : ITool
+{
+    Task<ToolResult> InvokeAsync(string argumentsJson, int maxTokens, Partner.Core.Memory.ITokenCounter counter, CancellationToken ct = default);
+}
+
 /// <summary>
 /// A tool that knows how long it legitimately needs. The runner's per-call timeout is one number for every
 /// tool; a tool with its own time budget would otherwise be cancelled by that number and lose results it had

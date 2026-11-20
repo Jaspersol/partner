@@ -240,9 +240,14 @@ public sealed class AgentTurnRunner
             }
             else
             {
-                var conversation = (await _assembler
-                    .AssembleInitialAsync(item, ctx.InjectedPrompts, ctx.InjectedLabels, ct)
-                    .ConfigureAwait(false)).ToList();
+                var initial = await _assembler
+                    .AssemblePlannedAsync(item, ctx.InjectedPrompts, ctx.InjectedLabels, ct)
+                    .ConfigureAwait(false);
+                if (initial.Recall is { } recall)
+                {
+                    ctx.Inject(recall, priority: 50, label: SessionWindowContextAssembler.VolatileLabel);
+                }
+                var conversation = initial.Messages.ToList();
 
                 // Where the newest step begins. Older tool results may be folded; this step's never are.
                 var protectFrom = conversation.Count;
@@ -377,33 +382,59 @@ public sealed class AgentTurnRunner
                                 }), ct).ConfigureAwait(false);
                         }
 
-                        var results = await ExecuteToolsAsync(response.ToolCalls, ct, fileRetryBlocked).ConfigureAwait(false);
+                        var results = await ExecuteToolsAsync(response.ToolCalls, ct, fileRetryBlocked, resultCap).ConfigureAwait(false);
+
+                        var scheduleParts = item.Source == InputSource.Schedule ? item.IdempotencyKey.Split(':', 3) : Array.Empty<string>();
+                        var scheduled = scheduleParts.Length == 3 && scheduleParts[0] == "schedule" && scheduleParts[1].Length > 0;
+                        var evidence = response.ToolCalls.Select((call, i) =>
+                            scheduled && call.Name == "web_fetch"
+                            && !(results[i].RequiresIntactContent && _tokens.Count(results[i].Content) > resultCap)
+                            && results[i].CheckEvidence is { } check
+                            && check.Target is { Length: 64 } && check.Target.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')
+                            && (check.Status is >= 200 and <= 299 or >= 500 and <= 599)
+                                ? check : null).ToArray();
+                        var mixedTargets = evidence.Where(e => e is not null).GroupBy(e => e!.Target)
+                            .Where(g => g.Any(e => e!.Status >= 500) && g.Any(e => e!.Status < 300))
+                            .Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
 
                         for (var i = 0; i < response.ToolCalls.Count; i++)
                         {
                             var call = response.ToolCalls[i];
                             // Capped before it is logged as well as before it is sent: the next turn replays this
                             // log, and one oversized entry would make the assembler drop everything older.
-                            var cappedContent = ToolResultBudget.Clamp(results[i].Content, resultCap, _tokens);
+                            var intactDropped = results[i].RequiresIntactContent && _tokens.Count(results[i].Content) > resultCap;
+                            var cappedContent = results[i].RequiresIntactContent
+                                ? results[i].Content : ToolResultBudget.Clamp(results[i].Content, resultCap, _tokens);
                             var pageDropped = call.Name == "file_read" && results[i].Ok
                                 && cappedContent != results[i].Content;
-                            var result = pageDropped
-                                ? new ToolResult(false, "result_too_large: 文件读取结果超过上下文预算，本页内容未返回。请用相同 path 和 offset、较小的 limit 重新读取；不要跳到下一页。")
-                                : results[i] with { Content = cappedContent };
+                            var result = intactDropped
+                                ? new ToolResult(false, "result_too_large: 额度不足，本页未返回，游标未推进。")
+                                : pageDropped
+                                    ? new ToolResult(false, "result_too_large: 文件读取结果超过上下文预算，本页内容未返回。请用相同 path 和 offset、较小的 limit 重新读取；不要跳到下一页。")
+                                    : results[i] with { Content = cappedContent };
                             ToolMetrics.RecordOutcome(call.Name, result);
                             if (ToolMetrics.ResultTokensEnabled)
                             {
                                 ToolMetrics.RecordResultTokens(call.Name, _tokens.Count(result.Content));
                             }
 
-
+                            var resultMeta = new Dictionary<string, string>
+                            {
+                                ["id"] = call.Id,
+                                ["name"] = call.Name,
+                                ["ok"] = result.Ok ? "true" : "false",
+                            };
+                            if (evidence[i] is { } check)
+                            {
+                                resultMeta["checkKind"] = "http-status-v1";
+                                resultMeta["checkTarget"] = check.Target;
+                                resultMeta["checkStatus"] = check.Status.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                if (mixedTargets.Contains(check.Target))
+                                    resultMeta["checkBatchMixed"] = "true";
+                            }
                             await _session.AppendAsync(
-                                Event(SessionEventKind.ToolResult, item.Source, result.Content, item, new Dictionary<string, string>
-                                {
-                                    ["id"] = call.Id,
-                                    ["name"] = call.Name,
-                                    ["ok"] = result.Ok ? "true" : "false",
-                                }), CancellationToken.None).ConfigureAwait(false);
+                                Event(SessionEventKind.ToolResult, item.Source, result.Content, item, resultMeta),
+                                CancellationToken.None).ConfigureAwait(false);
 
                             // Counted here, not in the tool: `Ok == false` means the call did not happen the way
                             // it was asked to. A command that ran and exited non-zero is a *result*, not a broken
@@ -593,7 +624,7 @@ public sealed class AgentTurnRunner
     private async Task<IReadOnlyList<ToolResult>> ExecuteToolsAsync(
         IReadOnlyList<LlmToolCall> calls,
         CancellationToken ct,
-        bool fileRetryBlocked)
+        bool fileRetryBlocked, int resultCap)
     {
         // One budget for the dispatch rather than one per call: see ToolDispatchTimeout. It also covers the
         // approval wait, so a step cannot sit on a question that nobody is going to answer.
@@ -620,7 +651,7 @@ public sealed class AgentTurnRunner
                 await gate.WaitAsync(token).ConfigureAwait(false);
                 try
                 {
-                    return await ExecuteMeasuredAsync(call, token, starts, startsLock, index).ConfigureAwait(false);
+                    return await ExecuteMeasuredAsync(call, token, starts, startsLock, index, resultCap).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -726,13 +757,13 @@ public sealed class AgentTurnRunner
         return results;
     }
 
-    private async Task<ToolResult> ExecuteMeasuredAsync(LlmToolCall call, CancellationToken ct, bool[] starts, object startsLock, int index)
+    private async Task<ToolResult> ExecuteMeasuredAsync(LlmToolCall call, CancellationToken ct, bool[] starts, object startsLock, int index, int resultCap)
     {
         var measure = ToolMetrics.DurationEnabled;
         var started = measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         try
         {
-            return await ExecuteOneAsync(call, ct, starts, startsLock, index).ConfigureAwait(false);
+            return await ExecuteOneAsync(call, ct, starts, startsLock, index, resultCap).ConfigureAwait(false);
         }
         finally
         {
@@ -741,7 +772,7 @@ public sealed class AgentTurnRunner
         }
     }
 
-    private async Task<ToolResult> ExecuteOneAsync(LlmToolCall call, CancellationToken ct, bool[] starts, object startsLock, int index)
+    private async Task<ToolResult> ExecuteOneAsync(LlmToolCall call, CancellationToken ct, bool[] starts, object startsLock, int index, int resultCap)
     {
         if (call.Name is "file_write" or "file_edit")
         {
@@ -831,7 +862,9 @@ public sealed class AgentTurnRunner
         try
         {
             using var authorization = ToolExecutionAuthorization.Enter(decision.IsStillAuthorized);
-            return await tool.InvokeAsync(call.ArgumentsJson, timeout.Token).ConfigureAwait(false);
+            return tool is IResultBudgetTool budgeted
+                ? await budgeted.InvokeAsync(call.ArgumentsJson, resultCap, _tokens, timeout.Token).ConfigureAwait(false)
+                : await tool.InvokeAsync(call.ArgumentsJson, timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
         {
@@ -989,6 +1022,13 @@ public sealed class AgentTurnRunner
             ["itemId"] = item.ItemId,
             ["itemSeq"] = item.Seq.ToString(),
         };
+        if (item.Source == InputSource.Schedule)
+        {
+            var parts = item.IdempotencyKey.Split(':', 3);
+            if (parts.Length == 3 && parts[0] == "schedule" && parts[1].Length > 0)
+                merged["scheduleTaskId"] = parts[1];
+        }
+
 
         if (meta is not null)
         {

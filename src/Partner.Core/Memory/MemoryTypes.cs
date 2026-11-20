@@ -16,9 +16,8 @@ public enum MemoryTier
 /// there is one logical session — so every row would have said the same thing.
 /// </para>
 /// <para>
-/// <b>Retain locks forgetting, not correction.</b> A retained record survives demotion and trimming, but a
-/// later statement in the same tier still supersedes it. Tier says how much a record is trusted; this says
-/// whether it may be forgotten.
+/// <b>Retain locks forgetting, not correction.</b> A retained record survives demotion and trimming, but
+/// can still be explicitly revised. Tier says how much a record is trusted; this says whether it may be forgotten.
 /// </para>
 /// </summary>
 public enum MemoryScope
@@ -65,6 +64,9 @@ public sealed record MemoryScore(
     /// <summary>Weights used to fold the components into <see cref="Total"/>; set by the scorer.</summary>
     internal MemoryScorerOptions Weights { get; init; } = DefaultWeights;
 
+    /// <summary>Bounded bonus for complete identifiers in the current query.</summary>
+    public double Anchor { get; init; }
+
     /// <summary>
     /// Weighted sum of the components (weights live in <see cref="MemoryScorerOptions"/>), scaled by the
     /// <see cref="ContentAdjustment"/> penalty multiplier.
@@ -83,7 +85,7 @@ public sealed record MemoryScore(
                 (Tier * Weights.WeightTier);
 
             // ContentAdjustment is a penalty multiplier applied to the weighted sum, not a component of it.
-            return weighted * ContentAdjustment;
+            return (weighted + Anchor) * ContentAdjustment;
         }
     }
 }

@@ -42,6 +42,7 @@ public static class AgentRouting
         new(ScheduleCreateTool.ToolName, NativeToolKind.ScheduleCreate, (context, _, _) => new ScheduleCreateTool(context)),
         new(ScheduleListTool.ToolName, NativeToolKind.ScheduleList, (context, _, _) => new ScheduleListTool(context)),
         new(ScheduleDeleteTool.ToolName, NativeToolKind.ScheduleDelete, (context, _, _) => new ScheduleDeleteTool(context)),
+        new(SessionHistoryTool.ToolName, NativeToolKind.Information, (context, _, _) => new SessionHistoryTool(context.Session, context.Clock)),
         new(AgentDelegateTool.ToolName, NativeToolKind.Information, (_, host, settings) => new AgentDelegateTool(host, DelegationScenarios(settings))),
         new(AgentJobStatusTool.ToolName, NativeToolKind.Information, (_, host, _) => new AgentJobStatusTool(host)),
         new(AgentJobCancelTool.ToolName, NativeToolKind.Information, (_, host, _) => new AgentJobCancelTool(host)),
@@ -65,7 +66,7 @@ public static class AgentRouting
         var delegates = Effective(settings).Count > 0;
         foreach (var binding in MainTools)
         {
-            if (binding.Kind == NativeToolKind.Information && !delegates) continue;
+            if (binding.Kind == NativeToolKind.Information && binding.Name != SessionHistoryTool.ToolName && !delegates) continue;
             var tool = binding.Create(context, host, settings);
             if (tool.Spec.Name != binding.Name)
                 throw new InvalidOperationException($"Tool registration does not match the catalogue for '{binding.Name}'.");

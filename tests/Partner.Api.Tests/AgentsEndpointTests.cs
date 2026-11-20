@@ -267,7 +267,8 @@ public sealed class AgentsEndpointTests : ApiFixture
         var view = await _http.GetFromJsonAsync<JsonElement>("/api/agents");
         Assert.Equal(JsonValueKind.Null, view.GetProperty("main").GetProperty("prompt").ValueKind);
         Assert.Equal(JsonValueKind.Null, view.GetProperty("subAgents")[0].GetProperty("prompt").ValueKind);
-        Assert.Equal(AgentPrompts.MainDefault, view.GetProperty("main").GetProperty("effectivePrompt").GetString());
+        Assert.StartsWith(AgentPrompts.MainDefault, view.GetProperty("main").GetProperty("effectivePrompt").GetString(), StringComparison.Ordinal);
+        Assert.Contains(AgentPrompts.FileToolBoundary, view.GetProperty("main").GetProperty("effectivePrompt").GetString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -281,7 +282,9 @@ public sealed class AgentsEndpointTests : ApiFixture
         Assert.StartsWith("我是自定义桌面提示词", sub, StringComparison.Ordinal);
         Assert.Contains("task_report", sub, StringComparison.Ordinal);
         Assert.Contains("最多有 5 轮", sub, StringComparison.Ordinal);
-        Assert.Equal("我是自定义主提示词", view.GetProperty("main").GetProperty("effectivePrompt").GetString());
+        var main = view.GetProperty("main").GetProperty("effectivePrompt").GetString()!;
+        Assert.StartsWith("我是自定义主提示词", main, StringComparison.Ordinal);
+        Assert.Contains(AgentPrompts.FileToolBoundary, main, StringComparison.Ordinal);
     }
 
     [Fact]

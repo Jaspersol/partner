@@ -964,7 +964,7 @@ public static class ViewEndpoints
                 // Measured under the new window, so the room left for history is what the assembler will allow
                 // (it pays for the system block first).
                 var usage = await consumer.MeasureContextAsync(stored, ct).ConfigureAwait(false);
-                compaction = await consumer.CompactAsync(SessionCompactor.HistoryBudget(usage), ct).ConfigureAwait(false);
+                compaction = await consumer.CompactAsync(SessionCompactor.HistoryBudget(usage), ct, usage.BudgetTokens).ConfigureAwait(false);
             }
 
             // Avoid interrupting a healthy utterance on unrelated saves. A failed playback device is retried

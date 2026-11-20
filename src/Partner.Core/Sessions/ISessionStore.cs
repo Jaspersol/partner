@@ -32,6 +32,9 @@ public interface ISessionStore : IAsyncDisposable
     /// <summary>Appends one event and returns its seq. Throws <see cref="InvalidOperationException"/> when <see cref="Faulted"/>.</summary>
     Task<long> AppendAsync(SessionEvent sessionEvent, CancellationToken ct = default);
 
+    /// <summary>Appends a checkpoint only if no write has occurred since the projection was read.</summary>
+    Task<long?> AppendIfCurrentAsync(SessionEvent sessionEvent, long expectedLastSeq, CancellationToken ct = default);
+
     /// <summary>
     /// Physically removes <paramref name="fromSeq"/>..<paramref name="toSeq"/> (inclusive) from the log,
     /// together with any revisions of those events. Used by an explicit user removal: a retraction hides

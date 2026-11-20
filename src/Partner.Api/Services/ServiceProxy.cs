@@ -91,6 +91,14 @@ internal sealed class ServiceProxy
         // 2) Recall query: the last *text* user message, skipping tool-result-only user messages.
         var target = FindLastTextUser(root["messages"]);
         var query = target is { } t ? t.Text[..Math.Min(MemoryRecallHook.MaxQueryChars, t.Text.Length)] : string.Empty;
+        var targetMessage = target is { } selected ? ((JsonArray)root["messages"]!)[selected.Index] as JsonObject : null;
+        var supplementaryQuery = target is { } selectedTarget && root["messages"] is JsonArray originalMessages
+            ? MemoryRecallQuery.Supplement(query, originalMessages.Take(selectedTarget.Index)
+                .Reverse().OfType<JsonObject>()
+                .Where(message => Str(message["role"]) == "user")
+                .Select(message => ExtractText(message["content"]))
+                .Where(text => !string.IsNullOrWhiteSpace(text)))
+            : query;
 
         // Conversation identity, taken before anything is injected: two clients whose history differs but whose
         // last user message reads the same must not be merged into one round.
@@ -113,11 +121,20 @@ internal sealed class ServiceProxy
             return;
         }
 
-        // 3) Recall + inject, bounded by the room left in the context window.
-        if (settings.Recall.Enabled && target is not null && !string.IsNullOrWhiteSpace(query))
+        // Price the actual request sent upstream, including the prompt, model and protocol defaults.
+        ApplyPrompt(root, protocol, settings.Prompt);
+        if (anthropic && root["max_tokens"] is null)
+        {
+            root["max_tokens"] = Math.Max(1, upstream.MaxTokens);
+        }
+        root["model"] = upstream.Model;
+
+        if (settings.Recall.Enabled && targetMessage is not null && !string.IsNullOrWhiteSpace(query))
         {
             var requestTokens = _tokens.Count(root.ToJsonString());
-            var maxTokens = Int(root["max_tokens"]) ?? Int(root["max_completion_tokens"]) ?? 0;
+            var maxTokens = anthropic
+                ? Int(root["max_tokens"]) ?? 0
+                : Int(root["max_completion_tokens"]) ?? Int(root["max_tokens"]) ?? upstream.MaxTokens;
             var budget = Math.Min(settings.Recall.TokenLimit, settings.ContextTokens - requestTokens - maxTokens);
             if (budget > 0)
             {
@@ -125,31 +142,29 @@ internal sealed class ServiceProxy
                 {
                     ExcludeOrigins = new HashSet<string> { MemoryOrigins.Service(settings.Id) },
                     Limit = settings.Recall.Limit,
+                    UseStoreInjectionLimit = false,
                     TokenLimit = budget,
+                    SupplementaryQuery = supplementaryQuery,
+                    RenderedTokenCost = (hits, _) =>
+                    {
+                        var rendered = (JsonObject)targetMessage.DeepClone();
+                        InjectIntoMessage(rendered, BuildInjectionText(hits));
+                        // The same JSON representation is used for the request baseline. The extra token covers
+                        // rounding at the boundary between the message and the rest of the request.
+                        return Math.Max(0, _tokens.Count(rendered.ToJsonString())
+                            - _tokens.Count(targetMessage.ToJsonString()) + 1);
+                    },
                     MarkRecalled = false,
                 }, context.RequestAborted).ConfigureAwait(false);
 
                 if (injection.Hits.Count > 0)
                 {
-                    InjectIntoMessage(
-                        (root["messages"] as JsonArray)![target.Value.Index] as JsonObject
-                            ?? throw new JsonException("user message is not an object"),
-                        BuildInjectionText(injection.Hits));
+                    InjectIntoMessage(targetMessage, BuildInjectionText(injection.Hits));
                 }
             }
         }
 
-        // 5) Custom prompt. Empty means the request is left exactly as the client sent it.
-        ApplyPrompt(root, protocol, settings.Prompt);
-
-        // 6) Anthropic requires max_tokens; fall back to the ceiling this upstream actually accepts.
-        if (anthropic && root["max_tokens"] is null)
-        {
-            root["max_tokens"] = Math.Max(1, upstream.MaxTokens);
-        }
-
-        // Replace the model with the upstream name and serialize once.
-        root["model"] = upstream.Model;
+        // Serialize once after the chosen memories have been added.
         var outgoing = root.ToJsonString();
 
         if (string.IsNullOrWhiteSpace(upstream.BaseUrl))
@@ -463,7 +478,8 @@ internal sealed class ServiceProxy
         {
             var kind = hit.Tier == MemoryTier.Working ? "unconfirmed" : "established";
             var age = MemoryAge.Describe(hit.CreatedAt, hit.Now);
-            lines.Add($"- [{kind}, {age}] {hit.Body}");
+            var origin = MemoryOrigins.IsService(hit.Origin) ? ", 外部服务" : string.Empty;
+            lines.Add($"- [{kind}, {age}{origin}] {hit.Body}");
         }
 
         return string.Join('\n', lines);

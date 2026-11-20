@@ -6,6 +6,12 @@ Back to the [documentation index](./README.en.md).
 
 A task is one sentence plus one trigger rule. When it fires, the sentence enters the queue with the "schedule" source, lined up with typing and voice, and runs in order.
 
+Scheduled turns do not automatically create general memories or include the main-session summary, other tasks' turns, or general recall. Execution remains available in history on demand. Completion does not prove a business check passed.
+
+For a direct main-agent `web_fetch`, a non-redirected HTTP(S) GET without a read error can record the status for a target without credentials or query parameters: a 5xx opens an anomaly for that task and a later 2xx for the same target closes it. Only the normalized URI hash is stored, not an additional URL or body. This establishes only the HTTP status at that observation, not page correctness or overall service health. Ordinary completion, another target's success, delegated results, and free-text user statements cannot close the anomaly. If parallel checks in one batch return both 5xx and 2xx for one target, that batch does not advance its state.
+
+Projection shows at most one unresolved structured anomaly for the task and its source `Seq`; otherwise it shows the latest ordinary tool-failure lead, which is not a business status. Withdrawal or deletion recomputes from visible evidence, so withdrawing resolution evidence may reveal an older anomaly again. A recheck must actually follow the current instruction; an old lead is not the current result.
+
 ## Rules
 
 | Kind | Format | Notes |

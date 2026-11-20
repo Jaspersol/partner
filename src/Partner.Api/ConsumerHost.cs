@@ -352,7 +352,7 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
         var usage = await assembler.MeasureAsync(ct).ConfigureAwait(false);
         if (usage.Fraction > AutoCompactFraction || usage.FoldedItems > 0)
         {
-            await CompactAsync(SessionCompactor.HistoryBudget(usage), ct).ConfigureAwait(false);
+            await CompactAsync(SessionCompactor.HistoryBudget(usage), ct, usage.BudgetTokens).ConfigureAwait(false);
         }
     }
 
@@ -360,52 +360,15 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     /// Folds history that no longer fits the window. Only possible while a model is configured, because the
     /// summary is produced by that model.
     /// </summary>
-    public Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default)
+    public Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default, int? summaryInputBudget = null)
     {
         var llm = _llm;
 
         return llm is null
             ? Task.FromResult(new CompactionResult(0, null, "未配置模型，无法压缩"))
-            : CompactAndRememberAsync(llm, promptBudget, ct);
+            : new SessionCompactor(_context.Session, llm, Tokens).CompactAsync(promptBudget, ct, summaryInputBudget);
     }
 
-    /// <summary>
-    /// Compacts, then keeps what the summary calls facts: the history that was folded away is hidden from the next
-    /// prompt, but a name or a number in it is exactly what a later question will need, and the memory store is
-    /// where a later question looks. Written as semantic records with ids derived from the summary, so doing it
-    /// twice for the same summary writes nothing new.
-    /// </summary>
-    private async Task<CompactionResult> CompactAndRememberAsync(ILlmClient llm, int promptBudget, CancellationToken ct)
-    {
-        var result = await new SessionCompactor(_context.Session, llm, Tokens).CompactAsync(promptBudget, ct).ConfigureAwait(false);
-
-        if (result is { Compacted: true, SummaryText: { } text, SummarySeq: { } seq })
-        {
-            var index = 0;
-            foreach (var fact in SummaryFacts.From(text))
-            {
-                try
-                {
-                    await _context.Memory.WriteAsync(
-                        new Partner.Core.Memory.MemoryRecord
-                        {
-                            RecordId = $"summary-{seq}-{index++}",
-                            Tier = Partner.Core.Memory.MemoryTier.Semantic,
-                            Scope = Partner.Core.Memory.MemoryScope.Recall,
-                            Body = fact,
-                            SourceEventSeq = seq,
-                        },
-                        ct).ConfigureAwait(false);
-                }
-                catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
-                {
-                    // Already written for this summary, or refused as a duplicate: nothing to add.
-                }
-            }
-        }
-
-        return result;
-    }
 
     /// <summary>
     /// Applies a configuration: stops whatever is running, then starts the loop if one is usable.
@@ -539,7 +502,8 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
             Func<int> schemaTokens = () => ToolResultBudget.SchemaTokens(tools.Specs, tokens);
             var assembler = new SessionWindowContextAssembler(
                 _context.Session, turnOptions.ContextWindowTokens, turnOptions.MaxTokens, tokens,
-                turnOptions.BaseSystemPrompt, _context.Media, turnOptions.PromptSource, reservedTokens: schemaTokens);
+                turnOptions.BaseSystemPrompt, _context.Media, turnOptions.PromptSource, reservedTokens: schemaTokens,
+                memory: _context.Memory, scheduler: _context.Scheduler);
             var runner = new AgentTurnRunner(
                 _context.Session, llm, tools, governance,
                 new LeaseGrantingApprovalHandler(_context.Approvals, _context.TaskLeases),
@@ -622,7 +586,6 @@ public sealed class ConsumerHost : IAsyncDisposable, IAssistantStream
     {
         var hooks = new HookRegistry();
 
-        hooks.Register(new MemoryRecallHook(_context.Memory, _context.Session));
         hooks.Register(new MemoryDistilHook(_context.Memory, _context.Session, _clock));
 
         // A link the person pasted is a link they meant to open, so it goes into the ledger that web_fetch's

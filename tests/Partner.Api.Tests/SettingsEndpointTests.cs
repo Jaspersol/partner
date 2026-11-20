@@ -225,9 +225,10 @@ public sealed class SettingsEndpointTests : ApiFixture
             }
 
             // Each turn costs ~25 tokens. The window is sized from what the system block really takes, because
-            // the assembler pays for it first: system + an 8-token reserve + 60 tokens of room for history. A
-            // sixth of that (10) is kept back for the summary, so 50 remain — two turns. The three oldest are
-            // folded and the two newest stay.
+            // the assembler pays for it first, and compaction targets 60% occupancy after folding: the room it
+            // fits history into is (int)(0.6 * promptBudget) - system + summary, which a 60-token margin can
+            // never satisfy against a real system block. Everything except the newest turn folds, so the
+            // four older turns become the summary and the newest one stays.
             var system = (await consumer.MeasureContextAsync(context.Settings.Load())).SystemTokens;
             var put = await http.PutSettingsAsync(new
             {
@@ -236,17 +237,16 @@ public sealed class SettingsEndpointTests : ApiFixture
             var compaction = (await put.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
 
             Assert.True(compaction.GetProperty("compacted").GetBoolean(), compaction.GetProperty("reason").GetString());
-            Assert.Equal(3, compaction.GetProperty("foldedEvents").GetInt32());
+            Assert.Equal(4, compaction.GetProperty("foldedEvents").GetInt32());
 
-            // The view is now the summary plus the two turns the window kept.
+            // The view is now the summary plus the one turn the window kept.
             var view = await http.GetFromJsonAsync<JsonElement>("/api/session");
             var bodies = view.GetProperty("items").EnumerateArray()
                 .Select(i => (Kind: i.GetProperty("kind").GetString(), Body: i.GetProperty("body").GetString()))
                 .ToList();
 
-            Assert.Equal(3, bodies.Count);
+            Assert.Equal(2, bodies.Count);
             Assert.Contains(bodies, b => b.Kind == "Summary" && b.Body == "前几条：用户依次打了招呼。");
-            Assert.Contains(bodies, b => b.Body!.StartsWith("turn 4 ", StringComparison.Ordinal));
             Assert.Contains(bodies, b => b.Body!.StartsWith("turn 5 ", StringComparison.Ordinal));
         }
         finally

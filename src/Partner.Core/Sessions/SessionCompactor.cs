@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Text.Json;
 using Partner.Core.Agent;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Memory;
@@ -11,20 +11,9 @@ namespace Partner.Core.Sessions;
 public sealed record CompactionResult(int FoldedEvents, long? SummarySeq, string Reason)
 {
     public bool Compacted => SummarySeq is not null;
-
-    /// <summary>The summary that was written, so a caller can carry what it says somewhere else (see <see cref="SummaryFacts"/>).</summary>
-    public string? SummaryText { get; init; }
 }
 
-/// <summary>
-/// Folds history that no longer fits the context window into one summary.
-/// <para>
-/// Both halves are append-only, so folding never loses anything: a <see cref="SessionEventKind.Summary"/>
-/// carries the text and a <see cref="SessionEventKind.Retract"/> hides the events it replaced. Without the
-/// retraction the summarized events would still be sent and the window would not have shrunk. This is the
-/// opposite of an explicit removal, which takes the content out of the log for good.
-/// </para>
-/// </summary>
+/// <summary>Folds older complete turns into one atomic summary checkpoint.</summary>
 public sealed class SessionCompactor
 {
     private readonly ISessionStore _session;
@@ -38,143 +27,119 @@ public sealed class SessionCompactor
         _tokens = tokens ?? new ApproximateTokenCounter();
     }
 
-    /// <summary>
-    /// Summarises the history that no longer fits <paramref name="promptBudget"/> tokens. Does nothing when
-    /// the history already fits, so calling it after every settings change is safe.
-    /// <para>
-    /// <paramref name="promptBudget"/> is the room for history: the assembler subtracts the system block (and
-    /// the current input) from the window before fitting anything, so passing the whole prompt budget would keep
-    /// more than the assembler will send and the next turn would drop it again. Use
-    /// <see cref="HistoryBudget"/>.
-    /// </para>
-    /// </summary>
-    /// <summary>How long the summary may be for a window with <paramref name="promptBudget"/> tokens of room: a sixth of it, at most 512 and (for a window big enough to afford it) at least 64.</summary>
+    /// <summary>Summary output allowance for the history budget.</summary>
     public static int SummaryTokensFor(int promptBudget) =>
-        Math.Min(512, Math.Max(promptBudget / 6, Math.Min(64, promptBudget / 8)));
+        Math.Max(1, Math.Min(512, Math.Max(promptBudget / 6, Math.Min(64, promptBudget / 8))));
 
-    /// <summary>The room history has once the system block is paid for, never below one token.</summary>
-    public static int HistoryBudget(ContextUsage usage) => Math.Max(1, usage.BudgetTokens - usage.SystemTokens);
+    /// <summary>History allowance at the 60% post-compaction target, after fixed system costs.</summary>
+    public static int HistoryBudget(ContextUsage usage) => Math.Max(1, (int)(usage.BudgetTokens * 0.6) - usage.SystemTokens + usage.SummaryTokens);
 
-    public async Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default)
+    public async Task<CompactionResult> CompactAsync(int promptBudget, CancellationToken ct = default, int? summaryInputBudget = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(promptBudget);
-
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
-
-        // A summary is context, not a turn: it does not count against the window, so the window keeps
-        // bounding the raw conversation. Previous summaries are folded into the new one — otherwise every
-        // compaction would add another summary and the context would grow instead of shrinking.
-        var conversation = view.Items
-            .Where(item => item.Kind != SessionEventKind.Summary && SessionWindowContextAssembler.IsConversational(item))
-            .ToList();
+        var conversation = SessionWindowContextAssembler.ReplayableHistory(view.Items)
+            .Where(item => item.Kind != SessionEventKind.Summary).ToList();
         var summaries = view.Items.Where(item => item.Kind == SessionEventKind.Summary).ToList();
+        var groups = ContextBudget.GroupTurns(conversation);
+        if (groups.Count <= 1) return new CompactionResult(0, null, "无需压缩：没有可折叠的旧轮次");
 
-        // The summary is about to join the system block, so its room comes out of the history's: fitting against
-        // the whole budget and then adding the summary on top would overflow a freshly compacted session. Its
-        // length scales with the window instead of being a fixed 512, which is most of a small model's history.
         var summaryTokens = SummaryTokensFor(promptBudget);
-
-        // The same rule the assembler uses: the newest suffix that fits stays, the rest is folded. A
-        // disagreement between the two would either send more than the window allows or fold what fits.
-        var fits = await ContextBudget.FitNewestFirstAsync(
-            conversation,
+        var summaryFraming = await ContextBudget.CostAsync(_tokens, "summary of earlier history: ", ct).ConfigureAwait(false);
+        var fits = await ContextBudget.FitNewestGroupsAsync(conversation,
             (entry, token) => ContextBudget.CostAsync(_tokens, SessionWindowContextAssembler.CostText(entry), token),
-            Math.Max(1, promptBudget - summaryTokens),
-            ct).ConfigureAwait(false);
+            Math.Max(0, promptBudget - summaryTokens - summaryFraming), ct).ConfigureAwait(false);
+        var keepFrom = fits.Count == 0 ? long.MaxValue : fits[0].Seq;
+        // The newest turn is never folded, even when it cannot fit in the current request.
+        var older = groups.Take(groups.Count - 1).Where(group => group[0].Seq < keepFrom).ToList();
+        if (older.Count == 0) return new CompactionResult(0, null, "无需压缩：历史已在目标预算内");
 
-        var keepFrom = fits.Count > 0 ? fits[0].Seq : long.MaxValue;
-        var older = conversation.Where(item => item.Seq < keepFrom).ToList();
+        var instructions = "Summarise this history for continuing the work. Preserve the goal and constraints, "
+            + "decisions and reasons, progress and errors, next steps, and important paths. "
+            + "Earlier summaries are rolling context. #seq references are leads to the original log, not verified facts. "
+            + $"Reply only with the summary in the same language, at most {summaryTokens} tokens.";
+        var available = (summaryInputBudget ?? promptBudget) - summaryTokens
+            - await ContextBudget.CostAsync(_tokens, instructions, ct).ConfigureAwait(false)
+            - ContextBudget.MessageOverheadTokens;
+        var transcript = string.Join("\n", summaries.Select(item => $"#{item.Seq} Summary: {item.Body}"));
+        var priorSummaries = transcript;
+        if (await _tokens.CountAsync(transcript, ct).ConfigureAwait(false) > available)
+            return new CompactionResult(0, null, "压缩失败：摘要请求预算不足");
 
-        // Nothing to fold means the history fits, and re-summarising an existing summary would spend a model
-        // call to make the context longer rather than shorter.
-        if (older.Count == 0)
+        var selected = new List<SessionViewItem>();
+        foreach (var group in older)
         {
-            var used = 0;
-            foreach (var entry in fits)
+            var rendered = string.Join("\n", group.Select(item => $"#{item.Seq} {item.Kind}: {item.Body}"));
+            var separator = transcript.Length == 0 ? "" : "\n";
+            var candidate = transcript + separator + rendered;
+            if (await _tokens.CountAsync(candidate, ct).ConfigureAwait(false) <= available)
             {
-                used += await ContextBudget.CostAsync(_tokens, SessionWindowContextAssembler.CostText(entry), ct).ConfigureAwait(false);
+                transcript = candidate;
+                selected.AddRange(group);
+                continue;
             }
-            return new CompactionResult(0, null, $"无需压缩：历史约 {used} token ≤ 预算 {promptBudget}");
-        }
+            // A normal-sized next turn belongs to a later pass rather than being needlessly truncated.
+            if (await _tokens.CountAsync(priorSummaries + (priorSummaries.Length == 0 ? "" : "\n") + rendered, ct).ConfigureAwait(false) <= available)
+                break;
 
-        // A previous summary describes history that is now even older, so it is folded in rather than kept:
-        // otherwise every pass would add context instead of removing it.
-        var candidates = older.Concat(summaries).OrderBy(item => item.Seq).ToList();
-
-        if (candidates.Count == 0)
-        {
-            return new CompactionResult(0, null, "无需压缩：窗口外没有可摘要的内容");
-        }
-
-        var transcript = string.Join(
-            "\n",
-            candidates.Select(item => $"{item.Kind}: {item.Body}"));
-
-        var response = await _llm.CompleteAsync(new LlmRequest(
-            new[]
+            // A single very large turn can still be represented without changing its original log records.
+            const string marker = "\n[... middle of oversized turn omitted ...]\n";
+            var low = 0;
+            var high = rendered.Length;
+            string? excerpt = null;
+            while (low <= high)
             {
-                new LlmMessage(
-                    "system",
-                    "Summarise the conversation history below so that someone can carry on from it. Use these labelled "
-                    + "lines and leave out a line that has nothing in it: "
-                    + "Goal: what the person is trying to get done. "
-                    + "Decided: choices already made. "
-                    + "Facts: names, numbers, preferences, anything stated that must not be lost. "
-                    + "Open: questions still unanswered. "
-                    + "In progress: tasks started and not finished. "
-                    + "A line that comes from an earlier summary is history too: keep what still matters. "
-                    + $"Reply with the summary only, in the same language as the history, in at most {summaryTokens} tokens."),
-                new LlmMessage("user", transcript),
-            },
-            Array.Empty<ToolSpec>(),
-            MaxTokens: summaryTokens), ct).ConfigureAwait(false);
-
-        var text = (response.Text ?? string.Empty).Trim();
-        if (text.Length == 0)
-        {
-            return new CompactionResult(0, null, "压缩失败：模型没有返回摘要");
+                var count = (low + high) / 2;
+                var first = (count + 1) / 2;
+                var last = rendered.Length - count / 2;
+                if (first > 0 && first < rendered.Length && char.IsHighSurrogate(rendered[first - 1]) && char.IsLowSurrogate(rendered[first])) first--;
+                if (last > 0 && last < rendered.Length && char.IsHighSurrogate(rendered[last - 1]) && char.IsLowSurrogate(rendered[last])) last++;
+                var clipped = rendered[..first] + marker + rendered[last..];
+                candidate = transcript + separator + clipped;
+                if (await _tokens.CountAsync(candidate, ct).ConfigureAwait(false) <= available)
+                {
+                    excerpt = candidate;
+                    low = count + 1;
+                }
+                else high = count - 1;
+            }
+            if (excerpt is not null && low > 1)
+            {
+                transcript = excerpt;
+                selected.AddRange(group);
+            }
+            break;
         }
 
-        // Trimmed only: a summary keeps its line structure, like any other model output.
-        var single = text.Trim();
+        if (selected.Count == 0) return new CompactionResult(0, null, "压缩失败：摘要请求预算不足");
+        var response = await _llm.CompleteAsync(new LlmRequest(
+            new[] { new LlmMessage("system", instructions), new LlmMessage("user", transcript) },
+            Array.Empty<ToolSpec>(), MaxTokens: summaryTokens), ct).ConfigureAwait(false);
+        var text = (response.Text ?? string.Empty).Trim();
+        if (text.Length == 0 || string.Equals(response.FinishReason, "length", StringComparison.OrdinalIgnoreCase))
+            return new CompactionResult(0, null, "压缩失败：摘要为空或被截断");
 
-        var summarySeq = await _session.AppendAsync(new SessionEvent
+        var candidates = selected.Concat(summaries).OrderBy(item => item.Seq).ToList();
+        var originalCost = 0;
+        foreach (var item in candidates)
+        {
+            var original = item.Kind == SessionEventKind.Summary ? $"summary of earlier history: {item.Body}" : SessionWindowContextAssembler.CostText(item);
+            originalCost += await ContextBudget.CostAsync(_tokens, original, ct).ConfigureAwait(false);
+        }
+        var newCost = await ContextBudget.CostAsync(_tokens, $"summary of earlier history: {text}", ct).ConfigureAwait(false);
+        if (newCost >= originalCost) return new CompactionResult(0, null, "压缩失败：摘要没有节省空间");
+
+        var ranges = ContiguousRuns(candidates.Select(item => item.Seq)).Select(range => new[] { range.From, range.To }).ToArray();
+        var seq = await _session.AppendIfCurrentAsync(new SessionEvent
         {
             Kind = SessionEventKind.Summary,
             Source = InputSource.Text,
-            Body = single,
-            Meta = new Dictionary<string, string>
-            {
-                ["folded"] = candidates.Count.ToString(CultureInfo.InvariantCulture),
-                ["coveredFrom"] = candidates[0].Seq.ToString(CultureInfo.InvariantCulture),
-                ["coveredTo"] = candidates[candidates.Count - 1].Seq.ToString(CultureInfo.InvariantCulture),
-            },
-        }, ct).ConfigureAwait(false);
-
-        // One retraction per contiguous run: the candidates are usually adjacent, but a previous summary sits
-        // after the turns it covers, so the covered seqs are not necessarily one range.
-        var hidden = 0;
-        foreach (var (from, to) in ContiguousRuns(candidates.Select(item => item.Seq)))
-        {
-            await _session.AppendAsync(new SessionEvent
-            {
-                Kind = SessionEventKind.Retract,
-                Source = InputSource.Text,
-                Body = $"compacted #{from}..{to} into #{summarySeq}",
-                Meta = new Dictionary<string, string>
-                {
-                    [SessionRetraction.FromKey] = from.ToString(CultureInfo.InvariantCulture),
-                    [SessionRetraction.ToKey] = to.ToString(CultureInfo.InvariantCulture),
-                },
-            }, ct).ConfigureAwait(false);
-
-            hidden += (int)(to - from + 1);
-        }
-
-        return new CompactionResult(candidates.Count, summarySeq, $"已压缩 {candidates.Count} 条 → #{summarySeq}（隐藏 {hidden} 条）")
-        {
-            SummaryText = single,
-        };
+            Body = text,
+            Meta = new Dictionary<string, string> { ["compactedRanges"] = JsonSerializer.Serialize(ranges) },
+        }, view.LastSeq, ct).ConfigureAwait(false);
+        return seq is null
+            ? new CompactionResult(0, null, "压缩取消：会话在摘要期间已更改")
+            : new CompactionResult(candidates.Count, seq, $"已压缩 {candidates.Count} 条 → #{seq}");
     }
 
     /// <summary>Groups sorted seqs into the ranges a retraction can express.</summary>

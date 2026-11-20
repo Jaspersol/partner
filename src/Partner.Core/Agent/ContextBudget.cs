@@ -1,4 +1,6 @@
 using Partner.Core.Memory;
+using Partner.Core.Contracts;
+using Partner.Core.Sessions;
 
 namespace Partner.Core.Agent;
 
@@ -16,44 +18,52 @@ public static class ContextBudget
     /// </summary>
     public const int ImageTokens = 1024;
 
-    /// <summary>
-    /// Keeps the newest contiguous suffix that fits <paramref name="budget"/>. A suffix rather than a
-    /// selection: dropping a turn from the middle would leave the conversation answering something no
-    /// longer in context.
-    /// </summary>
-    public static async ValueTask<List<T>> FitNewestFirstAsync<T>(
-        IReadOnlyList<T> items,
-        Func<T, CancellationToken, ValueTask<int>> cost,
+    /// <summary>Splits replayable history into complete turns, using item IDs when available and input boundaries for older logs.</summary>
+    public static List<List<SessionViewItem>> GroupTurns(IReadOnlyList<SessionViewItem> items)
+    {
+        var groups = new List<List<SessionViewItem>>();
+        string? groupId = null;
+        foreach (var item in items)
+        {
+            var id = item.Meta is not null && item.Meta.TryGetValue("itemId", out var value) && !string.IsNullOrEmpty(value)
+                ? value : null;
+            var starts = groups.Count == 0
+                || (id is not null && groupId is not null && id != groupId)
+                || (item.Kind is SessionEventKind.User or SessionEventKind.Schedule
+                    && (id is null || groupId is null));
+            if (starts)
+            {
+                groups.Add(new List<SessionViewItem>());
+                groupId = id;
+            }
+            else if (groupId is null && id is not null)
+            {
+                groupId = id;
+            }
+            groups[^1].Add(item);
+        }
+        return groups;
+    }
+
+    /// <summary>Fits a contiguous suffix of whole turns; an oversized newest turn is omitted in full.</summary>
+    public static async ValueTask<List<SessionViewItem>> FitNewestGroupsAsync(
+        IReadOnlyList<SessionViewItem> items,
+        Func<SessionViewItem, CancellationToken, ValueTask<int>> cost,
         int budget,
         CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(items);
-        ArgumentNullException.ThrowIfNull(cost);
-
-        var kept = new List<T>();
-
-        if (budget <= 0)
-        {
-            return kept;
-        }
-
+        var groups = GroupTurns(items);
+        var first = groups.Count;
         var used = 0;
-
-        for (var i = items.Count - 1; i >= 0; i--)
+        for (var i = groups.Count - 1; i >= 0; i--)
         {
-            var price = await cost(items[i], ct).ConfigureAwait(false);
-
-            if (used + price > budget)
-            {
-                break;
-            }
-
+            var price = 0;
+            foreach (var item in groups[i]) price += await cost(item, ct).ConfigureAwait(false);
+            if (price > budget - used) break;
             used += price;
-            kept.Add(items[i]);
+            first = i;
         }
-
-        kept.Reverse();
-        return kept;
+        return groups.Skip(first).SelectMany(group => group).ToList();
     }
 
     /// <summary>Cost of one piece of text as a message: its tokens plus the framing overhead.</summary>
