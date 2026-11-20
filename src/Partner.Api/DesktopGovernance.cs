@@ -138,9 +138,11 @@ public sealed class DesktopGovernance(ApiContext context, bool mainAgent = false
         }
 
         if (toolName is "file_write" or "file_edit")
-            return Agents.AgentRouting.FileWriteAvailable(settings)
-                ? new GovernanceDecision(ToolDecision.Ask, "文件写入或编辑每次都需要人工批准")
-                : new GovernanceDecision(ToolDecision.Deny, "文件写入未启用或不可用");
+            return !Agents.AgentRouting.FileWriteAvailable(settings)
+                ? new GovernanceDecision(ToolDecision.Deny, "文件写入未启用或不可用")
+                : gear == ApprovalGears.None
+                    ? new GovernanceDecision(ToolDecision.Allow, "当前挡位不审批文件写入或编辑")
+                    : new GovernanceDecision(ToolDecision.Ask, "文件写入或编辑需要人工批准");
 
         // Reading is read-only and never asks, like the desktop's own reads; what bounds it is the directory
         // whitelist inside the tool. The switch is checked live so turning files off takes effect at once.
@@ -171,9 +173,11 @@ public sealed class DesktopGovernance(ApiContext context, bool mainAgent = false
 
         if (toolName == "desktop_exec")
         {
-            return desktop.ExecEnabled
-                ? new GovernanceDecision(ToolDecision.Ask, "执行命令具有系统权限，每次都需要人工批准")
-                : new GovernanceDecision(ToolDecision.Deny, "命令执行未启用");
+            return !desktop.ExecEnabled
+                ? new GovernanceDecision(ToolDecision.Deny, "命令执行未启用")
+                : gear == ApprovalGears.All
+                    ? new GovernanceDecision(ToolDecision.Ask, "执行命令具有系统权限，需要人工批准")
+                    : new GovernanceDecision(ToolDecision.Allow, "当前挡位不审批命令执行");
         }
 
         // Reads never ask; actions ask by gear; what leaves the GUI asks unless the gear says nothing does.

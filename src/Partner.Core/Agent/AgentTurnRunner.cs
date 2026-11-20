@@ -865,34 +865,37 @@ public sealed class AgentTurnRunner
         {
             using var operation = writer.Prepare(call.ArgumentsJson, ct);
             target = operation.TargetPath;
-            using var question = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            question.CancelAfter(_options.ApprovalTimeout);
-            var measure = ToolMetrics.ApprovalWaitEnabled;
-            var started = measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            Task<bool>? pending = null;
-            bool approved;
-            try
+            if (decision.Decision == ToolDecision.Ask)
             {
-                pending = _approval.RequestAsync(call.Name, operation.ApprovalJson, question.Token);
-                approval = "pending";
-                approved = await pending.WaitAsync(question.Token).ConfigureAwait(false);
-                if (question.IsCancellationRequested)
+                using var question = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                question.CancelAfter(_options.ApprovalTimeout);
+                var measure = ToolMetrics.ApprovalWaitEnabled;
+                var started = measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                Task<bool>? pending = null;
+                bool approved;
+                try
+                {
+                    pending = _approval.RequestAsync(call.Name, operation.ApprovalJson, question.Token);
+                    approval = "pending";
+                    approved = await pending.WaitAsync(question.Token).ConfigureAwait(false);
+                    if (question.IsCancellationRequested)
+                        return FileWriteAudit(target, "canceled", "not_started");
+                }
+                catch (OperationCanceledException) when (question.IsCancellationRequested)
+                {
+                    if (pending is not null) Forget(pending);
                     return FileWriteAudit(target, "canceled", "not_started");
-            }
-            catch (OperationCanceledException) when (question.IsCancellationRequested)
-            {
-                if (pending is not null) Forget(pending);
-                return FileWriteAudit(target, "canceled", "not_started");
-            }
-            finally
-            {
-                if (measure)
-                    ToolMetrics.RecordApprovalWait(call.Name, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-            }
+                }
+                finally
+                {
+                    if (measure)
+                        ToolMetrics.RecordApprovalWait(call.Name, System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
 
-            if (!approved)
-                return FileWriteAudit(target, "denied", "denied");
-            approval = "approved";
+                if (!approved)
+                    return FileWriteAudit(target, "denied", "denied");
+                approval = "approved";
+            }
             if (decision.IsStillAuthorized is { } authorized && !authorized())
                 return FileWriteAudit(target, approval, "denied");
             lock (startsLock)

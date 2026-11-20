@@ -84,7 +84,7 @@ public static class AgentPrompts
         + "- 文件编码不是 UTF-8、被截断、或读不全时要写明，别让主 agent 把残缺的内容当成全文。";
 
     public const string FileWriteGuidance =
-        "文件写入：仅支持 Windows 本地 NTFS，父目录必须已存在，目标须同时在读写白名单中，每次明确批准。用 file_write 提供绝对路径和正文，只新建不覆盖。用 file_edit 按 file_read 返回的版本精确替换唯一匹配的文本；编辑要求系统支持 NTFS 事务，文件有多个硬链接或版本变化时不会提交。拒绝、失败或结果未确认时如实报告，不换其他方式绕过。只有提交回执才是成功证据。";
+        "文件写入：仅支持 Windows 本地 NTFS，父目录必须已存在，目标须同时在读写白名单中，审批取决于当前挡位。用 file_write 提供绝对路径和正文，只新建不覆盖。用 file_edit 按 file_read 返回的版本精确替换唯一匹配的文本；编辑要求系统支持 NTFS 事务，文件有多个硬链接或版本变化时不会提交。拒绝、失败或结果未确认时如实报告，不换其他方式绕过。只有提交回执才是成功证据。";
 
     public const string WebSearchDefault =
         "你是联网搜索子 agent，为主 agent 查清需要外部信息的问题，把结果整理成可核对的说法交回去。你看不到主 agent 和用户的对话，目标和背景都在任务消息里。\n"

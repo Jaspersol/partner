@@ -11,7 +11,7 @@ Lets the model see windows, press controls, type and launch programs. Off by def
 "Settings → Computer control":
 
 - **Let the assistant operate the computer**: the master switch.
-- **Allow system commands**: a separate switch, off by default; desktop control must also be enabled. Every command requires approval regardless of the approval level or window lease.
+- **Allow system commands**: a separate switch, off by default; desktop control must also be enabled. Commands require individual approval only under "Approve everything", without a window-lease exemption.
 - **Only these windows**: a window allowlist; empty means no limit.
 - **Take over the screen?**: foreground / auto / background, see "Background input" below.
 - For screenshots, turn on "Can see images" under "Settings → Chat model". Text-only models do not get the screenshot tool.
@@ -28,7 +28,7 @@ GUI applications, commands, and external MCP processes access files with their s
 | `desktop_wait` | Waits for a control, a window, or a still frame, up to 5 seconds | Never |
 | `desktop_clipboard_get` / `_set` | Read / write the clipboard | Write: yes |
 | `desktop_launch` | Starts a program or opens a URI; bare names are looked up in the Start menu first | Yes |
-| `desktop_exec` | Runs a command and returns its output, 30 s timeout | Yes |
+| `desktop_exec` | Runs a command and returns its output, 30 s timeout | Only under "Approve everything" |
 
 ## Find the control, then act
 
@@ -43,9 +43,9 @@ Switch them from the drop-down in the chat input area; they apply immediately:
 
 | Level | Desktop actions |
 |---|---|
-| No approval | Ordinary desktop actions do not ask; commands always ask individually |
-| Approve risky actions | Asks for running commands, launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) |
-| Approve everything (default) | Asks for every UI action; observing and screenshots never ask |
+| No approval | Desktop actions and commands do not ask |
+| Approve risky actions | Asks for launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc); commands do not ask |
+| Approve everything (default) | UI actions ask subject to the window lease; commands ask individually; observing and screenshots never ask |
 
 The approval prompt appears just above the chat input; no answer means denied. Under "Approve everything", one approval lets the same window continue for 10 more steps (within 10 minutes); commands, launches, clipboard writes and system shortcuts still ask every time, and a system shortcut does not spend the lease.
 
