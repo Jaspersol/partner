@@ -162,7 +162,8 @@ public sealed class JobEngineTests : IAsyncLifetime
             Call("file-1", "file_write", "{\"content\":\"private-content\"}"),
             scenario == "success" ? Succeed("report") : Call("retry", "file_write", "{\"content\":\"private-content\"}"),
             Say("好了")]);
-        var (engine, _, session) = Build(llm, approval: new RecordingWriteApproval(scenario != "denied"), writer: writer);
+        var governance = new AllowListGovernance([TaskReportTool.ToolName, "act", "file_read"], ask: ["file_write"]);
+        var (engine, _, session) = Build(llm, governance: governance, approval: new RecordingWriteApproval(scenario != "denied"), writer: writer);
 
         var outcome = await engine.RunAsync(Spec(), CancellationToken.None);
 
@@ -176,6 +177,21 @@ public sealed class JobEngineTests : IAsyncLifetime
         var events = new List<SessionEvent>();
         await foreach (var e in session.ReadAsync(1, 1000)) events.Add(e);
         Assert.Single(events, e => e.Kind == SessionEventKind.ToolCall && e.Meta?.GetValueOrDefault("name") == "file_write");
+    }
+
+    [Fact]
+    public async Task Delegation_reports_unapproved_write_as_success_when_governance_allows_it()
+    {
+        var writer = new PreparedWriteTestTool();
+        var llm = new ScriptedLlmClient([Call("file-1", "file_write", "{}"), Succeed("report"), Say("好了")]);
+        var approval = new RecordingWriteApproval(false);
+        var (engine, _, _) = Build(llm, approval: approval, writer: writer);
+
+        var outcome = await engine.RunAsync(Spec(), CancellationToken.None);
+
+        Assert.Empty(approval.Requests);
+        Assert.Equal(1, writer.Commits);
+        Assert.Contains("工具结果：成功", Assert.Single(outcome.FileResults));
     }
 
     [Fact]

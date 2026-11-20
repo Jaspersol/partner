@@ -19,12 +19,12 @@ internal sealed class FakeTool(string name, Func<string, CancellationToken, Task
             : impl(argumentsJson, ct);
 }
 
-internal sealed class PreparedWriteTestTool(ToolResult? result = null) : IPreparedFileWriteTool
+internal sealed class PreparedWriteTestTool(ToolResult? result = null, string name = "file_write") : IPreparedFileWriteTool
 {
     private readonly ToolResult? _result = result;
     public int Commits { get; private set; }
     public int Disposals { get; private set; }
-    public ToolSpec Spec { get; } = new("file_write", "test", "{\"type\":\"object\"}");
+    public ToolSpec Spec { get; } = new(name, "test", "{\"type\":\"object\"}");
     public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
         throw new InvalidOperationException("must use prepared operation");
     public IPreparedFileWrite Prepare(string argumentsJson, CancellationToken ct) => new Operation(this);
@@ -182,6 +182,11 @@ public sealed class AgentTurnRunnerTests : IDisposable
     private sealed class UnknownDecisionGovernance : IToolGovernance
     {
         public GovernanceDecision Decide(string toolName, string argumentsJson) => new((ToolDecision)999, "unknown");
+    }
+
+    private sealed class AskWriteGovernance : IToolGovernance
+    {
+        public GovernanceDecision Decide(string toolName, string argumentsJson) => new(ToolDecision.Ask, "approval required");
     }
 
     [Fact]
@@ -407,7 +412,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Prepared_file_write_always_asks_and_persists_no_preview(bool approved)
+    public async Task Prepared_file_write_asks_when_required_and_persists_no_preview(bool approved)
     {
         var (store, _) = JsonlSessionStore.Open(_dir);
         await using (store)
@@ -421,7 +426,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
                 Call("write-1", "file_write", "{\"path\":\"C:\\\\safe\\\\new.txt\",\"content\":\"private-content\"}"),
                 Say("done"),
             });
-            await Build(store, llm, tools, new AllowListGovernance(new[] { "file_write" }), approval).RunAsync(Claimed());
+            await Build(store, llm, tools, new AskWriteGovernance(), approval).RunAsync(Claimed());
 
             Assert.Single(approval.Requests);
             Assert.DoesNotContain("private-content", approval.Requests[0]);
@@ -440,6 +445,31 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     [Theory]
+    [InlineData("file_write")]
+    [InlineData("file_edit")]
+    public async Task Prepared_file_operation_commits_without_approval_when_allowed(string name)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var writer = new PreparedWriteTestTool(name: name);
+            var tools = new InMemoryToolRegistry();
+            tools.Register(writer);
+            var approval = new RecordingWriteApproval(false);
+            var llm = new ScriptedLlmClient([Call("write-1", name, "{}"), Say("done")]);
+            await Build(store, llm, tools, new AllowListGovernance([name]), approval).RunAsync(Claimed());
+
+            Assert.Empty(approval.Requests);
+            Assert.Equal(1, writer.Commits);
+            Assert.Equal(1, writer.Disposals);
+            var result = Assert.Single(await RawAsync(store), e => e.Kind == SessionEventKind.ToolResult);
+            using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
+            Assert.Equal("success", receipt.RootElement.GetProperty("status").GetString());
+            Assert.Equal("not_requested", receipt.RootElement.GetProperty("approval").GetString());
+        }
+    }
+
+    [Theory]
     [InlineData("conflict: target already exists", "failed")]
     [InlineData("file write status unconfirmed; verify before retrying", "unconfirmed")]
     [InlineData("denied: file write authorization changed", "denied")]
@@ -451,7 +481,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
             var tools = new InMemoryToolRegistry();
             tools.Register(new PreparedWriteTestTool(new ToolResult(false, content)));
             var llm = new ScriptedLlmClient([Call("write-1", "file_write", "{\"content\":\"private-content\"}"), Say("done")]);
-            await Build(store, llm, tools, new AllowListGovernance(["file_write"]), new RecordingWriteApproval(true)).RunAsync(Claimed());
+            await Build(store, llm, tools, new AskWriteGovernance(), new RecordingWriteApproval(true)).RunAsync(Claimed());
             var events = await RawAsync(store);
             var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
             using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
@@ -473,7 +503,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
             var approval = new RecordingWriteApproval(false);
             var llm = new ScriptedLlmClient([
                 Call("first", "file_write", "{}"), Call("retry", "file_write", "{}"), Say("done")]);
-            await Build(store, llm, tools, new AllowListGovernance(["file_write"]), approval).RunAsync(Claimed());
+            await Build(store, llm, tools, new AskWriteGovernance(), approval).RunAsync(Claimed());
             Assert.Single(approval.Requests);
             Assert.Equal(0, writer.Commits);
             var events = await RawAsync(store);

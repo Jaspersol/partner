@@ -11,7 +11,6 @@ const part1: Record<string, string> = {
   '危险指令审批': 'Approve risky actions',
   '执行命令 / 启动程序 / 写剪贴板 / 删除定时任务要批准': 'Running commands, launching programs, writing the clipboard and deleting schedules need approval',
   '全部审批': 'Approve everything',
-  '每个动作都要批准（看屏幕不算）：点击、创建定时任务、打开没见过的网址': 'Every action needs approval (looking at the screen does not count): clicks, creating schedules, opening unfamiliar URLs',
   '上传失败（{status}）': 'Upload failed ({status})',
   '读取附图失败（{status}）': 'Failed to load the attached image ({status})',
   '『{title}』{state}': '“{title}”{state}',

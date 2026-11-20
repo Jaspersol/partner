@@ -848,9 +848,9 @@ export const INPUT_MODES = [
 
 /** The three approval gears, in the order the UI offers them. */
 export const APPROVAL_GEARS = [
-  { value: 'none', label: tr('不审批'), hint: tr('普通桌面动作不审批；命令执行仍逐次审批') },
-  { value: 'dangerous', label: tr('危险指令审批'), hint: tr('启动程序 / 写剪贴板 / 删除定时任务要批准；命令执行始终逐次审批') },
-  { value: 'all', label: tr('全部审批'), hint: tr('每个动作都要批准（看屏幕不算）：点击、创建定时任务、打开没见过的网址') },
+  { value: 'none', label: tr('不审批'), hint: tr('桌面动作、命令执行和文件新建 / 编辑不审批') },
+  { value: 'dangerous', label: tr('危险指令审批'), hint: tr('启动程序 / 写剪贴板 / 删除定时任务和文件新建 / 编辑要批准；命令执行不审批') },
+  { value: 'all', label: tr('全部审批'), hint: tr('每个动作都要批准（看屏幕不算）；命令执行和文件新建 / 编辑每次都要批准') },
 ] as const
 
 export interface DesktopState {

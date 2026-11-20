@@ -47,6 +47,24 @@ public sealed partial class ViewEndpointsTests
         Assert.Empty(tools.Specs);
     }
 
+    [Theory]
+    [InlineData("none", ToolDecision.Allow)]
+    [InlineData("dangerous", ToolDecision.Ask)]
+    [InlineData("all", ToolDecision.Ask)]
+    public void File_mutations_follow_approval_gear(string gear, ToolDecision expected)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var settings = _context.Settings.Load();
+        _context.Settings.Save(settings with
+        {
+            Desktop = settings.Desktop with { Approval = gear },
+            Files = new FilesSettings { Enabled = true, Roots = [_workspace], WriteEnabled = true, WriteRoots = [_workspace] },
+        });
+        var governance = new Partner.Api.DesktopGovernance(_context);
+        Assert.Equal(expected, governance.Decide("file_write", "{}").Decision);
+        Assert.Equal(expected, governance.Decide("file_edit", "{}").Decision);
+    }
+
     /// <summary>
     /// The desktop sub-agent's tools with the decision governance will make for each, read off /api/consumer.
     /// The main agent holds none of them, so they are reported under <c>agentTools</c>.
@@ -208,7 +226,7 @@ public sealed partial class ViewEndpointsTests
         Assert.Contains("desktop_act:conditional", dangerous);
         Assert.Contains("desktop_window:allow", dangerous);
         Assert.Contains("desktop_clipboard_get:allow", dangerous);
-        Assert.Contains("desktop_exec:ask", dangerous);
+        Assert.Contains("desktop_exec:allow", dangerous);
         Assert.Contains("desktop_launch:ask", dangerous);
         Assert.Contains("desktop_clipboard_set:ask", dangerous);
 
@@ -216,8 +234,8 @@ public sealed partial class ViewEndpointsTests
         await _http.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
 
         var none = await ToolsAsync();
-        Assert.Contains("desktop_exec:ask", none);
-        Assert.All(none.Where(tool => !tool.StartsWith("desktop_exec:", StringComparison.Ordinal)), tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
+        Assert.Contains("desktop_exec:allow", none);
+        Assert.All(none, tool => Assert.EndsWith(":allow", tool, StringComparison.Ordinal));
         Assert.Contains("task_report:allow", none);
         Assert.Equal(9, none.Count);
 
