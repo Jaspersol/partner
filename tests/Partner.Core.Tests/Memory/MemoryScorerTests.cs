@@ -270,7 +270,7 @@ public sealed class MemoryScorerTests
     }
 
     [Fact]
-    public void A_record_recalled_recently_is_not_treated_as_old_because_it_was_written_long_ago()
+    public void Recalling_a_record_does_not_refresh_its_evidence_time()
     {
         var wrote = Now.AddDays(-120);
         var untouched = new MemoryCandidate(
@@ -280,8 +280,7 @@ public sealed class MemoryScorerTests
         var cold = Score(untouched, "alpha");
         var warm = Score(usedYesterday, "alpha");
 
-        Assert.True(warm.TemporalDecay > cold.TemporalDecay, $"warm {warm.TemporalDecay} should beat cold {cold.TemporalDecay}");
-        Assert.True(warm.TemporalDecay > 0.9, "a record used yesterday is about as fresh as it gets");
+        Assert.Equal(cold.TemporalDecay, warm.TemporalDecay, 10);
 
         // A recall time earlier than the write (clock skew, an import) never makes a record look older.
         var skewed = untouched with { LastRecalledAt = wrote.AddDays(-10) };

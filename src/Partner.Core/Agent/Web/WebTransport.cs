@@ -35,6 +35,9 @@ public sealed record WebResponse(
     public bool Ok => Error is null;
 
     public string? Charset { get; init; }
+
+    /// <summary>Number of redirects followed before this response.</summary>
+    public int RedirectCount { get; init; }
 }
 
 /// <summary>
@@ -203,7 +206,7 @@ public sealed class WebTransport : IDisposable
                     }
 
                     var read = await ReadAsync(response, ct).ConfigureAwait(false);
-                    return read with { Status = status };
+                    return read with { Status = status, RedirectCount = hop };
                 }
             }
         }

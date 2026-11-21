@@ -157,7 +157,7 @@ public sealed partial class JobEngine
             var approval = Field("approval");
             var status = Field("status") switch
             {
-                "success" when ok == "true" && approval == "approved" && !string.IsNullOrWhiteSpace(path) => "成功",
+                "success" when ok == "true" && (approval is "approved" or "not_requested") && !string.IsNullOrWhiteSpace(path) => "成功",
                 "failed" when ok == "false" => "失败",
                 "denied" when ok == "false" => "拒绝",
                 "not_started" when ok == "false" => "未开始",

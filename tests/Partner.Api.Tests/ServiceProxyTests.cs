@@ -41,7 +41,7 @@ public sealed class ServiceProxyTests : ApiFixture
             prompt,
             recall = new { enabled = recall, limit = 8, tokenLimit = 2000 },
             summary = new { enabled = summary, intervalMinutes, maxWaitMinutes },
-            upstream = new { inherit = false, baseUrl = upstreamBase, model = upstreamModel, apiKey = upstreamKey },
+            upstream = new { inherit = false, baseUrl = upstreamBase, model = upstreamModel, apiKey = upstreamKey, maxTokens = 1000 },
         };
 
         var response = await _http.PostAsJsonAsync("/api/services", body);
@@ -175,7 +175,7 @@ public sealed class ServiceProxyTests : ApiFixture
             await ctx.Response.WriteAsync("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
         });
 
-        var (_, token, port) = await CreateAsync("openai", upstream.BaseUrl, "upstream-model", "UPSTREAM-KEY", recall: true);
+        var (_, token, port) = await CreateAsync("openai", upstream.BaseUrl, "upstream-model", "UPSTREAM-KEY", recall: true, prompt: "CUSTOM SYSTEM");
         using var client = ServiceClient(port, token);
         var payload = new
         {
@@ -186,10 +186,138 @@ public sealed class ServiceProxyTests : ApiFixture
 
         var body = JsonDocument.Parse(firstBody!).RootElement;
         var messages = body.GetProperty("messages");
-        Assert.Equal("user", messages[0].GetProperty("role").GetString()); // no system when Prompt is empty
-        var content = messages[0].GetProperty("content").GetString()!;
+        Assert.Equal("system", messages[0].GetProperty("role").GetString());
+        Assert.Equal("CUSTOM SYSTEM", messages[0].GetProperty("content").GetString());
+        Assert.Equal("user", messages[1].GetProperty("role").GetString());
+        var content = messages[1].GetProperty("content").GetString()!;
         Assert.Contains("以下是背景资料", content);
         Assert.Contains("the user prefers dark mode", content);
+    }
+
+    [Fact]
+    public async Task Openai_reserves_preferred_output_and_prices_prompt_before_recall()
+    {
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "budget-openai", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "alpha beta relevant background",
+        });
+        var bodies = new List<string>();
+        await using var upstream = await FakeUpstream.StartAsync(async ctx =>
+        {
+            bodies.Add(await ReadAsync(ctx));
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        });
+        var (_, token, port) = await CreateAsync("openai", upstream.BaseUrl, "upstream-model", "key",
+            recall: true, prompt: new string('x', 2000));
+        using var client = ServiceClient(port, token);
+        await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "exposed-model", max_tokens = 1, max_completion_tokens = 7400,
+            messages = new[] { new { role = "user", content = "alpha beta" } },
+        });
+        var messages = JsonDocument.Parse(bodies[0]).RootElement.GetProperty("messages");
+        Assert.Equal("alpha beta", messages[1].GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task Recall_budget_includes_the_rendered_background_wrapper()
+    {
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "wrapped", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "alpha beta",
+        });
+        var bodies = new List<string>();
+        await using var upstream = await FakeUpstream.StartAsync(async ctx =>
+        {
+            bodies.Add(await ReadAsync(ctx));
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        });
+        var (_, token, port) = await CreateAsync("openai", upstream.BaseUrl, "upstream-model", "key", recall: true);
+        using var client = ServiceClient(port, token);
+        foreach (var output in new[] { 7900, 100 })
+        {
+            await client.PostAsJsonAsync("/v1/chat/completions", new
+            {
+                model = "exposed-model", max_completion_tokens = output,
+                messages = new[] { new { role = "user", content = "alpha beta" } },
+            });
+        }
+        var tight = JsonDocument.Parse(bodies[0]).RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        var roomy = JsonDocument.Parse(bodies[1]).RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        Assert.Equal("alpha beta", tight);
+        Assert.Contains("以下是背景资料", roomy);
+    }
+
+    [Fact]
+    public async Task Recall_uses_only_earlier_client_users_for_short_references()
+    {
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "proxy-reference", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "quartz deployment uses blue green",
+            Origin = MemoryOrigins.Service("another-service"),
+        });
+        string? seen = null;
+        await using var upstream = await FakeUpstream.StartAsync(async ctx =>
+        {
+            seen = await ReadAsync(ctx);
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        });
+        var (_, token, port) = await CreateAsync("openai", upstream.BaseUrl, "upstream-model", "key", recall: true);
+        using var client = ServiceClient(port, token);
+        await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "exposed-model", messages = new[]
+            {
+                new { role = "user", content = "quartz deployment" },
+                new { role = "assistant", content = "unrelated assistant" },
+                new { role = "user", content = "按之前的" },
+            },
+        });
+        var messages = JsonDocument.Parse(seen!).RootElement.GetProperty("messages");
+        var content = messages[2].GetProperty("content").GetString()!;
+        Assert.Contains("quartz deployment uses blue green", content);
+        Assert.Contains("外部服务", content);
+        Assert.EndsWith("按之前的", content);
+    }
+
+    [Fact]
+    public async Task Own_summaries_do_not_crowd_out_other_recall_candidates()
+    {
+        string? seen = null;
+        await using var upstream = await FakeUpstream.StartAsync(async ctx =>
+        {
+            seen = await ReadAsync(ctx);
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+        });
+        var (id, token, port) = await CreateAsync("openai", upstream.BaseUrl, "upstream-model", "key", recall: true);
+        for (var i = 0; i < 240; i++)
+        {
+            await _context.Memory.WriteAsync(new MemoryRecord
+            {
+                RecordId = $"own-{i}", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+                Body = $"quartz deployment self summary {i}", Origin = MemoryOrigins.Service(id),
+            });
+        }
+        await _context.Memory.WriteAsync(new MemoryRecord
+        {
+            RecordId = "other-source", Tier = MemoryTier.Semantic, Scope = MemoryScope.Recall,
+            Body = "quartz deployment desired source", Origin = MemoryOrigins.Service("other"),
+        });
+        using var client = ServiceClient(port, token);
+        await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "exposed-model", messages = new[] { new { role = "user", content = "quartz deployment" } },
+        });
+        var content = JsonDocument.Parse(seen!).RootElement.GetProperty("messages")[0].GetProperty("content").GetString()!;
+        Assert.Contains("desired source", content);
+        Assert.DoesNotContain("self summary", content);
     }
 
     [Fact]
@@ -261,10 +389,10 @@ public sealed class ServiceProxyTests : ApiFixture
             Body = "alpha beta topic the user likes this topic",
         });
 
-        string? seen = null;
+        var seen = new List<string>();
         await using var upstream = await FakeUpstream.StartAsync(async ctx =>
         {
-            seen ??= await ReadAsync(ctx);
+            seen.Add(await ReadAsync(ctx));
             ctx.Response.ContentType = "application/json";
             await ctx.Response.WriteAsync("{\"content\":[{\"type\":\"text\",\"text\":\"answer\"}]}");
         });
@@ -288,11 +416,23 @@ public sealed class ServiceProxyTests : ApiFixture
         // The same history is resent on each step of the tool loop: it must stay one pending round.
         await client.PostAsJsonAsync("/v1/messages", payload);
         await client.PostAsJsonAsync("/v1/messages", payload);
+        var nearlyFull = JsonSerializer.SerializeToNode(payload)!.AsObject();
+        nearlyFull["max_tokens"] = 7990;
+        await client.PostAsJsonAsync("/v1/messages", nearlyFull);
+        var missingOutput = JsonSerializer.SerializeToNode(payload)!.AsObject();
+        missingOutput.Remove("max_tokens");
+        await client.PostAsJsonAsync("/v1/messages", missingOutput);
 
-        var messages = JsonDocument.Parse(seen!).RootElement.GetProperty("messages");
+        var messages = JsonDocument.Parse(seen[0]).RootElement.GetProperty("messages");
         // The injection goes into the *text* user at index 0; the tool_result user at index 2 is left alone.
         Assert.Contains("以下是背景资料", messages[0].GetProperty("content").GetString());
         Assert.Equal(JsonValueKind.Array, messages[2].GetProperty("content").ValueKind);
+        var fullMessages = JsonDocument.Parse(seen[2]).RootElement.GetProperty("messages");
+        Assert.Equal("alpha beta topic", fullMessages[0].GetProperty("content").GetString());
+        Assert.Equal("tool_result", fullMessages[2].GetProperty("content")[0].GetProperty("type").GetString());
+        var defaulted = JsonDocument.Parse(seen[3]).RootElement;
+        Assert.Equal(1000, defaulted.GetProperty("max_tokens").GetInt32());
+        Assert.Contains("以下是背景资料", defaulted.GetProperty("messages")[0].GetProperty("content").GetString());
 
         var state = await _http.GetFromJsonAsync<JsonElement>($"/api/services/{id}");
         Assert.Equal(1, state.GetProperty("state").GetProperty("pendingRounds").GetInt32());

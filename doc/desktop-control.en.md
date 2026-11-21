@@ -11,7 +11,7 @@ Lets the model see windows, press controls, type and launch programs. Off by def
 "Settings → Computer control":
 
 - **Let the assistant operate the computer**: the master switch.
-- **Allow system commands**: a separate switch, off by default; desktop control must also be enabled. Every command requires approval regardless of the approval level or window lease.
+- **Allow system commands**: a separate switch, off by default; desktop control must also be enabled. Commands require individual approval only under "Approve everything", without a window-lease exemption.
 - **Only these windows**: a window allowlist; empty means no limit.
 - **Take over the screen?**: foreground / auto / background, see "Background input" below.
 - For screenshots, turn on "Can see images" under "Settings → Chat model". Text-only models do not get the screenshot tool.
@@ -28,7 +28,7 @@ GUI applications, commands, and external MCP processes access files with their s
 | `desktop_wait` | Waits for a control, a window, or a still frame, up to 5 seconds | Never |
 | `desktop_clipboard_get` / `_set` | Read / write the clipboard | Write: yes |
 | `desktop_launch` | Starts a program or opens a URI; bare names are looked up in the Start menu first | Yes |
-| `desktop_exec` | Runs a command and returns its output, 30 s timeout | Yes |
+| `desktop_exec` | Runs a command and returns its output, 30 s timeout | Only under "Approve everything" |
 
 ## Find the control, then act
 
@@ -43,9 +43,9 @@ Switch them from the drop-down in the chat input area; they apply immediately:
 
 | Level | Desktop actions |
 |---|---|
-| No approval | Ordinary desktop actions do not ask; commands always ask individually |
-| Approve risky actions | Asks for running commands, launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) |
-| Approve everything (default) | Asks for every UI action; observing and screenshots never ask |
+| No approval | Desktop actions and commands do not ask |
+| Approve risky actions | Asks for launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc); commands do not ask |
+| Approve everything (default) | UI actions ask subject to the window lease; commands ask individually; observing and screenshots never ask |
 
 The approval prompt appears just above the chat input; no answer means denied. Under "Approve everything", one approval lets the same window continue for 10 more steps (within 10 minutes); commands, launches, clipboard writes and system shortcuts still ask every time, and a system shortcut does not spend the lease.
 
@@ -84,12 +84,12 @@ There are only two background channels: the page debugging protocol (only for br
 - Uses the UI Automation COM API (`CUIAutomation8`) on a dedicated MTA thread, with a 2-second connection timeout and a 5-second transaction timeout. Waiting for a Chromium tree to settle happens on the caller, not the UIA queue.
 - A provider in another process is read through a `CacheRequest` (`AutomationElementMode_Full`) that fetches every property the walk needs; a provider in this process is walked without caching (on this machine a 21-node fixture took 48.4ms cached vs 27.6ms uncached). The default `None` mode is wrong: on an Edge page it returned 63 of 129 nodes.
 - Measured on this machine: Notepad 43/43, Explorer 7/7, a Chromium window 87/87 and an Edge page 127/127 nodes (COM vs managed client); single-window observe p50 was 6.9ms (Explorer), 61.7ms (Chromium, at the 40-control cap) and 327.0ms (Edge page).
-- The ledger and reproduction commands are in `probes/windows/FINDINGS.md`.
+- Measured here: one 2560×1440 screen at 96 DPI (100%), virtual-desktop origin (0,0). Dual monitors, a secondary screen with negative coordinates, and 125%/150% scaling are untested. Compare handle + bounds + primary flag + scale together, and do not assert Per-Monitor V2 from a `GetProcessDpiAwareness` read-back.
 
 ## Known limits
 
 - The debugging port has no authentication and listens on loopback, so other local processes can reach it. It is only opened when `desktop_launch` starts the program.
 - No OCR. Interfaces UI Automation cannot see are left to a vision model reading screenshots.
-- Measured here: one 2560×1440 screen at 96 DPI (100%), virtual-desktop origin (0,0). Dual monitors, a secondary screen with negative coordinates, and 125%/150% scaling are untested; `probes/windows/run.ps1 -Command monitors` prints screen identity and DPI. Compare handle + bounds + primary flag + scale together, and do not assert Per-Monitor V2 from a `GetProcessDpiAwareness` read-back.
+- Measured here: one 2560×1440 screen at 96 DPI (100%), virtual-desktop origin (0,0). Dual monitors, a secondary screen with negative coordinates, and 125%/150% scaling are untested. Compare handle + bounds + primary flag + scale together, and do not assert Per-Monitor V2 from a `GetProcessDpiAwareness` read-back.
 - The "first Chromium read is incomplete, then settles" behaviour was not reproduced here; the code still re-reads at 250ms until the count stops growing.
 - The page-control path has not been verified on real Electron apps (such as a music client).

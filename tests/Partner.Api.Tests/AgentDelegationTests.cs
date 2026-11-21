@@ -561,10 +561,10 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
         }
 
         // The web capability ships enabled and no sub-agent has claimed it, so the main agent holds its two tools;
-        // the timed-task tools are always the main agent's. Nothing else.
+        // Timed-task and history tools are always the main agent's. Nothing else.
         var (fresh, _) = await ToolsAsync();
         Assert.Equal(
-            new[] { "schedule_create", "schedule_delete", "schedule_list", "web_fetch", "web_search" },
+            new[] { "schedule_create", "schedule_delete", "schedule_list", "session_history", "web_fetch", "web_search" },
             fresh.OrderBy(name => name, StringComparer.Ordinal));
 
         // Files on, no file-read agent: "no scenario configured" means the main agent reads. The web tools are

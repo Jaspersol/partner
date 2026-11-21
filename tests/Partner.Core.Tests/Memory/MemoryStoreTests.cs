@@ -81,6 +81,45 @@ public sealed class MemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Recall_excludes_service_origin_before_both_index_limits()
+    {
+        await using var store = Open(new MemoryStoreOptions { CandidateLimit = 1 });
+        await store.WriteAsync(Rec("own", "部署故障 deploy pipeline") with { Origin = "service:test" });
+        await store.WriteAsync(Rec("other", "部署故障 deploy pipeline external") with { Origin = "service:other" });
+        var filter = new RecallFilter { ExcludeOrigins = new HashSet<string> { "service:test" }, MarkRecalled = false };
+
+        Assert.Contains(await store.RecallAsync("deploy pipeline", 8, filter), h => h.RecordId == "other");
+        Assert.Contains(await store.RecallAsync("部署故障", 8, filter), h => h.RecordId == "other");
+    }
+
+    [Fact]
+    public async Task Explicit_rendered_budget_can_exceed_store_default()
+    {
+        await using var store = Open(new MemoryStoreOptions { InjectionTokenLimit = 1 });
+        await store.WriteAsync(Rec("a", "alpha beta gamma"));
+        var result = await store.InjectAsync("alpha", new RecallFilter
+        {
+            TokenLimit = 100,
+            UseStoreInjectionLimit = false,
+            RenderedTokenCost = (_, _) => 10,
+        });
+        Assert.Single(result.Hits);
+    }
+
+    [Fact]
+    public async Task Current_identifier_wins_over_near_match_and_explains_bonus()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("exact", "deploy failure v1 details"));
+        await store.WriteAsync(Rec("near", "deploy failure v10 details", importance: 0.9));
+        var hits = await store.RecallAsync("deploy failure v1");
+        Assert.Equal("exact", hits[0].RecordId);
+        Assert.Contains(hits[0].Reasons, reason => reason.StartsWith("anchor", StringComparison.Ordinal));
+        Assert.DoesNotContain(hits.Single(h => h.RecordId == "near").Reasons,
+            reason => reason.StartsWith("anchor", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Recall_is_deterministic_and_explainable()
     {
         await using var store = Open();
@@ -203,6 +242,38 @@ public sealed class MemoryStoreTests : IDisposable
 
         // Idempotent.
         Assert.Equal(0, await store.PromoteEligibleAsync());
+    }
+
+    [Fact]
+    public async Task Promotion_duplicates_do_not_consume_candidate_slots_and_working_is_available_if_copy_is_deleted()
+    {
+        await using var store = Open(new MemoryStoreOptions { CandidateLimit = 2 });
+        var old = _clock.GetUtcNow() - TimeSpan.FromDays(2);
+        await store.WriteAsync(Rec("a", "quartz pipeline", MemoryTier.Working, createdAt: old) with { SourceEventSeq = 1 });
+        await store.PromoteEligibleAsync();
+        await store.WriteAsync(Rec("b", "quartz pipeline details for a different system", MemoryTier.Semantic) with { SourceEventSeq = 2 });
+
+        var hits = await store.RecallAsync("quartz pipeline", 8, new RecallFilter { MarkRecalled = false });
+        Assert.Contains(hits, h => h.RecordId == MemoryStore.EpisodicCopyId("a"));
+        Assert.Contains(hits, h => h.RecordId == "b");
+        Assert.DoesNotContain(hits, h => h.RecordId == "a");
+        Assert.NotNull(await store.GetAsync("a"));
+
+        await store.SoftDeleteAsync(MemoryStore.EpisodicCopyId("a"), Actor.Human);
+        hits = await store.RecallAsync("quartz pipeline", 8, new RecallFilter { MarkRecalled = false });
+        Assert.Contains(hits, h => h.RecordId == "a");
+    }
+
+    [Fact]
+    public async Task Identical_text_from_distinct_sources_remains_independently_retrievable()
+    {
+        await using var store = Open();
+        await store.WriteAsync(Rec("a", "quartz deployment status") with { SourceEventSeq = 1 });
+        await store.WriteAsync(Rec("b", "quartz deployment status") with { SourceEventSeq = 2 });
+
+        var hits = await store.RecallAsync("quartz deployment", 8, new RecallFilter { MarkRecalled = false });
+        Assert.Contains(hits, h => h.RecordId == "a");
+        Assert.Contains(hits, h => h.RecordId == "b");
     }
 
     [Fact]
@@ -390,16 +461,16 @@ public sealed class MemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task The_same_sentence_in_two_rows_is_handed_out_once()
+    public async Task Identical_sentences_from_unrelated_rows_are_not_merged()
     {
         await using var store = Open();
-        await store.WriteAsync(Rec("working-copy", "用户喜欢喝无糖乌龙茶", MemoryTier.Working));
-        await store.WriteAsync(Rec("episodic-copy", "用户喜欢喝无糖乌龙茶", MemoryTier.Episodic));
+        await store.WriteAsync(Rec("working-copy", "用户喜欢喝无糖乌龙茶", MemoryTier.Working) with { SourceEventSeq = 1 });
+        await store.WriteAsync(Rec("episodic-copy", "用户喜欢喝无糖乌龙茶", MemoryTier.Episodic) with { SourceEventSeq = 2 });
         await store.WriteAsync(Rec("other", "用户喜欢喝茶的时间是下午", MemoryTier.Semantic));
 
         var hits = await store.RecallAsync("乌龙茶");
 
-        Assert.Equal(1, hits.Count(h => h.Body == "用户喜欢喝无糖乌龙茶"));
+        Assert.Equal(2, hits.Count(h => h.Body == "用户喜欢喝无糖乌龙茶"));
 
     }
 
@@ -485,7 +556,7 @@ public sealed class MemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task A_retained_record_is_still_corrected_by_a_later_statement_in_the_same_tier()
+    public async Task A_retained_record_is_not_replaced_by_a_similar_statement()
     {
         await using var store = Open();
 
@@ -500,9 +571,9 @@ public sealed class MemoryStoreTests : IDisposable
             "stage the staging cluster with kubectl and then restart the gateway daemon",
             MemoryTier.Semantic));
 
-        var superseded = await store.GetAsync("old");
-        Assert.NotNull(superseded!.ValidTo);
-        Assert.Equal("new", superseded.SupersededBy);
+        var old = await store.GetAsync("old");
+        Assert.Null(old!.ValidTo);
+        Assert.Null(old.SupersededBy);
     }
 
     [Fact]
@@ -621,12 +692,12 @@ public sealed class MemoryStoreTests : IDisposable
         Assert.Null((await store.GetAsync("svc"))!.ValidTo);
         Assert.Null((await store.GetAsync("main"))!.ValidTo);
 
-        // Control: two main-origin records with the same kind of overlap still supersede — existing behaviour.
+        // Even within one origin, lexical overlap is not a reliable fact identity.
         const string c = "budget forecast revenue margin quarterly grew steadily";
         const string d = "budget forecast revenue margin quarterly fell sharply";
         await store.WriteAsync(Rec("m1", c, MemoryTier.Episodic));
         await store.WriteAsync(Rec("m2", d, MemoryTier.Episodic));
-        Assert.NotNull((await store.GetAsync("m1"))!.ValidTo);
+        Assert.Null((await store.GetAsync("m1"))!.ValidTo);
         Assert.Null((await store.GetAsync("m2"))!.ValidTo);
     }
 

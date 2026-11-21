@@ -47,6 +47,7 @@ public sealed class MemoryRecallHook : AgentHookBase
 
     public override async ValueTask<HookOutcome> RunAsync(HookContext ctx, CancellationToken ct)
     {
+        if (ctx.Source == InputSource.Schedule) return HookOutcome.Continue;
         var query = ctx.InputPayload;
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -69,16 +70,19 @@ public sealed class MemoryRecallHook : AgentHookBase
             return HookOutcome.Continue;
         }
 
-        // Labelled "recall" so the assembler can place it after the history (in front of the current input)
-        // instead of in the system block: it changes every turn, and a system block that changes breaks the
-        // prefix cache for everything behind it.
-        var lines = new List<string>(injection.Hits.Count + 3)
+        ctx.Inject(Render(injection.Hits, injection.Truncated), priority: 50, label: "recall");
+        return HookOutcome.Continue;
+    }
+
+    internal static string Render(IReadOnlyList<MemoryHit> hits, bool truncated)
+    {
+        var lines = new List<string>(hits.Count + 3)
         {
             "Known from earlier sessions, most relevant first. Each is background, not something the person just",
             "said: trust it unless they contradict it here, and prefer what they say now over anything below.",
         };
 
-        foreach (var hit in injection.Hits)
+        foreach (var hit in hits)
         {
             var age = MemoryAge.Describe(hit.CreatedAt, hit.Now);
             var kind = hit.Tier == MemoryTier.Working ? "unconfirmed" : "established";
@@ -89,15 +93,12 @@ public sealed class MemoryRecallHook : AgentHookBase
 
         // The budget dropped something the query scored at least as highly as what is here. Saying so stops
         // the prompt from reading complete when it was cut.
-        if (injection.Truncated)
+        if (truncated)
         {
             lines.Add("(more memories were scored but dropped to stay within the injection token budget)");
         }
 
-        // The label is for the session page, not the model: it names the block in the log so the remembered
-        // facts read as one thing that happened in the turn.
-        ctx.Inject(string.Join('\n', lines), priority: 50, label: "recall");
-        return HookOutcome.Continue;
+        return string.Join('\n', lines);
     }
 
     /// <summary>
@@ -161,7 +162,7 @@ public sealed class MemoryDistilHook : AgentHookBase
     {
         // A sub-agent's report is the runtime talking to itself, not something the person said. Distilling it
         // would file a sub-agent failure message as the person's own statement.
-        if (ctx.Source == InputSource.Agent)
+        if (ctx.Source is InputSource.Agent or InputSource.Schedule)
         {
             return HookOutcome.Continue;
         }
@@ -170,6 +171,7 @@ public sealed class MemoryDistilHook : AgentHookBase
 
         // The last user/assistant exchange in the window: the one this turn produced.
         long? userSeq = null;
+        DateTimeOffset? userAt = null;
         var userText = string.Empty;
         var assistantText = string.Empty;
 
@@ -178,6 +180,7 @@ public sealed class MemoryDistilHook : AgentHookBase
             if (item.Kind == SessionEventKind.User && item.Source == ctx.Source)
             {
                 userSeq = item.Seq;
+                userAt = item.At;
                 userText = item.Body;
                 assistantText = string.Empty;
             }
@@ -232,7 +235,7 @@ public sealed class MemoryDistilHook : AgentHookBase
                 Scope = MemoryScope.Recall,
                 Body = distilled.Body,
                 SourceEventSeq = distilled.SourceEventSeq,
-                CreatedAt = now,
+                CreatedAt = userAt ?? now,
                 Importance = distilled.Importance,
                 Veracity = distilled.Veracity,
             },

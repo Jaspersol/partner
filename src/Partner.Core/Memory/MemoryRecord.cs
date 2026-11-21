@@ -54,9 +54,7 @@ public sealed record MemoryRecord
     public Actor? EditedBy { get; init; }
 
     /// <summary>
-    /// Which writer produced this record. Supersede compares only records of the same origin: a summary written
-    /// by an external service must not retire a fact from the main session, and two services' summaries describe
-    /// different time spans rather than contradicting each other.
+    /// Which writer produced this record, used to exclude a service's own records from its recall.
     /// </summary>
     public string Origin { get; init; } = MemoryOrigins.Main;
 }

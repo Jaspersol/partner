@@ -2,11 +2,13 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Partner.Core.Agent.Delegation;
+using Partner.Core.Agent.Hooks;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Contracts;
 using Partner.Core.Media;
 using Partner.Core.Memory;
 using Partner.Core.Queue;
+using Partner.Core.Scheduler;
 using Partner.Core.Sessions;
 
 namespace Partner.Core.Agent;
@@ -19,10 +21,13 @@ public sealed record ContextUsage(
     int MaxTokens,
     int KeptItems,
     int FoldedItems,
-    int SystemTokens = 0)
+    int SystemTokens = 0,
+    int SummaryTokens = 0)
 {
     public double Fraction => BudgetTokens <= 0 ? 0 : (double)UsedTokens / BudgetTokens;
 }
+
+public sealed record InitialContext(IReadOnlyList<LlmMessage> Messages, string? Recall);
 
 /// <summary>
 /// Builds the messages a turn starts with:
@@ -36,6 +41,11 @@ public interface IContextAssembler
         IReadOnlyList<string> injectedPrompts,
         IReadOnlyList<string?>? injectedLabels = null,
         CancellationToken ct = default);
+
+    async Task<InitialContext> AssemblePlannedAsync(
+        InputItem item, IReadOnlyList<string> injectedPrompts, IReadOnlyList<string?>? injectedLabels = null,
+        CancellationToken ct = default) =>
+        new(await AssembleInitialAsync(item, injectedPrompts, injectedLabels, ct).ConfigureAwait(false), null);
 
     /// <summary>What the history costs right now, without a turn — the number a UI shows.</summary>
     Task<ContextUsage> MeasureAsync(CancellationToken ct = default);
@@ -59,6 +69,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     private readonly Func<string?>? _promptSource;
     private readonly IMediaStore? _media;
     private readonly Func<int>? _reservedTokens;
+    private readonly IMemoryStore? _memory;
+    private readonly IScheduler? _scheduler;
 
     public SessionWindowContextAssembler(
         ISessionStore session,
@@ -68,9 +80,13 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         string? baseSystemPrompt = null,
         IMediaStore? media = null,
         Func<string?>? promptSource = null,
-        Func<int>? reservedTokens = null)
+        Func<int>? reservedTokens = null,
+        IMemoryStore? memory = null,
+        IScheduler? scheduler = null)
     {
         _reservedTokens = reservedTokens;
+        _scheduler = scheduler;
+        _memory = memory;
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(contextTokens);
 
         _session = session ?? throw new ArgumentNullException(nameof(session));
@@ -92,7 +108,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     public async Task<ContextUsage> MeasureAsync(CancellationToken ct = default)
     {
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
-        var plan = await PlanAsync(view, injectedPrompts: Array.Empty<string>(), currentInput: null, fromMemory: true, ct)
+        var plan = await PlanAsync(view, BasePrompt, injectedPrompts: Array.Empty<string>(), currentInput: null, fromMemory: true, ct)
             .ConfigureAwait(false);
 
         return new ContextUsage(
@@ -102,10 +118,18 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             _reserveForOutput,
             plan.Kept.Count,
             plan.FoldedCount,
-            plan.SystemTokens);
+            plan.SystemTokens,
+            plan.SummaryTokens);
     }
 
     public async Task<IReadOnlyList<LlmMessage>> AssembleInitialAsync(
+        InputItem item,
+        IReadOnlyList<string> injectedPrompts,
+        IReadOnlyList<string?>? injectedLabels = null,
+        CancellationToken ct = default) =>
+        (await AssemblePlannedAsync(item, injectedPrompts, injectedLabels, ct).ConfigureAwait(false)).Messages;
+
+    public async Task<InitialContext> AssemblePlannedAsync(
         InputItem item,
         IReadOnlyList<string> injectedPrompts,
         IReadOnlyList<string?>? injectedLabels = null,
@@ -115,9 +139,64 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         ArgumentNullException.ThrowIfNull(injectedPrompts);
 
         var view = await _session.ProjectAsync(ct).ConfigureAwait(false);
+        if (item.Source == InputSource.Schedule)
+        {
+            var parts = item.IdempotencyKey.Split(':', 3);
+            var taskId = parts.Length == 3 && parts[0] == "schedule" && parts[1].Length > 0 ? parts[1] : null;
+            var state = new List<string>();
+            if (taskId is not null && _scheduler is not null)
+            {
+                var task = (await _scheduler.ListAsync(ct).ConfigureAwait(false)).FirstOrDefault(t => t.TaskId == taskId);
+                if (task?.LastRunAt is { } at)
+                    state.Add($"任务 {taskId} 上次运行：{at:O}，运行结果：{(task.LastRunOk == true ? "完成" : "失败")}；错误：{task.LastRunError ?? "无"}。运行完成不等于业务检查通过。");
+            }
+            if (taskId is not null)
+            {
+                var resolved = new HashSet<string>(StringComparer.Ordinal);
+                SessionViewItem? anomaly = null;
+                SessionViewItem? failure = null;
+                for (var i = view.Items.Count - 1; i >= 0; i--)
+                {
+                    var entry = view.Items[i];
+                    var meta = entry.Meta;
+                    if (entry.Kind != SessionEventKind.ToolResult || meta?.GetValueOrDefault("scheduleTaskId") != taskId)
+                        continue;
+
+                    var target = meta.GetValueOrDefault("checkTarget");
+                    var status = 0;
+                    var valid = meta.GetValueOrDefault("checkKind") == "http-status-v1"
+                        && target is { Length: 64 } && target.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')
+                        && int.TryParse(meta.GetValueOrDefault("checkStatus"), System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out status)
+                        && (status is >= 200 and <= 299 or >= 500 and <= 599);
+                    if (valid)
+                    {
+                        if (meta.GetValueOrDefault("checkBatchMixed") != "true")
+                        {
+                            if (status < 300)
+                                resolved.Add(target!);
+                            else if (anomaly is null && !resolved.Contains(target!))
+                                anomaly = entry;
+                        }
+                    }
+                    else if (failure is null && meta.GetValueOrDefault("ok") == "false")
+                        failure = entry;
+                }
+                if (anomaly is not null)
+                    state.Add($"该任务未解决的 HTTP 检查异常 #{anomaly.Seq}：HTTP {anomaly.Meta!["checkStatus"]}，观测时间 {anomaly.At:O}。仅表示该次 HTTP 响应；重查目标来自当前任务指令，必须实际重新检查，以本轮工具结果作答。可按 Seq 回读可见的原始结果。");
+                else if (failure is not null)
+                    state.Add($"该任务最近的普通工具调用失败线索 #{failure.Seq}：{Trim(failure.Body)}。这不是业务状态；是否已解决尚未经验证，当前要求重查时必须实际重新检查，不能以旧线索代替检查。");
+            }
+            var scheduleView = new SessionView(view.LastSeq, Array.Empty<SessionViewItem>());
+            view = scheduleView;
+            if (state.Count > 0)
+                injectedPrompts = injectedPrompts.Concat(state).ToArray();
+        }
         var attachments = ResolveAttachments(item.MediaIds);
         var images = attachments.Where(a => a.IsImage).Select(a => a.ToDataUri()).ToList();
-        var plan = await PlanAsync(view, injectedPrompts, item.Payload, fromMemory: false, ct, images.Count)
+        var body = MessageBody(FrameBySource(item.Source, item.Payload), attachments);
+        var basePrompt = BasePrompt;
+        var plan = await PlanAsync(view, basePrompt, injectedPrompts, body, fromMemory: false, ct, images.Count)
             .ConfigureAwait(false);
 
         // Split by how often a block changes. Stable blocks stay in the system message; the volatile recall block
@@ -131,20 +210,51 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             (string.Equals(label, VolatileLabel, StringComparison.Ordinal) ? volatileBlocks : stable).Add(injectedPrompts[i]);
         }
 
+        string? recall = null;
+        var remaining = ContextBudget.PromptBudget(_contextTokens, _reserveForOutput) - plan.SystemTokens - plan.TurnTokens - plan.InputTokens;
+        if (item.Source != InputSource.Schedule && _memory is not null && remaining > 0 && !string.IsNullOrWhiteSpace(item.Payload))
+        {
+            var query = item.Payload[..Math.Min(item.Payload.Length, MemoryRecallHook.MaxQueryChars)];
+            var supplementaryQuery = item.Source is InputSource.Text or InputSource.Voice
+                ? MemoryRecallQuery.Supplement(query, plan.Kept.AsEnumerable().Reverse()
+                    .Where(entry => entry.Kind == SessionEventKind.User
+                        && entry.Source is InputSource.Text or InputSource.Voice)
+                    .Select(entry => entry.Body))
+                : query;
+            var sourceSeqs = plan.RenderedSeqs;
+            var existing = volatileBlocks.ToArray();
+            var withoutRecall = existing.Length == 0 ? body : WithBackground(existing, body);
+            var baseCost = _tokens.Count(withoutRecall);
+            var injection = await _memory.InjectAsync(query, new RecallFilter
+            {
+                Limit = 8,
+                TokenLimit = remaining,
+                ExcludeSourceSeqs = sourceSeqs,
+                SupplementaryQuery = supplementaryQuery,
+                RenderedTokenCost = (hits, truncated) => Math.Max(0,
+                    _tokens.Count(WithBackground([.. existing, MemoryRecallHook.Render(hits, truncated)], body)) - baseCost),
+            }, ct).ConfigureAwait(false);
+            if (injection.Hits.Count > 0)
+            {
+                recall = MemoryRecallHook.Render(injection.Hits, injection.Truncated);
+                volatileBlocks.Add(recall);
+            }
+        }
+
         var messages = new List<LlmMessage>
         {
-            new("system", BuildSystem(BasePrompt, stable, plan.Context)),
+            new("system", BuildSystem(basePrompt, stable, plan.Context)),
         };
 
         messages.AddRange(plan.Turns);
 
         // The current input is the last user message; the window above is history only.
-        var body = MessageBody(FrameBySource(item.Source, item.Payload), attachments);
+        // body already includes source framing and attachment hints used by the budget.
         messages.Add(new LlmMessage(
             "user",
             volatileBlocks.Count == 0 ? body : WithBackground(volatileBlocks, body),
             Images: images.Count > 0 ? images : null));
-        return messages;
+        return new InitialContext(messages, recall);
     }
 
     /// <summary>The label of the injected block that changes every turn (set by the memory hook).</summary>
@@ -220,6 +330,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// </summary>
     private async Task<Plan> PlanAsync(
         SessionView view,
+        string basePrompt,
         IReadOnlyList<string> injectedPrompts,
         string? currentInput,
         bool fromMemory,
@@ -228,9 +339,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     {
         // A summary stands in for history that was folded away, so it is context rather than a turn.
         var summaries = view.Items.Where(entry => entry.Kind == SessionEventKind.Summary).ToList();
-        var conversation = view.Items
-            .Where(entry => entry.Kind != SessionEventKind.Summary && (entry.Kind.IsContent() || IsHandoffTrace(entry)))
-            .ToList();
+        var conversation = ReplayableHistory(view.Items);
 
         ValueTask<int> Cost(string? text, CancellationToken token) => fromMemory
             ? ValueTask.FromResult(_tokens.Count(text ?? string.Empty) + ContextBudget.MessageOverheadTokens)
@@ -238,21 +347,12 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
 
         var context = summaries.Select(summary => $"summary of earlier history: {summary.Body}").ToList();
 
-        // The system block is always sent: dropping it would remove the instructions the turn runs under.
-        var systemTokens = await Cost(BasePrompt, ct).ConfigureAwait(false);
-
-        // The tool definitions are sent with every request and never appear in the log, so they come off the top too.
+        // Price the actual system block, including the summary wrapper and separators.
+        var systemTokens = await Cost(BuildSystem(basePrompt, injectedPrompts, context), ct).ConfigureAwait(false);
+        var summaryTokens = context.Count == 0 ? 0 : Math.Max(0,
+            _tokens.Count(BuildSystem(basePrompt, injectedPrompts, context))
+            - _tokens.Count(BuildSystem(basePrompt, injectedPrompts, Array.Empty<string>())));
         systemTokens += _reservedTokens?.Invoke() ?? 0;
-
-        foreach (var prompt in injectedPrompts)
-        {
-            systemTokens += await Cost(prompt, ct).ConfigureAwait(false);
-        }
-
-        foreach (var entry in context)
-        {
-            systemTokens += await Cost(entry, ct).ConfigureAwait(false);
-        }
 
         var inputTokens = currentInput is null
             ? 0
@@ -277,11 +377,12 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             return cost;
         }
 
-        var kept = await ContextBudget.FitNewestFirstAsync(
+        var kept = await ContextBudget.FitNewestGroupsAsync(
             conversation,
             (entry, token) => CostOf(entry, token),
             Math.Max(0, budget),
             ct).ConfigureAwait(false);
+        kept = ReplayableHistory(kept);
 
         // Entries that are not conversational are still shown to the model, just inside the system block.
         foreach (var entry in kept.Where(entry =>
@@ -299,13 +400,18 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             turnTokens += await CostOf(entry, ct).ConfigureAwait(false);
         }
 
+
+        var renderedSeqs = summaries.Select(e => e.Seq).Concat(kept.Select(e => e.Seq)).ToHashSet();
         return new Plan(
             context,
             turns,
             kept,
             systemTokens,
             turnTokens,
-            conversation.Count - kept.Count);
+            conversation.Count - kept.Count,
+            inputTokens,
+            renderedSeqs,
+            summaryTokens);
     }
 
     /// <summary>The most of a hand-off's arguments or result that is replayed. The detail is in the log.</summary>
@@ -427,13 +533,34 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     };
 
     /// <summary>Whether the window carries this entry as conversation. The compactor folds by the same rule.</summary>
-    internal static bool IsConversational(SessionViewItem entry) => entry.Kind.IsContent() || IsHandoffTrace(entry);
+    internal static bool IsConversational(SessionViewItem entry) =>
+        !(entry.Kind == SessionEventKind.System && entry.Meta?.GetValueOrDefault("label") == VolatileLabel)
+        && (entry.Kind.IsContent() || IsHandoffTrace(entry));
 
-    /// <summary>What an entry costs in the window: its text, and for a hand-off call its arguments too.</summary>
-    internal static string CostText(SessionViewItem entry) =>
-        entry.Kind == SessionEventKind.ToolCall && entry.Meta is { } meta
-            ? entry.Body + TraceArguments(meta.GetValueOrDefault("args"))
-            : IsHandoffTrace(entry) ? Trim(entry.Body) : entry.Body;
+    /// <summary>Replayable history, excluding incomplete delegation call/result pairs.</summary>
+    internal static List<SessionViewItem> ReplayableHistory(IEnumerable<SessionViewItem> items)
+    {
+        var conversational = items.Where(entry => entry.Kind != SessionEventKind.Summary && IsConversational(entry)).ToList();
+        var candidates = ContextBudget.GroupTurns(conversational)
+            .Where(group => !group.Any(entry => entry.Source == InputSource.Schedule || entry.Kind == SessionEventKind.Schedule))
+            .SelectMany(group => group).ToList();
+        var called = candidates.Where(e => e.Kind == SessionEventKind.ToolCall && IsHandoffTrace(e))
+            .Select(e => e.Meta!["id"]).ToHashSet();
+        var answered = candidates.Where(e => e.Kind == SessionEventKind.ToolResult && IsHandoffTrace(e))
+            .Select(e => e.Meta!["id"]).ToHashSet();
+        return candidates.Where(e => !IsHandoffTrace(e)
+            || (called.Contains(e.Meta!["id"]) && answered.Contains(e.Meta["id"]))).ToList();
+    }
+
+    /// <summary>Text actually rendered for a replayable history entry.</summary>
+    internal static string CostText(SessionViewItem entry) => entry.Kind switch
+    {
+        SessionEventKind.User or SessionEventKind.Schedule => FrameBySource(entry.Source, entry.Body),
+        SessionEventKind.Assistant => entry.Body,
+        SessionEventKind.ToolCall when IsHandoffTrace(entry) => TraceArguments(entry.Meta!.GetValueOrDefault("args")),
+        SessionEventKind.ToolResult when IsHandoffTrace(entry) => Trim(entry.Body),
+        _ => $"#{entry.Seq} [{entry.Kind}] {entry.Body}",
+    };
 
     /// <summary>
     /// The window as messages. A hand-off is replayed in the shape the model produced it — the assistant message
@@ -521,5 +648,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         List<SessionViewItem> Kept,
         int SystemTokens,
         int TurnTokens,
-        int FoldedCount);
+        int FoldedCount,
+        int InputTokens,
+        IReadOnlySet<long> RenderedSeqs,
+        int SummaryTokens);
 }

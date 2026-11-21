@@ -2,10 +2,7 @@ using Partner.Core.Memory;
 
 namespace Partner.Core.Tests.Memory;
 
-/// <summary>
-/// The two rules that keep a growing store honest: the newest statement about a thing retires the older one,
-/// and a record nobody has found in three months stops being trusted.
-/// </summary>
+/// <summary>Retention and independent-source lifecycle behavior.</summary>
 public sealed class MemoryLifecycleTests : IDisposable
 {
     private readonly string _dir = Path.Combine(
@@ -47,30 +44,9 @@ public sealed class MemoryLifecycleTests : IDisposable
             CreatedAt = at,
         });
 
-    [Fact]
-    public void Two_statements_about_the_same_thing_conflict()
-    {
-        Assert.True(MemoryLifecycle.Conflicts(
-            "用户用 pnpm 作为包管理器",
-            "用户用 npm 作为包管理器"));
-    }
 
     [Fact]
-    public void Two_statements_about_different_things_do_not()
-    {
-        Assert.False(MemoryLifecycle.Conflicts(
-            "用户用 pnpm 作为包管理器",
-            "部署脚本在 scripts 目录里"));
-    }
-
-    [Fact]
-    public void A_shared_placeholder_word_is_not_a_shared_topic()
-    {
-        Assert.False(MemoryLifecycle.Conflicts("用户喜欢深色主题", "用户部署在阿里云"));
-    }
-
-    [Fact]
-    public async Task A_newer_statement_retires_the_older_one()
+    public async Task A_newer_similar_statement_does_not_retire_the_older_one()
     {
         var store = Open();
         await Write(store, "m1", MemoryTier.Semantic, "用户用 pnpm 作为包管理器", DateTimeOffset.UtcNow);
@@ -78,15 +54,15 @@ public sealed class MemoryLifecycleTests : IDisposable
         await Write(store, "m2", MemoryTier.Semantic, "用户改用 npm 作为包管理器了", DateTimeOffset.UtcNow);
 
         var old = await store.GetAsync("m1");
-        Assert.NotNull(old!.ValidTo);
-        Assert.Equal("m2", old.SupersededBy);
+        Assert.Null(old!.ValidTo);
+        Assert.Null(old.SupersededBy);
 
         var current = await store.GetAsync("m2");
         Assert.Null(current!.ValidTo);
     }
 
     [Fact]
-    public async Task A_retired_record_is_still_there_to_read_and_edit()
+    public async Task Similar_records_remain_in_the_management_list()
     {
         var store = Open();
         await Write(store, "m1", MemoryTier.Semantic, "用户用 pnpm 作为包管理器", DateTimeOffset.UtcNow);
@@ -97,24 +73,9 @@ public sealed class MemoryLifecycleTests : IDisposable
         Assert.Equal(2, all.Count);
     }
 
-    [Fact]
-    public void An_identical_record_is_not_a_conflict()
-    {
-        Assert.False(MemoryLifecycle.Conflicts(
-            "用户用 pnpm 作为包管理器",
-            "用户用 pnpm 作为包管理器"));
-    }
 
     [Fact]
-    public void Punctuation_does_not_make_two_records_differ()
-    {
-        Assert.False(MemoryLifecycle.Conflicts(
-            "用户用 pnpm 作为包管理器。",
-            "用户用 pnpm 作为包管理器"));
-    }
-
-    [Fact]
-    public async Task A_recall_returns_the_newer_statement_and_not_the_retired_one()
+    public async Task Recall_returns_both_independent_statements()
     {
         var store = Open();
         await Write(store, "m1", MemoryTier.Semantic, "用户用 pnpm 作为包管理器", DateTimeOffset.UtcNow);
@@ -123,7 +84,7 @@ public sealed class MemoryLifecycleTests : IDisposable
         var hits = await store.RecallAsync("包管理器");
 
         Assert.Contains(hits, h => h.RecordId == "m2");
-        Assert.DoesNotContain(hits, h => h.RecordId == "m1");
+        Assert.Contains(hits, h => h.RecordId == "m1");
     }
 
     [Fact]

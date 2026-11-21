@@ -29,4 +29,3 @@ Back to the [project home](../README.md).
 | Doc | Description |
 |---|---|
 | [Development and debugging](./development.en.md) | Per-layer commands, running the API or frontend alone, test layers, common pitfalls |
-| [Release process](./release.en.md) | One tag builds the installer; how the engine packs relate to the app release |

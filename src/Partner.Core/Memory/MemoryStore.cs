@@ -162,66 +162,12 @@ public sealed class MemoryStore : IMemoryStore
         // runs at most once per PromotionThrottle, not once per record.
         await PromoteIfDueAsync(ct).ConfigureAwait(false);
 
-        // A newer statement about the same thing retires the older one, here rather than at recall, so the list
-        // a person reads shows the truth. The retired record is marked, not deleted: it stays visible and editable.
-        await SupersedeConflictingAsync(record, ct).ConfigureAwait(false);
 
         await InsertAsync(record, ct).ConfigureAwait(false);
         await LogAsync(record.RecordId, "write", record.Tier.ToString(), ct).ConfigureAwait(false);
         return record.RecordId;
     }
 
-    /// <summary>
-    /// Retires live records that the incoming one contradicts.
-    /// <para>
-    /// Only records in the same tier are compared: a semantic fact does not contradict a working note.
-    /// </para>
-    /// </summary>
-    private async Task SupersedeConflictingAsync(MemoryRecord incoming, CancellationToken ct)
-    {
-
-        // Service summaries describe different windows of time, not competing claims about one fact. Their
-        // template sentences share most bigrams, so comparing them at all would retire real records — including
-        // each other and the main session's promoted episodic memories. Never supersede for a service writer.
-        if (MemoryOrigins.IsService(incoming.Origin))
-        {
-            return;
-        }
-        // Two coarse filters, because a contradiction shares a subject and differs on one point. Bigrams for CJK,
-        // FTS expression for Latin; both are built even for a body that is mostly one script, since a mixed body's
-        // other half would otherwise be unsearchable. The decision is made by word overlap below.
-        var match = BuildMatchExpression(incoming.Body);
-        var cjkMatch = CjkText.MatchExpression(incoming.Body);
-
-        var candidates = await LoadCandidatesAsync(match, cjkMatch, ct).ConfigureAwait(false);
-        var now = _clock.GetUtcNow();
-        var analysed = new MemoryLifecycle.Incoming(incoming.Body);
-
-        foreach (var candidate in candidates)
-        {
-            // A record from another origin is about a different writer/time span, not a contradiction.
-            if (candidate.Tier != incoming.Tier || candidate.Origin != incoming.Origin)
-            {
-                continue;
-            }
-
-            if (!analysed.ConflictsWith(candidate.Body))
-            {
-                continue;
-            }
-
-            await using var cmd = _db.CreateCommand();
-            cmd.CommandText =
-                "UPDATE memories SET valid_to = $now, superseded_by = $by, edited_by = 'Agent' "
-                + "WHERE record_id = $id AND valid_to IS NULL";
-            cmd.Parameters.AddWithValue("$now", Iso(now));
-            cmd.Parameters.AddWithValue("$by", incoming.RecordId);
-            cmd.Parameters.AddWithValue("$id", candidate.RecordId);
-            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            await LogAsync(candidate.RecordId, "supersede", incoming.RecordId, ct).ConfigureAwait(false);
-        }
-    }
 
     /// <summary>
     /// Marks what was just handed out as used. The recall path is the only place "used" is observable, and
@@ -444,15 +390,16 @@ public sealed class MemoryStore : IMemoryStore
         // segmentation, so a CJK question is matched against the bigrams in the second index instead (CjkText).
         // Both expressions are built for every query — a mixed query carries words only one of the indexes can
         // see. The scorer still decides relevance; this is only a coarse filter.
-        var match = BuildMatchExpression(query);
-        var cjkMatch = CjkText.MatchExpression(query);
+        var candidateQuery = filter.SupplementaryQuery ?? query;
+        var match = BuildMatchExpression(candidateQuery);
+        var cjkMatch = CjkText.MatchExpression(candidateQuery);
 
         if (match is null && cjkMatch is null)
         {
             return Array.Empty<MemoryHit>();
         }
 
-        var candidates = await LoadCandidatesAsync(match, cjkMatch, ct).ConfigureAwait(false);
+        var candidates = await LoadCandidatesAsync(match, cjkMatch, ct, filter.ExcludeOrigins).ConfigureAwait(false);
         if (candidates.Count == 0)
         {
             return Array.Empty<MemoryHit>();
@@ -478,7 +425,6 @@ public sealed class MemoryStore : IMemoryStore
             return Array.Empty<MemoryHit>();
         }
 
-        var seenBodies = new HashSet<string>(StringComparer.Ordinal);
         var result = eligible
             .Select(candidate =>
             {
@@ -498,10 +444,7 @@ public sealed class MemoryStore : IMemoryStore
             })
             .OrderByDescending(h => h.Score.Total)
             .ThenBy(h => h.RecordId, StringComparer.Ordinal)
-            // The same sentence can live in two rows (a promotion leaves the working row behind next to its
-            // episodic copy). The better-scored row stands for it.
             .Where(hit => hit.Score.Total >= _options.MinScore)
-            .Where(hit => seenBodies.Add(MemoryLifecycle.Normalize(hit.Body)))
             .Take(take)
             .ToList();
 
@@ -522,26 +465,41 @@ public sealed class MemoryStore : IMemoryStore
         RecallFilter filter,
         CancellationToken ct = default)
     {
-        var hits = await RecallAsync(query, filter.Limit ?? _options.RecallLimit, filter, ct).ConfigureAwait(false);
-
         var budget = filter.TokenLimit ?? _options.InjectionTokenLimit;
+        if (filter.UseStoreInjectionLimit && filter.RenderedTokenCost is not null)
+        {
+            budget = Math.Min(budget, _options.InjectionTokenLimit);
+        }
+        if (budget <= 0)
+        {
+            return new InjectionResult(Array.Empty<MemoryHit>(), 0, false);
+        }
+
+        var hits = await RecallAsync(query, filter.Limit ?? _options.RecallLimit, filter with { MarkRecalled = false }, ct).ConfigureAwait(false);
         var kept = new List<MemoryHit>();
         var tokens = 0;
         var truncated = false;
 
         foreach (var hit in hits)
         {
-            var cost = _options.Tokens.Count(hit.Body);
-            if (tokens + cost > budget)
+            kept.Add(hit);
+            var cost = filter.RenderedTokenCost is { } rendered
+                ? rendered(kept, kept.Count < hits.Count)
+                : tokens + _options.Tokens.Count(hit.Body);
+            if (cost > budget)
             {
+                kept.RemoveAt(kept.Count - 1);
                 truncated = true;
                 break;
             }
 
-            tokens += cost;
-            kept.Add(hit);
+            tokens = cost;
         }
 
+        if (filter.MarkRecalled && kept.Count > 0)
+        {
+            await MaintainAsync(kept.Select(hit => hit.RecordId).ToList(), ct).ConfigureAwait(false);
+        }
         return new InjectionResult(kept, tokens, truncated);
     }
 
@@ -1109,18 +1067,19 @@ public sealed class MemoryStore : IMemoryStore
     private async Task<List<MemoryCandidate>> LoadCandidatesAsync(
         string? match,
         string? cjkMatch,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlySet<string>? excludeOrigins = null)
     {
         var found = new Dictionary<string, (MemoryCandidate Candidate, double Quality)>(StringComparer.Ordinal);
 
         if (match is not null)
         {
-            await LoadFromIndexAsync("memory_fts", match, found, ct).ConfigureAwait(false);
+            await LoadFromIndexAsync("memory_fts", match, found, ct, excludeOrigins).ConfigureAwait(false);
         }
 
         if (cjkMatch is not null)
         {
-            await LoadFromIndexAsync("memory_fts_cjk", cjkMatch, found, ct).ConfigureAwait(false);
+            await LoadFromIndexAsync("memory_fts_cjk", cjkMatch, found, ct, excludeOrigins).ConfigureAwait(false);
         }
 
         return found.Values
@@ -1139,20 +1098,34 @@ public sealed class MemoryStore : IMemoryStore
         string index,
         string match,
         Dictionary<string, (MemoryCandidate Candidate, double Quality)> found,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlySet<string>? excludeOrigins)
     {
         await using var cmd = _db.CreateCommand();
+        var originParameters = excludeOrigins?.Select((_, i) => $"$origin{i}").ToArray() ?? [];
+        var originFilter = originParameters.Length == 0 ? "" : $" AND m.origin NOT IN ({string.Join(',', originParameters)})";
         cmd.CommandText = $"""
           SELECT m.record_id, m.body, m.tier, m.scope, m.created_at, m.importance, m.veracity, m.confidence,
                  bm25({index}) AS rank, m.source_event_seq, m.last_recalled_at, m.origin
           FROM {index}
           JOIN memories m ON m.rowid = {index}.rowid
-          WHERE {index} MATCH $q AND m.valid_to IS NULL
+          WHERE {index} MATCH $q AND m.valid_to IS NULL{originFilter}
+            AND NOT (m.tier = 'Working' AND EXISTS (
+                SELECT 1 FROM memories copy
+                WHERE copy.record_id = m.record_id || '#episodic'
+                  AND copy.valid_to IS NULL
+                  AND copy.body = m.body AND copy.source_event_seq IS m.source_event_seq
+            ))
           ORDER BY rank
           LIMIT $candidates
           """;
         cmd.Parameters.AddWithValue("$q", match);
         cmd.Parameters.AddWithValue("$candidates", _options.CandidateLimit);
+        if (excludeOrigins is not null)
+        {
+            var i = 0;
+            foreach (var origin in excludeOrigins) cmd.Parameters.AddWithValue(originParameters[i++], origin);
+        }
 
         var rows = new List<(MemoryCandidate Candidate, double Magnitude)>();
         await using (var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))

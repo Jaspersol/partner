@@ -225,11 +225,11 @@ public sealed partial class ViewEndpointsTests : ApiFixture
             RecordId = "m1",
             Tier = MemoryTier.Procedural,
             Scope = MemoryScope.Retain,
-            Body = "the deploy target is the frankfurt cluster",
+            Body = "the deploy target is the frankfurt cluster, error ERR-4242",
             Importance = 0.9,
         });
 
-        var response = await _http.PostAsJsonAsync("/api/memory/recall", new { query = "frankfurt" });
+        var response = await _http.PostAsJsonAsync("/api/memory/recall", new { query = "ERR-4242", limit = 1 });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var hits = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -238,6 +238,7 @@ public sealed partial class ViewEndpointsTests : ApiFixture
         Assert.Equal("Procedural", hit.GetProperty("tier").GetString());
         Assert.Equal("Retain", hit.GetProperty("scope").GetString());
         Assert.True(hit.GetProperty("createdAt").GetString() is { Length: > 0 });
+        Assert.Contains(hit.GetProperty("reasons").EnumerateArray(), reason => reason.GetString()!.StartsWith("anchor", StringComparison.Ordinal));
     }
 
     [Theory]

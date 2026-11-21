@@ -184,7 +184,7 @@ public sealed record DesktopSettings
     /// <summary>Whether the desktop capability is exposed to the model.</summary>
     public bool Enabled { get; init; }
 
-    /// <summary>Expose command execution separately from desktop control; every command still requires approval.</summary>
+    /// <summary>Expose command execution separately from desktop control; approval follows the current gear.</summary>
     public bool ExecEnabled { get; init; }
 
     /// <summary>Base lease lifetime in milliseconds: how long after an observation actions may still rely on it. Bounded by policy.</summary>

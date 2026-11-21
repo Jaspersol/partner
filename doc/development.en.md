@@ -78,16 +78,7 @@ dotnet run -c Release --project tools/SessionProjectionBenchmark -- measure /tmp
 
 When comparing before and after a change, copy the same benchmark tool into the baseline tree, run it in both trees, and give each run a fresh copy of the original dataset. Open time includes the log repair check and the index rebuild; the peak is the working set of the whole measurement process, not the allocations of a single phase.
 
-Measurements this round (times in ms; peak in bytes):
-
-| Version | Initial events | Open | First projection | Projection after append | Peak working set |
-|---|---:|---:|---:|---:|---:|
-| Before | 100000 | 210.95 | 243.22 | 33.71 | 104202240 |
-| After | 100000 | 278.86 | 264.83 | 0.76 | 85458944 |
-| Before | 1000000 | 1240.16 | 1182.26 | 250.34 | 532164608 |
-| After | 1000000 | 1173.75 | 1304.74 | 0.67 | 413970432 |
-
-The measuring environment and the initial event counts of the generated data were the same, but these are single samples and still need repeating to assess variance. The results show the projection after append and the peak working set going down, the first-projection time going up, and open time moving in different directions at the two sizes. An ordinary append builds the immutable chunk view incrementally; edits, retractions or potential forward references still replay in full, and physical deletion rebuilds the cache.
+An ordinary append builds the immutable chunk view incrementally; edits, retractions or potential forward references still replay in full, and physical deletion rebuilds the cache.
 
 ## API only
 
