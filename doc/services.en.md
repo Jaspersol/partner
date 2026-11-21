@@ -36,6 +36,10 @@ The caller's tools (function calling), streaming and its own conversation histor
 - On a timer (or on shutdown, deletion, or a manual "Flush now") the interactions in the window are summarized into one sentence written to the main memory store, tagged with origin `service:<id>`.
 - It listens on `127.0.0.1` only, never on the LAN. The `model` in a request must equal the configured exposed name, or the service returns 404.
 
+Recall targets only the last text-bearing user message, skipping tool-result-only messages. A short reference may use earlier user text from this request to find candidates, never main-session history. The service excludes its own summaries, labels memories from other services as external, identifies injection as background rather than user speech, and does not update recall timestamps. It budgets after the custom prompt, upstream model and output reservation, including the complete injection wrapper within its own count and token limits. When there is no room, it sends no memory and does not trim client history. OpenAI reserves `max_completion_tokens`, then `max_tokens`, or the upstream maximum if neither is supplied; Anthropic reserves the forwarded `max_tokens`, defaulting it to the upstream maximum. This is a local estimate, not exact upstream metering.
+
+Service summaries can be written after the interaction; a memory's creation time is not the event time and cannot be used to find main-session transcripts by day. External callers cannot access the main session's `session_history`.
+
 ## Creating a service in the UI
 
 The **Memory Services** page in the sidebar:

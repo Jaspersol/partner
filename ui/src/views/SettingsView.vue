@@ -2031,7 +2031,7 @@ defineExpose({ refresh, hasUnsavedChanges })
               </p>
               <SettingRow :label="t('允许执行系统命令')">
                 <template #hint>
-                  {{ t('默认关闭，需同时启用电脑操控。启用后每条命令都需要批准，不受审批挡位或窗口授权影响。命令以系统权限访问文件，不受文件白名单约束。') }}
+                  {{ t('默认关闭，需同时启用电脑操控。仅在全部审批挡位下每条命令需要批准，不受窗口授权影响；其他挡位直接执行。命令以系统权限访问文件，不受文件白名单约束。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.desktop.execEnabled" data-test="desktop-exec-enabled" />
               </SettingRow>
@@ -2145,7 +2145,7 @@ defineExpose({ refresh, hasUnsavedChanges })
 
               <SettingRow :label="t('允许新建和编辑文件')">
                 <template #hint>
-                  <span>{{ t('默认关闭。仅支持 Windows 本地 NTFS，目标须同时位于读取和写入白名单内，每次都须批准。新建不覆盖已有文件；编辑仅支持 UTF-8 并复查预期版本，但外部进程在复查与替换之间修改的内容可能被覆盖。') }}</span>
+                  <span>{{ t('默认关闭。仅支持 Windows 本地 NTFS，目标须同时位于读取和写入白名单内；不审批挡位直接执行，其他挡位每次都须批准。新建不覆盖已有文件；编辑仅支持 UTF-8 并复查预期版本，但外部进程在复查与替换之间修改的内容可能被覆盖。') }}</span>
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.files.writeEnabled" data-test="files-write-enabled" />
               </SettingRow>

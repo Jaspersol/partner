@@ -64,7 +64,7 @@ function writeReceipt(item: SessionItem): { status: ToolRow['status']; path: str
     if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) throw new Error('invalid receipt')
     const value = receipt as Record<string, unknown>
     const path = typeof value.path === 'string' ? value.path : null
-    if (value.status === 'success' && item.meta?.ok === 'true' && value.approval === 'approved' && path?.trim()) return { status: 'ok', path }
+    if (value.status === 'success' && item.meta?.ok === 'true' && (value.approval === 'approved' || value.approval === 'not_requested') && path?.trim()) return { status: 'ok', path }
     if (item.meta?.ok === 'false') {
       if (value.status === 'failed') return { status: 'failed', path }
       if (value.status === 'denied') return { status: 'denied', path }

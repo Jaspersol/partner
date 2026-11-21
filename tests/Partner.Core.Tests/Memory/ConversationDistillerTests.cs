@@ -53,22 +53,24 @@ public sealed class ConversationDistillerTests
     }
 
     [Fact]
-    public void A_statement_about_the_person_is_written_with_the_answer_alongside_it()
+    public void A_statement_is_kept_in_the_users_words()
     {
         var memory = Distill("我用的是公司内网账号 alice");
 
         Assert.NotNull(memory);
         Assert.Equal(7, memory!.SourceEventSeq);
-        Assert.Contains("alice", memory.Body);
+        Assert.Equal("我用的是公司内网账号 alice", memory.Body);
     }
 
     [Fact]
-    public void The_longer_answer_wins_and_the_users_words_are_kept_when_they_are_longer()
+    public void Assistant_restatements_are_not_stored_as_user_facts()
     {
-        var shortAnswer = Distill("我用的是公司内网账号 alice", "好的，知道了。");
-        Assert.NotNull(shortAnswer);
-        Assert.Contains("alice", shortAnswer!.Body);
-        Assert.Contains("好的，知道了。", shortAnswer.Body);
+        var memory = Distill("我用的是公司内网账号 alice", "你的账号是 admin，而且部署已成功。");
+        Assert.NotNull(memory);
+        Assert.Equal("我用的是公司内网账号 alice", memory!.Body);
+        Assert.Equal(1.0, memory.Veracity);
+        Assert.Null(Distill("数据库怎么连", "数据库使用 admin 账号。"));
+        Assert.Null(Distill("帮我检查部署状态", "部署检查通过。"));
     }
 
     [Fact]
@@ -82,7 +84,7 @@ public sealed class ConversationDistillerTests
     [Fact]
     public void A_body_is_capped_because_it_has_to_be_re_injected()
     {
-        var memory = Distill("我用的是公司内网账号 alice", new string('答', 900));
+        var memory = Distill("我用的是" + new string('账', 900), "知道了");
 
         Assert.NotNull(memory);
         Assert.True(memory!.Body.Length <= ConversationDistiller.MaxBodyLength + 1);

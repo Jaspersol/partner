@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Partner.Core.Memory;
 
@@ -36,9 +37,7 @@ public sealed class MemoryScorer : IMemoryScorer
         double vector = ComputeVector(queryEmbedding, candidateEmbedding);
         double fts = ComputeFts(candidate.FtsRank);
         double importance = Clamp01(candidate.Importance);
-        double temporal = ComputeTemporalDecay(
-            candidate.LastRecalledAt is { } recalled && recalled > candidate.CreatedAt ? recalled : candidate.CreatedAt,
-            now);
+        double temporal = ComputeTemporalDecay(candidate.CreatedAt, now);
         double veracity = Clamp01(candidate.Veracity);
         double tier = TierWeight(candidate.Tier);
         double content = ComputeContentAdjustment(candidate.Body);
@@ -46,6 +45,7 @@ public sealed class MemoryScorer : IMemoryScorer
         return new MemoryScore(lexical, vector, fts, importance, temporal, veracity, tier, content)
         {
             Weights = _options,
+            Anchor = ComputeAnchor(query, candidate.Body),
         };
     }
 
@@ -61,6 +61,7 @@ public sealed class MemoryScorer : IMemoryScorer
         AddIfNonZero(reasons, "temporal", score.TemporalDecay);
         AddIfNonZero(reasons, "veracity", score.Veracity);
         AddIfNonZero(reasons, "tier", score.Tier);
+        AddIfNonZero(reasons, "anchor", score.Anchor);
 
         // A fully-zero score has nothing to explain, penalty or not.
         if (reasons.Count == 0)
@@ -74,6 +75,16 @@ public sealed class MemoryScorer : IMemoryScorer
         }
 
         return reasons;
+    }
+
+    private static double ComputeAnchor(string query, string body)
+    {
+        var anchors = MemoryRecallQuery.Anchors(query);
+        if (anchors.Count == 0) return 0;
+        var matched = anchors.Count(anchor => Regex.IsMatch(body,
+            @"(?<![A-Za-z0-9_])(?<![A-Za-z0-9][.-])" + Regex.Escape(anchor) + @"(?![A-Za-z0-9_]|[.-][A-Za-z0-9])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+        return 0.3 * matched / anchors.Count;
     }
 
     /// <summary>Token-overlap between query and body: <c>|query ∩ body| / |query|</c>, case-insensitive.</summary>
@@ -274,5 +285,36 @@ public sealed class MemoryScorer : IMemoryScorer
         }
 
         return value >= 1.0 ? 1.0 : value;
+    }
+}
+
+/// <summary>Conservative query expansion for short, object-free references.</summary>
+public static class MemoryRecallQuery
+{
+    private static readonly Regex AnchorPattern = new(
+        @"(?<![A-Za-z0-9_])(?:[A-Z][A-Z0-9]*[_-][A-Z0-9_-]+|[A-Za-z][A-Za-z0-9_-]*\d[A-Za-z0-9_.-]*|[A-Za-z0-9_-]+\.[A-Za-z0-9][A-Za-z0-9_.-]*)(?![A-Za-z0-9_])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex Reference = new(
+        @"^(?:(?:请|帮我|继续|再|还是|就|按|用|按照|参考|看看|处理|修复|解决|解释|说说|检查|做|改|找|查|分析|关于|那个|这个|上次|之前|刚才|前面|以前|一样|原来|的|那件|这件|那样|这样|一下|怎么|如何|呢|吧|吗|了|？|\?|，|,|。|！|!|\s)+)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    internal static List<string> Anchors(string query) => AnchorPattern.Matches(query)
+        .Select(m => m.Value.TrimEnd('.', '-')).Where(s => s.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>Returns the current query first, followed by at most two recent human messages within 300 characters.</summary>
+    public static string Supplement(string current, IEnumerable<string> previousNewestFirst)
+    {
+        var query = current[..Math.Min(current.Length, 300)];
+        if (query.Length > 32 || Anchors(query).Count != 0 || !Reference.IsMatch(query)
+            || !Regex.IsMatch(query, @"上次|之前|刚才|前面|以前|那个|这个|那件|这件|原来")) return query;
+        var builder = new StringBuilder(query);
+        foreach (var previous in previousNewestFirst.Where(s => !string.IsNullOrWhiteSpace(s)).Take(2))
+        {
+            var available = 300 - builder.Length - 1;
+            if (available <= 0) break;
+            builder.Append('\n').Append(previous.AsSpan(0, Math.Min(previous.Length, available)));
+        }
+        return builder.ToString();
     }
 }

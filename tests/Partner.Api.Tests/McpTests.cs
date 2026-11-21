@@ -155,7 +155,7 @@ public sealed partial class ViewEndpointsTests
         context.Settings.Save(context.Settings.Load() with { Desktop = new DesktopSettings { Enabled = true, Approval = ApprovalGears.None } });
         Assert.Equal(ToolDecision.Deny, governance.Decide("desktop_exec", "{}").Decision);
         context.Settings.Save(context.Settings.Load() with { Desktop = new DesktopSettings { Enabled = true, ExecEnabled = true, Approval = ApprovalGears.None } });
-        Assert.Equal(ToolDecision.Ask, governance.Decide("desktop_exec", "{}").Decision);
+        Assert.Equal(ToolDecision.Allow, governance.Decide("desktop_exec", "{}").Decision);
         context.Settings.Save(context.Settings.Load() with { Desktop = new DesktopSettings { Enabled = false, ExecEnabled = true } });
         Assert.Equal(ToolDecision.Deny, governance.Decide("desktop_exec", "{}").Decision);
     }

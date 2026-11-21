@@ -155,7 +155,7 @@ internal sealed class EnabledDesktopLaunchTool(DesktopLaunchTool inner, Func<boo
         inner.InvokeWhenEnabledAsync(argumentsJson, isEnabled, ct);
 }
 
-/// <summary>Rechecks command permission after approval, immediately before starting the command.</summary>
+/// <summary>Rechecks command permission immediately before starting the command.</summary>
 internal sealed class EnabledDesktopExecTool(ApiContext context) : ITool
 {
     private readonly DesktopExecTool _inner = new(isEnabled: () =>
@@ -216,7 +216,7 @@ internal static class FileToolSet
 internal sealed class LiveFileWriteTool(SettingsStore settings, string workspace, string? agentId) : IPreparedFileWriteTool
 {
     private static readonly UTF8Encoding Utf8 = new(false, true);
-    public ToolSpec Spec { get; } = new("file_write", "在允许的目录内新建 UTF-8 文件，不覆盖已有文件；每次需要批准。",
+    public ToolSpec Spec { get; } = new("file_write", "在允许的目录内新建 UTF-8 文件，不覆盖已有文件；是否批准取决于审批挡位。",
         """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}""");
 
     private bool Authorized(RuntimeSettings current) => FileToolSet.CanWrite(current, agentId);
@@ -252,7 +252,7 @@ internal sealed class LiveFileWriteTool(SettingsStore settings, string workspace
     }
 
     public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
-        Task.FromResult(new ToolResult(false, "denied: file write requires per-call approval"));
+        Task.FromResult(new ToolResult(false, "denied: file write requires prepared execution"));
 
     private sealed class Prepared(SettingsStore settings, RuntimeSettings snapshot, Func<RuntimeSettings, bool> authorized,
         PreparedFileCreate inner, string approvalJson) : IPreparedFileWrite
@@ -286,11 +286,11 @@ internal sealed class LiveFileWriteTool(SettingsStore settings, string workspace
     }
 }
 
-/// <summary>Prepares a version-checked edit for a separately approved commit.</summary>
+/// <summary>Prepares a version-checked edit for a governed commit.</summary>
 internal sealed class LiveFileEditTool(SettingsStore settings, string workspace, string? agentId) : IPreparedFileWriteTool
 {
     private static readonly UTF8Encoding Utf8 = new(false, true);
-    public ToolSpec Spec { get; } = new("file_edit", "在支持事务的本地 NTFS 上精确替换文本；需要读取版本和逐次批准，版本变化时不会提交。",
+    public ToolSpec Spec { get; } = new("file_edit", "在支持事务的本地 NTFS 上精确替换文本；需要读取版本，是否批准取决于审批挡位，版本变化时不会提交。",
         """{"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"},"expected_version":{"type":"string"}},"required":["path","old_text","new_text","expected_version"]}""");
 
     private bool Authorized(RuntimeSettings current) => FileToolSet.CanWrite(current, agentId);
@@ -325,7 +325,7 @@ internal sealed class LiveFileEditTool(SettingsStore settings, string workspace,
     }
 
     public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
-        Task.FromResult(new ToolResult(false, "denied: file edit requires per-call approval"));
+        Task.FromResult(new ToolResult(false, "denied: file edit requires prepared execution"));
 
     private sealed class Prepared(SettingsStore settings, RuntimeSettings snapshot, Func<RuntimeSettings, bool> authorized,
         PreparedFileEdit inner, string approvalJson) : IPreparedFileWrite

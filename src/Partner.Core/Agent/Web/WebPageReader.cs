@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Partner.Core.Agent.Tools;
 
 namespace Partner.Core.Agent.Web;
@@ -64,6 +66,41 @@ public sealed class WebPageReader(WebTransport transport)
         WebTransport.ApplyHeaders(request, WebTransport.AcceptLanguageFor(uri));
 
         var response = await transport.SendAsync(request, ct).ConfigureAwait(false);
+        return ConvertResponse(uri, response, offset, limit);
+    }
+
+    /// <summary>Converts an already-read response without issuing another request.</summary>
+    internal static ToolResult ConvertResponse(Uri requested, WebResponse response, int offset, int limit)
+    {
+        var result = RenderResponse(requested, response, offset, limit);
+        return result with { CheckEvidence = EvidenceFor(requested, response) };
+    }
+
+    private static HttpCheckEvidence? EvidenceFor(Uri requested, WebResponse response)
+    {
+        if (response.Error is not null || response.RedirectCount != 0 || response.FinalUri is not { } final
+            || response.Status is not (>= 200 and < 300) and not (>= 500 and < 600)
+            || !requested.IsAbsoluteUri || !final.IsAbsoluteUri
+            || (requested.Scheme != Uri.UriSchemeHttp && requested.Scheme != Uri.UriSchemeHttps)
+            || requested.UserInfo.Length != 0 || requested.Query.Length != 0)
+        {
+            return null;
+        }
+
+        // Fragments are not sent in HTTP requests. Everything else, including path and port, is part of the key.
+        var target = new UriBuilder(requested) { Fragment = string.Empty }.Uri.AbsoluteUri;
+        var actual = new UriBuilder(final) { Fragment = string.Empty }.Uri.AbsoluteUri;
+        if (!string.Equals(target, actual, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(target));
+        return new HttpCheckEvidence(Convert.ToHexString(hash).ToLowerInvariant(), response.Status);
+    }
+
+    private static ToolResult RenderResponse(Uri uri, WebResponse response, int offset, int limit)
+    {
         if (response.Error is { } error)
         {
             // Already prefixed by the transport (denied: / unreachable: / timeout after …), and the guarded

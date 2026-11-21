@@ -110,6 +110,7 @@ public sealed class ServiceSummarizerTests
     public async Task A_window_is_written_only_after_the_idle_interval_and_replay_does_not_duplicate_it()
     {
         await using var f = await NewAsync(intervalMinutes: 10, maxWaitMinutes: 60);
+        var sourceTime = f.Clock.GetUtcNow();
         await f.Rounds.AppendAsync("user asks X", "prefix", "service answers Y", new[] { "tool_a" }, default);
 
         f.Clock.Advance(TimeSpan.FromMinutes(5));
@@ -123,6 +124,7 @@ public sealed class ServiceSummarizerTests
         Assert.NotNull(memory);
         Assert.StartsWith("[对外服务:Summary]", memory!.Body, StringComparison.Ordinal);
         Assert.Equal(MemoryOrigins.Service("svc"), memory.Origin);
+        Assert.Equal(sourceTime, memory.CreatedAt);
 
         // A crash after the write but before the commit leaves the record behind; replaying the window must not
         // write a second one, and the second flush has nothing left to do.

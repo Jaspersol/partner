@@ -148,7 +148,7 @@ internal sealed class ServiceSummarizer : IAsyncDisposable
                         Scope = MemoryScope.Recall,
                         Body = body,
                         SourceEventSeq = null,
-                        CreatedAt = now,
+                        CreatedAt = snapshot.Rounds.Count == 0 ? now : snapshot.Rounds.Max(round => round.At),
                         Importance = 0.5,
                         Veracity = 0.8,
                         Origin = MemoryOrigins.Service(settings.Id),

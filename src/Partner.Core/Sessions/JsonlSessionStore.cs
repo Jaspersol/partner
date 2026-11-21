@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Partner.Core.Contracts;
 using Partner.Core.Storage;
 
@@ -95,6 +96,24 @@ public sealed class JsonlSessionStore : ISessionStore
         }
     }
 
+    public async Task<long?> AppendIfCurrentAsync(SessionEvent sessionEvent, long expectedLastSeq, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(sessionEvent);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfFaulted();
+        await _writeGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            ThrowIfFaulted();
+            if (Interlocked.Read(ref _assignedSeq) != expectedLastSeq) return null;
+            return await AppendCoreAsync(sessionEvent, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
     /// <summary>Append with the write gate already held.</summary>
     private Task<long> AppendCoreAsync(SessionEvent sessionEvent, CancellationToken ct)
     {
@@ -151,8 +170,7 @@ public sealed class JsonlSessionStore : ISessionStore
     /// because memory records point back at them (<c>MemoryRecord.SourceEventSeq</c>).
     /// </para>
     /// <para>
-    /// Compaction also writes a retraction, but it is lossless: the folded history stays in the log behind the
-    /// summary.
+    /// Compaction is lossless: its checkpoint hides folded history while leaving the original log intact.
     /// </para>
     /// </summary>
     public async Task<PurgeResult> PurgeAsync(long fromSeq, long toSeq, CancellationToken ct = default)
@@ -343,7 +361,8 @@ public sealed class JsonlSessionStore : ISessionStore
                 }
 
                 if (cached.CanIncrement && cached.Pending.All(e =>
-                    e.Kind is not (SessionEventKind.Edit or SessionEventKind.Retract)))
+                    e.Kind is not (SessionEventKind.Edit or SessionEventKind.Retract)
+                    && !SessionProjection.HasCompactedRanges(e)))
                 {
                     baseView = cached.View;
                     pending = new List<SessionEvent>(cached.Pending);
@@ -826,13 +845,53 @@ public static class SessionProjection
         return new SessionView(lastSeq, items.Append(additions));
     }
 
-    public static SessionView Build(IReadOnlyList<SessionEvent> events)
+    public static SessionView Build(IReadOnlyList<SessionEvent> events) => BuildCore(events, false);
+
+    /// <summary>Projects original history while still applying explicit retractions and edits.</summary>
+    public static SessionView BuildHistory(IReadOnlyList<SessionEvent> events) => BuildCore(events, true);
+
+    internal static bool HasCompactedRanges(SessionEvent e) =>
+        e.Kind == SessionEventKind.Summary && e.Meta?.ContainsKey("compactedRanges") == true;
+
+    private static IEnumerable<(long From, long To)> CompactedRanges(SessionEvent e)
+    {
+        if (!HasCompactedRanges(e)) return Array.Empty<(long, long)>();
+        try
+        {
+            var ranges = JsonSerializer.Deserialize<long[][]>(e.Meta!["compactedRanges"]);
+            return ranges?.Where(r => r is { Length: 2 } && r[0] > 0 && r[1] >= r[0] && r[1] < e.Seq)
+                .Select(r => (r[0], r[1])).ToArray() ?? Array.Empty<(long, long)>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<(long, long)>();
+        }
+    }
+
+    private static bool IsLegacyCompaction(SessionEvent e, long from, long to, IReadOnlyDictionary<long, SessionEvent> summaries)
+    {
+        var prefix = $"compacted #{from}..{to} into #";
+        if (!e.Body.StartsWith(prefix, StringComparison.Ordinal)
+            || !long.TryParse(e.Body.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out var summarySeq)
+            || summarySeq >= e.Seq || !summaries.TryGetValue(summarySeq, out var summary)
+            || summary.Meta is null
+            || !summary.Meta.TryGetValue("coveredFrom", out var first)
+            || !summary.Meta.TryGetValue("coveredTo", out var last)
+            || !long.TryParse(first, NumberStyles.None, CultureInfo.InvariantCulture, out var coveredFrom)
+            || !long.TryParse(last, NumberStyles.None, CultureInfo.InvariantCulture, out var coveredTo)) return false;
+        return from >= coveredFrom && to <= coveredTo;
+    }
+
+    private static SessionView BuildCore(IReadOnlyList<SessionEvent> events, bool history)
     {
         ArgumentNullException.ThrowIfNull(events);
 
         var ordered = events.OrderBy(e => e.Seq).ToList();
         var effective = new Dictionary<long, string>();
         var revisions = new Dictionary<long, int>();
+        var summaries = history
+            ? ordered.Where(e => e.Kind == SessionEventKind.Summary).ToDictionary(e => e.Seq)
+            : null;
         var retractions = new List<(long From, long To)>();
         var lastSeq = 0L;
 
@@ -841,9 +900,14 @@ public static class SessionProjection
         {
             lastSeq = Math.Max(lastSeq, e.Seq);
 
+            if (!history && HasCompactedRanges(e))
+            {
+                retractions.AddRange(CompactedRanges(e));
+            }
+
             if (SessionRetraction.TryRead(e, out var from, out var to))
             {
-                retractions.Add((from, to));
+                if (!history || !IsLegacyCompaction(e, from, to, summaries!)) retractions.Add((from, to));
                 continue;
             }
 

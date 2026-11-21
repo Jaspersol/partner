@@ -11,9 +11,8 @@ namespace Partner.Desktop.Tools;
 /// <summary>
 /// The parts of the desktop that are not input: running commands and the clipboard.
 /// <para>
-/// These are the tools the middle approval gear stops. Everything here reaches past the window the model is
-/// looking at — a command can delete a file the model never saw, a clipboard write changes what the user will
-/// paste next.
+/// These operations reach past the window the model is looking at: a command can delete a file the model never
+/// saw, and a clipboard write changes what the user will paste next. Governance applies the current gear.
 /// </para>
 /// </summary>
 /// <summary>

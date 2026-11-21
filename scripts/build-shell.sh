@@ -8,7 +8,7 @@
 # Usage:  bash scripts/build-shell.sh                    (the installer)
 #         SKIP_INSTALLER=1 bash scripts/build-shell.sh (compile the shell only, skip the NSIS package)
 #
-# One build for every purpose; CI ships the same one. See doc/release.md for the build CI runs.
+# One build for every purpose; CI ships the same one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

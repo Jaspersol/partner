@@ -284,6 +284,24 @@ describe('event list', () => {
     expect(wrapper.find('[data-tool=file_write]').text()).toContain('C:\\\\safe\\\\file.txt')
   })
 
+  it.each(['file_write', 'file_edit'])('requires a valid successful receipt for %s', (toolName) => {
+    const cases = [
+      { approval: 'approved', status: 'success', ok: 'true', path: 'C:\\safe\\file.txt', expected: 'ok' },
+      { approval: 'not_requested', status: 'success', ok: 'true', path: 'C:\\safe\\file.txt', expected: 'ok' },
+      { approval: 'denied', status: 'success', ok: 'true', path: 'C:\\safe\\file.txt', expected: 'unconfirmed' },
+      { approval: 'not_requested', status: 'unconfirmed', ok: 'true', path: 'C:\\safe\\file.txt', expected: 'unconfirmed' },
+      { approval: 'not_requested', status: 'success', ok: 'false', path: 'C:\\safe\\file.txt', expected: 'unconfirmed' },
+      { approval: 'not_requested', status: 'success', ok: 'true', path: '  ', expected: 'unconfirmed' },
+    ]
+    for (const { approval, status, ok, path, expected } of cases) {
+      const wrapper = mount(EventList, { props: { selectedSeq: null, items: [
+        { ...baseItem, seq: 1, kind: 'ToolCall', body: toolName, meta: { id: 'file-1', name: toolName, args: '{}' } },
+        { ...baseItem, seq: 2, kind: 'ToolResult', body: JSON.stringify({ path, approval, status }), meta: { id: 'file-1', name: toolName, ok } },
+      ] } })
+      expect(wrapper.find(`[data-tool=${toolName}]`).attributes('data-status')).toBe(expected)
+    }
+  })
+
   it('does not infer success from an old wrapped write result', () => {
     const wrapper = mount(EventList, { props: { selectedSeq: null, items: [
       { ...baseItem, seq: 1, kind: 'ToolCall', body: 'file_write', meta: { id: 'write-1', name: 'file_write', args: '{}' } },

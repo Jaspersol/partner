@@ -10,18 +10,26 @@ Say "my intranet account is alice" once, ask about it in other words later, and 
 
 | Step | What happens |
 |---|---|
-| Write | Distilled automatically at the end of each turn. Desktop tasks only contribute actions that succeeded |
-| Recall | Before each turn, relevant memories are retrieved and injected into the system prompt, up to about 5000 tokens; overflow is marked as truncated |
+| Write | Distilled from the user's own words; scheduled turns and assistant execution paraphrases do not automatically become general memory |
+| Recall | Before each request, relevant memories are inserted as background before the current user message; the allowance is bounded by the configured limit and remaining context, without displacing selected history |
 | Age | Each injected record carries its tier and age, such as `[established, 10 days ago]`, and the model is told what you say now wins |
 | Chinese | A separate bigram full-text index, so Chinese search does not fall back to a table scan |
 
 Sub-agent reports are not stored as memory.
 
+For short references without an explicit subject, recent visible user text can supplement candidate search without replacing the current words. Complete matches of explicit identifiers such as error codes and filenames can receive a bounded boost, explained in `reasons`. The management endpoint `POST /api/memory/recall` searches only the submitted `query`, without conversational context, service-origin exclusions or injection budgets.
+
+Rolling summaries, background recall and source history serve different purposes. Compaction folds older conversation into a rolling summary; facts in that summary are not automatically written to long-term memory. Background recall selects relevant SQLite records each turn. The main agent can also use `session_history` on demand to search the current workspace's history or page through a source by `Seq`; original text is not injected automatically. Search and reads expose the latest revision of text hidden by compaction, but not other withdrawn content. Physically deleted (purged) content cannot be read or recovered from summaries or backups. Tool results contain only text actually recorded; anything truncated before recording cannot be recovered.
+
+`session_history` accepts `day` as `YYYY-MM-DD`, `today`, or `yesterday`, filtering by original event time in the host's local time zone, optionally with `query`. It returns the absolute date and at most eight records. Continue with that date, the original `query`, and the exclusive `beforeSeq`; use `seq` / `offset` to read full text. An empty day does not fall back to another date.
+
+Relevance uses the source record time for age; repeated recall does not make an old fact new. A Working record and its searchable promoted copy do not both occupy retrieval candidates; both remain in the management list.
+
 ## Four tiers
 
 Shown in the UI as **New / Experience / Fact / Method**.
 
-- When a new record conflicts with an older one in the same tier, the old one is marked superseded and linked to its replacement, but not deleted.
+- Similar wording or a shared tier and source does not establish the same fact and does not automatically supersede an older record; explicit revisions can still replace it.
 - Records not recalled for three months drop one tier and are eventually removed by cleanup.
 - You can change a record's tier on the Memory page. Whether something is a fact you rely on is your call.
 
@@ -29,7 +37,7 @@ Shown in the UI as **New / Experience / Fact / Method**.
 
 - See every record, including superseded ones, what replaced them and when they were last used.
 - Filter by tier, with a count per tier.
-- **Pinned**: pinned records are never demoted or cleaned up, but a newer record in the same tier can still correct them.
+- **Pinned**: pinned records are never demoted or cleaned up, but can still be explicitly revised.
 - **Create**: write a memory by hand. It defaults to the Fact tier; length 4–400 characters.
 - Delete a single record.
 

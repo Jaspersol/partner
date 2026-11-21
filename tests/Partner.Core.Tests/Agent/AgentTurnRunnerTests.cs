@@ -5,6 +5,7 @@ using Partner.Core.Agent.Tools;
 using Partner.Core.Contracts;
 using Partner.Core.Queue;
 using Partner.Core.Sessions;
+using Partner.Core.Memory;
 using Partner.Core.Tests.Sessions;
 
 namespace Partner.Core.Tests.Agent;
@@ -19,12 +20,12 @@ internal sealed class FakeTool(string name, Func<string, CancellationToken, Task
             : impl(argumentsJson, ct);
 }
 
-internal sealed class PreparedWriteTestTool(ToolResult? result = null) : IPreparedFileWriteTool
+internal sealed class PreparedWriteTestTool(ToolResult? result = null, string name = "file_write") : IPreparedFileWriteTool
 {
     private readonly ToolResult? _result = result;
     public int Commits { get; private set; }
     public int Disposals { get; private set; }
-    public ToolSpec Spec { get; } = new("file_write", "test", "{\"type\":\"object\"}");
+    public ToolSpec Spec { get; } = new(name, "test", "{\"type\":\"object\"}");
     public Task<ToolResult> InvokeAsync(string argumentsJson, CancellationToken ct = default) =>
         throw new InvalidOperationException("must use prepared operation");
     public IPreparedFileWrite Prepare(string argumentsJson, CancellationToken ct) => new Operation(this);
@@ -183,6 +184,172 @@ public sealed class AgentTurnRunnerTests : IDisposable
     {
         public GovernanceDecision Decide(string toolName, string argumentsJson) => new((ToolDecision)999, "unknown");
     }
+
+    private sealed class AskWriteGovernance : IToolGovernance
+    {
+        public GovernanceDecision Decide(string toolName, string argumentsJson) => new(ToolDecision.Ask, "approval required");
+    }
+
+    [Fact]
+    public async Task Scheduled_runs_keep_history_without_replaying_other_turns_or_distilling_memory()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        await using (var memory = new MemoryStore(Path.Combine(_dir, "memory.db")))
+        {
+            var calls = 0;
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("check", (_, _) =>
+            {
+                calls++;
+                return Task.FromResult(calls is 3 or 4
+                    ? new ToolResult(false, calls == 3 ? "task-a failure" : "task-b failure")
+                    : new ToolResult(true, "checked"));
+            }));
+            var script = Enumerable.Range(0, 5).SelectMany(i => new[] { Call($"call-{i}", "check"), Say($"receipt-{i}") });
+            var llm = new ScriptedLlmClient(script);
+            var hooks = new HookRegistry();
+            hooks.Register(new MemoryDistilHook(memory, store));
+            var assembler = new SessionWindowContextAssembler(store, memory: memory);
+            var runner = Build(store, llm, tools, new AllowListGovernance(["check"]), hooks: hooks, assembler: assembler);
+            for (var i = 0; i < 5; i++)
+            {
+                var task = i == 3 ? "b" : "a";
+                await runner.RunAsync(Claimed(i == 4 ? "重新检查" : "检查", InputSource.Schedule) with
+                {
+                    ItemId = $"scheduled-{i}", Seq = i + 1, IdempotencyKey = $"schedule:{task}:occurrence-{i}",
+                });
+            }
+
+            Assert.Equal(5, calls);
+            Assert.Empty(await memory.ListAsync());
+            var history = await RawAsync(store);
+            Assert.Equal(5, history.Count(e => e.Kind == SessionEventKind.User));
+            var prompt = string.Join("\n", llm.Requests[8].Messages.Select(m => m.Content));
+            Assert.Contains("task-a failure", prompt);
+            Assert.DoesNotContain("task-b failure", prompt);
+            Assert.DoesNotContain("receipt-0", prompt);
+            Assert.DoesNotContain("receipt-1", prompt);
+        }
+    }
+    [Fact]
+    public async Task Scheduled_http_evidence_closes_only_same_task_and_target_and_keeps_original_result()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var a = new string('a', 64);
+            var b = new string('b', 64);
+            var calls = 0;
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("web_fetch", (args, _) =>
+            {
+                calls++;
+                var status = args == "fail" ? 503 : 200;
+                return Task.FromResult(new ToolResult(status == 200, args) { CheckEvidence = new(args == "other" ? b : a, status) });
+            }));
+            var script = new[] { "fail", "fail", "other", "ok", "ok" }
+                .SelectMany((arg, i) => new[] { Call($"c{i}", "web_fetch", arg), Say("done") });
+            var llm = new ScriptedLlmClient(script);
+            var runner = Build(store, llm, tools, new AllowListGovernance(["web_fetch"]));
+            for (var i = 0; i < 5; i++)
+                await runner.RunAsync(Claimed("重新检查", InputSource.Schedule) with
+                {
+                    ItemId = $"s{i}", Seq = i + 1, IdempotencyKey = $"schedule:{(i == 1 ? "b" : "a")}:run{i}",
+                });
+
+            Assert.Equal(5, calls);
+            var history = await RawAsync(store);
+            var first = history.First(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Equal("503", first.Meta!["checkStatus"]);
+            Assert.Equal(a, first.Meta["checkTarget"]);
+            Assert.Equal("fail", first.Body);
+            string Prompt(int run) => string.Join("\n", llm.Requests[run * 2].Messages.Select(m => m.Content));
+            Assert.DoesNotContain("HTTP 503", Prompt(1));
+            Assert.Contains($"#{first.Seq}", Prompt(2));
+            Assert.Contains($"#{first.Seq}", Prompt(3));
+            Assert.DoesNotContain("HTTP 503", Prompt(4));
+            Assert.DoesNotContain("fail", Prompt(4));
+            Assert.Contains((await store.ProjectAsync()).Items, e => e.Seq == first.Seq && e.Body == "fail");
+        }
+    }
+
+    [Fact]
+    public async Task Scheduled_mixed_batch_and_retracted_resolution_recompute_visible_evidence()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var target = new string('a', 64);
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("web_fetch", (args, _) => Task.FromResult(
+                new ToolResult(args != "fail", args) { CheckEvidence = new(target, args == "fail" ? 503 : 200) })));
+            var mixed = new LlmResponse(null, [new LlmToolCall("m1", "web_fetch", "fail"),
+                new LlmToolCall("m2", "web_fetch", "ok")], "tool_calls");
+            var llm = new ScriptedLlmClient([Call("c1", "web_fetch", "fail"), Say("done"), mixed, Say("done"),
+                Call("c2", "web_fetch", "ok"), Say("done"), Call("c3", "web_fetch", "fail"), Say("done")]);
+            var runner = Build(store, llm, tools, new AllowListGovernance(["web_fetch"]));
+            InputItem Item(int i) => Claimed("检查", InputSource.Schedule) with
+            {
+                ItemId = $"s{i}", Seq = i + 1, IdempotencyKey = $"schedule:a:run{i}",
+            };
+            await runner.RunAsync(Item(0));
+            await runner.RunAsync(Item(1));
+            await runner.RunAsync(Item(2));
+            var results = (await RawAsync(store)).Where(e => e.Kind == SessionEventKind.ToolResult).ToArray();
+            Assert.Equal(4, results.Length);
+            Assert.Equal("true", results[1].Meta!["checkBatchMixed"]);
+            Assert.Equal("true", results[2].Meta!["checkBatchMixed"]);
+            Assert.Contains($"#{results[0].Seq}", string.Join("\n", llm.Requests[4].Messages.Select(m => m.Content)));
+            var assembler = new SessionWindowContextAssembler(store);
+            async Task<string> Prompt() => string.Join("\n", (await assembler.AssembleInitialAsync(Item(3), [])).Select(m => m.Content));
+            Assert.DoesNotContain("HTTP 503", await Prompt());
+            await store.AppendAsync(new SessionEvent { Kind = SessionEventKind.Retract, Source = InputSource.Text,
+                Body = "retract resolution", Meta = SessionRetraction.Single(results[3].Seq) });
+            Assert.Contains($"#{results[0].Seq}", await Prompt());
+            await store.AppendAsync(new SessionEvent { Kind = SessionEventKind.Edit, Source = InputSource.Text,
+                EditedFromSeq = results[0].Seq, Body = "edited misleading 200" });
+            Assert.Contains("HTTP 503", await Prompt());
+            Assert.DoesNotContain("edited misleading", await Prompt());
+            await store.PurgeAsync(results[0].Seq, results[0].Seq);
+            Assert.DoesNotContain("HTTP 503", await Prompt());
+            await runner.RunAsync(Item(4));
+            var reopened = (await RawAsync(store)).Last(e => e.Kind == SessionEventKind.ToolResult);
+            Assert.Contains($"#{reopened.Seq}", await Prompt());
+        }
+    }
+
+    [Fact]
+    public async Task Scheduled_ordinary_failure_is_a_clue_not_business_state_and_evidence_requires_scheduled_identity()
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var tools = new InMemoryToolRegistry();
+            tools.Register(new FakeTool("web_fetch", (_, _) => Task.FromResult(new ToolResult(false, "old failure")
+                { CheckEvidence = new(new string('a', 64), 503) })));
+            tools.Register(new FakeTool("ordinary", (_, _) => Task.FromResult(new ToolResult(false, "ordinary failure"))));
+            var llm = new ScriptedLlmClient([Call("a", "web_fetch"), Say("done"), Call("b", "ordinary"), Say("done")]);
+            var runner = Build(store, llm, tools, new AllowListGovernance(["web_fetch", "ordinary"]));
+            await runner.RunAsync(Claimed());
+            await runner.RunAsync(Claimed("检查", InputSource.Schedule) with
+            {
+                ItemId = "s1", IdempotencyKey = "schedule:a:1",
+            });
+            var results = (await RawAsync(store)).Where(e => e.Kind == SessionEventKind.ToolResult).ToArray();
+            Assert.False(results[0].Meta!.ContainsKey("checkKind"));
+            var assembler = new SessionWindowContextAssembler(store);
+            var messages = await assembler.AssembleInitialAsync(Claimed("检查", InputSource.Schedule) with
+            {
+                ItemId = "s2", IdempotencyKey = "schedule:a:2",
+            }, []);
+            var prompt = string.Join("\n", messages.Select(m => m.Content));
+            Assert.Contains("ordinary failure", prompt);
+            Assert.Contains("不是业务状态", prompt);
+            Assert.DoesNotContain("HTTP 503", prompt);
+        }
+    }
+
 
     [Fact]
     public async Task An_unknown_governance_decision_never_executes_the_tool()
@@ -407,7 +574,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Prepared_file_write_always_asks_and_persists_no_preview(bool approved)
+    public async Task Prepared_file_write_asks_when_required_and_persists_no_preview(bool approved)
     {
         var (store, _) = JsonlSessionStore.Open(_dir);
         await using (store)
@@ -421,7 +588,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
                 Call("write-1", "file_write", "{\"path\":\"C:\\\\safe\\\\new.txt\",\"content\":\"private-content\"}"),
                 Say("done"),
             });
-            await Build(store, llm, tools, new AllowListGovernance(new[] { "file_write" }), approval).RunAsync(Claimed());
+            await Build(store, llm, tools, new AskWriteGovernance(), approval).RunAsync(Claimed());
 
             Assert.Single(approval.Requests);
             Assert.DoesNotContain("private-content", approval.Requests[0]);
@@ -440,6 +607,31 @@ public sealed class AgentTurnRunnerTests : IDisposable
     }
 
     [Theory]
+    [InlineData("file_write")]
+    [InlineData("file_edit")]
+    public async Task Prepared_file_operation_commits_without_approval_when_allowed(string name)
+    {
+        var (store, _) = JsonlSessionStore.Open(_dir);
+        await using (store)
+        {
+            var writer = new PreparedWriteTestTool(name: name);
+            var tools = new InMemoryToolRegistry();
+            tools.Register(writer);
+            var approval = new RecordingWriteApproval(false);
+            var llm = new ScriptedLlmClient([Call("write-1", name, "{}"), Say("done")]);
+            await Build(store, llm, tools, new AllowListGovernance([name]), approval).RunAsync(Claimed());
+
+            Assert.Empty(approval.Requests);
+            Assert.Equal(1, writer.Commits);
+            Assert.Equal(1, writer.Disposals);
+            var result = Assert.Single(await RawAsync(store), e => e.Kind == SessionEventKind.ToolResult);
+            using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
+            Assert.Equal("success", receipt.RootElement.GetProperty("status").GetString());
+            Assert.Equal("not_requested", receipt.RootElement.GetProperty("approval").GetString());
+        }
+    }
+
+    [Theory]
     [InlineData("conflict: target already exists", "failed")]
     [InlineData("file write status unconfirmed; verify before retrying", "unconfirmed")]
     [InlineData("denied: file write authorization changed", "denied")]
@@ -451,7 +643,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
             var tools = new InMemoryToolRegistry();
             tools.Register(new PreparedWriteTestTool(new ToolResult(false, content)));
             var llm = new ScriptedLlmClient([Call("write-1", "file_write", "{\"content\":\"private-content\"}"), Say("done")]);
-            await Build(store, llm, tools, new AllowListGovernance(["file_write"]), new RecordingWriteApproval(true)).RunAsync(Claimed());
+            await Build(store, llm, tools, new AskWriteGovernance(), new RecordingWriteApproval(true)).RunAsync(Claimed());
             var events = await RawAsync(store);
             var result = Assert.Single(events, e => e.Kind == SessionEventKind.ToolResult);
             using var receipt = System.Text.Json.JsonDocument.Parse(result.Body);
@@ -473,7 +665,7 @@ public sealed class AgentTurnRunnerTests : IDisposable
             var approval = new RecordingWriteApproval(false);
             var llm = new ScriptedLlmClient([
                 Call("first", "file_write", "{}"), Call("retry", "file_write", "{}"), Say("done")]);
-            await Build(store, llm, tools, new AllowListGovernance(["file_write"]), approval).RunAsync(Claimed());
+            await Build(store, llm, tools, new AskWriteGovernance(), approval).RunAsync(Claimed());
             Assert.Single(approval.Requests);
             Assert.Equal(0, writer.Commits);
             var events = await RawAsync(store);

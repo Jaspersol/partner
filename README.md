@@ -4,7 +4,7 @@
 
 ### A Ready-to-Use, Single-Session Desktop AI Assistant for Windows
 
-**One continuous conversation you can type or speak to; with memory, schedules, MCP, Skills, and sub-agents that operate your desktop, asking you before they act. Through Memory Services — a general-purpose API that keeps historical memory — your Partner plugs seamlessly into game AI mods, plugins and other agents.**
+**One continuous conversation you can type or speak to; with memory, schedules, MCP, Skills, and sub-agents that operate your desktop under your chosen approval level. Through Memory Services — a general-purpose API that keeps historical memory — your Partner plugs seamlessly into game AI mods, plugins and other agents.**
 
 [![Version](https://img.shields.io/github/v/release/Jaspersol/partner?color=blue&label=version)](https://github.com/Jaspersol/partner/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey.svg)](https://github.com/Jaspersol/partner/releases)
@@ -24,7 +24,7 @@ Most agent tools make you manage sessions, pick a model per chat, and type every
 
 - **One Session, Nothing to Manage** — Typed messages, voice, scheduled tasks, and sub-agent reports all go into the same log and run in the order they arrive. No sessions to create, name, switch, or clean up
 - **Voice, Local or Your Own** — Wake word, phrase splitting, recognition, sentence-by-sentence read-aloud, and spoken approval, using downloadable local engines or your own ASR/TTS services
-- **Desktop Control With Approval** — Requests that need a window or a file go to a background sub-agent. By default it asks before every action, and no answer counts as a refusal
+- **Desktop Control With Approval** — Requests that need a window or a file go to a background sub-agent. Approval depends on the action and level; no answer to a prompt counts as a refusal
 - **Memory That Stays Visible** — Preferences you mention are kept in a local database. You can browse, re-tier, pin, and delete every record
 - **Connect External Agents & Plugins** — Give a game AI mod, an editor or browser plugin, or another agent framework a local OpenAI/Anthropic-compatible endpoint, and your own Partner joins any platform that accepts a model address: each request gets the relevant memories, and summaries of the exchange go back into the main memory
 - **Schedules, MCP & Skills** — Run a sentence on a cron, interval, or one-off time; connect stdio MCP servers; teach the model routines with `SKILL.md`
@@ -78,7 +78,7 @@ Settings → General → "Check for updates". The check uses the GitHub REST API
 1. **Configure a Model**: Open Settings → Chat model. Pick the API format (OpenAI-compatible or Anthropic), enter the endpoint URL, choose a model from the list, and add an API key if needed. Saving applies immediately
 2. **Send a Message**: Type in the main window. If no model is configured, the message waits in the queue and the input area says what is missing
 3. **Turn On Voice (optional)**: Download engines under Settings → Local engines, or enter your service URLs under Settings → Voice input / Voice output. See [Voice](doc/voice.en.md)
-4. **Turn On Desktop Control (optional)**: Enable Settings → Computer control → "Let the assistant operate the computer", then enable the Computer control sub-agent when prompted. Each action needs you to click Allow in the prompt above the input box
+4. **Turn On Desktop Control (optional)**: Enable Settings → Computer control → "Let the assistant operate the computer", then enable the Computer control sub-agent when prompted. When approval is required, click Allow in the prompt above the input box
 
 The model can also be set with environment variables. Values from the settings page win:
 
@@ -140,7 +140,7 @@ For detailed guides on every feature, see the **[documentation index](doc/README
 - **Two scenes** — `desktop` (built in) and `file-read` (read-only, off by default, limited to a directory allowlist)
 - **Retries** — A job runs up to 5 rounds by default (1–10) within 15 minutes. Success needs evidence from the sub-agent; if every round fails, the main agent reports the failure instead of claiming success
 - **Find the control, then act** — Actions target a control ID rather than guessed coordinates. Buttons, list items, and checkboxes are invoked through UI Automation without bringing the window to the front; Chromium/Electron page controls are read the same way without a debugging port
-- **Approval levels** — Switch between "No approval", "Approve risky actions", and "Approve everything" (default) from the input area. Commands, launches, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) ask every time
+- **Approval levels** — Switch between "No approval", "Approve risky actions", and "Approve everything" (default) from the input area. Commands require approval only under "Approve everything"; file writes and edits require approval at both levels except "No approval". Launches, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) require approval under the two approval levels
 - **Guardrails** — Keys and typing need the target window and the named control to have focus, out-of-range coordinates are refused rather than clamped, password fields never return their value, and results report "posted" and "did the screen change" separately
 - **Window allowlist** — Limit control to named windows. Screenshots need a model with "Can see images" turned on
 
@@ -226,7 +226,7 @@ Conversations go to the model endpoint you configured. Web search is on by defau
 <details>
 <summary><strong>Why does the assistant keep asking for approval?</strong></summary>
 
-"Approve everything" is the default level for desktop control, so every UI action asks and no answer counts as a refusal. Change the level from the drop-down in the chat input area. "Approve risky actions" asks for running commands, launching programs, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc). Under the default level, one approval lets the same window continue for 10 more steps within 10 minutes. MCP tools use their own per-server "Skip approval" list instead of this level.
+"Approve everything" is the default level for desktop control; no answer to a prompt counts as a refusal. Change the level from the drop-down in the chat input area. "Approve risky actions" asks for launches, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc), but not commands. Commands ask only under "Approve everything". File writes and edits ask at both levels except "No approval". Under the default level, one approval lets the same window continue for 10 more steps within 10 minutes. MCP tools use their own per-server "Skip approval" list instead of this level.
 
 </details>
 
@@ -257,7 +257,7 @@ bash scripts/build-shell.sh      # build the NSIS installer
 bash scripts/ci.sh               # full checks; SKIP_SHELL=1 skips the shell build
 ```
 
-Debugging and running the API or frontend on their own: [Development](doc/development.en.md). Releases: [Release](doc/release.en.md).
+Debugging and running the API or frontend on their own: [Development](doc/development.en.md).
 
 ### Project Layout
 
