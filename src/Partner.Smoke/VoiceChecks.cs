@@ -222,7 +222,7 @@ internal static partial class Program
                 gate,
                 log.Add);
 
-            output.OnText("this will fail.", sessionEventSeq: 1);
+            output.OnText("this will fail。", sessionEventSeq: 1);
             var played = await output.PlayPendingAsync();
 
             Check("voice: a dead TTS service fails visibly without stalling playback",
@@ -258,24 +258,24 @@ internal static partial class Program
         {
             for (var i = 0; i < 20000; i++)
             {
-                output.OnText($"Sentence {i}.", i + 1);
+                output.OnText($"Sentence {i}。", i + 1);
                 await output.PlayPendingAsync();
             }
             Check("voice: completed speech history is bounded without changing total count",
                 output.TotalCount == 20000 && output.Items.Count <= 256 && output.SentencesEmpty,
                 $"total={output.TotalCount} retained={output.Items.Count}");
 
-            output.OnText("Interrupted sentence.", 20001);
+            output.OnText("Interrupted sentence。", 20001);
             output.StopPlayback();
             output.ResumeAfterInterruption();
-            output.OnText("Next sentence.", 20002);
+            output.OnText("Next sentence。", 20002);
             await output.PlayPendingAsync();
             Check("voice: interrupted output can speak a later sentence",
-                output.Items.Any(i => i.Text == "Next sentence." && i.Status == SpeechStatus.Played)
-                && output.Items.Any(i => i.Text == "Interrupted sentence." && i.Status == SpeechStatus.Failed));
+                output.Items.Any(i => i.Text == "Next sentence。" && i.Status == SpeechStatus.Played)
+                && output.Items.Any(i => i.Text == "Interrupted sentence。" && i.Status == SpeechStatus.Failed));
 
-            output.OnText("Repeat this sentence.", 20003);
-            output.OnText("Repeat this sentence.", 20004);
+            output.OnText("Repeat this sentence。", 20003);
+            output.OnText("Repeat this sentence。", 20004);
             output.Say("Approval prompt.", SpeechKind.ApprovalPrompt, tag: "approval", priority: true);
             output.Say("Approval result.", SpeechKind.ApprovalResult, priority: true);
             var pending = output.Items.Where(i => i.Status == SpeechStatus.Queued).ToArray();
