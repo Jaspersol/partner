@@ -269,10 +269,13 @@ public sealed partial class SubAgentHost : IAsyncDisposable
             return null;
         }
 
+        // A job is published before its background worker creates the session log (and a queued job may not
+        // start for some time). A known job therefore has an empty session until its first event is written.
+        var known = Job(jobId) is not null;
         var root = Path.Combine(_workspace, "agents");
         if (!Directory.Exists(root))
         {
-            return null;
+            return known ? Array.Empty<Partner.Core.Sessions.SessionEvent>() : null;
         }
 
         foreach (var agentDirectory in Directory.EnumerateDirectories(root))
@@ -297,7 +300,7 @@ public sealed partial class SubAgentHost : IAsyncDisposable
             return events;
         }
 
-        return null;
+        return known ? Array.Empty<Partner.Core.Sessions.SessionEvent>() : null;
     }
 
     /// <summary>
