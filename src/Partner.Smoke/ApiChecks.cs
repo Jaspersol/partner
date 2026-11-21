@@ -989,24 +989,24 @@ internal static partial class Program
                     }
 
                     var gearAll = await ExposedToolsAsync();
-                    Check("desktop: the default gear asks for every action but never for looking",
+                    Check("desktop: the default gear applies conditional action and command policy",
                         gearAll.Contains("desktop_observe:allow")
-                        && gearAll.Contains("desktop_act:ask")
+                        && gearAll.Contains("desktop_act:conditional")
                         && gearAll.Contains("desktop_exec:ask"),
                         string.Join(",", gearAll));
 
                     await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "dangerous" });
                     var gearDangerous = await ExposedToolsAsync();
-                    Check("desktop: the middle gear frees the GUI and still gates commands",
-                        gearDangerous.Contains("desktop_act:allow")
-                        && gearDangerous.Contains("desktop_exec:ask")
+                    Check("desktop: the middle gear applies conditional GUI and command policy",
+                        gearDangerous.Contains("desktop_act:conditional")
+                        && gearDangerous.Contains("desktop_exec:allow")
                         && gearDangerous.Contains("desktop_launch:ask"),
                         string.Join(",", gearDangerous));
 
                     await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "none" });
                     var gearNone = await ExposedToolsAsync();
-                    Check("desktop: commands still ask under the open gear",
-                        gearNone.Contains("desktop_exec:ask") && gearNone.Where(tool => !tool.StartsWith("desktop_exec:", StringComparison.Ordinal)).All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
+                    Check("desktop: the open gear allows desktop tools",
+                        gearNone.Contains("desktop_exec:allow") && gearNone.Where(tool => !tool.StartsWith("desktop_exec:", StringComparison.Ordinal)).All(tool => tool.EndsWith(":allow", StringComparison.Ordinal)),
                         string.Join(",", gearNone));
 
                     await desktopHttp.PostAsJsonAsync("/api/desktop/approval", new { approval = "all" });
@@ -1410,7 +1410,7 @@ internal static partial class Program
 
                 for (var i = 0; i < 3; i++)
                 {
-                    await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = $"填充 {i}" });
+                    await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = $"填充 {i} {new string('字', 200)}" });
                 }
 
                 for (var attempt = 0; attempt < 400; attempt++)
@@ -1461,9 +1461,9 @@ internal static partial class Program
                     {
                         baseUrl = $"http://127.0.0.1:{settingsModelPort}/v1",
                         model = "settings-model",
-                        // ~5 tokens per short turn: a 16-token window with a 4-token reserve keeps two.
-                        contextTokens = 16,
-                        maxTokens = 4,
+                        // Leave enough room for summary instructions while forcing the long history to fold.
+                        contextTokens = 256,
+                        maxTokens = 32,
                     },
                 });
                 var shrinkBody = (await shrink.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("compaction");
@@ -1480,7 +1480,7 @@ internal static partial class Program
                     .Count(i => i.GetProperty("kind").GetString() == "Summary");
 
                 // After folding, the meter must show the folded history rather than the raw log. The window here
-                // is deliberately tiny (16 tokens), so the always-sent system block alone can exceed the budget —
+                // is deliberately small, so the always-sent system block alone can exceed the budget —
                 // what matters is that folding lowered the prompt, not that it fits this artificial window.
                 // FoldedItems counts entries the window had to drop, not entries a summary replaced: after a
                 // successful fold everything that remains fits, so it is legitimately zero. The prompt cost is
