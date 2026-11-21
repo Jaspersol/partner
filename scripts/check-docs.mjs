@@ -42,6 +42,10 @@ const SCAN_EXTENSIONS = new Set(['.md', '.ts', '.vue', '.css', '.cs', '.json', '
  */
 const EXEMPT = new Map([
   ['SKILL.md', 'a workspace artifact read at runtime: <workspace>/skills/<id>/SKILL.md, never a repo file'],
+  // OMP local memory backend artifacts, generated outside this repository.
+  ['MEMORY.md', 'OMP local memory backend artifact, not a repo document'],
+  ['memory_summary.md', 'OMP local memory backend summary, not a repo document'],
+  ['learned.md', 'OMP local memory backend lessons, not a repo document'],
   // Upload fixtures: file names the skill-upload tests send, not documents anyone reads.
   ['my-skill.md', 'skill-upload fixture name in tests/Partner.Api.Tests/SkillEndpointsTests.cs'],
   ['bad.md', 'skill-upload fixture name in SkillEndpointsTests.cs and ui/tests/views.test.ts'],
