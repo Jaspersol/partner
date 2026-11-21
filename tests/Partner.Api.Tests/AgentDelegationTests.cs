@@ -690,6 +690,29 @@ public sealed class AgentDelegationTests : ApiFixture, IDisposable
     }
 
     [Fact]
+    public async Task A_queued_job_has_an_empty_session_before_its_log_is_created()
+    {
+        await EnableReaderAsync();
+        var gated = new GatedLlm(new ScriptedLlmClient([Report("s1", true, "完成"), Say("完成")]));
+        _llm.Sub = gated;
+        Assert.True(_consumer.Agents.Start("file-read", "第一个任务", null).Started);
+        await gated.Started.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            var queued = _consumer.Agents.Start("file-read", "第二个任务", null);
+            Assert.True(queued.Started);
+            var session = await _http.GetFromJsonAsync<JsonElement>($"/api/agent-jobs/{queued.Job!.Id}/session");
+            Assert.Empty(session.GetProperty("items").EnumerateArray());
+            Assert.Equal(System.Net.HttpStatusCode.NotFound,
+                (await _http.GetAsync("/api/agent-jobs/job-unknown/session")).StatusCode);
+        }
+        finally
+        {
+            gated.Release();
+        }
+    }
+
+    [Fact]
     public async Task A_running_job_cannot_call_a_family_after_losing_its_scenario()
     {
         await EnableReaderAsync();
