@@ -498,6 +498,53 @@ pub(crate) struct PetCursorReport {
 }
 
 #[cfg(partner_pet)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PetBubbleBounds {
+    x: i32,
+    y: i32,
+    scale: f64,
+    work_area: Option<PetRect>,
+}
+
+#[cfg(partner_pet)]
+#[tauri::command]
+pub(crate) fn pet_bubble_bounds(
+    caller: tauri::WebviewWindow,
+    app: AppHandle,
+    model_center_x: f64,
+    model_center_y: f64,
+) -> Result<PetBubbleBounds, String> {
+    require_caller(&caller, &[PET_LABEL])?;
+    let window = pet_window(&app)?;
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let monitor = window
+        .monitor_from_point(
+            f64::from(position.x) + model_center_x * scale,
+            f64::from(position.y) + model_center_y * scale,
+        )
+        .ok()
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
+    let work_area = monitor.map(|monitor| {
+        let work = monitor.work_area();
+        PetRect {
+            x: work.position.x,
+            y: work.position.y,
+            width: work.size.width,
+            height: work.size.height,
+        }
+    });
+    Ok(PetBubbleBounds {
+        x: position.x,
+        y: position.y,
+        scale,
+        work_area,
+    })
+}
+
+#[cfg(partner_pet)]
 #[tauri::command]
 pub(crate) fn get_pet_enabled(caller: tauri::WebviewWindow) -> Result<bool, String> {
     require_caller(&caller, &[MAIN_LABEL])?;
@@ -591,11 +638,29 @@ pub(crate) fn pet_set_size(
     app: AppHandle,
     width: f64,
     height: f64,
+    shift_x: Option<f64>,
 ) -> Result<(), String> {
     require_caller(&caller, &[MAIN_LABEL, PET_LABEL])?;
-    pet_window(&app)?
+    let window = pet_window(&app)?;
+    let shifted = if let Some(shift) = shift_x.filter(|shift| *shift != 0.0) {
+        let position = window.outer_position().map_err(|error| error.to_string())?;
+        let scale = window.scale_factor().map_err(|error| error.to_string())?;
+        Some(PhysicalPosition::new(
+            position.x.saturating_add((shift * scale).round() as i32),
+            position.y,
+        ))
+    } else {
+        None
+    };
+    window
         .set_size(LogicalSize::new(width, height))
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if let Some(position) = shifted {
+        window
+            .set_position(position)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(partner_pet)]

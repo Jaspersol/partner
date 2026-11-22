@@ -182,6 +182,7 @@ pub fn run() {
         pet::set_pet_enabled,
         pet::pet_set_passthrough,
         pet::pet_cursor,
+        pet::pet_bubble_bounds,
         pet::pet_move_by,
         pet::pet_set_size,
         pet::pet_always_on_top,

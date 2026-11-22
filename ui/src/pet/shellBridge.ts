@@ -4,6 +4,8 @@
  * `@tauri-apps/api`. Outside the desktop shell `petShell()` answers null and the page is a plain web page.
  */
 
+import type { BubbleRect } from './speechBubble'
+
 interface TauriInternals {
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>
   transformCallback(callback: (event: { payload?: unknown }) => void): number
@@ -19,11 +21,19 @@ interface PetCursor {
   scale: number
 }
 
+interface PetBubbleBounds {
+  x: number
+  y: number
+  scale: number
+  workArea: BubbleRect | null
+}
+
 export interface PetShell {
   cursor(): Promise<PetCursor>
   setPassthrough(on: boolean): Promise<void>
   moveBy(dx: number, dy: number): Promise<void>
-  setSize(width: number, height: number): Promise<void>
+  bubbleBounds(modelCenterX: number, modelCenterY: number): Promise<PetBubbleBounds>
+  setSize(width: number, height: number, shiftX: number): Promise<void>
   /** The pet's own always-on-top switch; the shell opens the window on top, so it has to be told otherwise. */
   setAlwaysOnTop(on: boolean): Promise<void>
   /** Calls `listener` with each visibility boolean the shell emits on `partner:pet`. */
@@ -60,8 +70,10 @@ export function petShell(): PetShell | null {
       // Physical pixels, rounded: the command takes i32 and a fractional pixel would be truncated anyway.
       await tauri.invoke('pet_move_by', { dx: Math.round(dx), dy: Math.round(dy) })
     },
-    setSize: async (width, height) => {
-      await tauri.invoke('pet_set_size', { width, height })
+    bubbleBounds: async (modelCenterX, modelCenterY) =>
+      (await tauri.invoke('pet_bubble_bounds', { modelCenterX, modelCenterY })) as PetBubbleBounds,
+    setSize: async (width, height, shiftX) => {
+      await tauri.invoke('pet_set_size', { width, height, shiftX })
     },
     setAlwaysOnTop: async (on) => {
       await tauri.invoke('pet_always_on_top', { enabled: on })

@@ -31,6 +31,7 @@ import { matchEmotion, type Dictionary } from './emotion'
 import { startFeed, type FeedHandle } from './feed'
 import { OPAQUE_ALPHA, PetInput, type ClickZone, type InputHost } from './input'
 import { convertFileSrc, petShell, type PetShell } from './shellBridge'
+import { BUBBLE_HEIGHT, BUBBLE_WIDTH, bubbleFrame, bubbleText, type BubbleFrame, type BubbleRect } from './speechBubble'
 
 /** How long a missing Core counts as "still loading". */
 const CORE_TIMEOUT_MS = 10_000
@@ -159,6 +160,8 @@ class SpriteRuntime implements ActionRuntime {
 class PetApp {
   private readonly api: PetApi
   private readonly element: HTMLElement
+  private readonly bubble: HTMLDivElement
+  private readonly bubbleContent: HTMLDivElement
   private shell: PetShell | null
 
   /** Set by {@link mount}, which is the only place the Core is known to exist. */
@@ -186,12 +189,28 @@ class PetApp {
   private crop: { minX: number; minY: number; width: number; height: number } | null = null
   /** Resting visible figure bounds as fractions of the uncropped model canvas. */
   private figureBounds: { top: number; height: number } | null = null
+  private modelFrame: { width: number; height: number; spriteX: number } | null = null
+  private windowFrame: BubbleFrame | null = null
+  private layoutRequested = false
+  private layoutTask: Promise<void> | null = null
+  private speaking = false
+  private latestReply: string | null = null
   private tickHandler: ((ticker: Ticker) => void) | null = null
 
   constructor(api: PetApi, element: HTMLElement) {
     this.api = api
     this.element = element
     this.shell = petShell()
+    this.bubble = document.createElement('div')
+    this.bubble.className = 'speech-bubble'
+    this.bubble.hidden = true
+    this.bubble.setAttribute('role', 'status')
+    this.bubble.setAttribute('aria-live', 'polite')
+    this.bubble.style.width = `${BUBBLE_WIDTH}px`
+    this.bubble.style.height = `${BUBBLE_HEIGHT}px`
+    this.bubbleContent = document.createElement('div')
+    this.bubbleContent.className = 'speech-bubble-text'
+    this.bubble.append(this.bubbleContent)
   }
 
   async start(): Promise<void> {
@@ -284,10 +303,7 @@ class PetApp {
     const rebuilt = model.id !== this.model?.id
 
     if (rebuilt) {
-      const wasSpeaking = this.director?.isSpeaking ?? false
       await this.mount(model)
-      // The new director starts silent, so a pet that was talking would forget it until the next speech edge.
-      if (wasSpeaking) this.director?.speaking(true)
     } else {
       this.actions?.configure(
         profileMapping(this.settings, model.id),
@@ -366,7 +382,7 @@ class PetApp {
     Config.crossOrigin = 'anonymous'
 
     const canvas = document.createElement('canvas')
-    this.element.replaceChildren(canvas)
+    this.element.replaceChildren(canvas, this.bubble)
 
     const app = new Application()
     await app.init({
@@ -423,6 +439,8 @@ class PetApp {
       },
       this.directorSettings(),
     )
+    this.director.speaking(this.speaking)
+    if (this.speaking) this.setBubble(this.latestReply)
     // The layer writes inside the model's own update, between its effects and its physics, so the procedural
     // offsets drive physics outputs (hair, smoothed `*2` chains) too. See `ui/patches/easy-live2d+1.1.0.patch`.
     sprite.onBeforePhysics((parameters) => this.actions?.apply(parameters))
@@ -452,6 +470,9 @@ class PetApp {
     this.actions = null
     this.crop = null
     this.figureBounds = null
+    this.modelFrame = null
+    this.bubble.hidden = true
+    this.bubbleContent.textContent = ''
 
     if (this.sprite !== null) {
       this.sprite.destroy()
@@ -462,6 +483,62 @@ class PetApp {
       this.app = null
     }
     this.element.replaceChildren()
+  }
+
+  private setBubble(body: string | null): void {
+    const text = body === null ? '' : bubbleText(body)
+    if (text === this.bubbleContent.textContent) return
+    if (text === '') this.bubble.hidden = true
+    this.bubbleContent.textContent = text
+    this.requestWindowLayout()
+  }
+
+  private requestWindowLayout(): void {
+    this.layoutRequested = true
+    this.layoutTask ??= this.layoutWindow().catch((error: unknown) => this.report(error)).finally(() => {
+      this.layoutTask = null
+      if (this.layoutRequested) this.requestWindowLayout()
+    })
+  }
+
+  private async layoutWindow(): Promise<void> {
+    while (this.layoutRequested) {
+      this.layoutRequested = false
+      const { app, sprite, modelFrame, windowFrame, shell } = this
+      if (app === null || sprite === null || modelFrame === null) continue
+
+      const offsetX = windowFrame?.modelOffsetX ?? 0
+      const show = Boolean(this.bubbleContent.textContent)
+      let workArea: BubbleRect | null = null
+      if (show && shell !== null) {
+        const bounds = await shell.bubbleBounds(offsetX + modelFrame.width / 2, modelFrame.height / 2)
+        if (bounds.workArea !== null) {
+          workArea = {
+            x: (bounds.workArea.x - bounds.x) / bounds.scale,
+            y: (bounds.workArea.y - bounds.y) / bounds.scale,
+            width: bounds.workArea.width / bounds.scale,
+            height: bounds.workArea.height / bounds.scale,
+          }
+        }
+      }
+      if (this.modelFrame !== modelFrame || show !== Boolean(this.bubbleContent.textContent)) continue
+
+      const { width, height, modelOffsetX, bubble } = bubbleFrame({ ...modelFrame, x: offsetX, y: 0 }, workArea, show)
+      if (bubble === null) this.bubble.hidden = true
+      if (width !== windowFrame?.width || height !== windowFrame.height || modelOffsetX !== offsetX) {
+        await shell?.setSize(width, height, offsetX - modelOffsetX)
+      }
+      this.windowFrame = { width, height, modelOffsetX, bubble }
+      if (this.modelFrame !== modelFrame) continue
+
+      sprite.x = modelFrame.spriteX + modelOffsetX
+      if (app.screen.width !== width || app.screen.height !== height) app.renderer.resize(width, height)
+      if (bubble !== null && this.bubbleContent.textContent) {
+        this.bubble.style.left = `${bubble.x}px`
+        this.bubble.style.top = `${bubble.y}px`
+        this.bubble.hidden = false
+      }
+    }
   }
 
   /**
@@ -507,7 +584,8 @@ class PetApp {
       const measured = this.opaqueBounds()
       if (measured === null) {
         // An unmeasurable model keeps the whole canvas rather than being clipped to a guess.
-        void this.shell?.setSize(fullWidth, fullHeight)
+        this.modelFrame = { width: fullWidth, height: fullHeight, spriteX: 0 }
+        this.requestWindowLayout()
         return
       }
       this.figureBounds = { top: measured.minY / fullHeight, height: measured.height / fullHeight }
@@ -550,13 +628,11 @@ class PetApp {
     const scaleX = spriteWidth / fullWidth
     const scaleY = spriteHeight / fullHeight
 
-    sprite.x = -crop.minX * scaleX
     sprite.y = -crop.minY * scaleY
     sprite.width = spriteWidth
     sprite.height = spriteHeight
-
-    void this.shell?.setSize(windowWidth, windowHeight)
-    app.renderer.resize(windowWidth, windowHeight)
+    this.modelFrame = { width: windowWidth, height: windowHeight, spriteX: -crop.minX * scaleX }
+    this.requestWindowLayout()
   }
 
   /**
@@ -659,6 +735,7 @@ class PetApp {
       },
       moveBy: async (dx, dy) => {
         await this.shell?.moveBy(dx, dy)
+        if (this.bubbleContent.textContent) this.requestWindowLayout()
       },
       visibleBounds: () => {
         const sprite = this.sprite
@@ -690,6 +767,8 @@ class PetApp {
     this.feed = startFeed({
       fetch: (after, previewAfter) => this.api.petFeed(after, previewAfter),
       onReply: (body) => {
+        this.latestReply = body
+        if (this.speaking && this.modelFrame !== null) this.setBubble(body)
         const director = this.director
         if (director === null) return
         // A sleeping pet wakes first; the emotion then queues behind the wake scene instead of being lost.
@@ -698,7 +777,14 @@ class PetApp {
         director.emotion(match)
       },
       onSpeaking: (speaking) => {
+        this.speaking = speaking
         this.director?.speaking(speaking)
+        if (speaking) {
+          if (this.modelFrame !== null) this.setBubble(this.latestReply)
+        } else {
+          this.latestReply = null
+          this.setBubble(null)
+        }
       },
       onSettings: () => {
         void this.reload().catch((error: unknown) => this.report(error))
