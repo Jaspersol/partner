@@ -190,28 +190,36 @@ public sealed class LocalEngineHostTests
     [Fact]
     public async Task Port_placeholder_is_expanded_into_the_argument()
     {
-        await using var host = new LocalEngineHost();
-        var port = ApiFixture.FreePort();
-
-        var state = await host.ReconfigureAsync(new LocalSettings
+        await using var gate = await HealthGate.StartAsync();
+        gate.Ready = true;
+        var output = Path.Combine(Path.GetTempPath(), $"partner-port-{Guid.NewGuid():N}.txt");
+        try
         {
-            Tts = new LocalEngineSettings
+            await using var host = new LocalEngineHost();
+            var escapedPath = output.Replace("'", "''", StringComparison.Ordinal);
+            var state = await host.ReconfigureAsync(new LocalSettings
             {
-                Enabled = true,
-                Command = "powershell",
-                Arguments = new[] { "-NoProfile", "-Command", "exit 0; # listen at {port}" },
-                Port = port,
-                // A cold PowerShell start can take seconds on a loaded CI runner; a one-second grace races the
-                // spawn itself and reports a timeout while the child is still starting, neither running nor
-                // exited. The bound only has to outlive process startup, not the health probe.
-                ReadyTimeoutSeconds = 10,
-            },
-        });
+                Tts = new LocalEngineSettings
+                {
+                    Enabled = true,
+                    Command = "powershell",
+                    Arguments = ["-NoProfile", "-Command", $"[System.IO.File]::WriteAllText('{escapedPath}', '{{port}}'); Start-Sleep -Seconds 60"],
+                    Port = gate.Port,
+                    ReadyTimeoutSeconds = 10,
+                },
+            });
 
-        // Placeholder expansion can only be checked as far as "the process starts and exits with our injected
-        // exit 0". The command line is not read back; a wrong placeholder would make the engine listen on the
-        // wrong port, which is for integration verification.
-        Assert.True(state.Tts.Running || state.Tts.Reason.Contains("退出", StringComparison.Ordinal));
+            Assert.True(state.Tts.Running, state.Tts.Reason);
+            var watch = Stopwatch.StartNew();
+            while ((!File.Exists(output) || new FileInfo(output).Length == 0) && watch.Elapsed < TimeSpan.FromSeconds(20))
+                await Task.Delay(50);
+            Assert.True(File.Exists(output), "The engine did not write its received port within 20 seconds.");
+            Assert.Equal(gate.Port.ToString(), await File.ReadAllTextAsync(output));
+        }
+        finally
+        {
+            if (File.Exists(output)) File.Delete(output);
+        }
     }
 
     [Fact]
