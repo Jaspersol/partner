@@ -1397,61 +1397,37 @@ internal static partial class Program
 
                 Check("session: events after a retraction stay visible", revived, $"revived={revived}");
 
-                // Shrinking the context folds history once, using the model that is already configured. Enough
-                // history is needed first: folding one event is not compaction. The wait is on the session's own
-                // sequence — a turn that is mid-flight is not in the history yet.
-                // Counted in content events, not in seq: a turn also appends turnStart/stepStart/stepEnd/turnEnd,
-                // so waiting for "six more seqs" can be satisfied by the control events of one turn while the
-                // other two are still running — and then the shrink happens before there is history to fold.
+                // Shrinking the context folds history once, using the model that is already configured. Wait
+                // for the last queued turn to settle: content and sequence numbers can advance before turnEnd.
                 static int ContentCount(JsonElement session) => session.GetProperty("items").EnumerateArray()
                     .Count(item => item.GetProperty("kind").GetString() is "User" or "Assistant");
 
                 var fillContent = ContentCount(await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session"));
+                string? lastFillId = null;
 
                 for (var i = 0; i < 3; i++)
                 {
-                    await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = $"填充 {i} {new string('字', 200)}" });
+                    var fill = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = $"填充 {i} {new string('字', 200)}" });
+                    lastFillId = (await fill.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
                 }
 
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
-                    if (ContentCount(polled) >= fillContent + 6)
-                    {
-                        break;
-                    }
-
-                    await Task.Delay(25);
-                }
+                var fillsSettled = await WaitForQueueItemToSettleAsync(settingsHttp, lastFillId);
 
                 // The context meter: the occupancy reported to the UI is the one that decides folding. Measured
-                // against the roomy default window, where another turn is a visible increase. The wait is on the
-                // session itself — queue depth can read zero while a turn is mid-flight, and then the reply this
-                // check is about has not been written yet.
+                // against the roomy default window, where another turn is a visible increase.
                 var usageView = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var usageBefore = usageView.GetProperty("context");
-                var seqBefore = usageView.GetProperty("lastSeq").GetInt64();
-
-                await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "再填充一些内容让占用增长" });
-
-                var usageAfter = usageBefore;
-                for (var attempt = 0; attempt < 400; attempt++)
-                {
-                    var polled = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
-                    if (polled.GetProperty("lastSeq").GetInt64() >= seqBefore + 2)
-                    {
-                        usageAfter = polled.GetProperty("context");
-                        break;
-                    }
-
-                    await Task.Delay(25);
-                }
+                var usageInput = await settingsHttp.PostAsJsonAsync("/api/input", new { source = "text", payload = "再填充一些内容让占用增长" });
+                var usageId = (await usageInput.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("itemId").GetString();
+                var usageSettled = await WaitForQueueItemToSettleAsync(settingsHttp, usageId);
+                var usageAfter = (await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session")).GetProperty("context");
 
                 Check("context: the reported occupancy follows the history",
-                    usageAfter.GetProperty("usedTokens").GetInt32() > usageBefore.GetProperty("usedTokens").GetInt32()
+                    fillsSettled && usageSettled && ContentCount(usageView) >= fillContent + 6
+                    && usageAfter.GetProperty("usedTokens").GetInt32() > usageBefore.GetProperty("usedTokens").GetInt32()
                     && usageAfter.GetProperty("usedTokens").GetInt32() <= usageAfter.GetProperty("budgetTokens").GetInt32(),
                     $"{usageBefore.GetProperty("usedTokens").GetInt32()} -> {usageAfter.GetProperty("usedTokens").GetInt32()} "
-                    + $"budget={usageAfter.GetProperty("budgetTokens").GetInt32()}");
+                    + $"budget={usageAfter.GetProperty("budgetTokens").GetInt32()} fillsSettled={fillsSettled} usageSettled={usageSettled}");
 
                 var beforeShrink = await settingsHttp.GetFromJsonAsync<JsonElement>("/api/session");
                 var shrink = await settingsHttp.PutAsJsonAsync("/api/settings", new
