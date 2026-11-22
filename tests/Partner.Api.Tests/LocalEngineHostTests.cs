@@ -201,7 +201,10 @@ public sealed class LocalEngineHostTests
                 Command = "powershell",
                 Arguments = new[] { "-NoProfile", "-Command", "exit 0; # listen at {port}" },
                 Port = port,
-                ReadyTimeoutSeconds = 1,
+                // A cold PowerShell start can take seconds on a loaded CI runner; a one-second grace races the
+                // spawn itself and reports a timeout while the child is still starting, neither running nor
+                // exited. The bound only has to outlive process startup, not the health probe.
+                ReadyTimeoutSeconds = 10,
             },
         });
 
