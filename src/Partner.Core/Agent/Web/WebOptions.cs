@@ -20,6 +20,11 @@ public sealed record WebOptions(
     string? Proxy,
     IReadOnlySet<string> DisabledEngines)
 {
+    /// <summary>Runtime engine definitions. Null preserves the legacy built-in directory behavior.</summary>
+    public IReadOnlyList<WebEngineDefinition>? Engines { get; init; }
+
+    /// <summary>Settings revision, included in search cache identity for hot updates.</summary>
+    public long Revision { get; init; }
     /// <summary>The bounds both the settings validation and the runtime clamp against.</summary>
     public const int MinBudgetSeconds = 3;
 

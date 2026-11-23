@@ -15,8 +15,8 @@ public sealed class WebSearchService : IDisposable
 {
     private readonly Func<WebOptions> _options;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly IReadOnlyList<IWebSearchEngine>? _defaultEngines;
     private readonly WebTransport _transport;
-    private readonly QueryPlanner _planner;
     private readonly BatchGate _gate = new();
     private readonly Merger _merger = new();
     private readonly ResultFormatter _formatter = new();
@@ -47,7 +47,8 @@ public sealed class WebSearchService : IDisposable
 
         _options = options;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
-        _planner = new QueryPlanner(engines);
+        _defaultEngines = engines;
+        // Engine definitions are resolved per search so settings edits take effect without restart.
 
         // The transport reads the proxy through the same delegate, so a proxy edit rebuilds the client lazily
         // rather than needing the consumer to restart.
@@ -103,7 +104,10 @@ public sealed class WebSearchService : IDisposable
             Recency: recency,
             Limit: Math.Clamp(limit ?? options.MaxResults, WebOptions.MinResults, WebOptions.MaxResultsCeiling));
 
-        if (_cache.TryGet(request.CacheKey, out var cached, out var age) && cached is not null)
+        var configured = options.Engines is null ? _defaultEngines ?? WebEngines.All : ConfiguredWebEngines.Resolve(options.Engines);
+        var planner = new QueryPlanner(configured);
+        var cacheKey = $"{options.Revision}\u0000{request.CacheKey}";
+        if (_cache.TryGet(cacheKey, out var cached, out var age) && cached is not null)
         {
             foreach (var hit in cached.Hits)
             {
@@ -114,7 +118,7 @@ public sealed class WebSearchService : IDisposable
         }
 
         var now = _clock();
-        var pool = _planner.Plan(request, new WebPlanContext(
+        var pool = planner.Plan(request, new WebPlanContext(
             options.Disabled,
             _health.Unavailable,
             Interlocked.Increment(ref _rotation)));
@@ -155,7 +159,7 @@ public sealed class WebSearchService : IDisposable
 
         if (SearchCache.WorthCaching(outcome))
         {
-            _cache.Set(outcome);
+            _cache.Set(outcome, cacheKey);
         }
 
         return new ToolResult(true, _formatter.Format(outcome, options.MaxResults));

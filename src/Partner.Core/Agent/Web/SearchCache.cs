@@ -117,15 +117,15 @@ public sealed class SearchCache
         return false;
     }
 
-    public void Set(SearchOutcome outcome)
+    public void Set(SearchOutcome outcome, string? key = null)
     {
         ArgumentNullException.ThrowIfNull(outcome);
 
         lock (_gate)
         {
-            var key = outcome.Query.CacheKey;
-            _entries[key] = outcome;
-            _lastUsed[key] = ++_sequence;
+            var cacheKey = key ?? outcome.Query.CacheKey;
+            _entries[cacheKey] = outcome;
+            _lastUsed[cacheKey] = ++_sequence;
 
             while (_entries.Count > Capacity)
             {
