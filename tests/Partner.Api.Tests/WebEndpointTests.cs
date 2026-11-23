@@ -86,14 +86,52 @@ public sealed class WebEndpointTests : ApiFixture
         Assert.Equal("http://127.0.0.1:7890", view.GetProperty("proxy").GetString());
 
         var engines = view.GetProperty("engines").EnumerateArray().ToList();
-        Assert.Equal(
-            new[] { "duckduckgo" },
-            engines.Where(engine => engine.GetProperty("disabled").GetBoolean())
-                .Select(engine => engine.GetProperty("id").GetString()));
+        Assert.DoesNotContain(engines, engine => engine.GetProperty("disabled").GetBoolean());
 
         // Switching an engine off is the only thing this payload lets a person change about the rows: the cooldown
         // is the breaker's, and no attempt to edit it here is possible.
         Assert.All(engines, engine => Assert.False(engine.GetProperty("cooling").GetBoolean()));
+    }
+
+    [Fact]
+    public async Task Configured_engines_round_trip_and_empty_list_stays_empty()
+    {
+        var custom = new WebEngineDefinition("custom-1", "Example", UrlTemplate: "https://example.com/search?q={query}",
+            ResultsPath: "results", TitleField: "title", UrlField: "url");
+        (await _http.PutSettingsAsync(new { web = new { engines = new[] { custom } } })).EnsureSuccessStatusCode();
+        Assert.Equal(custom, Assert.Single(_context.Settings.Reload().Web.Engines!));
+        var view = await _http.GetFromJsonAsync<JsonElement>("/api/web");
+        Assert.Equal("custom-1", Assert.Single(view.GetProperty("engines").EnumerateArray()).GetProperty("id").GetString());
+        Assert.Equal(WebEngines.All.Count, view.GetProperty("defaults").GetArrayLength());
+        (await _http.PutSettingsAsync(new { web = new { engines = Array.Empty<WebEngineDefinition>() } })).EnsureSuccessStatusCode();
+        Assert.Empty(_context.Settings.Reload().Web.Engines!);
+        view = await _http.GetFromJsonAsync<JsonElement>("/api/web");
+        Assert.Equal(0, view.GetProperty("engines").GetArrayLength());
+        (await _http.PutSettingsAsync(new { web = new { maxResults = 7 } })).EnsureSuccessStatusCode();
+        Assert.Empty(_context.Settings.Reload().Web.Engines!);
+    }
+
+    [Fact]
+    public async Task Invalid_engine_is_rejected_without_writing()
+    {
+        var before = _context.Settings.Load().Web.Engines!.ToArray();
+        var result = await _http.PutSettingsAsync(new { web = new { engines = new[] { new { id = "bad", name = "Bad", urlTemplate = "https://example.com/{query}" } } } });
+        Assert.Equal(HttpStatusCode.BadRequest, result.StatusCode);
+        Assert.Equal(before, _context.Settings.Reload().Web.Engines);
+    }
+
+    [Fact]
+    public void Legacy_settings_migrate_disabled_engines_and_conflicts_do_not_write()
+    {
+        var path = Path.Combine(_workspace, "legacy-web.json");
+        File.WriteAllText(path, """{"web":{"disabledEngines":["duckduckgo","unknown"]}}""");
+        var store = new SettingsStore(path);
+        var snapshot = store.Snapshot();
+        Assert.False(snapshot.Settings.Web.Engines!.Single(e => e.Id == "duckduckgo").Enabled);
+        Assert.Equal(WebEngines.All.Count, snapshot.Settings.Web.Engines!.Count);
+        store.Save(snapshot.Settings with { Web = snapshot.Settings.Web with { Engines = [] } }, snapshot.Revision);
+        Assert.Throws<SettingsConflictException>(() => store.Save(snapshot.Settings, snapshot.Revision));
+        Assert.Empty(new SettingsStore(path).Load().Web.Engines!);
     }
 
     [Fact]

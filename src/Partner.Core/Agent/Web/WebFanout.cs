@@ -65,12 +65,15 @@ public sealed class WebFanout
     private readonly WebTransport _transport;
     private readonly RateLimiter _limiter;
     private readonly Func<DateTimeOffset> _clock;
+    private readonly Func<HttpRequestMessage, CancellationToken, Task<WebResponse>> _send;
 
-    public WebFanout(WebTransport transport, RateLimiter? limiter = null, Func<DateTimeOffset>? clock = null)
+    public WebFanout(WebTransport transport, RateLimiter? limiter = null, Func<DateTimeOffset>? clock = null,
+        Func<HttpRequestMessage, CancellationToken, Task<WebResponse>>? send = null)
     {
         ArgumentNullException.ThrowIfNull(transport);
 
         _transport = transport;
+        _send = send ?? transport.SendAsync;
         _limiter = limiter ?? new RateLimiter();
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
     }
@@ -179,7 +182,7 @@ public sealed class WebFanout
             }
 
             using var request = engine.Build(query);
-            var response = await _transport.SendAsync(request, ct).ConfigureAwait(false);
+            var response = await _send(request, ct).ConfigureAwait(false);
 
             if (response.Error is { } error)
             {

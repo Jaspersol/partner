@@ -3133,13 +3133,103 @@ describe('settings view', () => {
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
 
-    expect(calls.saves[0]?.web).toEqual({
+    expect(calls.saves[0]?.web).toMatchObject({
       enabled: true,
       timeBudgetSeconds: 12,
       maxResults: 8,
       proxy: 'http://127.0.0.1:7890',
       disabledEngines: ['duckduckgo'],
+      engines: [{ id: 'duckduckgo', enabled: false }, { id: 'wikipedia', enabled: true }],
     })
+  })
+
+  it('edits, adds, deletes and restores engines in the settings draft', async () => {
+    const { stub, calls } = createStub()
+    const defaults = [{ id: 'duckduckgo', name: 'DuckDuckGo', enabled: true, presetId: 'duckduckgo' }]
+    const readWeb = vi.mocked(stub.web).getMockImplementation()!
+    vi.mocked(stub.web).mockImplementation(async () => ({ ...await readWeb(), defaults }))
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Renamed')
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] button').trigger('click')
+    expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('Renamed')
+    await wrapper.find('[data-test="web-engine-add"]').trigger('click')
+    const editor = wrapper.find('.engine-edit')
+    const fields = editor.findAll('input')
+    await fields[0].setValue('Custom')
+    await editor.find('button').trigger('click')
+    expect(wrapper.text()).toContain('Custom')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.web.engines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'duckduckgo', name: 'Renamed' }),
+      expect.objectContaining({ name: 'Custom', urlField: 'url' }),
+    ]))
+    await wrapper.find('[data-test="web-engine-duckduckgo-delete"]').trigger('click')
+    expect(wrapper.find('[data-test="web-engine-duckduckgo"]').exists()).toBe(false)
+    await wrapper.find('[data-test="web-engine-restore"]').trigger('click')
+    expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('DuckDuckGo')
+    vi.unstubAllGlobals()
+    wrapper.unmount()
+  })
+
+  it('keeps the engine draft editable when status is unavailable', async () => {
+    const configured = [{ id: 'custom-1', name: 'Custom', enabled: true, urlTemplate: 'https://example.com/?q={query}', titleField: 'title', urlField: 'url' }]
+    const { stub } = createStub({
+      settings: vi.fn(async () => ({ ...SETTINGS_FIXTURE, web: { ...SETTINGS_FIXTURE.web, engines: configured } })),
+      web: vi.fn(async () => { throw new Error('offline') }),
+    })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="web-engine-custom-1"]').text()).toContain('状态不可用')
+    await wrapper.find('[data-test="web-engine-custom-1-edit"]').trigger('click')
+    expect(wrapper.find('[data-test="web-engine-custom-1-form"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps switch and delete decisions when an engine editor is open', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const { stub, calls } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Changed')
+    await wrapper.find('[data-test="web-engine-duckduckgo-enabled"]').setValue(false)
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] button').trigger('click')
+    expect(wrapper.find<HTMLInputElement>('[data-test="web-engine-duckduckgo-enabled"]').element.checked).toBe(false)
+    await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Old draft')
+    const readWeb = vi.mocked(stub.web).getMockImplementation()!
+    vi.mocked(stub.web).mockImplementation(async () => ({ ...await readWeb(), defaults: [{ id: 'duckduckgo', name: 'DuckDuckGo', enabled: true, presetId: 'duckduckgo' }] }))
+    await wrapper.find('[data-test="web-refresh"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="web-engine-restore"]').trigger('click')
+    expect(wrapper.find('[data-test="web-engine-duckduckgo-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('DuckDuckGo')
+    await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
+    await wrapper.find('[data-test="web-engine-duckduckgo-delete"]').trigger('click')
+    expect(wrapper.find('[data-test="web-engine-duckduckgo-form"]').exists()).toBe(false)
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(calls.saves[0]?.web.engines?.some(e => e.id === 'duckduckgo')).toBe(false)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps engine changes after a failed settings save', async () => {
+    const { stub } = createStub({ saveSettings: vi.fn(async () => { throw new Error('save failed') }) })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    await flushPromises()
+    await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Draft name')
+    await wrapper.find('[data-test="web-engine-duckduckgo-form"] button').trigger('click')
+    await wrapper.find('[data-test="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('Draft name')
+    expect(wrapper.text()).toContain('save failed')
+    wrapper.unmount()
   })
 
   it('puts a field explanation behind a mark instead of a second line under the field', async () => {

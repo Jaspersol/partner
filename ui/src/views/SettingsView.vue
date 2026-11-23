@@ -411,6 +411,7 @@ function apply(settings: RuntimeSettings & { rebaseGuard?: string; model: { apiK
   // A response from an older build carries no `web` at all; the fallback is the same default the section
   // starts from, so saving from a stale page writes back what the switch is showing rather than turning the
   // capability off behind the user's back.
+  legacyWebEngines.value = settings.web?.engines == null
   form.web = {
     enabled: settings.web?.enabled ?? true,
     timeBudgetSeconds: settings.web?.timeBudgetSeconds ?? 12,
@@ -467,10 +468,16 @@ async function refresh() {
  * </para>
  */
 const webView = ref<WebView | null>(null)
+const legacyWebEngines = ref(false)
 
 async function refreshWeb() {
   try {
     webView.value = await props.api.web()
+    if (legacyWebEngines.value) {
+      form.web.engines = webView.value.engines.map(e => ({ id: e.id, name: e.name, enabled: !form.web.disabledEngines.includes(e.id), presetId: e.id }))
+      legacyWebEngines.value = false
+      stored.value = fingerprint()
+    }
   } catch {
     // Its own try, not the caller's: a status list that cannot be read must not take down the form above it.
     webView.value = null
@@ -657,9 +664,10 @@ onUnmounted(() => {
 
 /** Toggles an engine. Stores which ones are off, so a newly added engine defaults to on. */
 function toggleEngine(id: string) {
-  if (form.web.engines?.length) {
-    const row = form.web.engines.find((e) => e.id === id)
-    if (row) row.enabled = !row.enabled
+  const row = form.web.engines?.find((e) => e.id === id)
+  if (row) {
+    row.enabled = !row.enabled
+    if (engineDraft.value?.id === id) engineDraft.value.enabled = row.enabled
   }
   const off = form.web.disabledEngines
   form.web.disabledEngines = off.includes(id) ? off.filter((each) => each !== id) : [...off, id]
@@ -667,18 +675,32 @@ function toggleEngine(id: string) {
 
 function addWebEngine() {
   const id = `custom-${Math.random().toString(36).slice(2, 10)}`
-  const row: WebEngineSettings = { id, name: '', enabled: true, presetId: null, urlTemplate: 'https://example.com/search?q={query}', resultsPath: 'results', titleField: 'title', linkField: 'url', summaryField: 'content' }
-  form.web.engines = [...(form.web.engines ?? []), row]
+  const row: WebEngineSettings = { id, name: '', enabled: true, presetId: null, urlTemplate: 'https://example.com/search?q={query}', resultsPath: 'results', titleField: 'title', urlField: 'url', snippetField: 'content' }
   editingEngine.value = id
+  engineDraft.value = row
 }
 
 const editingEngine = ref<string | null>(null)
-function editWebEngine(id: string) { editingEngine.value = editingEngine.value === id ? null : id }
+const engineDraft = ref<WebEngineSettings | null>(null)
+function editWebEngine(id: string) {
+  const row = form.web.engines?.find(e => e.id === id)
+  if (row) { editingEngine.value = id; engineDraft.value = { ...row } }
+}
+function confirmWebEngine() {
+  if (!engineDraft.value) return
+  const rows = form.web.engines ?? []
+  const index = rows.findIndex(e => e.id === engineDraft.value!.id)
+  if (index < 0) rows.push({ ...engineDraft.value })
+  else rows[index] = { ...engineDraft.value }
+  form.web.engines = rows
+  editingEngine.value = null
+  engineDraft.value = null
+}
 function removeWebEngine(id: string) {
   if (!window.confirm(t('删除后无法恢复。'))) return
   form.web.engines = (form.web.engines ?? []).filter((e) => e.id !== id)
   form.web.disabledEngines = form.web.disabledEngines.filter((e) => e !== id)
-  if (editingEngine.value === id) editingEngine.value = null
+  if (editingEngine.value === id) { editingEngine.value = null; engineDraft.value = null }
 }
 function restoreWebDefaults() {
   if (!window.confirm(t('恢复默认搜索引擎？'))) return
@@ -686,6 +708,8 @@ function restoreWebDefaults() {
   if (defaults.length) {
     form.web.engines = defaults.map((e) => ({ ...e, enabled: true }))
     form.web.disabledEngines = []
+    editingEngine.value = null
+    engineDraft.value = null
   }
 }
 
@@ -714,6 +738,7 @@ function engineState(engine: Partial<WebEngineView> & { id: string }): string {
   if (form.web.disabledEngines.includes(engine.id)) {
     return t('已关闭')
   }
+  if (webView.value === null) return t('状态不可用')
   if (engine.cooling) {
     const until = !engine.until ? '' : t('，{toLocaleTimeString} 后再试', { toLocaleTimeString: new Date(engine.until).toLocaleTimeString(locale.value) })
     return t('连续失败 {strikes} 次，暂停中{until}', { strikes: engine.strikes, until: until })
@@ -732,10 +757,8 @@ function engineStateClass(engine: Partial<WebEngineView> & { id: string }): stri
 }
 
 function webEngineRows(): any[] {
-  if (form.web.engines?.length) {
-    return form.web.engines.map((e) => ({ ...e, kinds: [], singleSite: Boolean(e.presetId), cooling: false, strikes: 0, lastReason: null, until: null, disabled: !e.enabled }))
-  }
-  return webView.value?.engines ?? []
+  return (form.web.engines ?? []).map(e => ({ ...e, kinds: [], singleSite: false, cooling: false, strikes: 0, lastReason: null, until: null,
+    ...webView.value?.engines.find(status => status.id === e.id), name: e.name, enabled: e.enabled, presetId: e.presetId }))
 }
 
 const cloneBusy = ref(false)
@@ -805,7 +828,7 @@ async function persist() {
       maxResults: form.web.maxResults,
       proxy: form.web.proxy === null || form.web.proxy.trim() === '' ? null : form.web.proxy.trim(),
       disabledEngines: [...form.web.disabledEngines],
-      engines: (form.web.engines ?? []).map((e) => ({ ...e, name: e.name.trim(), urlTemplate: e.urlTemplate?.trim() || null, resultsPath: e.resultsPath?.trim() || null, titleField: e.titleField?.trim() || null, linkField: e.linkField?.trim() || null, summaryField: e.summaryField?.trim() || null })),
+      engines: (form.web.engines ?? []).map((e) => ({ ...e, name: e.name.trim(), urlTemplate: e.urlTemplate?.trim() || null, resultsPath: e.resultsPath?.trim() || null, titleField: e.titleField?.trim() || null, urlField: e.urlField?.trim() || null, snippetField: e.snippetField?.trim() || null })),
     },
     model: {
       protocol: form.model.protocol,
@@ -2259,7 +2282,7 @@ defineExpose({ refresh, hasUnsavedChanges })
               <p v-if="webView === null" class="muted" data-test="web-engines-unknown">
                 {{ t('读不到引擎状态。开关照常保存，状态等后端可用后再刷新。') }}
               </p>
-              <p v-else-if="webEngineRows().length === 0" class="muted" data-test="web-engines-empty">
+              <p v-if="webEngineRows().length === 0" class="muted" data-test="web-engines-empty">
                 {{ t('还没有搜索引擎。请新增或恢复默认引擎。') }}
               </p>
               <div
@@ -2270,6 +2293,7 @@ defineExpose({ refresh, hasUnsavedChanges })
               >
                 <span class="engine-name" :title="engine.name">
                   {{ engine.name }}
+                  <span v-if="engine.presetId" class="engine-tag">{{ t('默认') }}</span>
                   <span v-if="engine.singleSite" class="engine-tag" :title="t('只索引自己这一个站点')">{{ t('单一站点') }}</span>
                 </span>
                 <span class="engine-kinds">{{ engine.kinds.map(kindLabel).join(t('、')) }}</span>
@@ -2279,20 +2303,22 @@ defineExpose({ refresh, hasUnsavedChanges })
                   class="g-switch"
                   role="switch"
                   :aria-label="t('使用 {name}', { name: engine.name })"
-                  :checked="!form.web.disabledEngines.includes(engine.id)"
+                  :checked="engine.enabled"
                   :data-test="`web-engine-${engine.id}-enabled`"
                   @change="toggleEngine(engine.id)"
                 />
                 <button class="ghost" type="button" :data-test="`web-engine-${engine.id}-edit`" @click="editWebEngine(engine.id)">{{ t('编辑') }}</button>
                 <button class="ghost" type="button" :data-test="`web-engine-${engine.id}-delete`" @click="removeWebEngine(engine.id)">{{ t('删除') }}</button>
-                <div v-if="editingEngine === engine.id" class="engine-edit" :data-test="`web-engine-${engine.id}-form`">
-                  <input v-model="engine.name" :placeholder="t('名称')" />
-                  <input v-if="!engine.presetId" v-model="engine.urlTemplate" :placeholder="t('URL 模板，包含 {query}')" />
-                  <input v-if="!engine.presetId" v-model="engine.resultsPath" :placeholder="t('结果数组路径')" />
-                  <input v-if="!engine.presetId" v-model="engine.titleField" :placeholder="t('标题字段')" />
-                  <input v-if="!engine.presetId" v-model="engine.linkField" :placeholder="t('链接字段')" />
-                  <input v-if="!engine.presetId" v-model="engine.summaryField" :placeholder="t('摘要字段（可选）')" />
-                </div>
+              </div>
+              <div v-if="engineDraft" class="engine-edit" :data-test="`web-engine-${engineDraft.id}-form`">
+                <input v-model="engineDraft.name" :placeholder="t('名称')" />
+                <input v-if="!engineDraft.presetId" v-model="engineDraft.urlTemplate" :placeholder="t('URL 模板，包含 {query}')" />
+                <input v-if="!engineDraft.presetId" v-model="engineDraft.resultsPath" :placeholder="t('结果数组路径')" />
+                <input v-if="!engineDraft.presetId" v-model="engineDraft.titleField" :placeholder="t('标题字段')" />
+                <input v-if="!engineDraft.presetId" v-model="engineDraft.urlField" :placeholder="t('链接字段')" />
+                <input v-if="!engineDraft.presetId" v-model="engineDraft.snippetField" :placeholder="t('摘要字段（可选）')" />
+                <button type="button" @click="confirmWebEngine">{{ t('确认') }}</button>
+                <button type="button" @click="engineDraft = null; editingEngine = null">{{ t('取消') }}</button>
               </div>
             </div>
 

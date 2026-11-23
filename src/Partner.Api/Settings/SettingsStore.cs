@@ -131,7 +131,11 @@ public sealed class SettingsStore
         },
         Desktop = settings.Desktop with { AllowedWindowTitles = FrozenList(settings.Desktop.AllowedWindowTitles) },
         Files = settings.Files with { Roots = FrozenList(settings.Files.Roots), WriteRoots = FrozenList(settings.Files.WriteRoots) },
-        Web = settings.Web with { DisabledEngines = FrozenList(settings.Web.DisabledEngines) },
+        Web = settings.Web.WithEngineDefaults() with
+        {
+            DisabledEngines = FrozenList(settings.Web.DisabledEngines),
+            Engines = FrozenList(settings.Web.WithEngineDefaults().Engines!),
+        },
         Skills = settings.Skills with { Disabled = FrozenList(settings.Skills.Disabled) },
         Agents = settings.Agents with { SubAgents = FrozenList(settings.Agents.SubAgents) },
         Services = settings.Services with { Instances = FrozenList(settings.Services.Instances) },
@@ -290,6 +294,7 @@ public sealed class SettingsStore
         var merged = incoming with
         {
             Revision = null,
+            Web = incoming.Web with { Engines = incoming.Web.Engines ?? stored.Web.Engines },
             Agents = incoming.AgentsSpecified ? MergeAgentKeys(incoming.Agents, stored.Agents) : stored.Agents,
             Services = incoming.ServicesSpecified
                 ? MergeServiceSecrets(incoming.Services, stored.Services)

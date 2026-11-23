@@ -477,8 +477,8 @@ export interface WebEngineSettings {
   urlTemplate?: string | null
   resultsPath?: string | null
   titleField?: string | null
-  linkField?: string | null
-  summaryField?: string | null
+  urlField?: string | null
+  snippetField?: string | null
 }
 
 export interface PetKeyword {

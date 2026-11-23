@@ -149,7 +149,7 @@ public sealed class EngineHealth
     /// <param name="companionAnswered">Whether another engine in the same batch found something.</param>
     /// <param name="save">False when the caller records a whole batch and saves once at the end (see <see cref="Save"/>).</param>
     /// <returns>Whether the state changed.</returns>
-    public bool Record(EngineAttempt attempt, bool companionAnswered, bool save = true)
+    public bool Record(EngineAttempt attempt, bool companionAnswered, bool save = true, string? healthId = null)
     {
         ArgumentNullException.ThrowIfNull(attempt);
 
@@ -157,7 +157,7 @@ public sealed class EngineHealth
 
         lock (_gate)
         {
-            var id = attempt.Engine.Traits.Id;
+            var id = healthId ?? attempt.Engine.Traits.Id;
 
             if (attempt.Answered)
             {
@@ -205,7 +205,7 @@ public sealed class EngineHealth
     /// Everything the settings page shows: every known engine, with the user's own switch taking precedence over
     /// whatever the breaker thinks.
     /// </summary>
-    public IReadOnlyList<EngineHealthSnapshot> Snapshot(IEnumerable<string>? disabled = null)
+    public IReadOnlyList<EngineHealthSnapshot> Snapshot(IEnumerable<string>? disabled = null, IReadOnlyList<WebEngineDefinition>? definitions = null)
     {
         var off = disabled is null
             ? new HashSet<string>(StringComparer.Ordinal)
@@ -214,17 +214,17 @@ public sealed class EngineHealth
 
         lock (_gate)
         {
-            return WebEngines.All
-                .Select(engine =>
+            return (definitions ?? WebEngines.All.Select(engine => new WebEngineDefinition(engine.Traits.Id, engine.Traits.Name, PresetId: engine.Traits.Id)).ToArray())
+                .Select(definition =>
                 {
-                    var id = engine.Traits.Id;
-                    _records.TryGetValue(id, out var record);
+                    var id = definition.Id;
+                    _records.TryGetValue(ConfiguredWebEngines.HealthId(definition), out var record);
                     var cooling = record?.CoolingUntil is { } until && until > now;
 
                     return new EngineHealthSnapshot(
                         id,
-                        engine.Traits.Name,
-                        off.Contains(id),
+                        definition.Name,
+                        !definition.Enabled || off.Contains(id),
                         cooling,
                         cooling ? record!.CoolingUntil : null,
                         record?.Strikes ?? 0,

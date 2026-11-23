@@ -32,7 +32,8 @@ public sealed record WebView(
     int TimeBudgetSeconds,
     int MaxResults,
     IReadOnlyList<WebEngineView> Engines,
-    string HealthPath);
+    string HealthPath,
+    IReadOnlyList<WebEngineDefinition> Defaults);
 
 public static class WebEndpoints
 {
@@ -41,10 +42,12 @@ public static class WebEndpoints
         app.MapGet("/api/web", (ApiContext ctx) =>
         {
             var settings = ctx.Settings.Load().Web;
-            var health = ctx.Web.Health.Snapshot(settings.DisabledEngines).ToDictionary(snapshot => snapshot.Id, StringComparer.Ordinal);
+            var definitions = settings.WithEngineDefaults().Engines!;
+            var health = ctx.Web.Health.Snapshot(definitions: definitions).ToDictionary(snapshot => snapshot.Id, StringComparer.Ordinal);
 
-            var engines = WebEngines.All.Select(engine =>
+            var engines = definitions.Select(definition =>
             {
+                var engine = ConfiguredWebEngines.Resolve([definition with { Enabled = true }]).First();
                 var traits = engine.Traits;
                 health.TryGetValue(traits.Id, out var state);
 
@@ -54,7 +57,7 @@ public static class WebEndpoints
                     traits.Nature == ResultNature.Record ? "record" : "ranked",
                     Names(traits.Kinds),
                     traits.SingleSite,
-                    settings.DisabledEngines.Contains(traits.Id, StringComparer.Ordinal),
+                    !definition.Enabled,
                     state?.Cooling ?? false,
                     state?.Until,
                     state?.Strikes ?? 0,
@@ -67,7 +70,8 @@ public static class WebEndpoints
                 settings.TimeBudgetSeconds,
                 settings.MaxResults,
                 engines,
-                ctx.Web.Health.FilePath));
+                ctx.Web.Health.FilePath,
+                new Partner.Api.Settings.WebSettings().WithEngineDefaults().Engines!));
         });
     }
 

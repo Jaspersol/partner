@@ -28,7 +28,8 @@ public sealed class ResultFormatter
     public string Format(
         SearchOutcome outcome,
         int maxResults,
-        TimeSpan? cacheAge = null)
+        TimeSpan? cacheAge = null,
+        IReadOnlyDictionary<string, string>? engineNames = null)
     {
         ArgumentNullException.ThrowIfNull(outcome);
 
@@ -56,7 +57,7 @@ public sealed class ResultFormatter
                     break;
                 }
 
-                AppendHit(text, hits[index], index + 1);
+                AppendHit(text, hits[index], index + 1, engineNames);
             }
         }
 
@@ -93,7 +94,7 @@ public sealed class ResultFormatter
         return snippet[..cut] + "…";
     }
 
-    private static void AppendHit(StringBuilder text, SearchHit hit, int order)
+    private static void AppendHit(StringBuilder text, SearchHit hit, int order, IReadOnlyDictionary<string, string>? engineNames)
     {
         text.AppendLine($"{order}. {hit.Title}");
 
@@ -108,13 +109,14 @@ public sealed class ResultFormatter
 
         var stamps = new List<string> { DescribeDate(hit) };
 
+        var sourceNames = hit.Sources.Select(id => engineNames is not null && engineNames.TryGetValue(id, out var name) ? name : id).ToArray();
         if (hit.Sources.Count > 1)
         {
-            stamps.Add($"{hit.Sources.Count} 个来源都命中：{string.Join("、", hit.Sources)}");
+            stamps.Add($"{hit.Sources.Count} 个来源都命中：{string.Join("、", sourceNames)}");
         }
         else if (hit.Sources.Count == 1)
         {
-            stamps.Add($"来源：{hit.Sources[0]}");
+            stamps.Add($"来源：{sourceNames[0]}");
         }
 
         text.AppendLine($"   [{string.Join(" | ", stamps)}]");

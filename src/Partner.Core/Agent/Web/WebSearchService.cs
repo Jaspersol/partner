@@ -40,7 +40,8 @@ public sealed class WebSearchService : IDisposable
         Func<WebOptions> options,
         string workspace,
         Func<DateTimeOffset>? clock = null,
-        IReadOnlyList<IWebSearchEngine>? engines = null)
+        IReadOnlyList<IWebSearchEngine>? engines = null,
+        Func<HttpRequestMessage, CancellationToken, Task<WebResponse>>? send = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspace);
@@ -55,7 +56,7 @@ public sealed class WebSearchService : IDisposable
         _transport = new WebTransport(() => _options().Proxy);
         _health = EngineHealth.Load(workspace, _clock);
         _cache = new SearchCache(_clock);
-        _fanout = new WebFanout(_transport, new RateLimiter(), _clock);
+        _fanout = new WebFanout(_transport, new RateLimiter(), _clock, send);
     }
 
     /// <summary>The time budget one search is allowed, read live from the settings.</summary>
@@ -105,6 +106,11 @@ public sealed class WebSearchService : IDisposable
             Limit: Math.Clamp(limit ?? options.MaxResults, WebOptions.MinResults, WebOptions.MaxResultsCeiling));
 
         var configured = options.Engines is null ? _defaultEngines ?? WebEngines.All : ConfiguredWebEngines.Resolve(options.Engines);
+        var names = configured.ToDictionary(engine => engine.Traits.Id, engine => engine.Traits.Name, StringComparer.Ordinal);
+        if (configured.Count == 0 && options.Engines is not null)
+        {
+            return new ToolResult(false, "unavailable: 没有启用的搜索引擎，请在设置 → 联网搜索中添加或启用引擎");
+        }
         var planner = new QueryPlanner(configured);
         var cacheKey = $"{options.Revision}\u0000{request.CacheKey}";
         if (_cache.TryGet(cacheKey, out var cached, out var age) && cached is not null)
@@ -114,13 +120,14 @@ public sealed class WebSearchService : IDisposable
                 Ledger.Remember(hit.Url);
             }
 
-            return new ToolResult(true, _formatter.Format(cached, options.MaxResults, age));
+            return new ToolResult(true, _formatter.Format(cached, options.MaxResults, age, names));
         }
 
         var now = _clock();
         var pool = planner.Plan(request, new WebPlanContext(
             options.Disabled,
-            _health.Unavailable,
+            id => _health.Unavailable(options.Engines?.FirstOrDefault(e => e.Id == id) is { } definition
+                ? ConfiguredWebEngines.HealthId(definition) : id),
             Interlocked.Increment(ref _rotation)));
 
         FanoutOutcome fanout;
@@ -147,7 +154,7 @@ public sealed class WebSearchService : IDisposable
             At: now,
             BudgetExpired: fanout.BudgetExpired);
 
-        RecordHealth(fanout.Attempts);
+        RecordHealth(fanout.Attempts, options.Engines);
 
         // The results are what the ledger is for: the model may now open any of these without a banner, since
         // they came out of a search the person's own question started. A cached answer takes the same path, which
@@ -162,7 +169,7 @@ public sealed class WebSearchService : IDisposable
             _cache.Set(outcome, cacheKey);
         }
 
-        return new ToolResult(true, _formatter.Format(outcome, options.MaxResults));
+        return new ToolResult(true, _formatter.Format(outcome, options.MaxResults, engineNames: names));
     }
 
     /// <summary>
@@ -187,7 +194,7 @@ public sealed class WebSearchService : IDisposable
             .ToList();
     }
 
-    private void RecordHealth(IReadOnlyList<EngineAttempt> attempts)
+    private void RecordHealth(IReadOnlyList<EngineAttempt> attempts, IReadOnlyList<WebEngineDefinition>? definitions)
     {
         var answered = attempts.Count(attempt => attempt.Answered);
         var changed = false;
@@ -197,7 +204,9 @@ public sealed class WebSearchService : IDisposable
             // The control the silent-empty rule asks for is another engine in the same batch that did find
             // something — the engine's own result cannot vouch for itself.
             var companion = (answered - (attempt.Answered ? 1 : 0)) > 0;
-            changed |= _health.Record(attempt, companion, save: false);
+            var definition = definitions?.FirstOrDefault(e => e.Id == attempt.Engine.Traits.Id);
+            changed |= _health.Record(attempt, companion, save: false,
+                healthId: definition is null ? null : ConfiguredWebEngines.HealthId(definition));
         }
 
         // One write for the whole search rather than one atomic file replacement per engine.

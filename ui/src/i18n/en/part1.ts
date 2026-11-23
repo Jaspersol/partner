@@ -116,6 +116,7 @@ const part1: Record<string, string> = {
   '确认删除': 'Confirm delete',
   '取消删除': 'Cancel delete',
   '取消': 'Cancel',
+  '确认': 'Confirm',
   '撤回到这里：隐藏这条和之后的对话，发送新消息前可以取消': 'Roll back to here: hides this and everything after it. You can undo this until you send a new message',
   '撤回': 'Roll back',
   '默认': 'Default',

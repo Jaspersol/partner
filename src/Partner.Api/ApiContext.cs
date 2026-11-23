@@ -52,7 +52,11 @@ public sealed class ApiContext : IAsyncDisposable
         // Options are read through a delegate, so an edit to the proxy, the budget or the engine list takes
         // effect on the next search rather than at the next restart. The health state lives under the workspace.
         Web = new Partner.Core.Agent.Web.WebSearchService(
-            () => Settings.Load().Web.ToOptions(),
+            () =>
+            {
+                var snapshot = Settings.Snapshot();
+                return snapshot.Settings.Web.ToOptions() with { Revision = snapshot.Revision };
+            },
             workspace,
             () => Clock.GetUtcNow());
     }

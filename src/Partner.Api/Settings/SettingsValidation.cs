@@ -169,6 +169,34 @@ public static partial class SettingsValidation
     {
         ArgumentNullException.ThrowIfNull(web);
 
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var engine in web.Engines ?? [])
+        {
+            if (engine is null) { errors.Add("web.engines 不允许空项"); continue; }
+            if (string.IsNullOrWhiteSpace(engine.Id) || !ids.Add(engine.Id)) errors.Add("web.engines 的 id 不能为空或重复");
+            if (string.IsNullOrWhiteSpace(engine.Name)) errors.Add("web.engines 的名称不能为空");
+            if (!string.IsNullOrWhiteSpace(engine.PresetId))
+            {
+                if (Partner.Core.Agent.Web.WebEngines.Find(engine.PresetId) is null || engine.Id != engine.PresetId)
+                    errors.Add("web.engines 的预设无效");
+                continue;
+            }
+            var template = engine.UrlTemplate ?? "";
+            var marker = template.IndexOf("{query}", StringComparison.Ordinal);
+            if (marker < 0 || marker != template.LastIndexOf("{query}", StringComparison.Ordinal)
+                || !Uri.TryCreate(template.Replace("{query}", "test", StringComparison.Ordinal), UriKind.Absolute, out var uri)
+                || Partner.Core.Agent.Web.WebAddressGuard.Reject(uri) is not null
+                || !template.Split('?', 2).Skip(1).Any(query => query.Split('#')[0].Split('&')
+                    .Any(part => part.Contains('=') && part[(part.IndexOf('=') + 1)..].Contains("{query}", StringComparison.Ordinal)))
+                || template.Replace("{query}", "", StringComparison.Ordinal).IndexOfAny(['{', '}']) >= 0)
+                errors.Add("web.engines 的 URL 模板必须在查询参数值中包含一个 {query}，且为有效的 http(s) 地址");
+            static bool ValidPath(string? path, bool required) => string.IsNullOrEmpty(path) ? !required
+                : path.Split('.').All(segment => segment.Length > 0 && segment.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '-'));
+            if (!ValidPath(engine.ResultsPath, false) || !ValidPath(engine.TitleField, true)
+                || !ValidPath(engine.UrlField, true) || !ValidPath(engine.SnippetField, false))
+                errors.Add("web.engines 的结果字段映射无效");
+        }
+
         if (!string.IsNullOrWhiteSpace(web.Proxy))
         {
             if (!Uri.TryCreate(web.Proxy, UriKind.Absolute, out var uri)

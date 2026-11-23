@@ -85,7 +85,7 @@ public sealed record RuntimeSettings
     /// <summary>The desktop pet: window switches, model choice, idle timing and the emotion dictionary.</summary>
     public PetSettings Pet { get; init; } = new();
 
-    public static RuntimeSettings Default { get; } = new();
+    public static RuntimeSettings Default { get; } = new() { Web = new WebSettings().WithEngineDefaults() };
 }
 
 /// <summary>
@@ -123,6 +123,15 @@ public sealed record WebSettings
     /// <summary>Ids of engines the user turned off. Unknown ids are ignored (an engine may be removed in a later version).</summary>
     public IReadOnlyList<string> DisabledEngines { get; init; } = Array.Empty<string>();
 
+    public IReadOnlyList<Partner.Core.Agent.Web.WebEngineDefinition>? Engines { get; init; }
+
+    public WebSettings WithEngineDefaults() => Engines is not null ? this : this with
+    {
+        Engines = Partner.Core.Agent.Web.WebEngines.All.Select(engine => new Partner.Core.Agent.Web.WebEngineDefinition(
+            engine.Traits.Id, engine.Traits.Name,
+            !DisabledEngines.Contains(engine.Traits.Id, StringComparer.Ordinal), engine.Traits.Id)).ToArray(),
+    };
+
     /// <summary>
     /// Value equality that actually compares the list. Same reason as <see cref="DesktopSettings.Equals"/>:
     /// a record holding a list compares it by reference, so two defaults would look different and every save
@@ -134,7 +143,8 @@ public sealed record WebSettings
         && TimeBudgetSeconds == other.TimeBudgetSeconds
         && MaxResults == other.MaxResults
         && string.Equals(Proxy, other.Proxy, StringComparison.Ordinal)
-        && DisabledEngines.SequenceEqual(other.DisabledEngines, StringComparer.Ordinal);
+        && DisabledEngines.SequenceEqual(other.DisabledEngines, StringComparer.Ordinal)
+        && (Engines is null ? other.Engines is null : other.Engines is not null && Engines.SequenceEqual(other.Engines));
 
     public override int GetHashCode() =>
         HashCode.Combine(Enabled, TimeBudgetSeconds, MaxResults, Proxy, DisabledEngines.Count);
@@ -145,7 +155,7 @@ public sealed record WebSettings
         TimeBudgetSeconds,
         MaxResults,
         string.IsNullOrWhiteSpace(Proxy) ? null : Proxy,
-        new HashSet<string>(DisabledEngines, StringComparer.Ordinal));
+        new HashSet<string>(Engines is null ? DisabledEngines : Array.Empty<string>(), StringComparer.Ordinal)) { Engines = Engines };
 }
 
 /// <summary>
