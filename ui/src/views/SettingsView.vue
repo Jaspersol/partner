@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import Dialog from '../components/Dialog.vue'
 import McpView from './McpView.vue'
 import PromptsView from './PromptsView.vue'
 import SkillsView from './SkillsView.vue'
@@ -51,8 +52,8 @@ import type {
   UpdateDownload,
   VoiceState,
   VoiceTestResult,
-  WebEngineView,
   WebEngineSettings,
+  WebEngineView,
   WebView,
 } from '../api'
 
@@ -348,6 +349,7 @@ const LOCAL_ENGINE_DEFAULTS = {
 } as const
 
 function apply(settings: RuntimeSettings & { rebaseGuard?: string; model: { apiKeySet?: boolean } }) {
+  closeWebEngine()
   form.revision = settings.revision
   rebaseGuard.value = settings.rebaseGuard
   Object.assign(form.input, settings.input)
@@ -675,32 +677,40 @@ function toggleEngine(id: string) {
 
 function addWebEngine() {
   const id = `custom-${Math.random().toString(36).slice(2, 10)}`
-  const row: WebEngineSettings = { id, name: '', enabled: true, presetId: null, urlTemplate: 'https://example.com/search?q={query}', resultsPath: 'results', titleField: 'title', urlField: 'url', snippetField: 'content' }
-  editingEngine.value = id
-  engineDraft.value = row
+  engineDraft.value = {
+    id,
+    name: '',
+    enabled: true,
+  }
 }
 
-const editingEngine = ref<string | null>(null)
 const engineDraft = ref<WebEngineSettings | null>(null)
+const isEditingEngine = computed(() => form.web.engines?.some((engine) => engine.id === engineDraft.value?.id) ?? false)
+
 function editWebEngine(id: string) {
-  const row = form.web.engines?.find(e => e.id === id)
-  if (row) { editingEngine.value = id; engineDraft.value = { ...row } }
+  const row = form.web.engines?.find((engine) => engine.id === id)
+  if (row) engineDraft.value = { ...row }
 }
-function confirmWebEngine() {
-  if (!engineDraft.value) return
-  const rows = form.web.engines ?? []
-  const index = rows.findIndex(e => e.id === engineDraft.value!.id)
-  if (index < 0) rows.push({ ...engineDraft.value })
-  else rows[index] = { ...engineDraft.value }
-  form.web.engines = rows
-  editingEngine.value = null
+
+function closeWebEngine() {
   engineDraft.value = null
+}
+
+function confirmWebEngine() {
+  const draft = engineDraft.value
+  if (!draft || draft.name.trim() === '') return
+  const rows = form.web.engines ?? []
+  const index = rows.findIndex((engine) => engine.id === draft.id)
+  if (index < 0) rows.push({ ...draft })
+  else rows[index] = { ...draft }
+  form.web.engines = rows
+  closeWebEngine()
 }
 function removeWebEngine(id: string) {
   if (!window.confirm(t('删除后无法恢复。'))) return
   form.web.engines = (form.web.engines ?? []).filter((e) => e.id !== id)
   form.web.disabledEngines = form.web.disabledEngines.filter((e) => e !== id)
-  if (editingEngine.value === id) { editingEngine.value = null; engineDraft.value = null }
+  if (engineDraft.value?.id === id) closeWebEngine()
 }
 function restoreWebDefaults() {
   if (!window.confirm(t('恢复默认搜索引擎？'))) return
@@ -708,8 +718,7 @@ function restoreWebDefaults() {
   if (defaults.length) {
     form.web.engines = defaults.map((e) => ({ ...e, enabled: true }))
     form.web.disabledEngines = []
-    editingEngine.value = null
-    engineDraft.value = null
+    closeWebEngine()
   }
 }
 
@@ -730,35 +739,16 @@ function kindLabel(kind: string): string {
   return label === undefined ? kind : t(label)
 }
 
-/**
- * One sentence describing an engine's current state. Paused and failed are reported explicitly: "no results
- * this time" must not read as "nothing on the web" when the engine is actually circuit-broken.
- */
-function engineState(engine: Partial<WebEngineView> & { id: string }): string {
-  if (form.web.disabledEngines.includes(engine.id)) {
-    return t('已关闭')
-  }
-  if (webView.value === null) return t('状态不可用')
-  if (engine.cooling) {
-    const until = !engine.until ? '' : t('，{toLocaleTimeString} 后再试', { toLocaleTimeString: new Date(engine.until).toLocaleTimeString(locale.value) })
-    return t('连续失败 {strikes} 次，暂停中{until}', { strikes: engine.strikes, until: until })
-  }
-  if ((engine.strikes ?? 0) > 0 && engine.lastReason !== null && engine.lastReason !== undefined) {
-    return t('上次失败：{lastReason}', { lastReason: engine.lastReason })
-  }
-  return t('正常')
-}
 
-function engineStateClass(engine: Partial<WebEngineView> & { id: string }): string {
-  if (form.web.disabledEngines.includes(engine.id)) {
-    return 'is-off'
-  }
-  return engine.cooling || (engine.strikes ?? 0) > 0 ? 'is-warn' : 'is-ok'
-}
-
-function webEngineRows(): any[] {
-  return (form.web.engines ?? []).map(e => ({ ...e, kinds: [], singleSite: false, cooling: false, strikes: 0, lastReason: null, until: null,
-    ...webView.value?.engines.find(status => status.id === e.id), name: e.name, enabled: e.enabled, presetId: e.presetId }))
+function webEngineRows(): Array<WebEngineSettings & Pick<WebEngineView, 'kinds' | 'singleSite'>> {
+  return (form.web.engines ?? []).map((engine) => {
+    const status = webView.value?.engines.find((row) => row.id === engine.id)
+    return {
+      ...engine,
+      kinds: status?.kinds ?? [],
+      singleSite: status?.singleSite ?? false,
+    }
+  })
 }
 
 const cloneBusy = ref(false)
@@ -992,6 +982,7 @@ function choose(key: string): void {
   if (key === section.value) return
   // The embedded pages are `v-if`: leaving one destroys it and its edits.
   if (child.value?.hasUnsavedChanges?.() === true && !window.confirm(t('app.unsavedLeave'))) return
+  closeWebEngine()
   section.value = key
   writeStored(SECTION_KEY, key)
 }
@@ -2275,7 +2266,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <button class="ghost icon-only" :title="t('刷新状态')" :aria-label="t('刷新引擎状态')" data-test="web-refresh" @click="refreshWeb()">
                   <Icon name="refresh" :size="14" /><span class="sr-only">{{ t('刷新状态') }}</span>
                 </button>
-                <button class="ghost" type="button" data-test="web-engine-add" @click="addWebEngine">{{ t('新增引擎') }}</button>
+                <button class="secondary" type="button" aria-haspopup="dialog" data-test="web-engine-add" @click="addWebEngine">{{ t('新增引擎') }}</button>
                 <button class="ghost" type="button" data-test="web-engine-restore" @click="restoreWebDefaults">{{ t('恢复默认引擎') }}</button>
               </div>
 
@@ -2291,35 +2282,63 @@ defineExpose({ refresh, hasUnsavedChanges })
                 class="engine-row"
                 :data-test="`web-engine-${engine.id}`"
               >
-                <span class="engine-name" :title="engine.name">
-                  {{ engine.name }}
-                  <span v-if="engine.presetId" class="engine-tag">{{ t('默认') }}</span>
-                  <span v-if="engine.singleSite" class="engine-tag" :title="t('只索引自己这一个站点')">{{ t('单一站点') }}</span>
-                </span>
-                <span class="engine-kinds">{{ engine.kinds.map(kindLabel).join(t('、')) }}</span>
-                <span class="engine-state" :class="engineStateClass(engine)" data-test="web-engine-state">{{ engineState(engine) }}</span>
+                <div class="engine-identity">
+                  <span class="engine-name" :title="engine.name">
+                    {{ engine.name }}
+                    <span v-if="engine.presetId" class="engine-tag">{{ t('默认') }}</span>
+                    <span v-if="engine.singleSite" class="engine-tag" :title="t('只索引自己这一个站点')">{{ t('单一站点') }}</span>
+                  </span>
+                  <span class="engine-kinds">{{ engine.kinds.map(kindLabel).join(t('、')) }}</span>
+                </div>
                 <input
                   type="checkbox"
-                  class="g-switch"
+                  class="g-switch engine-enabled"
                   role="switch"
                   :aria-label="t('使用 {name}', { name: engine.name })"
                   :checked="engine.enabled"
                   :data-test="`web-engine-${engine.id}-enabled`"
                   @change="toggleEngine(engine.id)"
                 />
-                <button class="ghost" type="button" :data-test="`web-engine-${engine.id}-edit`" @click="editWebEngine(engine.id)">{{ t('编辑') }}</button>
-                <button class="ghost" type="button" :data-test="`web-engine-${engine.id}-delete`" @click="removeWebEngine(engine.id)">{{ t('删除') }}</button>
+                <button class="ghost engine-edit-button" type="button" aria-haspopup="dialog" :aria-label="t('编辑 {name}', { name: engine.name })" :data-test="`web-engine-${engine.id}-edit`" @click="editWebEngine(engine.id)">{{ t('编辑') }}</button>
+                <button class="ghost engine-delete-button" type="button" :data-test="`web-engine-${engine.id}-delete`" @click="removeWebEngine(engine.id)">{{ t('删除') }}</button>
               </div>
-              <div v-if="engineDraft" class="engine-edit" :data-test="`web-engine-${engineDraft.id}-form`">
-                <input v-model="engineDraft.name" :placeholder="t('名称')" />
-                <input v-if="!engineDraft.presetId" v-model="engineDraft.urlTemplate" :placeholder="t('URL 模板，包含 {query}')" />
-                <input v-if="!engineDraft.presetId" v-model="engineDraft.resultsPath" :placeholder="t('结果数组路径')" />
-                <input v-if="!engineDraft.presetId" v-model="engineDraft.titleField" :placeholder="t('标题字段')" />
-                <input v-if="!engineDraft.presetId" v-model="engineDraft.urlField" :placeholder="t('链接字段')" />
-                <input v-if="!engineDraft.presetId" v-model="engineDraft.snippetField" :placeholder="t('摘要字段（可选）')" />
-                <button type="button" @click="confirmWebEngine">{{ t('确认') }}</button>
-                <button type="button" @click="engineDraft = null; editingEngine = null">{{ t('取消') }}</button>
-              </div>
+              <Dialog
+                :open="section === 'web' && engineDraft !== null"
+                :title="isEditingEngine ? t('编辑引擎') : t('新增引擎')"
+                @close="closeWebEngine"
+              >
+                <form v-if="engineDraft" id="web-engine-form" class="engine-edit" data-test="web-engine-form" @submit.prevent="confirmWebEngine">
+                  <label class="is-wide">
+                    {{ t('名称') }}
+                    <input v-model.trim="engineDraft.name" :placeholder="t('例如：我的搜索引擎')" required data-test="web-engine-name" />
+                  </label>
+                  <label v-if="!engineDraft.presetId" class="is-wide">
+                    {{ t('URL 模板，包含 {query}') }}
+                    <input v-model.trim="engineDraft.urlTemplate" placeholder="https://example.com/search?q={query}" required data-test="web-engine-url-template" />
+                  </label>
+                  <label v-if="!engineDraft.presetId" class="is-wide">
+                    {{ t('结果数组路径') }}
+                    <input v-model.trim="engineDraft.resultsPath" :placeholder="t('例如：results（响应本身是数组时留空）')" />
+                  </label>
+                  <label v-if="!engineDraft.presetId">
+                    {{ t('标题字段') }}
+                    <input v-model.trim="engineDraft.titleField" placeholder="title" required data-test="web-engine-title-field" />
+                  </label>
+                  <label v-if="!engineDraft.presetId">
+                    {{ t('链接字段') }}
+                    <input v-model.trim="engineDraft.urlField" placeholder="url" required data-test="web-engine-url-field" />
+                  </label>
+                  <label v-if="!engineDraft.presetId" class="is-wide">
+                    {{ t('摘要字段（可选）') }}
+                    <input v-model.trim="engineDraft.snippetField" :placeholder="t('例如：snippet 或 content.text')" aria-describedby="web-engine-snippet-hint" />
+                    <span id="web-engine-snippet-hint" class="muted">{{ t('填写每条结果中摘要文本的字段名或路径，嵌套字段用点连接。留空时仍返回标题和链接，不提取摘要。') }}</span>
+                  </label>
+                </form>
+                <template #footer>
+                  <button class="ghost" type="button" data-test="web-engine-cancel" @click="closeWebEngine">{{ t('取消') }}</button>
+                  <button class="primary" type="submit" form="web-engine-form" data-test="web-engine-confirm">{{ t('确认') }}</button>
+                </template>
+              </Dialog>
             </div>
 
             <button

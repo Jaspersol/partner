@@ -1,17 +1,12 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 
-/**
- * A short form in the middle of the page, over a dimmed scrim.
- *
- * Absolutely positioned in the nearest positioned ancestor, so it covers its view; Esc and the scrim close it.
- * Focus moves to the first field on open and back to the opener on close.
- */
-const props = defineProps<{ open: boolean; title: string }>()
+const props = defineProps<{ open: boolean; title: string; wide?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
-const panel = ref<HTMLElement | null>(null)
+const panel = ref<HTMLDialogElement | null>(null)
 let opener: HTMLElement | null = null
+let pressedBackdrop = false
 
 watch(
   () => props.open,
@@ -19,60 +14,70 @@ watch(
     if (open) {
       opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
       await nextTick()
-      const target = panel.value?.querySelector<HTMLElement>('textarea, input, select')
-      ;(target ?? panel.value)?.focus()
+      const dialog = panel.value
+      if (!props.open || !dialog || dialog.open) return
+      pressedBackdrop = false
+      dialog.showModal()
+      dialog.querySelector<HTMLElement>('textarea:not(:disabled), input:not(:disabled), select:not(:disabled)')?.focus()
     } else {
-      opener?.focus?.()
+      panel.value?.close()
+      opener?.focus()
       opener = null
     }
   },
+  { immediate: true },
 )
 </script>
 
 <template>
-  <Transition name="dialog">
-    <div v-if="open" class="dialog-layer" data-test="dialog">
-      <div class="dialog-scrim" @click="emit('close')" />
-      <section
-        ref="panel"
-        class="dialog g-float"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="title"
-        tabindex="-1"
-        @keydown.escape.stop="emit('close')"
-      >
-        <h2>{{ title }}</h2>
-        <div class="dialog-body"><slot /></div>
-        <footer v-if="$slots.footer" class="dialog-foot"><slot name="footer" /></footer>
-      </section>
+  <dialog
+    v-if="open"
+    ref="panel"
+    class="dialog g-float"
+    :class="{ 'is-wide': wide }"
+    :aria-label="title"
+    data-test="dialog"
+    @cancel.prevent="emit('close')"
+    @keydown.stop
+    @pointerdown="pressedBackdrop = $event.target === $event.currentTarget"
+    @click.self="pressedBackdrop && emit('close')"
+  >
+    <div class="dialog-content">
+      <h2>{{ title }}</h2>
+      <div class="dialog-body"><slot /></div>
+      <footer v-if="$slots.footer" class="dialog-foot"><slot name="footer" /></footer>
     </div>
-  </Transition>
+  </dialog>
 </template>
 
 <style scoped>
-.dialog-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 50;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  place-items: center;
-  padding: var(--space-4);
-}
-
-.dialog-scrim {
-  position: absolute;
-  inset: 0;
-  background: rgb(0 0 0 / 0.22);
-}
-
 .dialog {
-  position: relative;
-  inline-size: min(30rem, 100%);
-  padding: var(--space-5);
+  inline-size: min(30rem, calc(100% - 2 * var(--space-4)));
+  max-inline-size: none;
+  max-block-size: calc(100dvh - 2 * var(--space-4));
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+}
+
+.dialog[open] {
+  animation: dialog-in var(--motion-base) var(--ease);
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 0.28);
+}
+
+.dialog.is-wide {
+  inline-size: min(44rem, calc(100% - 2 * var(--space-4)));
+}
+
+.dialog-content {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-block-size: inherit;
+  padding: var(--space-5);
   gap: var(--space-4);
 }
 
@@ -83,33 +88,25 @@ watch(
 .dialog-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  align-content: start;
   gap: var(--space-3);
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .dialog-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
 }
 
-.dialog-enter-active,
-.dialog-leave-active {
-  transition: opacity var(--motion-base) var(--ease);
-}
-
-.dialog-enter-active .dialog,
-.dialog-leave-active .dialog {
-  transition: transform var(--motion-base) var(--ease);
-}
-
-.dialog-enter-from,
-.dialog-leave-to {
-  opacity: 0;
-}
-
-.dialog-enter-from .dialog,
-.dialog-leave-to .dialog {
-  transform: translateY(0.5rem) scale(0.98);
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.98);
+  }
 }
 </style>

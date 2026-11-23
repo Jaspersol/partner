@@ -26,7 +26,7 @@ public sealed class DesktopSystemToolTests
             var tool = new DesktopScreenshotTool(automation, new FileMediaStore(workspace.FullName));
 
             var observation = automation.Observe();
-            var target = observation.Entities.First(entity => entity.IsForeground);
+            var target = observation.Entities.First(entity => !entity.IsMinimized);
 
             var result = await tool.InvokeAsync($$"""{"entityId":"{{target.EntityId}}"}""");
 

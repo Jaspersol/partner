@@ -249,7 +249,7 @@ internal static partial class Program
         /// the 160×28 taskbar stub, and empty so there is nothing to look at.
         /// </summary>
         /// <param name="showWithoutActivating">True to show the window without activating it, so it is never in front.</param>
-        public static OwnedWindow Create(string title, bool showWithoutActivating = false)
+        public static OwnedWindow Create(string title, bool showWithoutActivating = false, bool addButton = false)
         {
             var window = new OwnedWindow();
             nint handle = 0;
@@ -292,6 +292,16 @@ internal static partial class Program
                 if (handle == 0)
                 {
                     failure = $"CreateWindowExW failed (win32 {GetLastError()})";
+                    window._ready.Set();
+                    return;
+                }
+
+                if (addButton && CreateWindowExW(0, "BUTTON", "Smoke button", 0x50010000u,
+                    20, 20, 120, 30, handle, 0, instance, 0) == 0)
+                {
+                    failure = $"CreateWindowExW button failed (win32 {GetLastError()})";
+                    DestroyWindow(handle);
+                    handle = 0;
                     window._ready.Set();
                     return;
                 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { locale, t } from '../i18n'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import Dialog from '../components/Dialog.vue'
 import HintTip from '../components/HintTip.vue'
 import Icon from '../components/Icon.vue'
@@ -42,9 +42,6 @@ const error = ref('')
 const errors = ref<string[]>([])
 const notice = ref('')
 
-/** Which agent the right column shows: 'main', a stored sub-agent's id, or a draft's local key. */
-const selectedKey = ref('main')
-
 interface SubDraft {
   /** Stable while the page is open: a stored id, or a local key for a draft the server has not named yet. */
   key: string
@@ -64,6 +61,39 @@ interface SubDraft {
 
 const main = ref<{ prompt: string }>({ prompt: '' })
 const subs = ref<SubDraft[]>([])
+
+const mainEditor = ref<{ prompt: string } | null>(null)
+const selectedSub = ref<SubDraft | null>(null)
+const editorOpen = computed(() => mainEditor.value !== null || selectedSub.value !== null)
+const confirmingRemove = ref(false)
+const mainEditButton = ref<HTMLButtonElement | null>(null)
+const agentEditButtons = ref<HTMLButtonElement[]>([])
+
+function openEditor(key: string) {
+  const agent = subs.value.find((item) => item.key === key)
+  mainEditor.value = key === 'main' ? { ...main.value } : null
+  selectedSub.value = agent === undefined ? null : { ...agent, model: agent.model === null ? null : { ...agent.model } }
+  confirmingRemove.value = false
+  previewOpen.value = null
+}
+
+function confirmEditor() {
+  if (editorOverLimit.value) return
+  const agent = selectedSub.value
+  if (mainEditor.value !== null) {
+    main.value = mainEditor.value
+  } else if (agent !== null) {
+    const index = subs.value.findIndex((item) => item.key === agent.key)
+    if (index !== -1) subs.value[index] = agent
+  }
+  closeEditor()
+}
+
+function closeEditor() {
+  mainEditor.value = null
+  selectedSub.value = null
+  confirmingRemove.value = false
+}
 
 /**
  * The stored form, for telling "changed" from "unchanged".
@@ -87,8 +117,6 @@ const limit = computed(() => view.value?.limits.promptTokens ?? 0)
 const maxRounds = computed(() => view.value?.limits.maxRounds ?? 10)
 const defaultMaxRounds = computed(() => view.value?.limits.defaultMaxRounds ?? 5)
 
-const mainSelected = computed(() => selectedKey.value === 'main')
-const selectedSub = computed(() => subs.value.find((agent) => agent.key === selectedKey.value) ?? null)
 const selectedSubView = computed(
   () => view.value?.subAgents.find((agent) => agent.id !== '' && agent.id === selectedSub.value?.id) ?? null,
 )
@@ -132,15 +160,16 @@ function promptTokensFor(draft: string, body: string, effective: string, measure
   return estimateTokens(normalized) + estimateTokens(suffix)
 }
 
-/** The main agent's draft, measured. */
-const mainTokens = computed(() => {
+function measureMainPrompt(prompt: string): number {
   const current = view.value
   if (current === null) {
     return 0
   }
 
-  return promptTokensFor(main.value.prompt, current.main.prompt ?? current.main.defaultPrompt, current.main.effectivePrompt, current.main.promptTokens)
-})
+  return promptTokensFor(prompt, current.main.prompt ?? current.main.defaultPrompt, current.main.effectivePrompt, current.main.promptTokens)
+}
+
+const mainTokens = computed(() => measureMainPrompt(mainEditor.value?.prompt ?? main.value.prompt))
 
 /** One sub-agent draft, measured. A draft the server has not named yet has no generated block to add. */
 function subTokens(agent: SubDraft): number {
@@ -153,6 +182,7 @@ function subTokens(agent: SubDraft): number {
 }
 
 const selectedSubTokens = computed(() => (selectedSub.value === null ? 0 : subTokens(selectedSub.value)))
+const editorOverLimit = computed(() => (mainEditor.value !== null ? mainTokens.value : selectedSubTokens.value) > limit.value)
 
 /**
  * Whether any prompt on the page is over the limit, measured the way the server would.
@@ -167,7 +197,7 @@ const overLimit = computed(() => {
   }
 
   return (
-    mainTokens.value > current.limits.promptTokens ||
+    measureMainPrompt(main.value.prompt) > current.limits.promptTokens ||
     subs.value.some((agent) => subTokens(agent) > current.limits.promptTokens)
   )
 })
@@ -229,14 +259,10 @@ function draftFrom(agent: SubAgentView): SubDraft {
 }
 
 function restore(current: AgentsView) {
+  closeEditor()
   main.value = { prompt: current.main.prompt ?? '' }
   // Rebuilt in the server's order, so the list on screen is the list that was stored.
   subs.value = current.subAgents.map(draftFrom)
-
-  // A selection that no longer exists (a deleted agent) falls back to the main agent rather than to nothing.
-  if (selectedKey.value !== 'main' && !subs.value.some((agent) => agent.key === selectedKey.value)) {
-    selectedKey.value = 'main'
-  }
 
   stored.value = fingerprint()
 }
@@ -322,7 +348,7 @@ async function discard() {
 }
 
 function resetMain() {
-  main.value = { prompt: '' }
+  if (mainEditor.value !== null) mainEditor.value.prompt = ''
 }
 
 function resetSubPrompt() {
@@ -394,7 +420,7 @@ function openAdd() {
  * Adds a draft, not a stored agent. It goes to the server with the rest of the page on Save, with `id: ""` —
  * the server names it, so two windows cannot pick the same id.
  */
-function commitAdd() {
+async function commitAdd() {
   const scenario = freeScenarios.value.find((item) => item.key === newScenario.value)
   if (scenario === undefined) {
     addError.value = t('先选一个场景')
@@ -408,23 +434,16 @@ function commitAdd() {
   const draft = blankSub(scenario)
   draft.name = newName.value.trim()
   subs.value = [...subs.value, draft]
-  selectedKey.value = draft.key
   adding.value = false
+  await nextTick()
+  agentEditButtons.value.find((button) => button.dataset.agentKey === draft.key)?.focus()
+  openEditor(draft.key)
 }
 
 /** The built-in agent: no delete, and its scenario is locked. */
 function isBuiltin(agent: SubDraft): boolean {
   return agent.id === 'desktop' || view.value?.subAgents.some((item) => item.id === agent.id && item.builtin) === true
 }
-
-/** Choosing an agent. A pending 「确认删除」 belongs to the agent it was pressed on, so it does not follow the selection. */
-function pick(key: string) {
-  selectedKey.value = key
-  confirmingRemove.value = false
-}
-
-/** Deleting a sub-agent arms first: the button turns into 「确认删除」, and picking another agent disarms it. */
-const confirmingRemove = ref(false)
 
 function removeSelected() {
   const current = selectedSub.value
@@ -436,9 +455,14 @@ function removeSelected() {
     return
   }
 
-  confirmingRemove.value = false
-  subs.value = subs.value.filter((agent) => agent !== current)
-  selectedKey.value = 'main'
+  subs.value = subs.value.filter((agent) => agent.key !== current.key)
+  closeEditor()
+  void nextTick(() => mainEditButton.value?.focus())
+}
+
+function navigateToSettings() {
+  closeEditor()
+  emit('navigate', 'settings')
 }
 
 /** The scenario a sub-agent's detail shows, with its description; the key is what is stored. */
@@ -532,30 +556,20 @@ defineExpose({ refresh, hasUnsavedChanges })
           <li v-for="(problem, index) in view.problems" :key="index">{{ problem }}</li>
         </ul>
 
-        <div class="split">
-          <section class="list-column" :aria-label="t('Agent 列表')">
+          <section class="agent-list" :aria-label="t('Agent 列表')">
             <ul class="agents g-glass" role="list">
-              <li
-                :class="{ active: mainSelected }"
-                data-test="prompts-main"
-                tabindex="0"
-                @click="pick('main')"
-                @keydown.enter="pick('main')"
-                @keydown.space.prevent="pick('main')"
-              >
+              <li data-test="prompts-main">
                 <Icon name="prompt" :size="16" />
                 <span class="agent-name">{{ t('主 Agent') }}</span>
+                <button ref="mainEditButton" class="ghost agent-edit-button" type="button" aria-haspopup="dialog" :aria-label="t('编辑主 Agent')" data-test="prompts-main-edit" @click="openEditor('main')">
+                  {{ t('编辑') }}
+                </button>
               </li>
 
               <li
                 v-for="agent in subs"
                 :key="agent.key"
-                :class="{ active: agent.key === selectedKey }"
                 data-test="prompts-agent"
-                tabindex="0"
-                @click="pick(agent.key)"
-                @keydown.enter="pick(agent.key)"
-                @keydown.space.prevent="pick(agent.key)"
               >
                 <input
                   type="checkbox"
@@ -564,7 +578,6 @@ defineExpose({ refresh, hasUnsavedChanges })
                   :checked="agent.enabled"
                   :aria-label="t('启用「{name}」', { name: agent.name || t('（未命名）') })"
                   data-test="prompts-agent-enabled"
-                  @click.stop
                   @change="agent.enabled = ($event.target as HTMLInputElement).checked"
                 />
                 <span class="agent-name">{{ agent.name || t('（未命名）') }}</span>
@@ -574,6 +587,16 @@ defineExpose({ refresh, hasUnsavedChanges })
                   {{ t('暂不可用') }}
                   <HintTip align="end">{{ t('要么对应的能力没开，要么没有启用的子 agent 负责它。') }}</HintTip>
                 </span>
+                <button
+                  ref="agentEditButtons"
+                  class="ghost agent-edit-button"
+                  type="button"
+                  aria-haspopup="dialog"
+                  :aria-label="t('编辑 {name}', { name: agent.name || t('（未命名）') })"
+                  :data-agent-key="agent.key"
+                  data-test="prompts-agent-edit"
+                  @click="openEditor(agent.key)"
+                >{{ t('编辑') }}</button>
               </li>
             </ul>
 
@@ -587,13 +610,20 @@ defineExpose({ refresh, hasUnsavedChanges })
               <Icon name="plus" :size="14" /> {{ t('新增子 agent') }}
             </button>
           </section>
+      </div>
+    </div>
 
-          <section class="detail g-glass" :aria-label="t('Agent 详情')">
-            <!-- Main agent: a prompt, a default, and the generated delegation block underneath. -->
-            <template v-if="mainSelected">
+    <Dialog
+      v-if="view"
+      :open="editorOpen"
+      wide
+      :title="mainEditor ? t('编辑主 Agent') : t('编辑子 Agent')"
+      @close="closeEditor"
+    >
+          <div class="detail">
+            <template v-if="mainEditor">
               <header class="detail-head">
-                <h2>{{ t('主 Agent') }}</h2>
-                <span v-if="main.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-main-modified">{{ t('已修改') }}</span>
+                <span v-if="mainEditor.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-main-modified">{{ t('已修改') }}</span>
                 <HintTip>
                   {{ t('主 Agent 负责和你对话，并决定要不要把活交给子 agent。「实际发送的指令」里有它读得到的任务清单， 那部分由服务端生成，不能改。') }}
                 </HintTip>
@@ -602,15 +632,14 @@ defineExpose({ refresh, hasUnsavedChanges })
               <div class="block">
                 <h3>{{ t('指令') }} <HintTip>{{ t('告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。') }}</HintTip></h3>
                 <textarea
-                  :value="main.prompt"
+                  v-model="mainEditor.prompt"
                   rows="12"
                   :placeholder="view.main.defaultPrompt"
                   :aria-label="t('主 Agent 的指令')"
                   data-test="prompts-main-textarea"
-                  @input="main.prompt = ($event.target as HTMLTextAreaElement).value"
                 />
                 <div class="meter-row">
-                  <button class="ghost" :disabled="main.prompt.trim() === ''" data-test="prompts-main-reset" @click="resetMain">
+                  <button class="ghost" :disabled="mainEditor.prompt.trim() === ''" data-test="prompts-main-reset" @click="resetMain">
                     {{ t('恢复默认') }}
                   </button>
                   <span class="spacer" />
@@ -634,7 +663,6 @@ defineExpose({ refresh, hasUnsavedChanges })
               <pre v-if="previewOpen === 'main'" class="effective" data-test="prompts-main-preview">{{ view.main.effectivePrompt }}</pre>
             </template>
 
-            <!-- Sub-agent: the same prompt editor plus what makes it a sub-agent. -->
             <template v-else-if="selectedSub">
               <header class="detail-head">
                 <input
@@ -656,7 +684,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 </div>
                 <p v-if="capabilityOff" class="warn-line" data-test="prompts-agent-capability">
                   {{ capabilityOff }}
-                  <button class="ghost" data-test="prompts-agent-goto-settings" @click="emit('navigate', 'settings')">
+                  <button class="ghost" data-test="prompts-agent-goto-settings" @click="navigateToSettings">
                     {{ t('去设置页开启') }}
                   </button>
                 </p>
@@ -789,10 +817,13 @@ defineExpose({ refresh, hasUnsavedChanges })
                 </button>
               </div>
             </template>
-          </section>
-        </div>
-      </div>
-    </div>
+          </div>
+          <template #footer>
+            <p v-if="editorOverLimit" class="error editor-error">{{ t('指令太长了，先缩短再保存') }}</p>
+            <button class="ghost" type="button" data-test="prompts-edit-cancel" @click="closeEditor">{{ t('取消') }}</button>
+            <button class="primary" type="button" data-test="prompts-edit-confirm" :disabled="editorOverLimit" @click="confirmEditor">{{ t('确认') }}</button>
+          </template>
+    </Dialog>
 
     <Dialog :open="adding" :title="t('新增子 agent')" @close="adding = false">
       <div v-if="view" data-test="prompts-add-form" class="add-form">
@@ -858,22 +889,11 @@ defineExpose({ refresh, hasUnsavedChanges })
   line-height: 1.6;
 }
 
-/* Two columns: the agents, and the one being edited. The list is narrow because a name and a switch are all
-   it holds; the editor takes whatever is left. */
-.split {
-  display: grid;
-  grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
-  gap: var(--space-4);
-  align-items: start;
-}
-
-.list-column {
+.agent-list {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
-  align-content: start;
-  position: sticky;
-  inset-block-start: calc(var(--topbar-h) + var(--space-4));
+  max-inline-size: 52rem;
 }
 
 .agents {
@@ -893,25 +913,7 @@ defineExpose({ refresh, hasUnsavedChanges })
   min-block-size: 2.75rem;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   min-inline-size: 0;
-  outline: none;
-}
-
-.agents > li:hover {
-  background: var(--surface-2);
-}
-
-.agents > li:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-/* Selection is a soft fill, the same as the rail. */
-.agents > li.active {
-  background: var(--accent-soft);
-  color: var(--accent-pressed);
-  font-weight: 500;
 }
 
 .agent-name {
@@ -921,10 +923,13 @@ defineExpose({ refresh, hasUnsavedChanges })
 }
 
 .scenario {
-  margin-inline-start: auto;
   flex: none;
   font-size: var(--fs-meta);
   color: var(--text-3);
+}
+
+.agent-edit-button {
+  margin-inline-start: auto;
 }
 
 .add {
@@ -936,18 +941,22 @@ defineExpose({ refresh, hasUnsavedChanges })
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-1);
   min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.editor-error {
+  margin-inline-end: auto;
+  font-size: var(--fs-meta);
 }
 
 .detail-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-}
-
-.detail-head h2 {
-  font-size: var(--fs-title);
+  min-inline-size: 0;
 }
 
 .name-input {
@@ -981,6 +990,7 @@ defineExpose({ refresh, hasUnsavedChanges })
 
 .scenario-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -993,8 +1003,10 @@ textarea {
 
 .meter-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
+  min-inline-size: 0;
 }
 
 .meter {
@@ -1090,17 +1102,5 @@ textarea {
   gap: var(--space-2);
   font-size: var(--fs-ui);
   color: var(--text-2);
-}
-
-/* Narrow: the list goes above the editor. A 14rem list beside a form on a 600px window would leave the form
-   narrower than the prompt it edits. */
-@container body (max-width: 52rem) {
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .list-column {
-    position: static;
-  }
 }
 </style>

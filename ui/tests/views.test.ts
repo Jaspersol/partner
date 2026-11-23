@@ -3120,12 +3120,12 @@ describe('settings view', () => {
     expect(wrapper.find('[data-test="web-callout"]').text()).toContain('会离开这台电脑')
     expect(wrapper.find('[data-test="web-effect"]').text()).toContain('已开启')
 
-    // A paused engine says so where the switch that would switch it off lives. In an answer "没搜到" and
-    // "这家停了" are the same sentence and they are not the same fact.
-    const paused = wrapper.find('[data-test="web-engine-wikipedia"] [data-test="web-engine-state"]')
-    expect(paused.text()).toContain('连续失败 3 次')
-    expect(paused.text()).toContain('暂停中')
-
+    const wikipedia = wrapper.find('[data-test="web-engine-wikipedia"]')
+    expect(wikipedia.find('[data-test="web-engine-state"]').exists()).toBe(false)
+    expect(wikipedia.text()).not.toContain('连续失败 3 次')
+    expect(wikipedia.text()).not.toContain('上次失败')
+    expect(wikipedia.find('.engine-identity .engine-name').text()).toContain('Wikipedia')
+    expect(wikipedia.find('.engine-identity .engine-kinds').exists()).toBe(true)
     // Switching one off stores "who was switched off", not a list of everyone who is on: an engine added by a
     // later build is then on by default rather than silently missing.
     await wrapper.find('[data-test="web-engine-duckduckgo-enabled"]').setValue(false)
@@ -3149,29 +3149,71 @@ describe('settings view', () => {
     const readWeb = vi.mocked(stub.web).getMockImplementation()!
     vi.mocked(stub.web).mockImplementation(async () => ({ ...await readWeb(), defaults }))
     vi.stubGlobal('confirm', vi.fn(() => true))
-    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub }, attachTo: document.body })
     await flushPromises()
+    await wrapper.get('[data-test="settings-nav-web"]').trigger('click')
     await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Renamed')
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] button').trigger('click')
+    expect(wrapper.get('dialog[open]').attributes('aria-label')).toBe('编辑引擎')
+    expect(wrapper.find('[data-test="web-engine-url-template"]').exists()).toBe(false)
+    await wrapper.get('[data-test="web-engine-name"]').setValue('Renamed')
+    await wrapper.get('[data-test="web-engine-confirm"]').trigger('click')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
     expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('Renamed')
     await wrapper.find('[data-test="web-engine-add"]').trigger('click')
-    const editor = wrapper.find('.engine-edit')
-    const fields = editor.findAll('input')
-    await fields[0].setValue('Custom')
-    await editor.find('button').trigger('click')
+    expect(wrapper.get('dialog[open]').attributes('aria-label')).toBe('新增引擎')
+    const fields = wrapper.findAll<HTMLInputElement>('[data-test="web-engine-form"] input')
+    expect(fields).toHaveLength(6)
+    expect(fields.every((field) => field.element.value === '' && field.element.placeholder !== '')).toBe(true)
+    expect(wrapper.get('[aria-describedby="web-engine-snippet-hint"]').attributes('placeholder')).toContain('content.text')
+    expect(wrapper.get('#web-engine-snippet-hint').text()).toContain('不提取摘要')
+    await wrapper.get('[data-test="web-engine-name"]').setValue('Custom')
+    await wrapper.get('[data-test="web-engine-url-template"]').setValue('https://example.com/search?term={query}')
+    await wrapper.get('[data-test="web-engine-title-field"]').setValue('title')
+    await wrapper.get('[data-test="web-engine-url-field"]').setValue('url')
+    await wrapper.get('[data-test="web-engine-confirm"]').trigger('click')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
     expect(wrapper.text()).toContain('Custom')
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
     expect(calls.saves[0]?.web.engines).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'duckduckgo', name: 'Renamed' }),
-      expect.objectContaining({ name: 'Custom', urlField: 'url' }),
+      expect.objectContaining({ name: 'Custom', urlTemplate: 'https://example.com/search?term={query}', urlField: 'url', snippetField: null }),
     ]))
     await wrapper.find('[data-test="web-engine-duckduckgo-delete"]').trigger('click')
     expect(wrapper.find('[data-test="web-engine-duckduckgo"]').exists()).toBe(false)
     await wrapper.find('[data-test="web-engine-restore"]').trigger('click')
     expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('DuckDuckGo')
     vi.unstubAllGlobals()
+    wrapper.unmount()
+  })
+
+  it('discards an engine modal without changing the settings or retaining its fields', async () => {
+    const { stub } = createStub()
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub }, attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-test="settings-nav-web"]').trigger('click')
+    const add = wrapper.get<HTMLButtonElement>('[data-test="web-engine-add"]')
+    add.element.focus()
+    await add.trigger('click')
+    const name = wrapper.get<HTMLInputElement>('[data-test="web-engine-name"]')
+    expect(document.activeElement).toBe(name.element)
+    await name.setValue('Discard this engine')
+    await wrapper.get('dialog[open]').trigger('cancel')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
+    expect(document.activeElement).toBe(add.element)
+    expect(wrapper.text()).not.toContain('Discard this engine')
+    await add.trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[data-test="web-engine-name"]').element.value).toBe('')
+    await wrapper.get('[data-test="web-engine-cancel"]').trigger('click')
+
+    await wrapper.get('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
+    await wrapper.get('[data-test="web-engine-name"]').setValue('Discard this rename')
+    const dialog = wrapper.get('dialog[open]')
+    await dialog.trigger('pointerdown')
+    await dialog.trigger('click')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="web-engine-duckduckgo"]').text()).toContain('DuckDuckGo')
+    expect(wrapper.find('[data-test="settings-save"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -3183,34 +3225,36 @@ describe('settings view', () => {
     })
     const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
     await flushPromises()
-    expect(wrapper.find('[data-test="web-engine-custom-1"]').text()).toContain('状态不可用')
+    await wrapper.get('[data-test="settings-nav-web"]').trigger('click')
+    expect(wrapper.find('[data-test="web-engines-unknown"]').exists()).toBe(true)
     await wrapper.find('[data-test="web-engine-custom-1-edit"]').trigger('click')
-    expect(wrapper.find('[data-test="web-engine-custom-1-form"]').exists()).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('dialog[open] [data-test="web-engine-url-template"]').element.value).toBe('https://example.com/?q={query}')
     wrapper.unmount()
   })
 
   it('keeps switch and delete decisions when an engine editor is open', async () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
     const { stub, calls } = createStub()
-    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub }, attachTo: document.body })
     await flushPromises()
+    await wrapper.get('[data-test="settings-nav-web"]').trigger('click')
     await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Changed')
+    await wrapper.get('[data-test="web-engine-name"]').setValue('Changed')
     await wrapper.find('[data-test="web-engine-duckduckgo-enabled"]').setValue(false)
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] button').trigger('click')
+    await wrapper.get('[data-test="web-engine-confirm"]').trigger('click')
     expect(wrapper.find<HTMLInputElement>('[data-test="web-engine-duckduckgo-enabled"]').element.checked).toBe(false)
     await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Old draft')
+    await wrapper.get('[data-test="web-engine-name"]').setValue('Old draft')
     const readWeb = vi.mocked(stub.web).getMockImplementation()!
     vi.mocked(stub.web).mockImplementation(async () => ({ ...await readWeb(), defaults: [{ id: 'duckduckgo', name: 'DuckDuckGo', enabled: true, presetId: 'duckduckgo' }] }))
     await wrapper.find('[data-test="web-refresh"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="web-engine-restore"]').trigger('click')
-    expect(wrapper.find('[data-test="web-engine-duckduckgo-form"]').exists()).toBe(false)
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
     expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('DuckDuckGo')
     await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
     await wrapper.find('[data-test="web-engine-duckduckgo-delete"]').trigger('click')
-    expect(wrapper.find('[data-test="web-engine-duckduckgo-form"]').exists()).toBe(false)
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
     expect(calls.saves[0]?.web.engines?.some(e => e.id === 'duckduckgo')).toBe(false)
@@ -3220,11 +3264,12 @@ describe('settings view', () => {
 
   it('keeps engine changes after a failed settings save', async () => {
     const { stub } = createStub({ saveSettings: vi.fn(async () => { throw new Error('save failed') }) })
-    const wrapper = mount(SettingsViewComponent, { props: { api: stub } })
+    const wrapper = mount(SettingsViewComponent, { props: { api: stub }, attachTo: document.body })
     await flushPromises()
+    await wrapper.get('[data-test="settings-nav-web"]').trigger('click')
     await wrapper.find('[data-test="web-engine-duckduckgo-edit"]').trigger('click')
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] input').setValue('Draft name')
-    await wrapper.find('[data-test="web-engine-duckduckgo-form"] button').trigger('click')
+    await wrapper.get('[data-test="web-engine-name"]').setValue('Draft name')
+    await wrapper.get('[data-test="web-engine-confirm"]').trigger('click')
     await wrapper.find('[data-test="settings-save"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="web-engine-duckduckgo"]').text()).toContain('Draft name')
@@ -3753,11 +3798,36 @@ describe('prompts view', () => {
     expect(rows[0]?.find('[data-test="prompts-agent-builtin"]').exists()).toBe(true)
     expect(rows[1]?.text()).toContain('读文件的')
 
-    // The detail pane starts on the main agent, with the default as the placeholder rather than as content.
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
+    await wrapper.get('[data-test="prompts-main-edit"]').trigger('click')
+    expect(wrapper.get('dialog[open]').attributes('aria-label')).toBe('编辑主 Agent')
     const textarea = wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]')
     expect(textarea.element.value).toBe('')
     expect(textarea.attributes('placeholder')).toBe('你是主 agent。')
     expect(wrapper.find('[data-test="prompts-main-modified"]').exists()).toBe(false)
+  })
+
+  it('leaves staged sub-agent settings intact when a later edit is cancelled', async () => {
+    const { stub, calls } = createStub()
+    const wrapper = mount(PromptsView, { props: { api: stub } })
+    await flushPromises()
+    const edit = wrapper.findAll('[data-test="prompts-agent-edit"]')[1]!
+    await edit.trigger('click')
+    expect(wrapper.get('dialog[open]').attributes('aria-label')).toBe('编辑子 Agent')
+    await wrapper.get('[data-test="prompts-agent-name"]').setValue('Reader draft')
+    await wrapper.get('[data-test="prompts-edit-confirm"]').trigger('click')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
+    expect(calls.agentSaves).toHaveLength(0)
+
+    await edit.trigger('click')
+    await wrapper.get('[data-test="prompts-agent-name"]').setValue('Discarded reader')
+    await wrapper.get('[data-test="prompts-agent-api-key"]').setValue('discarded-key')
+    await wrapper.get('[data-test="prompts-edit-cancel"]').trigger('click')
+    expect(wrapper.find('dialog[open]').exists()).toBe(false)
+    await wrapper.get('[data-test="prompts-save"]').trigger('click')
+    const reader = calls.agentSaves[0]?.subAgents.find((agent) => agent.id === 'reader')
+    expect(reader?.name).toBe('Reader draft')
+    expect(reader?.model).not.toHaveProperty('apiKey')
   })
 
   it('disables the add button when both scenarios have an owner', async () => {
@@ -3792,12 +3862,14 @@ describe('prompts view', () => {
     const wrapper = mount(PromptsView, { props: { api: stub } })
     await flushPromises()
 
+    await wrapper.get('[data-test="prompts-main-edit"]').trigger('click')
     expect(wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').element.value).toBe('你只听我的。')
     expect(wrapper.find('[data-test="prompts-main-modified"]').exists()).toBe(true)
 
     await wrapper.find('[data-test="prompts-main-reset"]').trigger('click')
     expect(wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').element.value).toBe('')
     expect(wrapper.find('[data-test="prompts-main-modified"]').exists()).toBe(false)
+    await wrapper.get('[data-test="prompts-edit-confirm"]').trigger('click')
     await wrapper.find('[data-test="prompts-save"]').trigger('click')
     await flushPromises()
 
@@ -3809,7 +3881,9 @@ describe('prompts view', () => {
     const wrapper = mount(PromptsView, { props: { api: stub } })
     await flushPromises()
 
+    await wrapper.get('[data-test="prompts-main-edit"]').trigger('click')
     await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('   \n  ')
+    await wrapper.get('[data-test="prompts-edit-confirm"]').trigger('click')
     await wrapper.find('[data-test="prompts-save"]').trigger('click')
     await flushPromises()
 
@@ -3824,6 +3898,9 @@ describe('prompts view', () => {
     await wrapper.find('[data-test="prompts-add"]').trigger('click')
     await wrapper.find('[data-test="prompts-add-name"]').setValue('新来的')
     await wrapper.find('[data-test="prompts-add-commit"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-test="prompts-agent-name"]').element.value).toBe('新来的')
+    await wrapper.get('[data-test="prompts-edit-confirm"]').trigger('click')
     await wrapper.find('[data-test="prompts-save"]').trigger('click')
     await flushPromises()
 
@@ -3837,13 +3914,14 @@ describe('prompts view', () => {
     const wrapper = mount(PromptsView, { props: { api: stub } })
     await flushPromises()
 
-    await wrapper.findAll('[data-test="prompts-agent"]')[1]?.trigger('click')
+    await wrapper.findAll('[data-test="prompts-agent-edit"]')[1]?.trigger('click')
     // The stored key is never prefilled; the field says one exists and stays empty.
     const key = wrapper.find<HTMLInputElement>('[data-test="prompts-agent-api-key"]')
     expect(key.element.value).toBe('')
     expect(wrapper.find('[data-test="prompts-agent-api-key-state"]').text()).toBe('已设置')
 
     await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-agent-textarea"]').setValue('只读。')
+    await wrapper.get('[data-test="prompts-edit-confirm"]').trigger('click')
     await wrapper.find('[data-test="prompts-save"]').trigger('click')
     await flushPromises()
 
@@ -3857,8 +3935,11 @@ describe('prompts view', () => {
     const wrapper = mount(PromptsView, { props: { api: stub } })
     await flushPromises()
 
+    await wrapper.get('[data-test="prompts-main-edit"]').trigger('click')
     expect(wrapper.find('[data-test="prompts-main-tokens"]').text()).toContain('上限 10')
     expect(wrapper.find('[data-test="prompts-main-tokens"]').classes()).toContain('error')
+    expect(wrapper.get<HTMLButtonElement>('[data-test="prompts-edit-confirm"]').element.disabled).toBe(true)
+    await wrapper.get('[data-test="prompts-edit-cancel"]').trigger('click')
     expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(true)
     expect(wrapper.find('[data-test="prompts-over-limit"]').exists()).toBe(true)
   })
@@ -3873,12 +3954,15 @@ describe('prompts view', () => {
     // Nothing to save yet, so there is no button to be wrong about.
     expect(wrapper.find('[data-test="prompts-save"]').exists()).toBe(false)
 
-    // 41 CJK characters are 41 tokens, plus the 13-token generated block the fixture's effective prompt carries.
+    await wrapper.get('[data-test="prompts-main-edit"]').trigger('click')
     await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('字'.repeat(41))
     expect(wrapper.find('[data-test="prompts-main-tokens"]').text()).toContain('约 54 token')
-    expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(true)
+    const confirm = wrapper.get<HTMLButtonElement>('[data-test="prompts-edit-confirm"]')
+    expect(confirm.element.disabled).toBe(true)
 
     await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('字'.repeat(10))
+    expect(confirm.element.disabled).toBe(false)
+    await confirm.trigger('click')
     expect(wrapper.find<HTMLButtonElement>('[data-test="prompts-save"]').element.disabled).toBe(false)
   })
 
@@ -3891,7 +3975,9 @@ describe('prompts view', () => {
     const wrapper = mount(PromptsView, { props: { api: stub } })
     await flushPromises()
 
+    await wrapper.get('[data-test="prompts-main-edit"]').trigger('click')
     await wrapper.find<HTMLTextAreaElement>('[data-test="prompts-main-textarea"]').setValue('改一下')
+    await wrapper.get('[data-test="prompts-edit-confirm"]').trigger('click')
     await wrapper.find('[data-test="prompts-save"]').trigger('click')
     await flushPromises()
 
@@ -3916,7 +4002,7 @@ describe('prompts view', () => {
     // The list says it before the detail does: a disabled capability makes the agent look fine in a list.
     expect(wrapper.findAll('[data-test="prompts-agent-unavailable"]')).toHaveLength(1)
 
-    await wrapper.findAll('[data-test="prompts-agent"]')[1]?.trigger('click')
+    await wrapper.findAll('[data-test="prompts-agent-edit"]')[1]?.trigger('click')
     expect(wrapper.find('[data-test="prompts-agent-capability"]').text()).toContain('对应能力没有开启')
 
     await wrapper.find('[data-test="prompts-agent-goto-settings"]').trigger('click')

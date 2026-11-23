@@ -281,16 +281,18 @@ describe('the API contract the UI binds to', () => {
       expect(engine.lastReason === null || typeof engine.lastReason === 'string').toBe(true)
     }
 
-    // Turning one engine off is the only edit this endpoint's rows offer, and it is stored in the settings
-    // document the page writes back — so what has to round-trip is that document, not the view.
+    // The configurable engine definitions are the source of truth for each row's enabled state.
     const current = await api.settings()
     const switchedOff = view.engines[0].id
-    const disabled = await api.saveSettings({ ...current, web: { ...current.web, disabledEngines: [switchedOff] } })
-
-    const after = await api.web()
-    expect(after.engines.filter((engine) => engine.disabled).map((engine) => engine.id)).toEqual([switchedOff])
-
-    await api.saveSettings({ ...disabled.settings, web: { ...disabled.settings.web, disabledEngines: [] } })
+    let saved = current
+    try {
+      saved = (await api.saveSettings({ ...current, web: { ...current.web, engines: current.web.engines!.map((engine) =>
+        engine.id === switchedOff ? { ...engine, enabled: false } : engine) } })).settings
+      const after = await api.web()
+      expect(after.engines.filter((engine) => engine.disabled).map((engine) => engine.id)).toEqual([switchedOff])
+    } finally {
+      await api.saveSettings({ ...saved, web: current.web })
+    }
   })
 
   it('lists the devices the runtime can see', async () => {

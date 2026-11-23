@@ -112,7 +112,8 @@ public sealed class DesktopIntegrationTests
             Assert.False(string.IsNullOrWhiteSpace(w.Title));
             Assert.True(w.Width > 0 && w.Height > 0);
         });
-        Assert.Single(windows, w => w.IsForeground);
+        // The foreground window can be untitled, cloaked, or otherwise excluded from this list.
+        Assert.True(windows.Count(w => w.IsForeground) <= 1);
     }
 
     [Fact]

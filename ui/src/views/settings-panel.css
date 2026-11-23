@@ -3,15 +3,17 @@
   min-block-size: 0;
 }
 .settings-body {
+  container-type: inline-size;
+  container-name: settings-content;
   min-inline-size: 0;
   margin: 0;
   padding: 0;
   border: 0;
 }
 
-
 .settings.is-single {
-  grid-template-columns: minmax(0, var(--column-form));
+  grid-template-columns: minmax(0, 1fr);
+  max-inline-size: 70rem;
 }
 
 /* An embedded page brings its own scroll region, top-bar clearance and Save bar. Inside this page the scroll
@@ -38,9 +40,12 @@
    needs a scroll back up. */
 .settings {
   display: grid;
-  grid-template-columns: 11rem minmax(0, var(--column-form));
-  gap: var(--space-6);
-  justify-content: center;
+  grid-template-columns: minmax(10rem, 12rem) minmax(0, 1fr);
+  gap: clamp(var(--space-4), 2.5vw, var(--space-6));
+  inline-size: 100%;
+  max-inline-size: 86rem;
+  margin-inline: 0 auto;
+  justify-content: start;
   padding: calc(var(--topbar-h) + var(--space-4)) var(--space-5) 7rem;
 }
 
@@ -99,8 +104,10 @@
 
 .panel-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
+  min-inline-size: 0;
 }
 
 .panel-head h2 {
@@ -120,6 +127,7 @@
 
 .g-card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -311,25 +319,37 @@
   justify-self: start;
 }
 
-/* One line per engine: who it is, what it indexes, how it is doing, and the switch. The state is the part
-   that matters — an engine that is quietly paused is why a search came back thin. */
+/* One consistent track per field; status history stays out of the configuration list. */
 .engine-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) auto auto auto;
+  grid-template-areas: 'name enabled edit delete';
   align-items: center;
-  gap: var(--space-3);
-  min-block-size: 2.5rem;
+  gap: var(--space-2);
+  min-block-size: 2.75rem;
   padding-block: var(--space-1);
   border-block-start: 1px solid var(--glass-edge);
+  min-inline-size: 0;
+}
+
+.engine-identity {
+  display: grid;
+  grid-area: name;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  min-inline-size: 0;
 }
 
 .engine-name {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  flex: none;
-  max-inline-size: 12rem;
+  min-inline-size: 0;
   font-size: var(--fs-ui);
   color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .engine-tag {
@@ -342,7 +362,6 @@
 }
 
 .engine-kinds {
-  flex: 1 1 auto;
   min-inline-size: 0;
   color: var(--text-3);
   font-size: var(--fs-meta);
@@ -350,28 +369,38 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.engine-enabled {
+  grid-area: enabled;
+  justify-self: center;
+  inline-size: 2.25rem;
+  block-size: 1.25rem;
+}
 
-.engine-state {
-  flex: none;
-  max-inline-size: 14rem;
-  font-size: var(--fs-meta);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.engine-edit-button { grid-area: edit; }
+.engine-delete-button { grid-area: delete; }
+
+.engine-edit {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-1);
+}
+
+.engine-edit label {
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
   color: var(--text-2);
+  font-size: var(--fs-meta);
 }
 
-.engine-state.is-ok {
-  color: var(--text-3);
+.engine-edit input {
+  inline-size: 100%;
+  min-inline-size: 0;
 }
 
-.engine-state.is-warn {
-  color: var(--warn);
-}
-
-.engine-state.is-off {
-  color: var(--text-3);
-  opacity: 0.7;
+.engine-edit .is-wide {
+  grid-column: 1 / -1;
 }
 
 .pkg-actions {
@@ -531,6 +560,41 @@
   min-inline-size: 11rem;
   color: var(--text-2);
   font-size: var(--fs-meta);
+}
+
+@container settings-content (max-width: 44rem) {
+  .settings-body :deep(.g-row) {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .settings-body :deep(.g-row-name),
+  .settings-body :deep(.g-row-control) {
+    flex: 1 1 100%;
+  }
+
+  .settings-body :deep(.g-row-control) {
+    justify-content: flex-start;
+  }
+
+  .settings-body :deep(.g-row-control > input:not([type='checkbox'])),
+  .settings-body :deep(.g-row-control > select) {
+    max-inline-size: 100%;
+  }
+
+  .engine-row {
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-areas: 'name enabled edit delete';
+    column-gap: var(--space-2);
+    row-gap: 0;
+    padding-block: var(--space-2);
+  }
+}
+
+@media (max-width: 30rem) {
+  .engine-edit {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @container body (max-width: 52rem) {

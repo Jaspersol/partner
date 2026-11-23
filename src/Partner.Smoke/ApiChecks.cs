@@ -952,12 +952,18 @@ internal static partial class Program
                     Path.Combine(desktopWorkspace, "settings", "runtime.json"),
                     """{"desktop":{"enabled":true,"execEnabled":true,"leaseTtlMs":15000,"allowedWindowTitles":[]}}""");
 
+                using var observeWindow = OwnedWindow.Create("Partner smoke observation", showWithoutActivating: true, addButton: true);
+                if (!observeWindow.Created)
+                {
+                    throw new InvalidOperationException($"Could not create the observation window: {observeWindow.Failure}");
+                }
+
                 var desktopPort = FreePort();
                 var desktopToken = TokenAuth.Generate();
                 var desktopScripted = new ScriptedLlmClient(new[]
                 {
                 // Turn 1: look. Read-only, so it runs without approval.
-                new LlmResponse(null, new[] { new LlmToolCall("c1", "desktop_observe", "{}") }, "tool_calls"),
+                new LlmResponse(null, new[] { new LlmToolCall("c1", "desktop_observe", """{"titleContains":"Partner smoke observation"}""") }, "tool_calls"),
                 new LlmResponse("看过了。", Array.Empty<LlmToolCall>(), "stop"),
                 // Turn 2: act. Irreversible, so it parks in the approval queue.
                 new LlmResponse(
