@@ -2,44 +2,44 @@
 
 [简体中文](./schedules.md) | [繁體中文](./schedules.zh-TW.md) | **English**
 
-Back to the [documentation index](./README.en.md).
+Return to the [documentation index](./README.en.md).
 
-A task is one sentence plus one trigger rule. When it fires, the sentence enters the queue with the "schedule" source, lined up with typing and voice, and runs in order.
+A scheduled task combines one sentence with one trigger rule. When the rule fires, the sentence enters the queue with the `schedule` source and is processed in order alongside typed and spoken input.
 
-Scheduled turns do not automatically create general memories or include the main-session summary, other tasks' turns, or general recall. Execution remains available in history on demand. Completion does not prove a business check passed.
+Scheduled turns do not automatically write general memories or include the main-session summary, other scheduled turns or ordinary recall. The execution can still be read on demand. A completed run is not evidence that a business-level check succeeded.
 
-For a direct main-agent `web_fetch`, a non-redirected HTTP(S) GET without a read error can record the status for a target without credentials or query parameters: a 5xx opens an anomaly for that task and a later 2xx for the same target closes it. Only the normalized URI hash is stored, not an additional URL or body. This establishes only the HTTP status at that observation, not page correctness or overall service health. Ordinary completion, another target's success, delegated results, and free-text user statements cannot close the anomaly. If parallel checks in one batch return both 5xx and 2xx for one target, that batch does not advance its state.
+When the main agent calls `web_fetch` directly, a non-redirected HTTP(S) GET with no read error may record the status of a target stripped of credentials and query parameters: a 5xx opens an anomaly for that task, and a later 2xx from the same target closes it. Only the normalized URI hash is stored; no extra URL or response body is kept. This proves only the HTTP status observed at that time, not that the page or the whole service is healthy. Normal completion, success from another target, delegated results and free-form user text cannot close the anomaly. If one parallel batch returns both 5xx and 2xx for the same target, that target’s state is left unchanged.
 
-Projection shows at most one unresolved structured anomaly for the task and its source `Seq`; otherwise it shows the latest ordinary tool-failure lead, which is not a business status. Withdrawal or deletion recomputes from visible evidence, so withdrawing resolution evidence may reveal an older anomaly again. A recheck must actually follow the current instruction; an old lead is not the current result.
+Projection shows at most one unresolved structured anomaly for the task together with its source `Seq`. With no such anomaly, it shows the latest ordinary tool-failure lead, which is not a business status. Removing or withdrawing evidence causes a recomputation from what remains visible, so withdrawing resolution evidence can expose an older anomaly again. A recheck must actually follow the current instruction; an old lead is not a substitute for the current result.
 
 ## Rules
 
-| Kind | Format | Notes |
+| Type | Syntax | Details |
 |---|---|---|
-| `cron` | Five-field cron | Local time zone |
-| `interval` | Minutes, ≥ 1 | Counted from creation |
-| `once` | A point in time | Must be in the future; marked done after it runs |
+| `cron` | Five-field cron | Uses the local time zone |
+| `interval` | Minutes, ≥ 1 | Counted from creation time |
+| `once` | A time point | Must be in the future and is marked executed after it runs |
 
-Limits: content up to 2000 characters, interval from 1 minute to 1 year, at most 100 tasks.
+Limits: content is at most 2,000 characters, intervals range from 1 minute to 1 year, and there can be at most 100 tasks.
 
-## Managing them
+## Managing tasks
 
-The **Schedules** page in the sidebar:
+The **Schedules** page in the sidebar lets you:
 
-- Create: choose a rule and enter the content. The date-time picker has shortcuts such as "in 1 hour / tomorrow 9:00 / next Monday 9:00"; past times cannot be picked.
-- Pause / resume: resuming skips the times missed while paused; nothing is replayed. Times missed while the app was closed are skipped too.
-- Delete.
+- Create a task by choosing a rule and entering its content. The date-time picker offers shortcuts such as “in 1 hour / tomorrow 9:00 / next Monday 9:00”; past times are not selectable.
+- Pause or resume it. Resuming skips times missed during the pause rather than replaying them; times missed while the app was closed are skipped as well.
+- Delete it.
 
-There is no edit. To change a rule or its content, delete and recreate, so old delivery records cannot swallow new triggers.
+There is no edit action. Delete and recreate a task when its rule or content changes, so an old delivery record cannot consume a new trigger.
 
-## Letting the assistant create them
+## Letting the assistant create tasks
 
-The main agent always has `schedule_create`, `schedule_list` and `schedule_delete` (sub-agents do not).
+The main agent always has `schedule_create`, `schedule_list` and `schedule_delete`; sub-agents do not.
 
-- Tool results include the current local time, so a one-off task can simply say "in N minutes".
-- Approval follows the level in the input area: "Approve risky actions" asks only for deletes; "Approve everything" asks for create and delete; listing never asks.
-- Why: when a task fires, its content is treated as a message from you, so a web page the assistant read must not be able to plant one quietly.
+- Tool results include the current local time, so a one-off task can say “in N minutes”.
+- Approval follows the input-area level: “Approve risky actions” asks only for deletion, “Approve everything” asks for creation and deletion, and listing never asks.
+- The reason is that task content is treated as a message from you when it fires. A webpage read by the assistant must not be able to plant a task silently.
 
 ## Storage
 
-`<workspace>/scheduler/tasks.jsonl` and `receipts.jsonl`, append-only.
+Tasks and delivery receipts are append-only files at `<workspace>/scheduler/tasks.jsonl` and `receipts.jsonl`.

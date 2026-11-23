@@ -4,7 +4,7 @@
 
 Back to the [documentation index](./README.en.md).
 
-A Live2D character that sits on the desktop. It takes no part in the conversation: it reads the assistant replies that are **already finalised** in the same session log, scores them by keyword, and plays fixed scenes. The system prompt is unchanged, the model is never asked for an emotion tag, and no extra model request is made.
+The desktop pet is a persistent Live2D character. It takes no part in the conversation: it reads the assistant replies that are **already finalised** in the same session log, scores them by keyword, and plays fixed scenes. The system prompt is unchanged, the model is never asked for an emotion tag, and no extra model request is made.
 
 ## 1. What it is
 

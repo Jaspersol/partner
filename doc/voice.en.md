@@ -4,7 +4,7 @@
 
 Back to the [documentation index](./README.en.md).
 
-Say a sentence; it enters the queue, runs a turn, and the reply is read out. Voice and typing share one queue and run in arrival order.
+The basic voice interaction flow is: speak → enter queue → run a turn → read the assistant's reply. Voice and text share one queue and process in arrival order.
 
 ## Pipeline
 
@@ -41,7 +41,7 @@ The installer carries only two small server scripts. Runtimes and models are not
 - If you only need recognition, download only KWS + ASR. No GPU required.
 - Downloads resume; SHA-256 is verified when available; when the server reports a length it is checked, and a truncated file does not count as success.
 - A dropped connection is retried three times from the bytes already on disk, and 60 seconds without data counts as dropped, so the download button does not have to be pressed again.
-- The settings page displays engine readiness and missing files without changing settings on open. Click “Check” to fill in detected engine paths, then save to apply them; you can also choose an existing engine directory manually.
+- The settings page displays engine readiness and missing files without changing settings on open. Click "Check" to fill in detected engine paths, then save to apply them; you can also choose an existing engine directory manually.
 - Default paths are stored relative to the app directory, so moving or reinstalling the app needs no settings change.
 - Switching an engine off ends its process (the whole tree) and returns all VRAM and RAM.
 - The API listens first, then warms enabled local engines in parallel. Settings and history remain available during loading. `/api/health` means the API is reachable, not that models are ready; `/api/voice/local` and `/api/voice` report engine and voice-path startup, readiness, and failures. A live process whose health check times out is not ready. Saving settings cancels superseded warmup, and shutdown stops warmup and child processes.
@@ -77,7 +77,7 @@ With voice output on, a request that needs your approval is read aloud. With voi
 
 - Prompts name the tool and asker without reading raw arguments or file contents. For file approvals, speech uses an identifiable filename, adds directories when pending targets have the same name, and directs you to the screen if a short identification is not possible. Edit prompts explain that the edit is not applied if the file no longer matches the version that was read; the screen shows the full path.
 - The prompt is inserted after the sentence currently playing and before assistant sentences that have not started. An approval lives for 120 seconds, so waiting behind a whole reply can outlive it.
-- While the approval is pending and the speaker is idle, the microphone keeps transcribing without a wake word: say "批准执行" (approve) or "拒绝执行" (deny). The prompt does not have to finish first, and the request stays answerable for as long as it exists.
+- While the approval is pending and the speaker is idle, the microphone keeps transcribing without a wake word: say "approve" or "deny". The prompt does not have to finish first, and the request stays answerable for as long as it exists.
 - With a wake word configured, the bypass applies only to those two commands. Other speech captured while waiting, without a wake word, is not queued. Without a wake word configured, ordinary speech still behaves as a message.
 - While the prompt or an assistant reply is playing, or audio is still queued, commands are not accepted. Approval prompts and results force the microphone closed even when "Mute the microphone while speaking" is off.
 - With several pending requests, one command answers only the oldest, matching the first banner on screen; the confirmation says how many remain.
@@ -93,4 +93,4 @@ Changing input, output, ASR or TTS restarts the voice host (devices reopen). Cha
 
 - Automated tests of the full loop use a synthetic source; a whole sentence has not been run end to end on a real microphone.
 - The official KWS package only ships chunk-16, so wake latency is about 320 ms.
-- Voice approval matches whole commands, but ASR can still mishear one (for example, dropping "不"); the prompt and the final decision are both read out.
+- Voice approval matches whole commands, but ASR can still mishear one (for example, dropping "not"); the prompt and the final decision are both read out.

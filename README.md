@@ -2,9 +2,9 @@
 
 # Partner
 
-### A Ready-to-Use, Single-Session Desktop AI Assistant for Windows
+### A ready-to-use, single-session desktop AI assistant for Windows
 
-**One continuous conversation you can type or speak to; with memory, schedules, MCP, Skills, and sub-agents that operate your desktop under your chosen approval level. Through Memory Services — a general-purpose API that keeps historical memory — your Partner plugs seamlessly into game AI mods, plugins and other agents.**
+**Partner keeps your conversations in one continuous session, whether you type or speak. It brings together memory, scheduled tasks, MCP, and Skills, and can delegate desktop work to sub-agents under the approval level you choose. Its local OpenAI- and Anthropic-compatible services let game AI mods, plugins, and other agents connect to your Partner, use relevant memories, and write interaction summaries back to its main memory.**
 
 [![Version](https://img.shields.io/github/v/release/Jaspersol/partner?color=blue&label=version)](https://github.com/Jaspersol/partner/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-lightgrey.svg)](https://github.com/Jaspersol/partner/releases)
@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/Jaspersol/partner/total)](https://github.com/Jaspersol/partner/releases/latest)
 
-English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
+**English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 
 **[Download](#download--installation) · [Quick Start](#quick-start) · [Features](#features) · [FAQ](#faq) · [Documentation](doc/README.en.md)**
 
@@ -20,26 +20,26 @@ English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 
 ## Why Partner?
 
-Most agent tools make you manage sessions, pick a model per chat, and type everything. Partner removes that bookkeeping: there is one session, and you talk to it the way you would talk to a person, by keyboard or by voice. It connects to the OpenAI-compatible or Anthropic endpoint you configure.
+Many agent tools ask you to manage conversations, choose a model for each chat, and type every message. Partner simplifies that routine: there is one ongoing session, and you can talk to it by keyboard or voice. It connects to the OpenAI-compatible or Anthropic endpoint you configure.
 
-- **One Session, Nothing to Manage** — Typed messages, voice, scheduled tasks, and sub-agent reports all go into the same log and run in the order they arrive. No sessions to create, name, switch, or clean up
-- **Voice, Local or Your Own** — Wake word, phrase splitting, recognition, sentence-by-sentence read-aloud, and spoken approval, using downloadable local engines or your own ASR/TTS services
-- **Desktop Control With Approval** — Requests that need a window or a file go to a background sub-agent. Approval depends on the action and level; no answer to a prompt counts as a refusal
-- **Memory That Stays Visible** — Preferences you mention are kept in a local database. You can browse, re-tier, pin, and delete every record
-- **Connect External Agents & Plugins** — Give a game AI mod, an editor or browser plugin, or another agent framework a local OpenAI/Anthropic-compatible endpoint, and your own Partner joins any platform that accepts a model address: each request gets the relevant memories, and summaries of the exchange go back into the main memory
-- **Schedules, MCP & Skills** — Run a sentence on a cron, interval, or one-off time; connect stdio MCP servers; teach the model routines with `SKILL.md`
-- **Local by Default** — The local API listens only on `127.0.0.1` and requires a token generated at startup. Conversations go only to the model endpoint you configured
-- **Native Windows App** — Built with Tauri 2 and a .NET 10 backend; the installer bundles the .NET runtime
+- **One conversation, no session housekeeping** — Typed messages, voice input, scheduled tasks, and sub-agent reports all enter the same log and run in arrival order. There is nothing to create, name, switch between, or clean up.
+- **Voice with local engines or your own services** — Use wake words, pause-based phrase splitting, speech recognition, sentence-by-sentence read-aloud, and spoken approvals. Download the local engines or connect existing ASR/TTS services.
+- **Desktop actions under your control** — Requests that involve windows or file reading are handled by a background sub-agent. Whether an action needs approval depends on the action and selected level; unanswered approval prompts are treated as refusals.
+- **Inspectable memory** — Preferences you mention are stored in a local database. Every record can be reviewed, moved between tiers, pinned, or deleted.
+- **Connect external agents and plugins** — Game AI mods, editor or browser plugins, and other agent frameworks can use a local OpenAI/Anthropic-compatible endpoint. Requests receive relevant memories, and interaction summaries can be written back to the main memory.
+- **Schedules, MCP, and Skills** — Trigger a message on a cron schedule, fixed interval, or one-off time; connect stdio MCP servers; and give the model procedures through `SKILL.md` files.
+- **Local by default** — The local API listens only on `127.0.0.1`, and requests must include a token generated at startup. Conversation content is sent to the model endpoint you configure.
+- **A native Windows app** — Built with Tauri 2 and a .NET 10 backend. The installer includes the .NET runtime.
 
 ## Screenshots
 
 <table>
 <tr>
-<td align="center" width="50%"><img src="doc/images/main-en.png" alt="Main window: session, tool call cards and the input box" width="400"><br>Main Window</td>
+<td align="center" width="50%"><img src="doc/images/main-en.png" alt="Main window: session, tool call cards, and input box" width="400"><br>Main Window</td>
 <td align="center" width="50%"><img src="doc/images/approval-en.png" alt="Approval prompt before a desktop action" width="400"><br>Approval Before Acting</td>
 </tr>
 <tr>
-<td align="center"><img src="doc/images/memory-en.png" alt="Memory page: tiers, pinning and deleting" width="400"><br>Memory</td>
+<td align="center"><img src="doc/images/memory-en.png" alt="Memory page: tiers, pinning, and deletion" width="400"><br>Memory</td>
 <td align="center"><img src="doc/images/schedules-en.png" alt="Scheduled task list" width="400"><br>Schedules</td>
 </tr>
 <tr>
@@ -54,33 +54,33 @@ Most agent tools make you manage sessions, pick a model per chat, and type every
 
 | Item | Requirement |
 |---|---|
-| OS | Windows 10 2004 or later, x64 |
+| Operating system | Windows 10 2004 or later, x64 |
 | WebView2 | Included with Windows 10/11 |
-| Model | An OpenAI-compatible or Anthropic endpoint |
-| Voice (optional) | Microphone and speakers. Local read-aloud needs about 1.9 GB of VRAM; wake word and recognition run on CPU |
+| Model service | An OpenAI-compatible or Anthropic endpoint |
+| Voice (optional) | Microphone and speakers. Local text-to-speech needs about 1.9 GB of VRAM; wake-word detection and recognition use the CPU |
 
-macOS and Linux are not supported. Desktop control and audio call the Win32 API directly.
+Partner does not support macOS or Linux. Desktop control and audio call Win32 APIs directly.
 
-### Windows Users
+### Install on Windows
 
-1. Download `Partner_<version>_x64-setup.exe` from the [Releases](https://github.com/Jaspersol/partner/releases/latest) page.
-2. Run it. It installs for the current user and needs no admin rights.
-3. The installer is not code-signed. If SmartScreen blocks it, click "More info → Run anyway". `SHA256SUMS.txt` and `<installer>.exe.sha256` in the same release let you verify the file.
+1. Download `Partner_<version>_x64-setup.exe` from the [latest release](https://github.com/Jaspersol/partner/releases/latest).
+2. Run the installer. It installs for the current user and does not require administrator privileges.
+3. The installer is not code-signed. If SmartScreen blocks it, select **More info → Run anyway**. Verify the file with `SHA256SUMS.txt` or `<installer>.exe.sha256` from the same release.
 
-### Updating
+### Update
 
-Settings → General → "Check for updates". The check uses the GitHub REST API first and falls back to direct release-download links when the API is rate-limited, unreachable, or the release has no API checksum. The app downloads the installer from whichever path answers, verifies its SHA-256, starts it, and exits.
+Go to **Settings → General → Check for updates**. Partner checks through the GitHub REST API first. If the API is rate-limited or unreachable, or the release lacks an API checksum file, it falls back to a direct download link. The app downloads the installer through an available route, verifies its SHA-256, starts the installer, and exits.
 
 ## Quick Start
 
-### Basic Usage
+### Get Started
 
-1. **Configure a Model**: Open Settings → Chat model. Pick the API format (OpenAI-compatible or Anthropic), enter the endpoint URL, choose a model from the list, and add an API key if needed. Saving applies immediately
-2. **Send a Message**: Type in the main window. If no model is configured, the message waits in the queue and the input area says what is missing
-3. **Turn On Voice (optional)**: Download engines under Settings → Local engines, or enter your service URLs under Settings → Voice input / Voice output. See [Voice](doc/voice.en.md)
-4. **Turn On Desktop Control (optional)**: Enable Settings → Computer control → "Let the assistant operate the computer", then enable the Computer control sub-agent when prompted. When approval is required, click Allow in the prompt above the input box
+1. **Configure a model** — Open **Settings → Chat model**, choose OpenAI-compatible or Anthropic format, enter the service URL, and select a model from the list. Add an API key if required. Changes take effect as soon as you save.
+2. **Send a message** — Type in the main window. If no model is configured, the message remains queued and the input area indicates what is missing.
+3. **Set up voice (optional)** — Download engines under **Settings → Local engines**, or enter existing service URLs under **Settings → Voice input / Voice output**. See [Voice](doc/voice.en.md).
+4. **Enable desktop control (optional)** — Open **Settings → Computer control → Let the assistant operate the computer**, then enable the Computer control sub-agent when prompted. When an action needs approval, select **Allow** in the prompt above the input box.
 
-The model can also be set with environment variables. Values from the settings page win:
+You can also configure the model with environment variables. Values entered in Settings take precedence:
 
 ```bash
 export PARTNER_LLM_BASE_URL=http://127.0.0.1:11434/v1
@@ -89,192 +89,192 @@ export PARTNER_LLM_API_KEY=...       # optional
 export PARTNER_LLM_PROTOCOL=openai   # optional: openai / anthropic
 ```
 
-### Memory, Schedules, MCP & Skills
+### Memory, Schedules, MCP, and Skills
 
-- **Memory**: Click "Memory" in the sidebar → browse records, filter by tier, pin, delete, or write one by hand
-- **Schedules**: Click "Schedules" in the sidebar → choose cron, interval, or a one-off time → enter the sentence to send
-- **MCP**: Click "Settings" in the sidebar → "MCP" → turn on the master switch → add a server (name, command, arguments)
-- **Skills**: Click "Settings" in the sidebar → "Skills" → upload a `SKILL.md` (or a zipped skill folder), or create one in the app
-- **Memory Services**: Click "Memory Services" in the sidebar → add a service (name, port, protocol, exposed model name) → copy the token, which is shown once → enter `http://127.0.0.1:<port>/v1`, the token and the model name in the mod or plugin
-- **Agents**: Click "Settings" in the sidebar → "Agent" to edit the prompts of the main agent and each sub-agent, and to give a sub-agent its own model
+- **Memory** — Open **Memory** in the sidebar to browse records, filter by tier, pin or delete them, or add one manually.
+- **Schedules** — Open **Schedules** in the sidebar, choose cron, an interval, or a one-off time, then enter the message to send.
+- **MCP** — Go to **Settings → MCP**, enable the master switch, and add a server name, command, and arguments.
+- **Skills** — Go to **Settings → Skills** to upload a `SKILL.md` or a zipped skill folder, or create a skill in the app.
+- **Memory Services** — Open **Memory Services** in the sidebar and add a service with a name, port, protocol, and exposed model name. Copy the token, which is displayed only once, then configure `http://127.0.0.1:<port>/v1`, the token, and the model name in your mod or plugin.
+- **Agents** — Go to **Settings → Agent** to edit the main agent and sub-agent prompts, and optionally assign a separate model to each sub-agent.
 
-> **Note**: With no model configured, nothing is lost. Messages from every source wait in the queue until a model is available.
+> **Note:** Messages from every source stay queued while no model is configured. They are processed once a model becomes available.
 
-For detailed guides on every feature, see the **[documentation index](doc/README.en.md)**.
+For detailed instructions, see the **[documentation index](doc/README.en.md)**.
 
 ## Features
 
-### Supported Features
+### Feature Overview
 
-| Feature | What it does | Docs |
+| Feature | Description | Docs |
 |---|---|---|
-| Single session | One log for typing, voice, schedules, and sub-agent reports, split into days in the view | [Single session](#single-session) |
-| Memory | Keeps preferences you mention so later turns can use them | [memory](doc/memory.en.md) |
-| Sub-agents | Run desktop and file tasks in the background and report back | [sub-agents](doc/sub-agents.en.md) |
-| Desktop control | Lists windows, clicks controls, types text, and launches programs | [desktop-control](doc/desktop-control.en.md) |
-| Voice | Wake word, recognition, read-aloud, and spoken approval | [voice](doc/voice.en.md) |
-| Schedules | Cron, fixed interval, or a specific date and time | [schedules](doc/schedules.en.md) |
-| MCP | Connects stdio MCP servers | [mcp](doc/mcp.en.md) |
-| Skills | Describes routines in `SKILL.md` | [skills](doc/skills.en.md) |
-| Memory Services | Let game mods, plugins and external agents use your memory through a local OpenAI/Anthropic endpoint, with summaries written back to main memory | [services](doc/services.en.md) |
+| Single session | One log for text, voice, schedules, and sub-agent reports, browsable by day | [Single session](#single-session) |
+| Memory | Stores preferences you mention for later turns to retrieve | [Memory](doc/memory.en.md) |
+| Sub-agents | Run desktop and file-reading tasks in the background and report back | [Sub-agents](doc/sub-agents.en.md) |
+| Desktop control | List windows, operate controls, enter text, and launch programs | [Desktop control](doc/desktop-control.en.md) |
+| Voice | Wake word, recognition, read-aloud, and spoken approvals | [Voice](doc/voice.en.md) |
+| Schedules | Cron, fixed intervals, or a specific date and time | [Schedules](doc/schedules.en.md) |
+| MCP | Connect stdio MCP servers | [MCP](doc/mcp.en.md) |
+| Skills | Describe procedures in `SKILL.md` | [Skills](doc/skills.en.md) |
+| Memory Services | Let game mods, plugins, and external agents use memory through a local OpenAI/Anthropic endpoint, with summaries written back to the main memory | [Memory Services](doc/services.en.md) |
 
 ### Single Session
 
-- **One log** — Typed messages, voice, scheduled tasks, and sub-agent reports are lined up in one queue and run in the order they arrive
-- **Nothing to maintain** — No sessions to create, name, switch, or clean up, and no need to remember which session something was discussed in
-- **Suits voice** — You don't pick a session before you speak
-- **Split by day** — The date picker only changes which day you see. A message sent while an old day is on screen still goes to the end of the log, and days without messages are not listed. Days follow your local time zone, and a turn still running at midnight finishes before the view moves to the new day
-- **Committed history** — In the default  mode, the session view does not publish a new event until its disk flush succeeds; a failed commit is not shown as history
+- **One shared log** — Text, voice, scheduled tasks, and sub-agent reports enter the same queue and run in the order they arrive.
+- **No session maintenance** — There is no need to create, name, switch, or clean up sessions, or to remember which conversation covered a topic.
+- **Ready for voice** — You do not need to choose a session before speaking.
+- **Browse by date** — The date picker changes only which day is displayed. Messages sent while viewing an older day still append to the end of the log, and dates without messages are omitted. Dates use the local time zone. If a turn is still running at midnight, the view switches to the new day after that turn finishes.
+- **Committed history** — In the default mode, the session view publishes a new event only after it has been flushed to disk successfully. An event whose commit fails is not shown as history.
 
 ### Memory
 
-- **Automatic** — Distilled at the end of each turn. Before each turn, relevant memories are retrieved and added to the system prompt, up to about 5000 tokens
-- **Four tiers** — New, Experience, Fact, and Method. A newer record that conflicts with an older one in the same tier supersedes it without deleting it, and records not recalled for three months drop one tier
-- **Yours to edit** — The memory page lists every record, including superseded ones. Move items between tiers, pin them so they are never demoted or cleaned up, create your own, or delete any
-- **Chinese search** — A separate bigram full-text index keeps Chinese search off a table scan
-- **Local and backed up** — Stored in SQLite and copied into `memory/backups/` at least once a day, keeping the newest 7
+- **Automatic extraction** — Memories are distilled at the end of each turn. Relevant records are retrieved before the next turn and added to the system prompt, up to about 5,000 tokens.
+- **Four tiers** — New, Experience, Fact, and Method. When a newer record conflicts with an older one in the same tier, the older record is marked invalid and notes what replaced it rather than being deleted. Records not recalled for three months move down one tier.
+- **You control the records** — The Memory page lists all records, including invalidated ones. You can change tiers, pin records to prevent demotion or cleanup, add records yourself, or delete any record.
+- **Chinese full-text search** — A separate bigram-based index avoids falling back to a full table scan for Chinese searches.
+- **Local storage and backups** — Memories live in SQLite and are copied to `memory/backups/` at least daily. The seven most recent backups are kept.
 
-### Sub-agents & Desktop Control
+### Sub-agents and Desktop Control
 
-- **Delegation** — The main agent only talks and delegates. A sub-agent works in the background, and its result returns as a new input that the main agent relays to you
-- **Two scenes** — `desktop` (built in) and `file-read` (read-only, off by default, limited to a directory allowlist)
-- **Retries** — A job runs up to 5 rounds by default (1–10) within 15 minutes. Success needs evidence from the sub-agent; if every round fails, the main agent reports the failure instead of claiming success
-- **Find the control, then act** — Actions target a control ID rather than guessed coordinates. Buttons, list items, and checkboxes are invoked through UI Automation without bringing the window to the front; Chromium/Electron page controls are read the same way without a debugging port
-- **Approval levels** — Switch between "No approval", "Approve risky actions", and "Approve everything" (default) from the input area. Commands require approval only under "Approve everything"; file writes and edits require approval at both levels except "No approval". Launches, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) require approval under the two approval levels
-- **Guardrails** — Keys and typing need the target window and the named control to have focus, out-of-range coordinates are refused rather than clamped, password fields never return their value, and results report "posted" and "did the screen change" separately
-- **Window allowlist** — Limit control to named windows. Screenshots need a model with "Can see images" turned on
+- **Delegate work** — The main agent handles conversation and delegation. A sub-agent works in the background and returns its result as a new input for the main agent to relay to you.
+- **Two task modes** — `desktop` is built in. `file-read` is read-only, disabled by default, and restricted to an allowed directory list.
+- **Retries and evidence** — A task gets up to 5 rounds by default (configurable from 1 to 10) and has a 15-minute total time limit. A success report must include evidence from the sub-agent; if every round fails, the main agent reports the failure rather than claiming success.
+- **Locate controls before acting** — Actions target control IDs rather than guessed coordinates. UI Automation invokes buttons, list items, and checkboxes without bringing the window to the foreground. Chromium/Electron page controls work without a debugging port as well.
+- **Approval levels** — Choose **No approval**, **Approve risky actions**, or the default **Approve everything** from the input area. Commands need approval only under **Approve everything**. File writes and edits require approval at every level except **No approval**. Launching programs, writing to the clipboard, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc) require approval under both approval levels.
+- **Guardrails** — Key presses and text entry require the target window to be in the foreground and the target control to have focus. Out-of-range coordinates are rejected rather than clamped. Password fields do not return their values. Results report separately whether an action was sent and whether the screen changed.
+- **Window allowlist** — Restrict actions to selected windows. Screenshots require a model with image input enabled.
 
 ### Voice
 
-- **Pipeline** — Microphone → pause segmentation → ASR → queue → turn → session, and new assistant replies → sentence split → TTS → ordered playback
-- **Local engines or your own** — KWS + ASR (sherpa-onnx + SenseVoice, about 380 MB, CPU) and TTS (Qwen3-TTS 1.7B GGUF, about 3.0 GB, about 1.9 GB VRAM) download separately and resume after a dropped connection. Or enter your existing ASR/TTS service URLs
-- **Wake word** — Comma-separated words, a configurable wait after waking, and an optional chime
-- **Speaking controls** — Mute the microphone while the assistant speaks, or interrupt it by speaking for about half a second (use headphones, there is no echo cancellation)
-- **Voice approval** — An approval request is read aloud and can be answered by saying "批准执行" (approve) or "拒绝执行" (deny). Raw arguments are never read out, and no answer within 120 seconds counts as a denial
+- **Pipeline** — Microphone audio is split at pauses, sent through ASR and the queue, and handled as a turn in the session. New assistant replies are split into sentences, passed to TTS, and played in order.
+- **Local engines or existing services** — KWS and ASR use sherpa-onnx and SenseVoice (about 380 MB, CPU-only). TTS uses Qwen3-TTS 1.7B GGUF (about 3.0 GB and about 1.9 GB of VRAM). The engines are downloaded separately and support resuming after a connection drops. You can also enter existing ASR/TTS service URLs.
+- **Wake words** — Configure multiple comma-separated words, the time to wait after waking, and an optional wake-up sound.
+- **Speaking controls** — Mute the microphone while the assistant speaks, or interrupt it by speaking for about half a second. There is no echo cancellation, so headphones are recommended.
+- **Spoken approvals** — Approval requests are read aloud. Respond with “批准执行” (approve) or “拒绝执行” (deny). Raw arguments are not spoken; a request with no response after 120 seconds is denied.
 
-### Schedules, MCP & Skills
+### Schedules, MCP, and Skills
 
-- **Schedules** — Five-field cron in your local time zone, an interval of 1 minute to 1 year, or a one-off future time; up to 100 tasks. When one fires, its text enters the queue as a normal message. The assistant can create them too, and creating and deleting follow your approval level
-- **MCP** — Off by default. Tools get the prefix `mcp_{server}_`, every call asks by default, and you can turn on "Skip approval" per server. A server that fails to start does not affect the others
-- **Skills** — A folder with a `SKILL.md` (`name`, `description`, and steps). Enabled skills are listed in the model prompt, up to 50, and take effect on the next turn without a restart
+- **Schedules** — Supports five-field cron in the local time zone, intervals from 1 minute to 1 year, and one-off future times. Up to 100 tasks are allowed. When a task fires, its content enters the queue as a normal message. The assistant can create schedules too; creation and deletion follow your approval level.
+- **MCP** — Disabled by default. Tool names use the `mcp_{server}_` prefix, and each call requires approval unless you enable **Skip approval** for that server. A server failing to start does not affect the others.
+- **Skills** — A skill is a folder containing a `SKILL.md` with `name`, `description`, and steps. Enabled skills appear in the model prompt, up to 50 skills, and take effect on the next turn without a restart.
 
 ### Memory Services
 
-- **What for** — Connecting external agents and plugins. A game AI mod, an NPC dialogue plugin, a writing or coding plugin, or another agent framework can connect as long as it lets you enter an OpenAI- or Anthropic-compatible address, key and model name
-- **How** — Each service listens on its own `127.0.0.1` port and forwards to the main model or an upstream of its own. It changes three things: the model name, recalled memories in front of the last user message, and an optional custom prompt. Tools, streaming, `tool_calls` and errors pass through unchanged
-- **Write-back** — On a set interval, what callers asked and what came back is summarized into one sentence starting with `[对外服务:<name>]` and written to the main memory. The Memory page filters by origin, and deleting a service can delete the memories it wrote
-- **Boundaries** — The caller must run on the same computer as Partner; a service's protocol must match its upstream's, with no format conversion; each service has its own token. External text reaches the main memory, so give tokens only to programs you trust
+- **Use cases** — Connect external agents and plugins, including game AI mods, NPC dialogue plugins, writing or coding plugins, and other agent frameworks that accept an OpenAI- or Anthropic-compatible URL, key, and model name.
+- **Request handling** — Each service listens on its own `127.0.0.1` port and forwards requests to the main model or a separately configured upstream. It changes only the exposed model name, the recalled memories inserted before the last user message, and an optional custom prompt. Tools, streaming, `tool_calls`, and errors pass through unchanged.
+- **Write-back** — At the configured interval, the caller's request and response are summarized in one sentence and added to main memory with the prefix `[对外服务:<name>]`. The Memory page can filter records by source. When deleting a service, you can also delete memories it wrote.
+- **Boundaries** — Callers must run on the same computer as Partner. The service protocol must match the upstream protocol; no format conversion is performed. Each service has its own token. External text can enter main memory, so only share tokens with trusted programs.
 
-### Desktop pet
+### Desktop Pet
 
-- **Live2D character** — A transparent, always-on-top window that reacts to finished assistant replies by matching a keyword dictionary and playing fixed scenes; you choose to download the Cubism Core and the model yourself
+- **Live2D character** — A transparent, always-on-top window matches finalized assistant replies against a keyword dictionary and plays fixed scenes. You choose whether to download Cubism Core and the model.
 
-### System & Platform
+### System and Platform
 
-- **Model protocols** — OpenAI-compatible and Anthropic Messages endpoints, with the API key stored write-only
-- **Web search** — On by default and sends search queries to third-party search engines; turn it off under Settings → Web search
-- **Auto-updater** — Downloads the new installer, verifies its SHA-256, and restarts into it
-- **Crash recovery** — The session and queue are append-only `.jsonl` files and can be rebuilt; unfinished sub-agent jobs get an "interrupted" report on the next start
-- **i18n** — Simplified Chinese, Traditional Chinese, and English UI
+- **Model protocols** — Supports OpenAI-compatible and Anthropic Messages endpoints. API keys are write-only and cannot be read back.
+- **Web search** — Enabled by default. Search queries are sent to a third-party search engine; turn this off under **Settings → Web search**.
+- **Automatic updates** — Downloads the new installer, verifies its SHA-256, and restarts into the new version.
+- **Crash recovery** — The session and queue are append-only `.jsonl` files and can be rebuilt. If a crash interrupts sub-agent tasks, they are reported as interrupted the next time the app starts.
+- **Languages** — The interface is available in Simplified Chinese, Traditional Chinese, and English.
 
 ## FAQ
 
 <details>
-<summary><strong>Do I need the voice engines?</strong></summary>
+<summary><strong>Do I need to download the voice engines?</strong></summary>
 
-No, typing doesn't use them. The wake word and recognition engine is about 380 MB and runs on CPU; the read-aloud engine is about 3 GB and needs a GPU. You can also skip both and use existing ASR/TTS services.
+No. They are not needed for text-only use. The wake-word and recognition engines are about 380 MB and run on the CPU; the read-aloud engine is about 3 GB and needs a GPU. You can skip the local engines and connect existing ASR/TTS services instead.
 
 </details>
 
 <details>
-<summary><strong>Why is the read-aloud engine split into several files?</strong></summary>
+<summary><strong>Why is the read-aloud engine split across several files?</strong></summary>
 
-GitHub limits release assets to 2 GiB and the engine is about 3 GB. The app downloads the parts in order into one folder, checks their SHA-256, and resumes after a dropped connection.
+GitHub limits each release asset to 2 GiB, while the read-aloud engine is about 3 GB. The app downloads the files in order to the same directory, verifies their SHA-256, and resumes after a connection drops.
 
 </details>
 
 <details>
 <summary><strong>Where is my data stored?</strong></summary>
 
-In `%LocalAppData%/Partner/workspace` by default:
+By default, data is under `%LocalAppData%/Partner/workspace`:
 
 - **Session log**: `session/events.jsonl`
 - **Queue**: `queue/items.jsonl`
-- **Memory database**: `memory/memory.db` (SQLite), with copies in `memory/backups/`
-- **Schedules**: `scheduler/`
+- **Memory database**: `memory/memory.db` (SQLite), backed up under `memory/backups/`
+- **Scheduled tasks**: `scheduler/`
 - **Skills**: `skills/`
 - **Attachments**: `media/`
 
-The session and queue can be rebuilt from their `.jsonl` files. `memory.db` is copied into `memory/backups/` at least once a day, on startup when the newest copy is stale and before the daily maintenance pass, keeping the newest 7. Deleting the original loses only what was written since the last copy.
+The session and queue can be rebuilt from their `.jsonl` files. `memory.db` is copied to `memory/backups/` at least daily. A backup is created at startup if the newest one is stale, and the daily maintenance pass checks as well. The latest 7 copies are kept. If the original database is lost, only memories added after the most recent backup are missing.
 
 </details>
 
 <details>
-<summary><strong>Where are the logs?</strong></summary>
+<summary><strong>Where can I find the logs?</strong></summary>
 
-The shell writes the API's stdout/stderr and its own diagnostics to `%LocalAppData%/Partner/partner-api.log`. It rotates at 10 MB and keeps one previous file.
+The desktop shell writes the API's stdout/stderr and its own diagnostic messages to `%LocalAppData%/Partner/partner-api.log`. The log rotates at 10 MB and keeps one previous file.
 
 </details>
 
 <details>
-<summary><strong>Does anything leave my machine?</strong></summary>
+<summary><strong>Does my data get sent elsewhere?</strong></summary>
 
-Conversations go to the model endpoint you configured. Web search is on by default and sends search queries to third-party search engines; turn it off under Settings → Web search. The app also contacts GitHub to check for updates and download voice engines. The local API and Memory Services listen only on `127.0.0.1`, and every request needs a token.
+Conversation content goes to the model endpoint you configure. Web search is enabled by default and sends search queries to a third-party search engine; you can disable it under **Settings → Web search**. The app also contacts GitHub to check for updates and download voice engines. The local API and Memory Services listen only on `127.0.0.1`, and requests require a token.
 
 </details>
 
 <details>
 <summary><strong>Why does the assistant keep asking for approval?</strong></summary>
 
-"Approve everything" is the default level for desktop control; no answer to a prompt counts as a refusal. Change the level from the drop-down in the chat input area. "Approve risky actions" asks for launches, clipboard writes, and system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc), but not commands. Commands ask only under "Approve everything". File writes and edits ask at both levels except "No approval". Under the default level, one approval lets the same window continue for 10 more steps within 10 minutes. MCP tools use their own per-server "Skip approval" list instead of this level.
+Desktop control defaults to **Approve everything**, and unanswered prompts are denied. Change the level using the drop-down in the chat input area. **Approve risky actions** asks before launching programs, writing to the clipboard, or using system shortcuts (Win combinations, Alt+F4, Alt+Tab, Ctrl+Alt+*, Ctrl+Shift+Esc), but not before running commands. Commands require approval only under **Approve everything**. File writes and edits require approval at every level other than **No approval**. Under the default level, one approval lets the same window perform up to 10 more steps within 10 minutes. MCP tools use each server's **Skip approval** setting instead of this approval level.
 
 </details>
 
 <details>
-<summary><strong>Why did my scheduled task not run while the app was closed?</strong></summary>
+<summary><strong>Why didn't a scheduled task run while the app was closed?</strong></summary>
 
-Times missed while the app was closed are skipped, and so are times missed while a task was paused. Nothing is replayed. There is no edit button: to change a rule or its content, delete the task and create it again.
+Scheduled times missed while the app is closed or a task is paused are skipped, not replayed. Tasks cannot currently be edited; delete and recreate a task to change its schedule or content.
 
 </details>
 
 <details>
-<summary><strong>Does it work on macOS or Linux?</strong></summary>
+<summary><strong>Is macOS or Linux supported?</strong></summary>
 
-No. Desktop control and audio call the Win32 API directly, and another OS would need both rewritten.
+No. Desktop control and audio call Win32 APIs directly, so both parts would need to be rewritten for another operating system.
 
 </details>
 
-For more questions, see the [documentation index](doc/README.en.md).
+For more answers, see the [documentation index](doc/README.en.md).
 
 ## Building from Source
 
-You need the .NET 10 SDK, Node 22 with npm (not pnpm, which fails to install esbuild), and Rust (cargo 1.98+).
+You need the .NET 10 SDK, Node 22 with npm (do not use pnpm; esbuild will fail to install), and Rust (cargo 1.98 or later).
 
 ```bash
-npm --prefix ui install          # first time
-npx --prefix ui tauri dev        # dev mode: frontend + desktop shell, the shell starts the API
+npm --prefix ui install          # first-time setup
+npx --prefix ui tauri dev        # development: starts the frontend and desktop shell; the shell starts the API
 bash scripts/build-shell.sh      # build the NSIS installer
-bash scripts/ci.sh               # full checks; SKIP_SHELL=1 skips the shell build
+bash scripts/ci.sh               # run all checks; set SKIP_SHELL=1 to skip the shell build
 ```
 
-Debugging and running the API or frontend on their own: [Development](doc/development.en.md).
+For debugging and running the API or frontend separately, see [Development](doc/development.en.md).
 
 ### Project Layout
 
 | Path | Contents |
 |---|---|
-| `src/Partner.Core` | Session, queue, agent turns, memory, scheduler, MCP, Skills, governance |
-| `src/Partner.Desktop` | Window enumeration, capture, input injection, action verification |
-| `src/Partner.Voice` | Microphone input, segmentation, ASR/TTS clients, playback |
-| `src/Partner.Api` | Local HTTP API, queue consumer, voice host, local engine management |
-| `ui/` | Vue 3 frontend, UI in Simplified Chinese, Traditional Chinese and English |
+| `src/Partner.Core` | Sessions, queue, agent turns, memory, scheduling, MCP, Skills, and governance |
+| `src/Partner.Desktop` | Window enumeration, screenshots, input injection, and action validation |
+| `src/Partner.Voice` | Microphone input, segmentation, ASR/TTS clients, and playback |
+| `src/Partner.Api` | Local HTTP API, queue consumer, voice host, and local engine management |
+| `ui/` | Vue 3 frontend with Simplified Chinese, Traditional Chinese, and English UI |
 | `src-tauri/` | Tauri 2 desktop shell |
-| `engines/` | Server scripts for the local voice engines; runtimes and models stay out of git |
-| `scripts/` | CI, packaging and engine install scripts |
+| `engines/` | Local voice engine service scripts; runtimes and models are not committed to git |
+| `scripts/` | CI, packaging, and engine installation scripts |
 
 ## Contributing
 
-Issues and suggestions are welcome. For larger changes, open an issue to discuss the approach first. Run `bash scripts/ci.sh` on Windows before sending a PR. `master` only accepts changes through PRs.
+Issues and suggestions are welcome. For larger changes, open an issue to discuss the approach first. Before submitting a PR, run `bash scripts/ci.sh` on Windows. The `master` branch accepts changes through PRs only.
 
 **Tech stack**: C# / .NET 10 · Vue 3 · TypeScript · Tauri 2 · SQLite
 
@@ -284,4 +284,4 @@ Issues and suggestions are welcome. For larger changes, open an issue to discuss
 
 ## License
 
-The code is [MIT](LICENSE). The voice engine runtimes, model weights and voice anchors are not in this repository. Each follows its own licence (Apache-2.0, FunASR MODEL_LICENSE and others, listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)), and MIT does not cover them.
+The code is licensed under [MIT](LICENSE). Voice engine runtimes, model weights, and voice anchors are not included in this repository. They are governed by the licenses listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), including Apache-2.0 and FunASR MODEL_LICENSE, and are not covered by MIT.

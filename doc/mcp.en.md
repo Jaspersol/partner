@@ -2,40 +2,40 @@
 
 [简体中文](./mcp.md) | [繁體中文](./mcp.zh-TW.md) | **English**
 
-Back to the [documentation index](./README.en.md).
+Return to the [documentation index](./README.en.md).
 
-Connects stdio MCP servers and hands their tools to the main agent. Off by default: enabling it starts child processes.
+Connect MCP servers over stdio and make their tools available to the main agent. The feature is off by default; enabling it starts child processes.
 
 ## Setup
 
-The **MCP** category of Settings:
+Open the **MCP** section in Settings:
 
-1. Turn on the master switch.
-2. Add a server: name, command, arguments (one per line), optionally a working directory and a call timeout (default 30 seconds). Name and command are required.
-   The call timeout bounds tool calls only, not start-up: a slow server (a cold `dotnet` process takes 300 ms or more) is not treated as broken, and the handshake has its own 30-second budget.
-   A bare command name is only looked up on the system PATH; otherwise give the full path.
-3. Save. The consumer starts each server on launch and registers the result of `tools/list` in its tool table.
+1. Enable the master switch.
+2. Add a server with its name, launch command and arguments (one argument per line). A working directory and maximum wait can be supplied as well; the default is 30 seconds. The name and command are required.
+   The maximum wait applies to tool calls, not process startup. A cold `dotnet` process taking 300 ms or more is not treated as a failure; the handshake has its own 30-second allowance.
+   A command written only as a name is resolved from the system PATH. Use an absolute path for anything else.
+3. Save. When the consumer starts, it launches each server and registers the results of `tools/list` in its tool registry.
 
 ## Tool names
 
-Tool names get the prefix `mcp_{server}_`, so two servers with the same tool name do not overwrite each other.
+Every tool receives the prefix `mcp_{server}_`. Equal tool names from two servers therefore remain distinct.
 
 ## Approval
 
-- MCP tools are not governed by the approval level in the input area; they have their own allowlist.
-- Every call asks by default. Turn on "Skip approval" for a server and its tools run directly.
-- Enabling a server decides which tools exist, not which ones may run without asking.
+- MCP tools use their own allowlist rather than the approval level in the input area.
+- Calls ask for approval by default. A server’s tools run directly only after “Skip approval” is enabled for that server.
+- Enabling a server determines which tools are available; it does not make them automatically trusted.
 
-## What a settings change restarts
+## Effects of settings changes
 
 | Change | Effect |
 |---|---|
-| Server list | Restarts the consumer; child processes start again |
-| Skip-approval list | No restart; applies on the next call |
-| Other changes that rebuild the consumer | Reuse connections and tool descriptions when MCP server configuration is unchanged; disabling MCP, changing server configuration, or stopping the consumer closes them |
+| Server list | Restarts the consumer and launches the child processes again |
+| Skip-approval list | Does not restart anything; the next call sees the change |
+| Other settings that rebuild the consumer | Existing connections and tool descriptions are reused when the MCP configuration is unchanged; disabling MCP, changing a server or stopping the consumer closes the connections |
 
-## When something fails
+## Failures
 
-A server that fails to start does not affect the others; the reason is recorded in the consumer status.
+One server failing to start does not stop the others. Its reason is recorded in consumer status.
 
-In a single turn, MCP tools get a step budget of 32; ordinary tools get 8.
+MCP tools have a per-turn budget of 32 steps; ordinary tools have a budget of 8.

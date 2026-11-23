@@ -2,9 +2,9 @@
 
 [简体中文](./skills.md) | [繁體中文](./skills.zh-TW.md) | **English**
 
-Back to the [documentation index](./README.en.md).
+Return to the [documentation index](./README.en.md).
 
-A skill is one `SKILL.md`: a name, a one-line description and the steps. Once it is in the workspace, the skill list appears in the model's system prompt.
+A skill is a `SKILL.md` containing a name, a one-line description and a procedure. Once it is placed in the workspace, the skill appears in the model’s system prompt.
 
 ## File format
 
@@ -15,37 +15,37 @@ Location: `<workspace>/skills/<skill-id>/SKILL.md`
 name: Code review
 description: Review a code change and point out risks
 ---
-The steps the assistant should follow go here.
+Write the steps the assistant should follow here.
 ```
 
-- The first line must be `---`; the header runs until the next `---`. `name` and `description` are required; other keys are ignored.
-- The skill ID is the folder name: lowercase letters, digits, dots, underscores and hyphens, starting with a letter or digit.
-- The description is one line, truncated past 200 characters. At most 50 skills are loaded.
-- A malformed skill is skipped with a warning on the page; nothing crashes.
+- The first line must be `---`; everything through the next `---` is the header. `name` and `description` are required, and other keys are ignored.
+- The skill ID is the directory name. It may contain lowercase letters, digits, dots, underscores and hyphens, and must begin with a letter or digit.
+- The description is one line and is truncated after 200 characters. At most 50 skills are loaded.
+- Invalid skills are skipped with a warning on the page; they do not stop the application.
 
-## Managing them
+## Managing skills
 
-The **Skills** category of Settings:
+Under **Settings → Skills** you can:
 
-- **Upload**: pick a `SKILL.md`, or zip a skill folder (with `SKILL.md` at the root).
-- **Create**: fill in skill ID, name, description and instructions.
-- **Enable / disable**: disabled skills are not loaded. The switch lives in settings, so replacing a skill file does not quietly turn it back on.
-- **Delete**.
-- No editing. A skill's text belongs to its author; to change it, upload a new one.
+- **Upload** a `SKILL.md`, or upload a `.zip` of the skill folder with `SKILL.md` at its root.
+- **Create** a skill by entering its ID, name, description and instructions.
+- **Enable / disable** it. Disabled skills are not loaded. The switch is stored in settings, so replacing a file does not silently enable it.
+- **Delete** it.
+- There is no editor. The skill text belongs to its author; upload a new version to change it.
 
-Adding or removing a skill applies on the next turn without restarting the consumer.
+Adding or removing a skill takes effect on the next turn and does not require a consumer restart.
 
-## What gets injected
+## Injected content
 
-Before each turn, the system prompt gets a list:
+At the beginning of each turn, the system prompt receives a list in this form:
 
 ```
 Available skills (load one with the skill tool before using it):
 - <skill-id> — <name>: <description>
 ```
 
-Nothing is injected when there are no skills.
+No list is added when there are no skills.
 
-## Known limits
+## Known limitation
 
-The list tells the model to load a skill with the skill tool before using it, but no code registering such a tool was found. So for now the model sees the ID, name and description, not the steps. To be added.
+The instruction tells the model to load a skill with the skill tool before using it, but the current code contains no registration for that tool. For now the model can see only the ID, name and description, not the procedure itself. This still needs to be implemented.

@@ -2,59 +2,59 @@
 
 [简体中文](./sub-agents.md) | [繁體中文](./sub-agents.zh-TW.md) | **English**
 
-Back to the [documentation index](./README.en.md).
+Return to the [documentation index](./README.en.md).
 
-The main agent only talks and delegates. Slow work such as clicking through windows or reading files goes to a sub-agent in the background; when it finishes, the result comes back as a new input and the main agent relays it to you.
+The main agent handles conversation and delegation. Time-consuming work such as operating windows or reading files can run in a sub-agent in the background. When it finishes, its report enters the queue as a new input for the main agent to relay.
 
 ## Scenes
 
-There are two fixed scenes, at most one sub-agent each:
+There are two fixed scenes, with at most one sub-agent assigned to each:
 
-| Scene | Sub-agent tools | Switch | Taken by |
+| Scene | Available tools | Switch | Owner |
 |---|---|---|---|
-| `desktop` desktop control | `desktop_*` | `desktop.enabled` | The built-in desktop sub-agent; cannot be deleted |
-| `file-read` file access | `file_list`, `file_read`; `file_write` and `file_edit` when write access is available (edits require NTFS transactions) | `files.enabled` + read allowlist; writing also requires `files.writeEnabled` + write allowlist (both off by default) | A sub-agent you add |
+| `desktop` desktop control | `desktop_*` | `desktop.enabled` | Built-in desktop sub-agent; cannot be deleted |
+| `file-read` file access | `file_list`, `file_read`, plus `file_write` and `file_edit` when write requirements are met (editing requires NTFS transactions) | `files.enabled` + read allowlist; writing also needs `files.writeEnabled` + write allowlist (both off by default) | A sub-agent you create |
 
-- A scene nobody takes is handled by the main agent. For example, with file access on and no file-reading sub-agent, the `file_*` tools go to the main agent.
-- Desktop is the exception: desktop tools never go to the main agent. Turning desktop on requires an enabled desktop sub-agent; this is checked on save.
+- If no sub-agent owns a scene, the main agent handles it. For example, if file reading is enabled but no file-reading sub-agent exists, the main agent receives the `file_*` tools.
+- Desktop control is different: desktop tools are never assigned to the main agent. Enabling desktop control requires an enabled desktop sub-agent, and the setting is checked when saved.
 
-## Delegation and reports
+## Delegating and reporting
 
-- The main agent gets three tools: `agent_delegate` (returns immediately), `agent_job_status`, `agent_job_cancel`.
-- Jobs run in the background without holding the main conversation. The report enters the same queue, and the main agent starts a new turn to relay it.
-- Each job has its own session log (`agents/<agent>/job-*/session/`); each agent keeps only the newest 30 jobs. Screenshots and file contents stay out of the main session and out of memory.
-- A sub-agent runs one job at a time. A target that just failed cannot be delegated again unchanged for 10 minutes.
-- After a crash, unfinished jobs get an "interrupted" report on the next start.
+- The main agent has three tools: `agent_delegate` (returns immediately), `agent_job_status` and `agent_job_cancel`.
+- Jobs run in the background without blocking the main conversation. A completed report returns through the same queue, and the main agent starts a new turn to relay it.
+- Each job has its own session log at `agents/<agent>/job-*/session/`. Each agent retains only its latest 30 jobs. Screenshots and file contents do not enter the main session or memory.
+- A sub-agent runs only one job at a time. After a target fails, the identical task cannot be assigned again for 10 minutes.
+- If the process crashes, unfinished jobs receive an “interrupted” report at the next startup.
 
-## Retries and failure
+## Retries and failures
 
-- Each job runs up to `maxRounds` rounds, default 5 (1–10). Total limit 15 minutes.
-- Success or failure is decided by the sub-agent calling `task_report`: success needs evidence, failure needs an error. Not calling it counts as failure.
-- Terminal failures (approval denied, governance refusal, cancel, timeout and so on) are not retried. Before other retries, the sub-agent is told which actions the previous round already performed and asked to look at the current state first.
-- When every round fails, the main agent receives the failure category, the last error and a per-round log, and is told to report it honestly rather than claim success.
+- A job can use up to `maxRounds` rounds, 5 by default (configurable from 1 to 10), with a total time limit of 15 minutes.
+- The sub-agent declares success or failure by calling `task_report`. Success requires evidence; failure requires an error. Not calling the tool counts as failure.
+- Terminal failures such as denied approval, governance refusal, cancellation or timeout are not retried. Before retrying other failures, the sub-agent is told what actions the previous round already performed and asked to inspect the current state first.
+- If every round fails, the main agent receives the failure category, the final error and the round-by-round log. It is required to report the outcome accurately, not claim success.
 
 ## Prompts and models
 
-Edit them under Settings → Agent:
+Edit prompts under **Settings → Agent**:
 
-- The main agent and each sub-agent have editable prompts. Unchanged prompts use the built-in default and pick up new defaults on upgrade.
-- The generated file-tool boundary, "delegable scenes" and "how to report" sections are not editable; the same boundary applies to text and voice requests.
-- Prompt edits do not restart the consumer; they apply on the next turn.
-- A sub-agent's model follows the main model by default, or can be set on its own, such as a vision model for the desktop sub-agent.
+- The main agent and every sub-agent have editable prompts. A prompt that has not been customized uses the built-in default and picks up updated defaults after an upgrade.
+- Automatically appended file-tool boundaries, delegable scenes and reporting instructions cannot be edited. Text and voice requests follow the same boundaries.
+- Prompt changes take effect on the next turn without restarting the consumer.
+- A sub-agent follows the main model by default but can use a separately configured model, such as a vision model for desktop work.
 
 ## File access boundaries
 
-- Native file tools can list, read and, when permitted, create and edit files. Direct file requests must use the corresponding native tool. If it was not called, is unavailable, is denied or fails, the agent should not claim success or switch to desktop, commands or MCP. Desktop tasks explicitly requested through an application are an exception.
-- `files.writeEnabled` defaults to off and `files.writeRoots` to empty; old settings gain no write permission. When enabled, configure at least one existing absolute directory. `file_write` supports only local Windows NTFS and requires the target to be in both read and write allowlists. It runs without approval under "No approval" and requires explicit approval each time at the other levels. It creates new files only, never overwriting or editing existing files.
-- Creation requires an existing parent directory and does not create directories. Network drives, special paths, reparse points, and Partner data and credential paths are refused. Files are UTF-8 without BOM. If creation fails or its result is unconfirmed, do not claim success or automatically retry; check the target and permissions before deciding what to do.
-- `file_edit` uses the same allowlists and approval rules. It replaces one exact UTF-8 match using the SHA-256 version returned by `file_read`. It writes only the original file object's default data stream, preserving the BOM, security descriptor and alternate data streams. The result is capped at 8 MiB. Editing requires a local Windows volume supporting [Transactional NTFS (TxF)](https://learn.microsoft.com/en-us/windows/win32/fileio/transactional-ntfs-portal). Commit rechecks the version and hard-link count under the transaction lock. A changed version, multiple hard links, an unavailable transaction, or an unsupported target prevents the edit; there is no non-transacted fallback.
-- This is an instruction to the agent, not a system sandbox: desktop applications, commands and MCP access files under system permissions and do not inherit the file allowlist. The MCP no-approval list is not file authorization. Use system security measures for system-level isolation.
-- Paths must be inside `files.roots`. `..` traversal and links pointing outside are refused.
-- On Windows and Linux, reads and directory listings check the actual path of the opened handle; platforms where it cannot be verified are refused. Windows alternate data streams are refused. Hard-link aliases cannot be identified as protected files by this check; the allowlist is not a filesystem sandbox.
-- `file_list` sorts directories first, then names case-insensitively with an ordinal case-sensitive tie-breaker. It starts at `offset: 0` and returns at most 200 entries by default; specify a nonnegative integer `offset` and a `limit` of 1–200, and use the returned next offset with the same `path` and `limit` when more entries remain. Each call enumerates the directory again, not a snapshot: additions, deletions, or renames can cause duplicates or omissions, so restart after changes.
-- Text only, read in segments: 12000 characters by default, 40000 max. Binary files and files over 8 MB are refused.
-- `file_read` counts offset and limit in UTF-16 code units and never splits a surrogate pair; an offset inside a pair or a limit too small for one returns an argument error.
-- If a page exceeds the context result budget, it is not returned partially; retry the same path and offset with a smaller limit.
-- Each read returns a SHA-256 version of the bytes read. The file can change between pages, so compare versions; the version is not a lock and does not guarantee subsequent reads match.
-- Even inside the roots, `.env*`, `*.pem`, `*.key`, `*.pfx` and similar key files are never read, nor is the workspace.
-- What is read goes into the model context; keep the allowlist narrow.
+- Native file tools list directories and read files, and can create or edit files when the requirements are met. Direct file requests must use the corresponding native tool. If the tool was not called, is unavailable, denied or fails, do not claim success or switch to desktop, commands or MCP to bypass it. The exception is a desktop task the user explicitly asked to perform through an application.
+- `files.writeEnabled` is off and `files.writeRoots` is empty by default; existing settings do not gain write access automatically. Enabling writes requires at least one existing absolute directory. `file_write` supports local Windows NTFS only, and its target must be in both read and write allowlists. It runs directly under “No approval”; other levels require explicit approval each time. It creates files only and never overwrites or edits existing ones.
+- The parent directory for a new file must already exist; directory creation is not supported. Network drives, special paths, reparse points, and Partner data or credential paths are rejected. Files are written as UTF-8 without a BOM. If creation fails or the result is unconfirmed, do not claim success or retry automatically; inspect the target and permissions before deciding what to do.
+- `file_edit` uses the same allowlists and approval rules. It performs an exact replacement of one unique UTF-8 match using the SHA-256 version returned by `file_read`. It writes only the original file object's default data stream while preserving the BOM, security descriptor and alternate data streams. The result is limited to 8 MiB. Editing is allowed only on local Windows volumes that support [Transactional NTFS (TxF)](https://learn.microsoft.com/en-us/windows/win32/fileio/transactional-ntfs-portal). The transaction lock rechecks the version and hard-link count at commit; a changed version, multiple hard links, unavailable transactions or unsupported targets cause refusal, with no non-transactional fallback.
+- These rules guide the agent; they are not a system sandbox. Desktop applications, commands and MCP processes access files under system permissions and do not inherit the file allowlist. The MCP no-approval list is not file authorization. Use system-level security measures when isolation is required.
+- Paths must stay inside `files.roots`. `..` traversal and links that point outside are rejected.
+- On Windows and Linux, reads and directory enumeration check the actual path of the opened handle; platforms where this cannot be verified refuse access. Windows alternate data streams are rejected. Hard-link aliases to protected files cannot necessarily be detected, so the allowlist is not a filesystem sandbox.
+- `file_list` sorts directories first and then names case-insensitively, using ordinal character order to break case-only ties. It starts at `offset: 0` and returns up to 200 entries by default. Supply a nonnegative integer `offset` and `limit` from 1 to 200; if more results remain, continue at the returned offset with the same `path` and `limit`. Each call re-enumerates the directory rather than reading a snapshot, so additions, deletions or renames can produce duplicates or omissions. Restart enumeration after changes.
+- Only text is read, in chunks of 12,000 characters by default and up to 40,000. Binary files and files larger than 8 MB are refused.
+- `file_read` counts `offset` and `limit` in UTF-16 code units and does not split surrogate pairs. A limit too small for a pair or an offset inside one produces an argument error.
+- A page that exceeds the context-result budget is not returned partially. Keep the same path and offset, reduce the limit and try again.
+- Each read returns the SHA-256 version of the bytes read. Compare it across pages because the file may change; this value is not a lock and does not guarantee later reads are consistent.
+- Even within an allowed directory, files such as `.env*`, `*.pem`, `*.key` and `*.pfx` are not read, nor is the workspace as a whole.
+- Read content becomes part of model context, so keep the allowlist narrow.
