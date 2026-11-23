@@ -40,8 +40,12 @@ public static class ConfiguredWebEngines
     {
         public EngineTraits Traits { get; } = inner.Traits with { Id = id, Name = name };
         public HttpRequestMessage Build(SearchQuery query) => inner.Build(query);
-        public Task<ParseResult> ParseAsync(WebResponse response, SearchQuery query, IEngineFollowUp follow, CancellationToken ct = default)
-            => inner.ParseAsync(response, query, follow, ct);
+        public async Task<ParseResult> ParseAsync(WebResponse response, SearchQuery query, IEngineFollowUp follow, CancellationToken ct = default)
+        {
+            var parsed = await inner.ParseAsync(response, query, follow, ct).ConfigureAwait(false);
+            if (parsed.Hits.Count == 0 || parsed.Status != ParseStatus.Ok) return parsed;
+            return parsed with { Hits = parsed.Hits.Select(hit => hit with { Engine = id }).ToList() };
+        }
     }
 
     private sealed class CustomJsonEngine : IWebSearchEngine

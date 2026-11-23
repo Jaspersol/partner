@@ -465,6 +465,20 @@ export interface WebSettings {
   proxy: string | null
   /** Ids of engines manually turned off. */
   disabledEngines: string[]
+  /** Ordered engine configuration. Older servers may omit this field. */
+  engines?: WebEngineSettings[]
+}
+
+export interface WebEngineSettings {
+  id: string
+  name: string
+  enabled: boolean
+  presetId?: string | null
+  urlTemplate?: string | null
+  resultsPath?: string | null
+  titleField?: string | null
+  linkField?: string | null
+  summaryField?: string | null
 }
 
 export interface PetKeyword {
@@ -637,6 +651,8 @@ export interface WebView {
   timeBudgetSeconds: number
   maxResults: number
   engines: WebEngineView[]
+  /** Defaults that can be restored by the settings page. */
+  defaults?: WebEngineSettings[]
   /** Location of the circuit-breaker state file; this is what to inspect when something goes wrong. */
   healthPath: string
 }

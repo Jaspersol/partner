@@ -52,6 +52,7 @@ import type {
   VoiceState,
   VoiceTestResult,
   WebEngineView,
+  WebEngineSettings,
   WebView,
 } from '../api'
 
@@ -123,7 +124,7 @@ const form = reactive<RuntimeSettings>({
   // The one section here that defaults to ON, and the one that sends what you typed off this machine. The
   // default is deliberate (not an oversight): the search is useless if nobody ever finds the switch, and the
   // section says in as many words where the queries go.
-  web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] as string[] },
+  web: { enabled: true, timeBudgetSeconds: 12, maxResults: 8, proxy: null, disabledEngines: [] as string[], engines: [] as WebEngineSettings[] },
 
   // The dictionary starts empty and is replaced by the server's copy: the built-in table lives in C# and in the
   // pet frontend, and a third copy here would be one more to keep in step.
@@ -416,6 +417,10 @@ function apply(settings: RuntimeSettings & { rebaseGuard?: string; model: { apiK
     maxResults: settings.web?.maxResults ?? 8,
     proxy: settings.web?.proxy ?? null,
     disabledEngines: [...(settings.web?.disabledEngines ?? [])],
+    engines: (settings.web?.engines ?? []).map((e) => ({ ...e })),
+  }
+  if (form.web.engines && form.web.engines.length > 0) {
+    form.web.disabledEngines = form.web.engines.filter((e) => !e.enabled).map((e) => e.id)
   }
 
   form.pet = normalizePet(settings.pet)
@@ -652,8 +657,36 @@ onUnmounted(() => {
 
 /** Toggles an engine. Stores which ones are off, so a newly added engine defaults to on. */
 function toggleEngine(id: string) {
+  if (form.web.engines?.length) {
+    const row = form.web.engines.find((e) => e.id === id)
+    if (row) row.enabled = !row.enabled
+  }
   const off = form.web.disabledEngines
   form.web.disabledEngines = off.includes(id) ? off.filter((each) => each !== id) : [...off, id]
+}
+
+function addWebEngine() {
+  const id = `custom-${Math.random().toString(36).slice(2, 10)}`
+  const row: WebEngineSettings = { id, name: '', enabled: true, presetId: null, urlTemplate: 'https://example.com/search?q={query}', resultsPath: 'results', titleField: 'title', linkField: 'url', summaryField: 'content' }
+  form.web.engines = [...(form.web.engines ?? []), row]
+  editingEngine.value = id
+}
+
+const editingEngine = ref<string | null>(null)
+function editWebEngine(id: string) { editingEngine.value = editingEngine.value === id ? null : id }
+function removeWebEngine(id: string) {
+  if (!window.confirm(t('删除后无法恢复。'))) return
+  form.web.engines = (form.web.engines ?? []).filter((e) => e.id !== id)
+  form.web.disabledEngines = form.web.disabledEngines.filter((e) => e !== id)
+  if (editingEngine.value === id) editingEngine.value = null
+}
+function restoreWebDefaults() {
+  if (!window.confirm(t('恢复默认搜索引擎？'))) return
+  const defaults = webView.value?.defaults ?? []
+  if (defaults.length) {
+    form.web.engines = defaults.map((e) => ({ ...e, enabled: true }))
+    form.web.disabledEngines = []
+  }
 }
 
 /** Human labels for content types an engine indexes; unknown values are shown verbatim. */
@@ -677,25 +710,32 @@ function kindLabel(kind: string): string {
  * One sentence describing an engine's current state. Paused and failed are reported explicitly: "no results
  * this time" must not read as "nothing on the web" when the engine is actually circuit-broken.
  */
-function engineState(engine: WebEngineView): string {
+function engineState(engine: Partial<WebEngineView> & { id: string }): string {
   if (form.web.disabledEngines.includes(engine.id)) {
     return t('已关闭')
   }
   if (engine.cooling) {
-    const until = engine.until === null ? '' : t('，{toLocaleTimeString} 后再试', { toLocaleTimeString: new Date(engine.until).toLocaleTimeString(locale.value) })
+    const until = !engine.until ? '' : t('，{toLocaleTimeString} 后再试', { toLocaleTimeString: new Date(engine.until).toLocaleTimeString(locale.value) })
     return t('连续失败 {strikes} 次，暂停中{until}', { strikes: engine.strikes, until: until })
   }
-  if (engine.strikes > 0 && engine.lastReason !== null) {
+  if ((engine.strikes ?? 0) > 0 && engine.lastReason !== null && engine.lastReason !== undefined) {
     return t('上次失败：{lastReason}', { lastReason: engine.lastReason })
   }
   return t('正常')
 }
 
-function engineStateClass(engine: WebEngineView): string {
+function engineStateClass(engine: Partial<WebEngineView> & { id: string }): string {
   if (form.web.disabledEngines.includes(engine.id)) {
     return 'is-off'
   }
-  return engine.cooling || engine.strikes > 0 ? 'is-warn' : 'is-ok'
+  return engine.cooling || (engine.strikes ?? 0) > 0 ? 'is-warn' : 'is-ok'
+}
+
+function webEngineRows(): any[] {
+  if (form.web.engines?.length) {
+    return form.web.engines.map((e) => ({ ...e, kinds: [], singleSite: Boolean(e.presetId), cooling: false, strikes: 0, lastReason: null, until: null, disabled: !e.enabled }))
+  }
+  return webView.value?.engines ?? []
 }
 
 const cloneBusy = ref(false)
@@ -765,6 +805,7 @@ async function persist() {
       maxResults: form.web.maxResults,
       proxy: form.web.proxy === null || form.web.proxy.trim() === '' ? null : form.web.proxy.trim(),
       disabledEngines: [...form.web.disabledEngines],
+      engines: (form.web.engines ?? []).map((e) => ({ ...e, name: e.name.trim(), urlTemplate: e.urlTemplate?.trim() || null, resultsPath: e.resultsPath?.trim() || null, titleField: e.titleField?.trim() || null, linkField: e.linkField?.trim() || null, summaryField: e.summaryField?.trim() || null })),
     },
     model: {
       protocol: form.model.protocol,
@@ -2211,16 +2252,18 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <button class="ghost icon-only" :title="t('刷新状态')" :aria-label="t('刷新引擎状态')" data-test="web-refresh" @click="refreshWeb()">
                   <Icon name="refresh" :size="14" /><span class="sr-only">{{ t('刷新状态') }}</span>
                 </button>
+                <button class="ghost" type="button" data-test="web-engine-add" @click="addWebEngine">{{ t('新增引擎') }}</button>
+                <button class="ghost" type="button" data-test="web-engine-restore" @click="restoreWebDefaults">{{ t('恢复默认引擎') }}</button>
               </div>
 
               <p v-if="webView === null" class="muted" data-test="web-engines-unknown">
                 {{ t('读不到引擎状态。开关照常保存，状态等后端可用后再刷新。') }}
               </p>
-              <p v-else-if="webView.engines.length === 0" class="muted" data-test="web-engines-empty">
-                {{ t('这一版没有内置任何搜索引擎。') }}
+              <p v-else-if="webEngineRows().length === 0" class="muted" data-test="web-engines-empty">
+                {{ t('还没有搜索引擎。请新增或恢复默认引擎。') }}
               </p>
               <div
-                v-for="engine in webView?.engines ?? []"
+                v-for="engine in webEngineRows()"
                 :key="engine.id"
                 class="engine-row"
                 :data-test="`web-engine-${engine.id}`"
@@ -2240,6 +2283,16 @@ defineExpose({ refresh, hasUnsavedChanges })
                   :data-test="`web-engine-${engine.id}-enabled`"
                   @change="toggleEngine(engine.id)"
                 />
+                <button class="ghost" type="button" :data-test="`web-engine-${engine.id}-edit`" @click="editWebEngine(engine.id)">{{ t('编辑') }}</button>
+                <button class="ghost" type="button" :data-test="`web-engine-${engine.id}-delete`" @click="removeWebEngine(engine.id)">{{ t('删除') }}</button>
+                <div v-if="editingEngine === engine.id" class="engine-edit" :data-test="`web-engine-${engine.id}-form`">
+                  <input v-model="engine.name" :placeholder="t('名称')" />
+                  <input v-if="!engine.presetId" v-model="engine.urlTemplate" :placeholder="t('URL 模板，包含 {query}')" />
+                  <input v-if="!engine.presetId" v-model="engine.resultsPath" :placeholder="t('结果数组路径')" />
+                  <input v-if="!engine.presetId" v-model="engine.titleField" :placeholder="t('标题字段')" />
+                  <input v-if="!engine.presetId" v-model="engine.linkField" :placeholder="t('链接字段')" />
+                  <input v-if="!engine.presetId" v-model="engine.summaryField" :placeholder="t('摘要字段（可选）')" />
+                </div>
               </div>
             </div>
 
