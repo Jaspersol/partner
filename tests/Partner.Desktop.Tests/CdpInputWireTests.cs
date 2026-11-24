@@ -92,6 +92,7 @@ public sealed class CdpInputWireTests
 
             var socket = (await context.AcceptWebSocketAsync(null).ConfigureAwait(false)).WebSocket;
             var buffer = new byte[64 * 1024];
+            var message = new MemoryStream();
 
             while (socket.State == WebSocketState.Open && !_stop.IsCancellationRequested)
             {
@@ -110,7 +111,14 @@ public sealed class CdpInputWireTests
                     return;
                 }
 
-                using var request = JsonDocument.Parse(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                message.Write(buffer, 0, result.Count);
+                if (!result.EndOfMessage)
+                {
+                    continue;
+                }
+
+                using var request = JsonDocument.Parse(message.ToArray());
+                message.SetLength(0);
                 var id = request.RootElement.GetProperty("id").GetInt32();
                 var method = request.RootElement.GetProperty("method").GetString()!;
                 var parameters = request.RootElement.TryGetProperty("params", out var found) ? found.Clone() : default;
