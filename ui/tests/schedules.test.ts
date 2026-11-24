@@ -82,7 +82,7 @@ describe('schedules view', () => {
     expect(items[1]?.find('[data-test="schedule-rule"]').text()).toBe('每 2 小时')
     expect(items[1]?.find('[data-test="schedule-state"]').text()).toBe('已暂停')
     expect(items[1]?.find('[data-test="schedule-next"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="schedule-summary"]').text()).toBe('2 个任务 · 1 个在运行')
+    expect(wrapper.find('[data-test="schedule-summary"]').text()).toBe('共 2 个任务 · 1 个运行中')
     wrapper.unmount()
   })
 
@@ -154,7 +154,7 @@ describe('schedules view', () => {
 
     await wrapper.find('[data-test="schedule-payload"]').setValue('x')
     await wrapper.find('[data-test="schedule-add"]').trigger('click')
-    expect(wrapper.find('[data-test="schedule-form-error"]').text()).toContain('时刻')
+    expect(wrapper.find('[data-test="schedule-form-error"]').text()).toContain('Cron 表达式')
 
     expect(api.createSchedule).not.toHaveBeenCalled()
     wrapper.unmount()

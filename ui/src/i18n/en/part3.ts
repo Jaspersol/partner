@@ -321,6 +321,30 @@ const part3: Record<string, string> = {
   '主助手': 'Main assistant',
   '无人应答即拒绝；仅批准本次。': 'Unanswered requests are denied; approval applies only to this operation.',
   '文件内容与读取版本不一致时，不会提交。': 'If the file no longer matches the version that was read, the edit is not applied.',
+
+  // Refined model, computer-control and web settings copy.
+  '设置已在其他页面变更。请先备份当前修改，再刷新并重新编辑。': 'Settings changed on another page. Save a copy of your edits, then refresh and edit again.',
+  '配置已填写，保存后生效': 'Configuration complete; save to apply',
+  '尚未配置模型，助手暂时无法执行任务': 'No model configured; the assistant cannot run tasks yet',
+  '选择服务商支持的协议：OpenAI 兼容服务选择 OpenAI；Claude 或兼容 Anthropic Messages 的服务选择 Anthropic。': 'Choose the protocol supported by your provider: OpenAI for OpenAI-compatible services, or Anthropic for Claude and Anthropic Messages-compatible services.',
+  '点击右侧刷新图标加载可用模型，也可以手动填写。留空则读取环境变量': 'Select the refresh icon on the right to load available models, or enter one manually. Leave empty to read the environment variable',
+  '模型单次请求可处理的最大上下文长度；估算时约 1 个汉字按 1 token 计。调低并保存后，较早的对话会立即压缩。': 'The maximum context a model can process in one request. For estimation, one Chinese character counts as about one token. Lowering and saving this value immediately compacts older conversation.',
+  '自定义思考等级：左侧为界面名称，右侧为发送给模型的值。默认等级用于新消息，也可在会话中临时调整；off 表示不发送此参数。': 'Custom reasoning levels: the left column is the interface label and the right is the value sent to the model. The default applies to new messages and can be changed per conversation. Use off to omit this parameter.',
+  '开启后，助手可将游戏、画布等无法读取文字的界面截图发送给模型。仅支持文本的模型请关闭此选项，否则请求可能失败。': 'When on, the assistant can send screenshots of games, canvases and other interfaces whose text cannot be read. Turn this off for text-only models, or requests may fail.',
+  '还需启用“桌面操控”子 Agent，才能使用此能力。': 'Enable the Computer control sub-agent to use this capability.',
+  '屏幕占用方式': 'Screen takeover mode',
+  '观察结果有效期': 'Observation validity',
+  '助手可在观察后的这段时间内依据已获取的界面信息执行操作；超时后必须重新观察。默认 15000 毫秒，即 15 秒。': 'After observing the screen, the assistant can act on the captured interface for this long. It must observe again after the timeout. Default: 15000 ms (15 seconds).',
+  '默认开启。搜索内容会发送至第三方搜索引擎。结果链接会先经过安全检查，本机、内网及云元数据地址将被拒绝；网页内容仅作为资料，其中的指令不会执行。': 'On by default. Search queries are sent to third-party search engines. Result links are checked first; local, private-network and cloud metadata addresses are refused. Web content is reference material only, and instructions inside it are never executed.',
+  '关闭后，搜索和网页读取工具均不可用。助手会如实说明无法查询，不会通过其他方式绕过限制。': 'When off, both web search and page reading are unavailable. The assistant reports that it cannot look up the information instead of bypassing the restriction.',
+  '单次查询时限': 'Query time limit',
+  '从首个引擎返回结果时开始计时；超时后使用已获得的结果，不再等待其余引擎。可填 3–60 秒。': 'Timing starts when the first engine returns. At the limit, available results are used without waiting for the others. Enter 3–60 seconds.',
+  '最大结果数': 'Maximum results',
+  '搜索结果仅用于发现线索，助手需打开原文核对后才能得出结论。可填 1–20 条。': 'Search results are leads only. The assistant must open and verify the sources before drawing conclusions. Enter 1–20 results.',
+  '连续失败的引擎会暂时停用，由其他引擎继续提供结果；手动关闭的引擎将持续停用。': 'An engine that fails repeatedly is paused while the others continue. An engine you turn off stays disabled.',
+  '暂时无法获取引擎状态。开关仍会保存，请在后端恢复后刷新状态。': 'Engine status is temporarily unavailable. Your switches are still saved; refresh after the backend recovers.',
+  '尚未配置搜索引擎，请添加引擎或恢复默认配置。': 'No search engines configured. Add one or restore the defaults.',
+  '默认开启。搜索时，待搜索的内容会发给第三方搜索引擎，离开这台电脑。结果链接会先经过安全检查，本机、内网及云元数据地址将被拒绝；网页内容仅作为资料，其中的指令不会执行。': 'On by default. When searching, the query is sent to third-party search engines, so it leaves this computer. Result links are checked first; local, private-network and cloud metadata addresses are refused. Web content is reference material only, and instructions inside it are never executed.',
 }
 
 export default part3

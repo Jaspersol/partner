@@ -881,7 +881,7 @@ async function persist() {
     emit('saved')
   } catch (failure) {
     error.value = failure instanceof ApiError && failure.status === 409
-      ? t('设置已被其他页面修改。请先记录未保存的更改，再刷新并重新编辑。')
+      ? t('设置已在其他页面变更。请先备份当前修改，再刷新并重新编辑。')
       : String(failure)
   } finally {
     settingsBusy.value = false
@@ -1934,8 +1934,8 @@ defineExpose({ refresh, hasUnsavedChanges })
                 data-test="model-effect"
               >
                 <template v-if="consumer?.running">{{ t('运行中 · {model}', { model: consumer.model ?? t('模型') }) }}</template>
-                <template v-else-if="modelConfigured">{{ t('已填好，保存后生效') }}</template>
-                <template v-else>{{ t('未配置，助手暂时不会执行任务') }}</template>
+                <template v-else-if="modelConfigured">{{ t('配置已填写，保存后生效') }}</template>
+                <template v-else>{{ t('尚未配置模型，助手暂时无法执行任务') }}</template>
               </span>
             </header>
 
@@ -1954,15 +1954,15 @@ defineExpose({ refresh, hasUnsavedChanges })
                 />
               </div>
 
-              <SettingRow :label="t('接口格式')">
-                <template #hint>{{ t('选择服务商使用的接口协议：OpenAI 兼容端点选 OpenAI，Claude 或兼容 Anthropic Messages 的端点选 Anthropic。') }}</template>
+              <SettingRow :label="t('API 协议')">
+                <template #hint>{{ t('选择服务商支持的协议：OpenAI 兼容服务选择 OpenAI；Claude 或兼容 Anthropic Messages 的服务选择 Anthropic。') }}</template>
                 <select v-model="form.model.protocol" data-test="model-protocol">
                   <option value="openai">{{ t('OpenAI 兼容') }}</option>
                   <option value="anthropic">Anthropic (Claude)</option>
                 </select>
               </SettingRow>
 
-              <SettingRow :label="t('接口地址')">
+              <SettingRow :label="t('API 地址')">
                 <template #hint>
                   {{ t('模型服务的网址，一般以 /v1 结尾，比如 Ollama 是') }} <code>http://127.0.0.1:11434/v1</code>{{ t('。留空则读环境变量') }}
                   <code>PARTNER_LLM_BASE_URL</code>{{ t('。') }}
@@ -1977,7 +1977,7 @@ defineExpose({ refresh, hasUnsavedChanges })
 
               <SettingRow :label="t('模型')">
                 <template #hint>
-                  {{ t('点右边的刷新图标，可以从服务里读出可选的模型；读不到就手动填。留空则读环境变量') }} <code>PARTNER_LLM_MODEL</code>{{ t('。') }}
+                  {{ t('点击右侧刷新图标加载可用模型，也可以手动填写。留空则读取环境变量') }} <code>PARTNER_LLM_MODEL</code>{{ t('。') }}
                 </template>
                 <select v-if="models.length > 0" v-model="form.model.model" data-test="model-name">
                   <option v-for="name in withStored(models, form.model.model)" :key="name" :value="name">{{ name }}</option>
@@ -2014,21 +2014,21 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <button class="ghost" type="button" data-test="model-api-key-clear" @click.prevent="clearKey">{{ t('清除') }}</button>
               </SettingRow>
 
-              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('模型超过这个时间还没答完，就放弃这次请求。')">
+              <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('模型未在此时间内完成响应时，将取消本次请求。')">
                 <input type="number" v-model.number="form.model.timeoutSeconds" />
               </SettingRow>
-              <SettingRow :label="t('记忆长度')" unit="token">
-                <template #hint>{{ t('模型一次最多能「看」多少内容，约 1 个汉字算 1 token。改小并保存后，较早的对话会立刻被压缩。') }}</template>
+              <SettingRow :label="t('上下文长度')" unit="token">
+                <template #hint>{{ t('模型单次请求可处理的最大上下文长度；估算时约 1 个汉字按 1 token 计。调低并保存后，较早的对话会立即压缩。') }}</template>
                 <input type="number" min="1" v-model.number="form.model.contextTokens" data-test="model-context-tokens" />
               </SettingRow>
-              <SettingRow :label="t('单次回复上限')" unit="token" :hint="t('一次回复最多写多长，必须小于「记忆长度」。')">
+              <SettingRow :label="t('最大输出 token')" unit="token" :hint="t('单次回复可生成的最大 token 数，必须小于“上下文长度”。')">
                 <input type="number" min="1" v-model.number="form.model.maxTokens" data-test="model-max-tokens" />
               </SettingRow>
             </div>
 
             <div class="g-card">
               <div class="g-card-head"><h3>{{ t('思考') }}</h3></div>
-              <SettingRow :label="t('思考强度')" stack :hint="t('回答前想多久。左边是界面上显示的字，右边是真正发给模型的词，你可以增减。选中的「默认」用于新消息，会话里可以临时改。传值为 off 表示不向模型发这个参数。')">
+              <SettingRow :label="t('思考强度')" stack :hint="t('自定义思考等级：左侧为界面名称，右侧为发送给模型的值。默认等级用于新消息，也可在会话中临时调整；off 表示不发送此参数。')">
                 <GearTable
                   v-model="form.model.reasoningEffort"
                   v-model:gears="form.model.reasoningGears"
@@ -2036,9 +2036,9 @@ defineExpose({ refresh, hasUnsavedChanges })
                   data-test="model-reasoning-gears"
                 />
               </SettingRow>
-              <SettingRow :label="t('能看图片')">
+              <SettingRow :label="t('支持图像输入')">
                 <template #hint>
-                  {{ t('开启后，遇到读不出文字的软件（游戏、画布等），助手会直接截图给模型看。纯文字模型请保持关闭，否则请求会失败。') }}
+                  {{ t('开启后，助手可将游戏、画布等无法读取文字的界面截图发送给模型。仅支持文本的模型请关闭此选项，否则请求可能失败。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.model.supportsImages" data-test="model-supports-images" />
               </SettingRow>
@@ -2081,7 +2081,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.desktop.enabled" data-test="desktop-enabled" />
               </SettingRow>
               <p v-if="desktopAgentOff" class="warn-line" data-test="desktop-agent-warning">
-                {{ t('还需要启用「桌面操控」子 agent，助手才能使用这个能力。') }}
+                {{ t('还需启用“桌面操控”子 Agent，才能使用此能力。') }}
                 <button class="ghost" data-test="desktop-agent-fix" @click="choose('agents')">{{ t('去启用') }}</button>
               </p>
               <SettingRow :label="t('允许执行系统命令')">
@@ -2103,7 +2103,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                   @input="onTitlesInput"
                 />
               </SettingRow>
-              <SettingRow :label="t('操作时占用屏幕吗')">
+              <SettingRow :label="t('屏幕占用方式')">
                 <template #hint>
                   <span data-test="desktop-input-mode-hint">{{ t(INPUT_MODES.find((mode) => mode.value === form.desktop.inputMode)?.hint ?? '') }}</span>
                   {{ t('点击和打字默认要把窗口带到前台、移动你的鼠标。选「尽量后台」后，由助手启动的浏览器和 Electron 程序可以在后台完成，其余照旧；选「只在后台」则做不到的动作直接拒绝。') }}
@@ -2119,9 +2119,9 @@ defineExpose({ refresh, hasUnsavedChanges })
               {{ t('更多选项') }}
             </button>
             <div v-show="advanced.desktop === true" class="g-card">
-              <SettingRow :label="t('看屏幕后可操作多久')" :unit="t('毫秒')">
+              <SettingRow :label="t('观察结果有效期')" :unit="t('毫秒')">
                 <template #hint>
-                  {{ t('助手看过一次屏幕后，这段时间内可以照着看到的内容去点、去输入；超时要重新看一遍。默认 15000，即 15 秒。') }}
+                  {{ t('助手可在观察后的这段时间内依据已获取的界面信息执行操作；超时后必须重新观察。默认 15000 毫秒，即 15 秒。') }}
                 </template>
                 <input type="number" min="1000" v-model.number="form.desktop.leaseTtlMs" data-test="desktop-lease-ttl" />
               </SettingRow>
@@ -2231,25 +2231,25 @@ defineExpose({ refresh, hasUnsavedChanges })
                  this machine. That goes in a sentence rather than behind an ⓘ, for the same reason the
                  desktop callout is not behind one. -->
             <p class="callout" data-test="web-callout">
-              {{ t('默认开启。开启后，助手要把某句话拿去搜的时候，那句话会发给第三方搜索引擎，因此会离开这台电脑。 搜索结果的地址会先做一次安全检查，指向本机、内网或云服务商元数据地址的一律拒绝；从网上读回来的 内容只当资料，写在里面的任何指令都不会被执行。') }}
+              {{ t('默认开启。搜索时，待搜索的内容会发给第三方搜索引擎，离开这台电脑。结果链接会先经过安全检查，本机、内网及云元数据地址将被拒绝；网页内容仅作为资料，其中的指令不会执行。') }}
             </p>
 
             <div class="g-card">
               <SettingRow :label="t('允许助手联网搜索')">
                 <template #hint>
-                  {{ t('关闭后助手完全拿不到联网工具，连打开已知网页也一起停用。查不到就说查不到，不会绕过去。') }}
+                  {{ t('关闭后，搜索和网页读取工具均不可用。助手会如实说明无法查询，不会通过其他方式绕过限制。') }}
                 </template>
                 <input type="checkbox" class="g-switch" role="switch" v-model="form.web.enabled" data-test="web-enabled" />
               </SettingRow>
-              <SettingRow :label="t('每次查询最多等多久')" :unit="t('秒')">
+              <SettingRow :label="t('单次查询时限')" :unit="t('秒')">
                 <template #hint>
-                  {{ t('从第一个引擎返回结果开始计时，到点就用手上已有的结果作答，不再等慢的那几家。可填 3–60 秒。') }}
+                  {{ t('从首个引擎返回结果时开始计时；超时后使用已获得的结果，不再等待其余引擎。可填 3–60 秒。') }}
                 </template>
                 <input type="number" min="3" max="60" v-model.number="form.web.timeBudgetSeconds" data-test="web-budget" />
               </SettingRow>
-              <SettingRow :label="t('答案里最多列几条')" :unit="t('条')">
+              <SettingRow :label="t('最大结果数')" :unit="t('条')">
                 <template #hint>
-                  {{ t('列出来的是一组线索，不是答案。助手要据此下结论，还得逐条打开原文核对。可填 1–20。') }}
+                  {{ t('搜索结果仅用于发现线索，助手需打开原文核对后才能得出结论。可填 1–20 条。') }}
                 </template>
                 <input type="number" min="1" max="20" v-model.number="form.web.maxResults" data-test="web-max-results" />
               </SettingRow>
@@ -2260,7 +2260,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <h3>
                   {{ t('搜索引擎') }}
                   <HintTip>
-                    {{ t('某一家连续失败会被自动停用一段时间，其间由其余引擎顶上；这里关掉的引擎则是长期不再使用。') }}
+                    {{ t('连续失败的引擎会暂时停用，由其他引擎继续提供结果；手动关闭的引擎将持续停用。') }}
                   </HintTip>
                 </h3>
                 <button class="ghost icon-only" :title="t('刷新状态')" :aria-label="t('刷新引擎状态')" data-test="web-refresh" @click="refreshWeb()">
@@ -2271,10 +2271,10 @@ defineExpose({ refresh, hasUnsavedChanges })
               </div>
 
               <p v-if="webView === null" class="muted" data-test="web-engines-unknown">
-                {{ t('读不到引擎状态。开关照常保存，状态等后端可用后再刷新。') }}
+                {{ t('暂时无法获取引擎状态。开关仍会保存，请在后端恢复后刷新状态。') }}
               </p>
               <p v-if="webEngineRows().length === 0" class="muted" data-test="web-engines-empty">
-                {{ t('还没有搜索引擎。请新增或恢复默认引擎。') }}
+                {{ t('尚未配置搜索引擎，请添加引擎或恢复默认配置。') }}
               </p>
               <div
                 v-for="engine in webEngineRows()"

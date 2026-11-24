@@ -603,7 +603,7 @@ const contextRing = computed(() => {
 })
 
 /** Three things to say to an empty conversation. They only fill the box; sending is still the reader's call. */
-const STARTERS = [tr('介绍一下你能做什么'), tr('帮我记住：我喜欢简洁的回答'), tr('明天早上九点提醒我开会')]
+const STARTERS = [tr('你能做什么？'), tr('请记住：我喜欢简洁的回答'), tr('明天 9:00 提醒我开会')]
 
 function starter(text: string) {
   composer.value?.restore(text)
@@ -640,11 +640,11 @@ defineExpose({ refresh, focusSearch })
           exactly where they were — under the newest message — and is both the report and the remedy.
         -->
         <div v-if="withdrawn !== null" class="withdrawn" data-test="session-withdrawn">
-          <span>{{ t('已撤回一部分对话') }}</span>
+          <span>{{ t('部分对话已撤回') }}</span>
           <button
             class="ghost"
             data-test="session-withdrawn-cancel"
-            :title="t('把撤回隐藏的对话放回来。发送新消息后就无法恢复了。')"
+            :title="t('恢复被撤回的对话；发送新消息后将无法恢复。')"
             @click="cancelWithdrawal"
           >
             {{ t('取消撤回') }}
@@ -660,13 +660,13 @@ defineExpose({ refresh, focusSearch })
         <!-- An empty conversation gets an invitation, not a blank page. Only once the first read has come back:
              before that, "empty" would be a confident wrong answer. -->
         <div v-else-if="(view?.items.length ?? 0) === 0" class="empty-state" data-test="session-empty">
-          <p class="empty-title">{{ t('说点什么吧') }}</p>
+          <p class="empty-title">{{ t('开始一段对话') }}</p>
           <div class="starters">
             <button v-for="text in STARTERS" :key="text" class="starter" @click="starter(text)">{{ t(text) }}</button>
           </div>
         </div>
 
-        <p v-else-if="visible.length === 0" class="empty" data-test="session-no-match">{{ t('没有匹配的对话') }}</p>
+        <p v-else-if="visible.length === 0" class="empty" data-test="session-no-match">{{ t('未找到匹配的对话') }}</p>
       </div>
     </div>
 

@@ -1473,12 +1473,12 @@ describe('memory view', () => {
     await flushPromises()
 
     expect(wrapper.findAll('[data-test="memory-list"] li')).toHaveLength(0)
-    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('没有找到相关的记忆')
+    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('未找到相关记忆')
 
     // Back to the stored records and the same filter shows nothing — which is a different sentence.
     await wrapper.find('[data-test="memory-back-to-all"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('助手还没记住任何事')
+    expect(wrapper.find('[data-test="memory-empty"]').text()).toBe('暂无记忆，发送消息或手动添加一条吧')
   })
 
   it('keeps the summary honest when the filter changes after the search', async () => {
@@ -1782,7 +1782,7 @@ describe('memory view', () => {
     await wrapper.find('[data-test="memory-new"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-test="memory-new-cascade-hint"]').text()).toContain('删掉对话不会删掉它')
+    expect(wrapper.find('[data-test="memory-new-cascade-hint"]').text()).toContain('不关联任何对话')
   })
 
   it('sends a short body and shows the server refusal, rather than keeping its own length rule', async () => {
@@ -2012,7 +2012,7 @@ describe('settings view', () => {
     await flushPromises()
 
     const nav = wrapper.findAll('.settings-nav .nav-item').map((node) => node.text())
-    expect(nav).toEqual(['通用', '外观', '对话模型', '语音输入', '语音输出', '技能', 'MCP', 'agent', '电脑操控', '文件访问', '联网搜索', '本地引擎'])
+    expect(nav).toEqual(['通用', '外观', '对话模型', '语音输入', '语音输出',  '技能', 'MCP', 'Agent', '电脑操控', '文件访问', '联网搜索', '本地引擎'])
 
     // Every field is in the document whichever category is showing (the others are only hidden), so a change on
     // one category is never lost by looking at another.
@@ -2499,8 +2499,8 @@ describe('settings view', () => {
     expect(card).not.toBeNull()
     const labels = [...(card?.querySelectorAll('.g-row-label') ?? [])].map((node) => node.textContent?.trim())
     expect(labels).toContain('最长等待')
-    expect(labels).toContain('记忆长度')
-    expect(labels).toContain('单次回复上限')
+    expect(labels).toContain('上下文长度')
+    expect(labels).toContain('最大输出 token')
   })
 
   it('offers the image capability, and saves it with the model', async () => {
@@ -3117,7 +3117,7 @@ describe('settings view', () => {
     // The one capability on this page that starts on, and the one that sends what was typed off the machine.
     // Both facts are in the section — the second as a sentence of its own, not behind a hover.
     expect(wrapper.find<HTMLInputElement>('[data-test="web-enabled"]').element.checked).toBe(true)
-    expect(wrapper.find('[data-test="web-callout"]').text()).toContain('会离开这台电脑')
+    expect(wrapper.find('[data-test="web-callout"]').text()).toContain('离开这台电脑')
     expect(wrapper.find('[data-test="web-effect"]').text()).toContain('已开启')
 
     const wikipedia = wrapper.find('[data-test="web-engine-wikipedia"]')
@@ -3332,7 +3332,7 @@ describe('settings view', () => {
     await wrapper.find('[data-test="desktop-enabled"]').setValue(true)
     const warning = wrapper.find('[data-test="desktop-agent-warning"]')
     expect(warning.exists()).toBe(true)
-    expect(warning.text()).toContain('还需要启用「桌面操控」子 agent')
+    expect(warning.text()).toContain('还需启用“桌面操控”子 Agent')
 
     await wrapper.find('[data-test="desktop-agent-fix"]').trigger('click')
     // The agent page is a category of this page now, so "去启用" opens it here instead of leaving.
@@ -3837,7 +3837,7 @@ describe('prompts view', () => {
 
     const add = wrapper.find<HTMLButtonElement>('[data-test="prompts-add"]')
     expect(add.element.disabled).toBe(true)
-    expect(add.attributes('title')).toBe('两个场景都已有子 agent')
+    expect(add.attributes('title')).toBe('所有场景均已有子 Agent')
   })
 
   it('shows the desktop option disabled, because the built-in agent holds it', async () => {
@@ -3849,7 +3849,7 @@ describe('prompts view', () => {
     const options = wrapper.findAll<HTMLOptionElement>('[data-test="prompts-add-scenario"] option')
 
     expect(options[0]?.element.disabled).toBe(true)
-    expect(options[0]?.text()).toContain('已被内置的桌面操控占用')
+    expect(options[0]?.text()).toContain('已由内置桌面操控 Agent 使用')
     expect(options[1]?.element.disabled).toBe(false)
   })
 
@@ -4003,7 +4003,7 @@ describe('prompts view', () => {
     expect(wrapper.findAll('[data-test="prompts-agent-unavailable"]')).toHaveLength(1)
 
     await wrapper.findAll('[data-test="prompts-agent-edit"]')[1]?.trigger('click')
-    expect(wrapper.find('[data-test="prompts-agent-capability"]').text()).toContain('对应能力没有开启')
+    expect(wrapper.find('[data-test="prompts-agent-capability"]').text()).toContain('尚未启用')
 
     await wrapper.find('[data-test="prompts-agent-goto-settings"]').trigger('click')
     expect(wrapper.emitted('navigate')?.[0]).toEqual(['settings'])

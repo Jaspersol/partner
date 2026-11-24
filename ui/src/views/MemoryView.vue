@@ -405,7 +405,7 @@ async function create() {
     composing.value = false
     await reselect(recordId)
     drawerOpen.value = false
-    showToast(t('记住了'))
+    showToast(t('记忆已添加'))
     emit('changed')
   } catch (failure) {
     error.value = String(failure)
@@ -443,7 +443,7 @@ defineExpose({ refresh, focusSearch, collapseInspector })
             <input
               ref="searchInput"
               v-model="query"
-              :placeholder="t('搜一搜助手记得的…')"
+              :placeholder="t('搜索已保存的记忆…')"
               title="Ctrl+K"
               :aria-label="t('检索记忆')"
               data-test="memory-query"
@@ -460,7 +460,7 @@ defineExpose({ refresh, focusSearch, collapseInspector })
             </button>
           </label>
           <button class="primary" data-test="memory-new" @click="openComposer">
-            <Icon name="plus" :size="14" :stroke-width="2.2" /> {{ t('记住一件事') }}
+            <Icon name="plus" :size="14" :stroke-width="2.2" /> {{ t('添加记忆') }}
           </button>
         </header>
 
@@ -490,12 +490,12 @@ defineExpose({ refresh, focusSearch, collapseInspector })
               @change="setEmbeddings(($event.target as HTMLInputElement).checked)"
             />
             {{ t('本地向量检索') }}
-            <HintTip align="end">{{ t('开启后，召回记忆时除了关键词，还用本机算出的字符向量打分。全程在本机计算，不联网。默认关闭；开启后新写入的记忆会带上向量，召回排序会和现在略有不同。') }}</HintTip>
+            <HintTip align="end">{{ t('在关键词检索之外，使用本机计算的字符向量辅助排序，全程不联网。默认关闭；开启后，新记忆将保存向量，召回顺序可能有所变化。') }}</HintTip>
           </label>
           <label v-if="hiddenRetired > 0 || showRetired" class="toggle">
             <input v-model="showRetired" type="checkbox" class="g-switch" role="switch" data-test="memory-show-retired" />
-            {{ t('含已失效 {hiddenRetired}', { hiddenRetired: hiddenRetired }) }}
-            <HintTip align="end">{{ t('被新记录取代的旧记忆。平时不用看，想知道「它为什么现在这么认为」时再打开。') }}</HintTip>
+            {{ t('显示已失效（{hiddenRetired}）', { hiddenRetired: hiddenRetired }) }}
+            <HintTip align="end">{{ t('查看已被新记录取代的历史记忆，用于追溯记忆变更。') }}</HintTip>
           </label>
         </div>
 
@@ -514,13 +514,13 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           <div class="skeleton-line" />
           <div class="skeleton-line" />
         </div>
-        <p v-if="!loaded" class="pending" data-test="memory-pending">{{ t('正在读取记忆…') }}</p>
+        <p v-if="!loaded" class="pending" data-test="memory-pending">{{ t('正在加载记忆…') }}</p>
         <!--
           Two different empties. 「没有相关的记忆」 in a search result says the store is empty when it has just reported
           hits, and the other way round says the same thing about the whole store.
         -->
         <p v-else-if="visible.length === 0" class="empty" data-test="memory-empty">
-          {{ recalling ? t('没有找到相关的记忆') : t('助手还没记住任何事') }}
+          {{ recalling ? t('未找到相关记忆') : t('暂无记忆，发送消息或手动添加一条吧') }}
         </p>
       </div>
     </div>
@@ -535,7 +535,7 @@ defineExpose({ refresh, focusSearch, collapseInspector })
       <div class="target">
         <span class="meta break" data-test="memory-target">{{ selected?.recordId ?? t('未选中') }}</span>
         <span v-if="note" class="g-chip is-warn" data-test="memory-note">{{ note }}</span>
-        <HintTip align="end">{{ t('保存后会生成一条新记录，旧的那条被标记为「已失效」，但不会丢。') }}</HintTip>
+        <HintTip align="end">{{ t('保存修改会创建新记录；原记录将标记为“已失效”，但仍会保留。') }}</HintTip>
       </div>
 
       <textarea v-model="draft" rows="6" :aria-label="t('记忆内容')" data-test="memory-draft" />
@@ -599,7 +599,7 @@ defineExpose({ refresh, focusSearch, collapseInspector })
     </Drawer>
 
     <!-- Not a page: it is one textarea and two judgements, and a bottom-of-page form hides the list it adds to. -->
-    <Dialog :open="composing" :title="t('记住一件事')" @close="composing = false">
+    <Dialog :open="composing" :title="t('添加记忆')" @close="composing = false">
       <div data-test="memory-composer" class="composer-body">
         <textarea
           v-model="newBody"
@@ -609,7 +609,7 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           data-test="memory-new-body"
         />
         <div class="field-row">
-          <span class="field-name">{{ t('类型') }} <HintTip>{{ t('手写的记忆默认算「事实」，不需要再被印证。') }}</HintTip></span>
+          <span class="field-name">{{ t('类型') }} <HintTip>{{ t('手动添加的记忆默认为“事实”，无需再次验证。') }}</HintTip></span>
           <Segmented
             v-model="newTier"
             :options="MEMORY_TIERS.map((option) => ({ value: option, label: tierShort(option), title: tierLabel(option) }))"
@@ -630,8 +630,8 @@ defineExpose({ refresh, focusSearch, collapseInspector })
           with it, and this one is not one of those. It belongs to the person.
         -->
         <p class="cascade">
-          {{ t('这条记忆不属于任何一次对话') }}
-          <HintTip data-test="memory-new-cascade-hint">{{ t('这条记忆不属于任何一次对话，删掉对话不会删掉它。') }}</HintTip>
+          {{ t('此记忆独立于对话') }}
+          <HintTip data-test="memory-new-cascade-hint">{{ t('手动添加的记忆不关联任何对话，删除对话时不会一并删除。') }}</HintTip>
         </p>
         <p v-if="error" class="error" data-test="error">{{ error }}</p>
       </div>

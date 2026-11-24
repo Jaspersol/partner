@@ -407,7 +407,7 @@ const freeScenarios = computed(() => {
 const canAdd = computed(() => freeScenarios.value.length > 0)
 
 /** Why the add button is disabled, in the one case where it is. */
-const addBlockedReason = computed(() => (canAdd.value ? '' : t('两个场景都已有子 agent')))
+const addBlockedReason = computed(() => (canAdd.value ? '' : t('所有场景均已有子 Agent')))
 
 function openAdd() {
   addError.value = ''
@@ -423,11 +423,11 @@ function openAdd() {
 async function commitAdd() {
   const scenario = freeScenarios.value.find((item) => item.key === newScenario.value)
   if (scenario === undefined) {
-    addError.value = t('先选一个场景')
+    addError.value = t('请选择任务场景')
     return
   }
   if (newName.value.trim() === '') {
-    addError.value = t('子 agent 需要一个名字')
+    addError.value = t('请填写子 Agent 名称')
     return
   }
 
@@ -498,13 +498,13 @@ const capabilityOff = computed(() => {
     return ''
   }
   if (current.scenario === 'desktop' && !view.value.desktopEnabled) {
-    return t('对应能力没有开启：桌面操控')
+    return t('桌面操控尚未启用')
   }
   if (current.scenario === 'file-read' && !view.value.files.enabled) {
-    return t('对应能力没有开启：读文件')
+    return t('文件读取尚未启用')
   }
   if (current.scenario === 'web-search' && !view.value.webEnabled) {
-    return t('对应能力没有开启：联网搜索')
+    return t('联网搜索尚未启用')
   }
   return ''
 })
@@ -544,7 +544,7 @@ defineExpose({ refresh, hasUnsavedChanges })
     <div class="scroll prompts-scroll">
       <div v-if="view === null" class="g-page">
         <p v-if="error" class="error" data-test="error">{{ error }}</p>
-        <p v-else class="pending">{{ t('正在读取指令…') }}</p>
+        <p v-else class="pending">{{ t('正在加载提示词…') }}</p>
       </div>
 
       <div v-else class="g-page is-wide">
@@ -585,7 +585,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 <span class="scenario">{{ nameOf(agent.scenario) }}</span>
                 <span v-if="!availableOf(agent)" class="g-chip is-warn" data-test="prompts-agent-unavailable">
                   {{ t('暂不可用') }}
-                  <HintTip align="end">{{ t('要么对应的能力没开，要么没有启用的子 agent 负责它。') }}</HintTip>
+                  <HintTip align="end">{{ t('对应能力未启用，或没有已启用的子 Agent 负责此场景。') }}</HintTip>
                 </span>
                 <button
                   ref="agentEditButtons"
@@ -625,17 +625,17 @@ defineExpose({ refresh, hasUnsavedChanges })
               <header class="detail-head">
                 <span v-if="mainEditor.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-main-modified">{{ t('已修改') }}</span>
                 <HintTip>
-                  {{ t('主 Agent 负责和你对话，并决定要不要把活交给子 agent。「实际发送的指令」里有它读得到的任务清单， 那部分由服务端生成，不能改。') }}
+                  {{ t('主 Agent 负责对话和任务分派。“实际生效的提示词”包含服务端生成的任务清单，该部分不可编辑。') }}
                 </HintTip>
               </header>
 
               <div class="block">
-                <h3>{{ t('指令') }} <HintTip>{{ t('告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。') }}</HintTip></h3>
+                <h3>{{ t('提示词') }} <HintTip>{{ t('定义 Agent 的角色、职责和工作方式。留空则使用内置提示词。') }}</HintTip></h3>
                 <textarea
                   v-model="mainEditor.prompt"
                   rows="12"
                   :placeholder="view.main.defaultPrompt"
-                  :aria-label="t('主 Agent 的指令')"
+                  :aria-label="t('主 Agent 提示词')"
                   data-test="prompts-main-textarea"
                 />
                 <div class="meter-row">
@@ -658,7 +658,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 data-test="prompts-main-preview-toggle"
                 @click="previewOpen = previewOpen === 'main' ? null : 'main'"
               >
-                {{ previewOpen === 'main' ? t('收起实际发送的指令') : t('查看实际发送的指令') }}
+                {{ previewOpen === 'main' ? t('收起实际生效的提示词') : t('查看实际生效的提示词') }}
               </button>
               <pre v-if="previewOpen === 'main'" class="effective" data-test="prompts-main-preview">{{ view.main.effectivePrompt }}</pre>
             </template>
@@ -669,7 +669,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                   v-model="selectedSub.name"
                   type="text"
                   class="name-input"
-                  :aria-label="t('子 agent 名字')"
+                  :aria-label="t('子 Agent 名称')"
                   data-test="prompts-agent-name"
                 />
                 <span v-if="isBuiltin(selectedSub)" class="g-chip" data-test="prompts-agent-builtin">{{ t('内置') }}</span>
@@ -691,15 +691,15 @@ defineExpose({ refresh, hasUnsavedChanges })
               </div>
 
               <div class="block">
-                <h3>{{ t('指令') }}
+                <h3>{{ t('提示词') }}
                   <span v-if="selectedSub.prompt.trim() !== ''" class="g-chip is-accent" data-test="prompts-agent-modified">{{ t('已修改') }}</span>
-                  <HintTip>{{ t('告诉这个 Agent「你是谁、该怎么做事」。留空使用默认指令。') }}</HintTip>
+                  <HintTip>{{ t('定义 Agent 的角色、职责和工作方式。留空则使用内置提示词。') }}</HintTip>
                 </h3>
                 <textarea
                   v-model="selectedSub.prompt"
                   rows="10"
                   :placeholder="selectedSubView?.defaultPrompt ?? ''"
-                  :aria-label="t('子 agent 的指令')"
+                  :aria-label="t('子 Agent 提示词')"
                   data-test="prompts-agent-textarea"
                 />
                 <div class="meter-row">
@@ -720,7 +720,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                   data-test="prompts-agent-preview-toggle"
                   @click="previewOpen = previewOpen === selectedSub.key ? null : selectedSub.key"
                 >
-                  {{ previewOpen === selectedSub.key ? t('收起实际发送的指令') : t('查看实际发送的指令') }}
+                  {{ previewOpen === selectedSub.key ? t('收起实际生效的提示词') : t('查看实际生效的提示词') }}
                 </button>
                 <pre
                   v-if="previewOpen === selectedSub.key"
@@ -731,33 +731,33 @@ defineExpose({ refresh, hasUnsavedChanges })
 
               <div class="block rows">
                 <h3>{{ t('模型') }}</h3>
-                <SettingRow :label="t('使用哪个模型')" :hint="t('默认用和主 Agent 同一个模型。')" group>
+                <SettingRow :label="t('模型配置')" :hint="t('默认继承主 Agent 的模型配置。')" group>
                   <Segmented
                     :model-value="selectedSub.model === null ? 'main' : 'custom'"
                     :options="[
                       { value: 'main', label: t('跟随主 Agent') },
-                      { value: 'custom', label: t('单独设置') },
+                      { value: 'custom', label: t('自定义模型') },
                     ]"
-                    :label="t('模型来源')"
+                    :label="t('模型配置方式')"
                     data-test="prompts-agent-model-mode"
                     @update:model-value="setCustomModel($event === 'custom')"
                   />
                 </SettingRow>
 
                 <template v-if="selectedSub.model">
-                  <SettingRow :label="t('接口格式')" :hint="t('OpenAI 兼容端点选 OpenAI；Claude 或兼容 Anthropic Messages 的端点选 Anthropic。')">
+                  <SettingRow :label="t('API 协议')" :hint="t('OpenAI 兼容服务选择 OpenAI；Claude 或兼容 Anthropic Messages 的服务选择 Anthropic。')">
                     <select v-model="selectedSub.model.protocol" data-test="prompts-agent-protocol">
                       <option value="openai">{{ t('OpenAI 兼容') }}</option>
                       <option value="anthropic">Anthropic (Claude)</option>
                     </select>
                   </SettingRow>
-                  <SettingRow :label="t('接口地址')" :hint="t('模型服务的网址，一般以 /v1 结尾。')">
+                  <SettingRow :label="t('API 地址')" :hint="t('模型服务的完整地址，通常以 /v1 结尾。')">
                     <input v-model="selectedSub.model.baseUrl" type="text" data-test="prompts-agent-base-url" />
                   </SettingRow>
                   <SettingRow :label="t('模型')">
                     <input v-model="selectedSub.model.model" type="text" data-test="prompts-agent-model" />
                   </SettingRow>
-                  <SettingRow label="API Key" :hint="t('保存后不会再显示出来。留空表示不改；本地模型一般不需要。')">
+                  <SettingRow label="API Key" :hint="t('密钥保存后不再显示。留空表示保留当前密钥；本地模型通常无需填写。')">
                     <input
                       type="password"
                       :value="selectedSub.apiKeyEdited ? selectedSub.model.apiKey ?? '' : ''"
@@ -770,7 +770,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                       {{ keySetFor(selectedSub) ? t('已设置') : t('未设置') }}
                     </span>
                   </SettingRow>
-                  <SettingRow :label="t('思考强度')" :hint="t('回答前想多久。越高通常越准，但越慢、越费。')" group>
+                  <SettingRow :label="t('思考强度')" :hint="t('控制回答前的思考程度。等级越高通常越准确，但响应更慢、消耗更多。')" group>
                     <Segmented
                       v-model="selectedSub.model.reasoningEffort"
                       :options="gearChoices(selectedSub.model.reasoningEffort)"
@@ -778,24 +778,24 @@ defineExpose({ refresh, hasUnsavedChanges })
                       data-test="prompts-agent-reasoning"
                     />
                   </SettingRow>
-                  <SettingRow :label="t('能看图片')" :hint="t('纯文字模型请保持关闭，否则请求会失败。')">
+                  <SettingRow :label="t('支持图像输入')" :hint="t('仅支持文本的模型请关闭此选项，否则请求可能失败。')">
                     <input v-model="selectedSub.model.supportsImages" type="checkbox" class="g-switch" role="switch" data-test="prompts-agent-images" />
                   </SettingRow>
-                  <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('模型超过这个时间还没答完，就放弃这次请求。')">
+                  <SettingRow :label="t('最长等待')" :unit="t('秒')" :hint="t('模型未在此时间内完成响应时，将取消本次请求。')">
                     <input v-model.number="selectedSub.model.timeoutSeconds" type="number" min="1" />
                   </SettingRow>
-                  <SettingRow :label="t('记忆长度')" unit="token" :hint="t('模型一次最多能「看」多少内容，约 1 个汉字算 1 token。')">
+                  <SettingRow :label="t('上下文长度')" unit="token" :hint="t('模型单次请求可处理的最大上下文长度；估算时约 1 个汉字按 1 token 计。')">
                     <input v-model.number="selectedSub.model.contextTokens" type="number" min="1" />
                   </SettingRow>
-                  <SettingRow :label="t('单次回复上限')" unit="token" :hint="t('一次回复最多写多长，必须小于「记忆长度」。')">
+                  <SettingRow :label="t('最大输出 token')" unit="token" :hint="t('单次回复可生成的最大 token 数，必须小于“上下文长度”。')">
                     <input v-model.number="selectedSub.model.maxTokens" type="number" min="1" />
                   </SettingRow>
                 </template>
               </div>
 
               <div class="block rows">
-                <SettingRow :label="t('最多尝试几次')" :unit="t('次')">
-                  <template #hint>{{ t('一个任务最多试几轮（1–{maxRounds}），默认 {defaultMaxRounds}。全都失败时，会把原因告诉主 Agent。', { maxRounds: maxRounds, defaultMaxRounds: defaultMaxRounds }) }}</template>
+                <SettingRow :label="t('最大尝试轮数')" :unit="t('次')">
+                  <template #hint>{{ t('每个任务可执行 1–{maxRounds} 轮，默认 {defaultMaxRounds} 轮。全部尝试失败后，失败原因将返回主 Agent。', { maxRounds: maxRounds, defaultMaxRounds: defaultMaxRounds }) }}</template>
                   <input
                     v-model.number="selectedSub.maxRounds"
                     type="number"
@@ -819,7 +819,7 @@ defineExpose({ refresh, hasUnsavedChanges })
             </template>
           </div>
           <template #footer>
-            <p v-if="editorOverLimit" class="error editor-error">{{ t('指令太长了，先缩短再保存') }}</p>
+            <p v-if="editorOverLimit" class="error editor-error">{{ t('提示词超出长度限制，请精简后再保存') }}</p>
             <button class="ghost" type="button" data-test="prompts-edit-cancel" @click="closeEditor">{{ t('取消') }}</button>
             <button class="primary" type="button" data-test="prompts-edit-confirm" :disabled="editorOverLimit" @click="confirmEditor">{{ t('确认') }}</button>
           </template>
@@ -829,10 +829,10 @@ defineExpose({ refresh, hasUnsavedChanges })
       <div v-if="view" data-test="prompts-add-form" class="add-form">
         <label class="add-field">
           <span>{{ t('名字') }}</span>
-          <input v-model="newName" type="text" :placeholder="t('例如：读资料的')" data-test="prompts-add-name" />
+          <input v-model="newName" type="text" :placeholder="t('例如：资料助手')" data-test="prompts-add-name" />
         </label>
         <label class="add-field">
-          <span>{{ t('负责的任务') }} <HintTip>{{ t('同一类任务只能有一个子 agent。') }}</HintTip></span>
+          <span>{{ t('负责的任务') }} <HintTip>{{ t('每个任务场景只能分配给一个子 Agent。') }}</HintTip></span>
           <select v-model="newScenario" data-test="prompts-add-scenario">
             <option
               v-for="scenario in view.scenarios"
@@ -842,8 +842,8 @@ defineExpose({ refresh, hasUnsavedChanges })
             >
               {{ scenario.name }}{{ scenario.ownerId !== null
                 ? scenario.key === 'desktop'
-                  ? t(' · 已被内置的桌面操控占用')
-                  : t(' · 已被占用')
+                  ? t(' · 已由内置桌面操控 Agent 使用')
+                  : t(' · 已分配')
                 : '' }}
             </option>
           </select>
@@ -862,7 +862,7 @@ defineExpose({ refresh, hasUnsavedChanges })
       :status="notice"
       :error="error"
       :errors="errors"
-      :blocked-reason="overLimit ? t('指令太长了，先缩短再保存') : ''"
+      :blocked-reason="overLimit ? t('提示词超出长度限制，请精简后再保存') : ''"
       can-discard
       @save="save"
       @discard="discard"

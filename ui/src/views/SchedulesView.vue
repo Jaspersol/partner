@@ -60,9 +60,9 @@ const KINDS = computed(() => [
 ])
 
 const CATCH_UPS = computed(() => [
-  { value: 'once', label: t('补一次'), title: t('错过之后，下次打开时补跑最近错过的那一次') },
-  { value: 'skip', label: t('不补'), title: t('错过就算了，只记一笔') },
-  { value: 'all', label: t('全补'), title: t('每个错过的都补上（最多最近 5 个）') },
+  { value: 'once', label: t('补跑一次'), title: t('下次启动时补跑最近一次错过的任务') },
+  { value: 'skip', label: t('不补跑'), title: t('跳过错过的任务，仅保留错过记录') },
+  { value: 'all', label: t('全部补跑'), title: t('补跑所有错过的任务，最多最近 5 次') },
 ])
 
 const UNIT_MINUTES = { minutes: 1, hours: 60, days: 1440 } as const
@@ -125,7 +125,7 @@ function noticeRuns(list: ScheduleTaskView[]) {
     const before = seenRun.get(task.id) ?? null
     seenRun.set(task.id, task.lastRunAt)
     if (known && task.lastRunAt !== null && task.lastRunAt !== before && task.lastRunOk === false) {
-      showToast(t('定时任务没做成：{task}', { task: task.payload.slice(0, 24) + (task.lastRunError ? `（${task.lastRunError}）` : '') }), 'error')
+      showToast(t('定时任务执行失败：{task}', { task: task.payload.slice(0, 24) + (task.lastRunError ? `（${task.lastRunError}）` : '') }), 'error')
     }
   }
 }
@@ -145,10 +145,10 @@ async function refresh() {
 
 function buildInput(): ScheduleInput | string {
   const text = payload.value.trim()
-  if (text === '') return t('请填写到点要发给助手的内容')
+  if (text === '') return t('请填写任务触发时发送给助手的内容')
 
   if (kind.value === 'cron') {
-    return cron.value.trim() === '' ? t('请填写时刻规则，或点一个常用的') : { kind: 'cron', cron: cron.value.trim(), payload: text, catchUp: catchUp.value }
+    return cron.value.trim() === '' ? t('请填写 Cron 表达式，或选择一个常用规则') : { kind: 'cron', cron: cron.value.trim(), payload: text, catchUp: catchUp.value }
   }
 
   if (kind.value === 'interval') {
@@ -244,18 +244,18 @@ defineExpose({ refresh })
           <header class="compose-head">
             <span class="compose-title">
               {{ t('新建定时任务') }}
-              <HintTip>{{ t('到点后，下面这段话会作为一条消息发给助手，和你自己打字发送一样，排在已有的消息后面。') }}</HintTip>
+              <HintTip>{{ t('任务触发时，以下内容会作为新消息进入助手队列，与手动发送的消息按顺序处理。') }}</HintTip>
             </span>
           </header>
 
-          <SettingRow :label="t('什么时候')" group>
+          <SettingRow :label="t('触发时间')" group>
             <Segmented v-model="kind" :options="KINDS" :label="t('触发方式')" />
           </SettingRow>
 
           <template v-if="kind === 'cron'">
-            <SettingRow :label="t('时刻规则')" stack>
+            <SettingRow :label="t('Cron 表达式')" stack>
               <template #hint>
-                {{ t('五段：分 时 日 月 星期，例如') }} <code>0 9 * * *</code> {{ t('是每天 9 点。按这台电脑的本地时间计算。') }}
+                {{ t('依次填写分钟、小时、日期、月份和星期，例如') }} <code>0 9 * * *</code> {{ t('表示每天 9:00，使用本机时间。') }}
               </template>
               <input v-model="cron" placeholder="0 9 * * *" data-test="schedule-cron" spellcheck="false" />
             </SettingRow>
@@ -273,7 +273,7 @@ defineExpose({ refresh })
             </div>
           </template>
 
-          <SettingRow v-else-if="kind === 'interval'" :label="t('每隔')" :hint="t('从创建的那一刻算起，按这个间隔一直重复。')">
+          <SettingRow v-else-if="kind === 'interval'" :label="t('重复间隔')" :hint="t('从创建时间开始，按指定间隔重复触发。')">
             <span class="interval">
               <input
                 v-model.number="intervalValue"
@@ -294,11 +294,11 @@ defineExpose({ refresh })
             <DateTimePicker v-model="at" data-test="schedule-at" />
           </SettingRow>
 
-          <SettingRow :label="t('错过了怎么办')" :hint="t('程序没在运行、电脑睡着了，到点没发出去的任务，之后怎么处理。')" group>
-            <Segmented v-model="catchUp" :options="CATCH_UPS" :label="t('错过后')" data-test="schedule-catchup" />
+          <SettingRow :label="t('错过触发时')" :hint="t('设置应用未运行或电脑休眠导致任务未按时触发后的处理方式。')" group>
+            <Segmented v-model="catchUp" :options="CATCH_UPS" :label="t('补跑策略')" data-test="schedule-catchup" />
           </SettingRow>
 
-          <SettingRow :label="t('发给助手的内容')" stack>
+          <SettingRow :label="t('任务内容')" stack>
             <textarea
               v-model="payload"
               rows="3"
@@ -317,7 +317,7 @@ defineExpose({ refresh })
         </section>
 
         <p class="summary-line">
-          <span data-test="schedule-summary">{{ t('{length} 个任务 · {activeCount} 个在运行', { length: tasks.length, activeCount: activeCount }) }}</span>
+          <span data-test="schedule-summary">{{ t('共 {length} 个任务 · {activeCount} 个运行中', { length: tasks.length, activeCount: activeCount }) }}</span>
           <button class="ghost refresh" :aria-label="t('刷新')" :title="t('刷新')" data-test="schedule-refresh" @click="refresh">
             <Icon name="refresh" :size="14" />
           </button>
@@ -328,7 +328,7 @@ defineExpose({ refresh })
         <div class="tasks">
           <p v-if="!loaded" class="pending" data-test="schedule-pending">{{ t('读取中…') }}</p>
           <p v-else-if="tasks.length === 0" class="empty" data-test="schedule-empty">
-            {{ t('还没有定时任务。在上面添加一个，到点助手会自己收到这条消息。') }}
+            {{ t('暂无定时任务。创建后，助手将在指定时间收到任务内容。') }}
           </p>
 
           <section

@@ -1413,7 +1413,7 @@ describe('top bar', () => {
     const announcer = () => wrapper.find('[data-test="blocked-announcer"]')
     expect(announcer().attributes('role')).toBe('status')
     expect(announcer().attributes('aria-live')).toBe('polite')
-    expect(announcer().text()).toBe('队列阻塞：失败 1 项')
+    expect(announcer().text()).toBe('队列已阻塞：1 项失败')
 
     // The depth moves and nothing new is wrong: the announcement is byte-identical, so the live region has
     // nothing to re-read even though the badge beside it did change.
@@ -1423,7 +1423,7 @@ describe('top bar', () => {
 
     // A second failure is a different situation, not the same one louder — it must be spoken.
     await wrapper.setProps({ summary: { ...summary, pending: 2, depth: 2, failed: 2 } })
-    expect(announcer().text()).toBe('队列阻塞：失败 2 项')
+    expect(announcer().text()).toBe('队列已阻塞：2 项失败')
   })
 
   it('reports a lost connection on the spoken channel too', () => {
