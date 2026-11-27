@@ -2098,7 +2098,12 @@ describe('settings view', () => {
 
       expect(wrapper.find('[data-test="settings-version"]').text()).toBe(`v${packageVersion}`)
 
-      await wrapper.find('[data-test="settings-check-update"]').trigger('click')
+      const checkButton = wrapper.get('[data-test="settings-check-update"]')
+      const link = wrapper.get('[data-test="settings-update"] a[data-test="github-project-link"]')
+      expect(checkButton.element.nextElementSibling).toBe(link.element)
+      expect(link.attributes('href')).toBe('https://github.com/Jaspersol/partner')
+
+      await checkButton.trigger('click')
       await flushPromises()
 
       expect(wrapper.find('[data-test="settings-update-available"]').text()).toContain('9.9.9')

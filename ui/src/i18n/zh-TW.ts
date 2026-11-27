@@ -20,6 +20,7 @@ const zhTW: Record<string, string> = {
   'app.sidecarExitCode': '結束碼',
   'app.sidecarLog': '日誌',
   'app.retry': '重試',
+  'app.githubProject': '在 GitHub 上查看 Partner 專案',
 
   'topbar.disconnected': '未連線',
   'topbar.queueBlocked': '佇列已阻塞：{count} 項失敗',

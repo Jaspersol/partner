@@ -26,6 +26,7 @@ const en: Record<string, string> = {
   'app.sidecarExitCode': 'Exit code',
   'app.sidecarLog': 'Log',
   'app.retry': 'Retry',
+  'app.githubProject': 'View the Partner project on GitHub',
 
   'topbar.disconnected': 'Disconnected',
   'topbar.queueBlocked': 'Queue blocked: {count} items failed',

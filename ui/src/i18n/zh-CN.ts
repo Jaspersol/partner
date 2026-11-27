@@ -17,6 +17,7 @@ const zhCN = {
   'app.sidecarExitCode': '退出码',
   'app.sidecarLog': '日志',
   'app.retry': '重试',
+  'app.githubProject': '在 GitHub 上查看 Partner 项目',
 
   'topbar.disconnected': '未连接',
   'topbar.queueBlocked': '队列已阻塞：{count} 项失败',

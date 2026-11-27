@@ -27,6 +27,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 #[cfg(partner_pet)]
 use tauri::webview::PageLoadEvent;
+#[cfg(windows)]
+use tauri::webview::NewWindowResponse;
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -47,6 +49,8 @@ use tauri_plugin_autostart::MacosLauncher;
 
 const TRAY_ID: &str = "main-tray";
 const MAIN_LABEL: &str = "main";
+#[cfg(windows)]
+const PROJECT_URL: &str = "https://github.com/Jaspersol/partner";
 
 /// The pet webview is a second page in the same process; without this gate it could invoke the shell's own
 /// commands — start an installer, hide the tray, quit. Tauri's ACL is the general answer, but declaring an app
@@ -68,6 +72,20 @@ fn require_caller(caller: &tauri::WebviewWindow, allowed: &[&str]) -> Result<(),
 
 
 
+
+#[cfg(windows)]
+fn open_project_in_browser() {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+    let url: Vec<u16> = PROJECT_URL.encode_utf16().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(null_mut(), null(), url.as_ptr(), null(), null(), SW_SHOWNORMAL)
+    } as isize;
+    if result <= 32 {
+        append_api_log("shell", &format!("could not open the project URL: {result}"));
+    }
+}
 
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -96,14 +114,23 @@ pub fn run() {
                 cfg!(partner_pet)
             );
 
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+            let main_window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 .title("Partner")
                 // No native title bar: the UI draws its own drag area and window buttons in the top bar.
                 .decorations(false)
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(800.0, 520.0)
-                .initialization_script(&script)
-                .build()?;
+                .initialization_script(&script);
+            #[cfg(windows)]
+            let main_window = main_window.on_new_window(|url, _| {
+                if url.as_str() == PROJECT_URL {
+                    open_project_in_browser();
+                    NewWindowResponse::Deny
+                } else {
+                    NewWindowResponse::Allow
+                }
+            });
+            main_window.build()?;
 
             app.manage(Sidecar::new(port, token.clone())?);
 

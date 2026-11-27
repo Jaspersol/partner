@@ -479,6 +479,7 @@ onUnmounted(() => {
           :connected="connected"
           :connection-error="connectionError"
           :theme="theme"
+          :show-project-link="active === 'session'"
           @cycle-theme="cycleTheme"
         />
 

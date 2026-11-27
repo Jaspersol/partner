@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { TOPBAR_TOOLS } from '../topbarTools'
 import { hasWindowChrome, windowCommand } from '../windowChrome'
+import GithubProjectLink from './GithubProjectLink.vue'
 import Icon from './Icon.vue'
 import type { IconName } from '../icons'
 import type { QueueSummary } from '../api'
@@ -18,6 +19,7 @@ const props = defineProps<{
   connected: boolean
   connectionError: string
   theme: Theme
+  showProjectLink?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -103,6 +105,7 @@ const announcement = computed(() => {
       >
         <Icon :name="THEME_ICON[theme]" :size="16" />
       </button>
+      <GithubProjectLink v-if="showProjectLink" />
 
       <!-- The native title bar is off (src-tauri), so the three window buttons are rendered here. They only
            exist inside the desktop shell: in a plain browser the browser has its own. -->

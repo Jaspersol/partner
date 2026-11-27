@@ -248,6 +248,21 @@ describe('app shell', () => {
     expect(warnings).toEqual([])
   })
 
+  it('shows an external GitHub project link immediately after the chat theme switch', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+
+    const themeSwitch = wrapper.get('[data-test="theme-toggle"]')
+    const link = wrapper.get('a[data-test="github-project-link"]')
+    expect(themeSwitch.element.nextElementSibling).toBe(link.element)
+    expect(link.attributes('href')).toBe('https://github.com/Jaspersol/partner')
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('aria-label')).toContain('GitHub')
+
+    await wrapper.get('[data-test="tab-记忆"]').trigger('click')
+    expect(wrapper.find('[data-test="github-project-link"]').exists()).toBe(false)
+  })
+
   it('says why it cannot start when there is no token, instead of asking the server anyway', async () => {
     delete window.__PARTNER_TOKEN__
     const wrapper = mount(App)

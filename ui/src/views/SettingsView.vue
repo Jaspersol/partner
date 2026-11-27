@@ -11,6 +11,7 @@ import VoiceInputSettingsPanel from './VoiceInputSettingsPanel.vue'
 import VoiceOutputSettingsPanel from './VoiceOutputSettingsPanel.vue'
 import HintTip from '../components/HintTip.vue'
 import GearTable from '../components/GearTable.vue'
+import GithubProjectLink from '../components/GithubProjectLink.vue'
 import SaveBar from '../components/SaveBar.vue'
 import Segmented from '../components/Segmented.vue'
 import SettingRow from '../components/SettingRow.vue'
@@ -1867,7 +1868,7 @@ defineExpose({ refresh, hasUnsavedChanges })
             <p v-else class="callout" data-test="settings-general-unavailable">{{ t('settings.general.desktopOnly') }}</p>
 
             <div class="g-card" data-test="settings-update">
-              <SettingRow :label="t('settings.general.version')" :hint="t('settings.general.versionHint')">
+              <SettingRow :label="t('settings.general.version')" :hint="t('settings.general.versionHint')" group>
                 <span class="version-chip" data-test="settings-version">v{{ appVersion }}</span>
                 <button
                   v-if="shellPrefs"
@@ -1879,6 +1880,7 @@ defineExpose({ refresh, hasUnsavedChanges })
                 >
                   {{ updateChecking ? t('settings.general.checking') : t('settings.general.checkUpdate') }}
                 </button>
+                <GithubProjectLink />
               </SettingRow>
 
               <p v-if="updateError" class="warn-line" role="alert" data-test="settings-update-error">{{ updateError }}</p>
