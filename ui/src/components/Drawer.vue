@@ -4,7 +4,7 @@ import { t } from '../i18n'
 import Icon from './Icon.vue'
 
 /**
- * A glass panel that slides in from the right over the page it belongs to.
+ * A glass panel centred over the page it belongs to.
  *
  * Absolutely positioned inside the nearest positioned ancestor (the view), so it covers that view and not the
  * rail. Esc and the scrim close it; focus moves in when it opens and back to what opened it when it closes.
@@ -77,7 +77,8 @@ watch(
 .drawer {
   position: absolute;
   inset-block: var(--space-3);
-  inset-inline-end: var(--space-3);
+  inset-inline: 0;
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
   inline-size: min(28rem, calc(100% - var(--space-5)));
@@ -135,6 +136,6 @@ watch(
 
 .drawer-enter-from .drawer,
 .drawer-leave-to .drawer {
-  transform: translateX(1.5rem);
+  transform: translateY(0.5rem);
 }
 </style>

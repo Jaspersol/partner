@@ -570,12 +570,6 @@ h3 {
   flex: 1;
 }
 
-/* "Not connected" fills the page, centred, with the top bar above it. */
-.g-connect {
-  margin: auto;
-  max-inline-size: 28rem;
-}
-
 /* ---- shared bits ------------------------------------------------------------------------------ */
 
 .meta {
@@ -660,6 +654,13 @@ h3 {
   padding: var(--space-6) var(--space-3);
   color: var(--text-2);
   text-align: center;
+}
+
+/* Centre the connection state in the space below the floating top bar. */
+.empty.g-connect {
+  margin: auto;
+  max-inline-size: min(28rem, 100%);
+  padding-block-start: calc(var(--topbar-h) + var(--space-6));
 }
 
 /* "Not known yet" — a different answer from "nothing here", and the difference matters: a view that has not read

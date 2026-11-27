@@ -1,6 +1,7 @@
 .settings-scroll {
   flex: 1;
   min-block-size: 0;
+  container-type: size;
 }
 .settings-body {
   container-type: inline-size;
@@ -39,13 +40,14 @@
 /* Two columns: the categories, and one category at a time. The nav sticks under the top bar so switching never
    needs a scroll back up. */
 .settings {
+  --settings-nav-gap: clamp(var(--space-4), 2.5vw, var(--space-6));
+  --settings-side: calc(12rem + var(--settings-nav-gap));
   display: grid;
-  grid-template-columns: minmax(10rem, 12rem) minmax(0, 1fr);
-  gap: clamp(var(--space-4), 2.5vw, var(--space-6));
+  grid-template-columns: var(--settings-side) minmax(0, 1fr)
+    clamp(0px, 100% - var(--settings-side) - 32rem, var(--settings-side));
   inline-size: 100%;
   max-inline-size: 86rem;
-  margin-inline: 0 auto;
-  justify-content: start;
+  margin-inline: auto;
   padding: calc(var(--topbar-h) + var(--space-4)) var(--space-5) 7rem;
 }
 
@@ -56,6 +58,9 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-1);
+  margin-inline-end: var(--settings-nav-gap);
+  max-block-size: calc(100cqb - var(--topbar-h) - 2 * var(--space-4));
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -602,28 +607,5 @@
 @media (max-width: 30rem) {
   .engine-edit {
     grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@container body (max-width: 52rem) {
-  .settings {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-4);
-  }
-
-  .settings-nav {
-    position: static;
-    display: flex;
-    overflow-x: auto;
-    padding-block-end: var(--space-1);
-  }
-
-  .nav-item {
-    flex: none;
-    border-radius: var(--radius-pill);
-  }
-
-  .live-dot {
-    margin-inline-start: var(--space-1);
   }
 }
