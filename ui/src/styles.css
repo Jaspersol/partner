@@ -460,7 +460,10 @@ input.g-switch:disabled {
 
 textarea {
   inline-size: 100%;
-  resize: vertical;
+  field-sizing: content;
+  max-block-size: 20rem;
+  overflow-y: auto;
+  resize: none;
   line-height: 1.6;
 }
 

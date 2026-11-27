@@ -101,7 +101,9 @@ function place(): void {
 <style scoped>
 .hint-tip {
   position: relative;
-  display: inline-block;
+  display: inline-flex;
+  align-self: center;
+  vertical-align: middle;
   /* `none` so the mark keeps its size in a flex row. */
   flex: none;
 }
@@ -109,11 +111,9 @@ function place(): void {
 /* The circle is the glyph, so the button around it is nothing. Grey rather than the accent: this is a
    footnote, and a page of footnotes in the brand colour would pull the eye off the controls they annotate. */
 .hint-dot {
-  display: inline-block;
+  display: flex;
   border-radius: 50%;
   color: var(--text-3);
-  line-height: 0;
-  vertical-align: -0.2em;
   cursor: help;
 }
 

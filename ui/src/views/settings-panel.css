@@ -416,6 +416,14 @@
   min-inline-size: 0;
 }
 
+.pkg-actions.is-inline {
+  flex-wrap: nowrap;
+}
+
+.pkg-actions.is-inline > button {
+  flex: none;
+}
+
 .pkg-root {
   overflow-wrap: anywhere;
   color: var(--text-2);

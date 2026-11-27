@@ -106,7 +106,7 @@ const petTrialText = defineModel<string>('petTrialText', { required: true })
               </SettingRow>
 
               <SettingRow :label="t('Core 压缩包')" :hint="t('填 CubismSdkForWeb-5-r.5.zip 的完整路径，然后点导入。')">
-                <div class="pkg-actions">
+                <div class="pkg-actions is-inline">
                   <input
                     type="text"
                     v-model="petCorePath"
@@ -160,7 +160,7 @@ const petTrialText = defineModel<string>('petTrialText', { required: true })
               <p v-if="petModelsError" class="warn-line" role="alert" data-test="pet-models-error">{{ petModelsError }}</p>
 
               <SettingRow :label="t('导入模型')" :hint="t('填模型所在的文件夹，或者一个 zip 的完整路径。只复制 model3.json 引用到的文件。')">
-                <div class="pkg-actions">
+                <div class="pkg-actions is-inline">
                   <input
                     type="text"
                     v-model="petModelPath"

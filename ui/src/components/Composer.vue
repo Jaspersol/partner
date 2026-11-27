@@ -694,7 +694,6 @@ defineExpose({ focus, restore })
   padding: var(--space-2) var(--space-6) var(--space-2) var(--space-3);
   border: none;
   background: transparent;
-  resize: none;
   font-size: var(--fs-prose);
 }
 
