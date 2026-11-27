@@ -357,12 +357,6 @@ function focus() {
   box.value?.focus()
 }
 
-/**
- * Puts a removed message back in the box rather than making it be retyped.
- *
- * A retraction is physical: the text leaves the log, and the tombstone (`purge #a..#b`) records the range,
- * not the words. Without this, "撤回" on your own message means retyping it from memory.
- */
 function restore(body: string) {
   draft.value = body
   focus()

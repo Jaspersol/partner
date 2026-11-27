@@ -1,3 +1,4 @@
+using System.Globalization;
 using Partner.Api.Services;
 using Partner.Core.Agent.Llm;
 using Partner.Api.Agents;
@@ -260,7 +261,7 @@ public static class ViewEndpoints
     {
         app.MapGet("/api/session", async (
             ApiContext ctx, ConsumerHost consumer, long? from, int? take,
-            string? day, bool? open, int? offsetMinutes, CancellationToken ct) =>
+            string? day, bool? open, int? offsetMinutes, string? timeZone, CancellationToken ct) =>
         {
             var view = await ctx.Session.ProjectAsync(ct).ConfigureAwait(false);
             var pending = await ctx.Withdrawals.PendingAsync(ct).ConfigureAwait(false);
@@ -272,9 +273,8 @@ public static class ViewEndpoints
                 .Where(i => !(i.Kind == SessionEventKind.User && i.Source == InputSource.Agent))
                 .ToList();
 
-            // The day picker is a *view* over the one session: the log is not split, days are only a way to look
-            // at it. The client passes its own UTC offset because "which day" is the reader's calendar. Without
-            // `offsetMinutes` none of this runs.
+            // The day picker is a *view* over the one session: the log is not split. The reader's time zone
+            // determines the local day at each event's instant. Older clients can still pass a fixed UTC offset.
             //
             // `day` picks the window ("latest" = the newest day that has events). A *closed* window is that day
             // alone; an *open* one starts at that day and runs to the end of the log, so a turn crossing midnight
@@ -285,10 +285,14 @@ public static class ViewEndpoints
             Func<SessionViewItem, bool> inWindow = i => true;
             var includeLive = true;
 
-            if (offsetMinutes is { } minutes)
+            var zone = !string.IsNullOrEmpty(timeZone) && TimeZoneInfo.TryFindSystemTimeZoneById(timeZone, out var requestedZone)
+                ? requestedZone
+                : null;
+            if (zone is not null || offsetMinutes.HasValue)
             {
-                var offset = TimeSpan.FromMinutes(Math.Clamp(minutes, -14 * 60, 14 * 60));
-                string DayOf(SessionViewItem i) => i.At.ToOffset(offset).ToString("yyyy-MM-dd");
+                var offset = TimeSpan.FromMinutes(Math.Clamp(offsetMinutes.GetValueOrDefault(), -14 * 60, 14 * 60));
+                string DayOf(SessionViewItem item) => (zone is null ? item.At.ToOffset(offset) : TimeZoneInfo.ConvertTime(item.At, zone))
+                    .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
                 var groups = shown
                     .GroupBy(DayOf)
@@ -531,16 +535,20 @@ public static class ViewEndpoints
                 return busy;
             }
 
-            var pending = await ctx.Withdrawals.WithdrawAsync(seq, ct).ConfigureAwait(false);
-            return pending is null
-                ? Results.NotFound(new { error = $"#{seq} 不在当前视图里" })
-                : Results.Ok(new
-                {
-                    withdrawnFrom = pending.FromSeq,
-                    withdrawnTo = pending.ToSeq,
-                    conversations = pending.Conversations,
-                    events = pending.Events,
-                });
+            if (await ctx.Withdrawals.WithdrawAsync(seq, ct).ConfigureAwait(false) is not { } result)
+            {
+                return Results.NotFound(new { error = $"#{seq} 不在当前视图里" });
+            }
+
+            var (pending, draft) = result;
+            return Results.Ok(new
+            {
+                withdrawnFrom = pending.FromSeq,
+                withdrawnTo = pending.ToSeq,
+                conversations = pending.Conversations,
+                events = pending.Events,
+                draft,
+            });
         });
 
         app.MapPost("/api/session/withdrawal/cancel", async (ApiContext ctx, CancellationToken ct) =>

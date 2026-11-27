@@ -73,8 +73,8 @@ beforeAll(async () => {
   // agent), and the on-disk JSONL shape is itself part of the contract this test protects.
   mkdirSync(join(workspace, 'session'), { recursive: true })
   const events = [
-    { seq: 1, at: '2026-09-26T10:00:00+00:00', kind: 'user', source: 'text', body: 'turn on the lamp' },
-    { seq: 2, at: '2026-09-26T10:00:01+00:00', kind: 'assistant', source: 'text', body: 'done' },
+    { seq: 1, at: '2026-09-26T03:59:59+00:00', kind: 'user', source: 'text', body: 'turn on the lamp' },
+    { seq: 2, at: '2026-09-26T04:00:00+00:00', kind: 'assistant', source: 'text', body: 'done' },
   ]
   writeFileSync(join(workspace, 'session', 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n')
 
@@ -144,6 +144,20 @@ describe('the API contract the UI binds to', () => {
     expect(typeof settings.tts.chunkMs).toBe('number')
     expect(typeof settings.model.apiKeySet).toBe('boolean')
     expect(typeof settings.model.reasoningEffort).toBe('string')
+  })
+
+  it('groups session events by local day at the event time, not by the current UTC offset', async () => {
+    const window = { day: 'latest', open: true, timeZone: 'America/New_York', offsetMinutes: -300 }
+    const latest = await api.session(undefined, undefined, window)
+    expect(latest.days).toEqual([{ day: '2026-09-25', count: 1 }, { day: '2026-09-26', count: 1 }])
+    expect(latest.day).toBe('2026-09-26')
+    expect(latest.items.map((item) => item.seq)).toEqual([2])
+
+    const previous = await api.session(undefined, undefined, { ...window, day: '2026-09-25', open: false })
+    expect(previous.items.map((item) => item.seq)).toEqual([1])
+
+    const fixedOffset = await api.session(undefined, undefined, { day: 'latest', open: true, offsetMinutes: -300 })
+    expect(fixedOffset.days).toEqual([{ day: '2026-09-25', count: 2 }])
   })
 
   it('keeps the original body when a session event is edited', async () => {

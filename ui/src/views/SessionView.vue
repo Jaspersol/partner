@@ -10,7 +10,6 @@ import type {
   PendingApproval,
   QueueItem,
   QueueSummary,
-  SessionItem,
   SessionView,
   SessionWindow,
 } from '../api'
@@ -145,11 +144,12 @@ const working = computed(() => {
 
 function windowRequest(): SessionWindow {
   const offsetMinutes = -new Date().getTimezoneOffset()
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
   if (selectedDay.value !== null) {
-    return { day: selectedDay.value, open: false, offsetMinutes }
+    return { day: selectedDay.value, open: false, offsetMinutes, timeZone }
   }
 
-  return { day: working.value && heldDay.value !== null ? heldDay.value : 'latest', open: true, offsetMinutes }
+  return { day: working.value && heldDay.value !== null ? heldDay.value : 'latest', open: true, offsetMinutes, timeZone }
 }
 
 /** The days on offer: while the newest day is held back, the days after it are not listed yet. */
@@ -187,7 +187,8 @@ async function refresh(): Promise<boolean> {
   const window = windowRequest()
   const current = () => {
     const now = windowRequest()
-    return alive && generation === refreshGeneration && now.day === window.day && now.open === window.open && now.offsetMinutes === window.offsetMinutes
+    return alive && generation === refreshGeneration && now.day === window.day && now.open === window.open
+      && now.offsetMinutes === window.offsetMinutes && now.timeZone === window.timeZone
   }
   try {
     const next = await props.api.session(undefined, undefined, window)
@@ -230,19 +231,8 @@ function select(seq: number) {
  * </para>
  */
 async function deleteLatest(seq: number) {
-  // The reader's own message goes back in the box. The deleted conversation starts at its first message, so
-  // that is the text worth keeping — the row pressed may be a later reply. Its text is about to leave the log
-  // for good, and the only copy left is the one the composer is holding.
-  const startSeq = conversation.value?.latestFromSeq ?? seq
-  const first = view.value?.items.find((item) => item.seq === startSeq)
-  const body = first !== undefined && restorableItem(first) ? first.body : undefined
-
   try {
     await props.api.deleteLatest(seq)
-    if (body !== undefined) {
-      composer.value?.restore(body)
-    }
-
     clearSelection()
     await refresh()
     emit('changed')
@@ -262,8 +252,17 @@ async function deleteLatest(seq: number) {
  * </para>
  */
 async function withdrawFrom(seq: number) {
+  const items = view.value?.items ?? []
   try {
-    await props.api.withdrawFrom(seq)
+    const { draft, withdrawnFrom } = await props.api.withdrawFrom(seq)
+    const first = draft === undefined
+      ? items.find((item) => item.seq >= withdrawnFrom && item.seq <= seq && item.kind === 'User' && item.source.toLowerCase() !== 'agent')
+      : undefined
+    const source = first?.source.toLowerCase()
+    const body = source === 'text' || source === 'voice' ? first?.body : draft
+    if (typeof body === 'string') {
+      composer.value?.restore(body)
+    }
   } catch {
     // As above: a refused withdrawal leaves the list as it was, which the re-read shows.
   }
@@ -299,16 +298,6 @@ async function cancelWithdrawal() {
 /** The selection is a pointer into the list: a row that left the view must not stay selected. */
 function clearSelection() {
   selectedSeq.value = null
-}
-
-/**
- * Whether a removed conversation's first message belongs back in the composer's box.
- *
- * Only the reader's own typed messages do. An assistant reply put back there would be sent as the human's
- * words on the next turn, and a scheduled task's text is not theirs to resend.
- */
-function restorableItem(item: SessionItem): boolean {
-  return item.kind === 'User' && item.source.toLowerCase() === 'text'
 }
 
 /** The row's own 复用 button: fill the box, change nothing on the server. */

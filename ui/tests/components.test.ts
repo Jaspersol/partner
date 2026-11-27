@@ -198,6 +198,22 @@ describe('status bar job indicator', () => {
 })
 
 describe('event list', () => {
+  it('shows local hours and minutes without the event number, including when selected', async () => {
+    const at = new Date(2026, 10, 27, 9, 35, 42).toISOString()
+    const wrapper = mount(EventList, {
+      props: { selectedSeq: null, items: [{ ...baseItem, seq: 1377, at, kind: 'Assistant' }] },
+    })
+
+    expect(wrapper.get('.meta time').text()).toBe('09:35')
+    expect(wrapper.get('.meta time').attributes('datetime')).toBe(at)
+    expect(wrapper.get('.meta').text()).not.toContain('#1377')
+
+    await wrapper.setProps({ selectedSeq: 1377 })
+
+    expect(wrapper.get('li.selected .meta time').text()).toBe('09:35')
+    expect(wrapper.get('li.selected .meta').text()).not.toContain('#1377')
+  })
+
   it('pairs a tool call with its result into one card', async () => {
     const wrapper = mount(EventList, {
       props: {

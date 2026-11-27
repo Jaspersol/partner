@@ -42,6 +42,12 @@ const emit = defineEmits<{
   restore: [seq: number]
 }>()
 
+function localTime(at: string): string {
+  const date = new Date(at)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
 /**
  * One rendered line: a conversation event, a tool call with its result folded in, a stretch of thinking, or
  * the memory a turn was handed.
@@ -628,8 +634,7 @@ function rowSeq(index: number): number | null {
               <template v-else>{{ sourceLabel(row.item.source) }}</template>
               <span class="sr-only">{{ sourceLabel(row.item.source) }}</span>
             </span>
-            <time class="at" :datetime="row.item.at">{{ row.item.at.slice(11, 16) }}</time>
-            <span class="seq" :title="t('事件序号')">#{{ row.item.seq }}</span>
+            <time class="at" :datetime="row.item.at">{{ localTime(row.item.at) }}</time>
 
             <span v-if="row.item.streaming !== true" class="row-actions" data-test="session-row-actions">
               <button class="ghost row-action" data-test="session-row-copy" :title="t('复制')" @click.stop="copy(row)">
@@ -898,10 +903,6 @@ li[data-side='center'] .meta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.seq {
-  font-family: var(--font-mono);
 }
 
 .at {

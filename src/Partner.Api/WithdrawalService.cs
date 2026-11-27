@@ -106,9 +106,10 @@ public sealed class WithdrawalService
     }
 
     /// <summary>
-    /// Hides <paramref name="seq"/>'s conversation and everything after it. Null when <paramref name="seq"/> is not in the view.
+    /// Hides <paramref name="seq"/>'s conversation and everything after it, returning its user input for editing.
+    /// Null when <paramref name="seq"/> is not in the view.
     /// </summary>
-    public async Task<PendingWithdrawal?> WithdrawAsync(long seq, CancellationToken ct = default)
+    public async Task<(PendingWithdrawal Pending, string? Draft)?> WithdrawAsync(long seq, CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -122,6 +123,8 @@ public sealed class WithdrawalService
             }
 
             var start = StartOf(view, seq);
+            var draft = view.Items.FirstOrDefault(item => item.Seq == start && item.Kind == SessionEventKind.User
+                && item.Source is InputSource.Text or InputSource.Voice)?.Body;
             var from = await StartOfTurnAsync(start, ct).ConfigureAwait(false);
             var to = _session.LastSeq;
 
@@ -145,7 +148,7 @@ public sealed class WithdrawalService
             }
 
             _pending = new PendingWithdrawal(retractSeq, from, to, conversations, events);
-            return _pending;
+            return (_pending, draft);
         }
         finally
         {

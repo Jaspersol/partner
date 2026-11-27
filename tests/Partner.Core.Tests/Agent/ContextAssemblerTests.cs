@@ -349,7 +349,7 @@ public sealed class ContextAssemblerTests : IDisposable
         Assert.Contains("#3 [Tool] lamp.set(study, on)", system, StringComparison.Ordinal);
 
         Assert.DoesNotContain("turn on the lamp", system, StringComparison.Ordinal);
-        Assert.Contains(messages, m => m.Role == "user" && m.Content == "turn on the lamp");
+        Assert.Contains(messages, m => m.Role == "user" && m.Content?.EndsWith("\nturn on the lamp", StringComparison.Ordinal) == true);
     }
 
     [Fact]
@@ -386,16 +386,24 @@ public sealed class ContextAssemblerTests : IDisposable
             (SessionEventKind.User, "three"),
             (SessionEventKind.Assistant, "four"));
 
-        // Budget: 40 − 8 reserve = 32, minus the system block (~14) and the input (~5) leaves ~13 — room for
-        // two short turns, so the two oldest fall out even though the count is small.
-        var messages = await new SessionWindowContextAssembler(store, contextTokens: 40, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
-            .AssembleInitialAsync(Input("five"), Array.Empty<string>());
+        var input = Input("five") with { EnqueuedAt = new DateTimeOffset(2026, 11, 27, 6, 30, 5, TimeSpan.Zero) };
+        var full = await new SessionWindowContextAssembler(store, baseSystemPrompt: TinyPrompt)
+            .AssembleInitialAsync(input, Array.Empty<string>());
+        var counter = new ApproximateTokenCounter();
+        var budget = full.Where((_, index) => index is not (1 or 2))
+            .Sum(message => counter.Count(message.Content!) + ContextBudget.MessageOverheadTokens);
 
-        var bodies = messages.Select(m => m.Content).ToList();
-        Assert.DoesNotContain("one", bodies);
-        Assert.DoesNotContain("two", bodies);
-        Assert.Contains("three", bodies);
-        Assert.Contains("four", bodies);
+        var messages = await new SessionWindowContextAssembler(store, contextTokens: budget + 8, reserveForOutput: 8,
+                tokens: counter, baseSystemPrompt: TinyPrompt)
+            .AssembleInitialAsync(input, Array.Empty<string>());
+
+        Assert.Equal(full.Where((_, index) => index is not (1 or 2)), messages);
+
+        var tighter = await new SessionWindowContextAssembler(store, contextTokens: budget + 7, reserveForOutput: 8,
+                tokens: counter, baseSystemPrompt: TinyPrompt)
+            .AssembleInitialAsync(input, Array.Empty<string>());
+
+        Assert.Equal(new[] { full[0], full[^1] }, tighter);
     }
 
     [Fact]
@@ -449,12 +457,12 @@ public sealed class ContextAssemblerTests : IDisposable
                 Body = "and now?",
             });
 
-            var messages = await new SessionWindowContextAssembler(store, contextTokens: 64, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
+            var messages = await new SessionWindowContextAssembler(store, contextTokens: 80, reserveForOutput: 8, baseSystemPrompt: TinyPrompt)
                 .AssembleInitialAsync(Input("next"), Array.Empty<string>());
 
             // The summary rides in the system block, so the turn budget is spent on turns.
             Assert.Contains("earlier: the user asked about lamps", messages[0].Content!, StringComparison.Ordinal);
-            Assert.Contains(messages, m => m.Content == "and now?");
+            Assert.Contains(messages, m => m.Role == "user" && m.Content?.EndsWith("\nand now?", StringComparison.Ordinal) == true);
         }
     }
 
@@ -609,7 +617,28 @@ public sealed class ContextAssemblerTests : IDisposable
     }
 
     [Fact]
-    public async Task A_message_the_person_typed_is_not_framed()
+    public async Task A_legacy_user_message_replays_with_its_original_event_time()
+    {
+        await using var store = await SessionAsync();
+        var originalTime = new DateTimeOffset(2026, 11, 25, 12, 34, 56, TimeSpan.Zero);
+        var seq = await store.AppendAsync(new SessionEvent
+        {
+            Kind = SessionEventKind.User, Source = InputSource.Text, At = originalTime, Body = "earlier question",
+        });
+        var assembler = new SessionWindowContextAssembler(store);
+        var messages = await assembler.AssembleInitialAsync(Input("next"), Array.Empty<string>());
+        var expected = FormattableString.Invariant($"[用户消息时间：{originalTime.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}]\nearlier question");
+
+        var entry = Assert.Single((await store.ProjectAsync()).Items, item => item.Seq == seq);
+        Assert.Equal(expected, messages[1].Content);
+        Assert.Equal(expected, SessionWindowContextAssembler.CostText(entry));
+        var usage = await assembler.MeasureAsync();
+        Assert.Equal(new ApproximateTokenCounter().Count(expected) + ContextBudget.MessageOverheadTokens,
+            usage.UsedTokens - usage.SystemTokens);
+    }
+
+    [Fact]
+    public async Task A_current_input_without_an_enqueue_time_does_not_get_an_invented_timestamp()
     {
         await using var store = await SessionAsync((SessionEventKind.User, "hi"), (SessionEventKind.Assistant, "hello"));
 

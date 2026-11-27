@@ -376,7 +376,7 @@ public sealed class MemoryHookTests : IDisposable
             baseSystemPrompt: "assistant", memory: memory);
         var messages = await assembler.AssembleInitialAsync(item, Array.Empty<string>());
 
-        Assert.Contains(messages, m => m.Content == "alpha recent history");
+        Assert.Contains(messages, m => m.Role == "user" && m.Content?.EndsWith("\nalpha recent history", StringComparison.Ordinal) == true);
         Assert.DoesNotContain(messages, m => m.Content != null && m.Content.Contains("stale recall marker", StringComparison.Ordinal));
         Assert.Contains("alpha old memory", messages[^1].Content!, StringComparison.Ordinal);
         Assert.DoesNotContain("alpha recent memory", messages[^1].Content!, StringComparison.Ordinal);

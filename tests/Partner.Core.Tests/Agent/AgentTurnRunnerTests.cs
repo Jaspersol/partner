@@ -190,6 +190,30 @@ public sealed class AgentTurnRunnerTests : IDisposable
         public GovernanceDecision Decide(string toolName, string argumentsJson) => new(ToolDecision.Ask, "approval required");
     }
 
+    [Theory]
+    [InlineData(InputSource.Text)]
+    [InlineData(InputSource.Voice)]
+    public async Task A_user_message_keeps_its_enqueue_time_when_replayed(InputSource source)
+    {
+        var sentAt = new DateTimeOffset(2026, 11, 27, 6, 30, 5, TimeSpan.Zero);
+        var loggedAt = sentAt.AddMinutes(10);
+        var (store, _) = JsonlSessionStore.Open(_dir, new FixedClock(loggedAt));
+        await using (store)
+        {
+            var llm = new ScriptedLlmClient([Say("answer"), Say("next answer")]);
+            var runner = Build(store, llm);
+            await runner.RunAsync(Claimed("first question", source) with { EnqueuedAt = sentAt });
+            await runner.RunAsync(Claimed("next question") with { ItemId = "item-2", Seq = 2, EnqueuedAt = loggedAt });
+
+            var expected = FormattableString.Invariant($"[用户消息时间：{sentAt.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}]\nfirst question");
+            Assert.Equal(expected, llm.Requests[0].Messages[^1].Content);
+            Assert.Equal(expected, llm.Requests[1].Messages.First(message => message.Role == "user").Content);
+            var firstUser = (await RawAsync(store)).First(entry => entry.Kind == SessionEventKind.User);
+            Assert.Equal("first question", firstUser.Body);
+            Assert.Equal(loggedAt, firstUser.At);
+        }
+    }
+
     [Fact]
     public async Task Scheduled_runs_keep_history_without_replaying_other_turns_or_distilling_memory()
     {

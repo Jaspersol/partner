@@ -1,3 +1,4 @@
+using System.Globalization;
 using Partner.Core.Agent.Hooks;
 using Partner.Core.Agent.Llm;
 using Partner.Core.Agent.Tools;
@@ -1022,6 +1023,11 @@ public sealed class AgentTurnRunner
             ["itemId"] = item.ItemId,
             ["itemSeq"] = item.Seq.ToString(),
         };
+        if (kind == SessionEventKind.User && (source is InputSource.Text or InputSource.Voice) && item.EnqueuedAt != default)
+        {
+            merged[SessionEvent.EnqueuedAtMetaKey] = item.EnqueuedAt.ToString("O", CultureInfo.InvariantCulture);
+        }
+
         if (item.Source == InputSource.Schedule)
         {
             var parts = item.IdempotencyKey.Split(':', 3);

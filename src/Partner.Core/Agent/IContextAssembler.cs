@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -194,7 +195,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
         }
         var attachments = ResolveAttachments(item.MediaIds);
         var images = attachments.Where(a => a.IsImage).Select(a => a.ToDataUri()).ToList();
-        var body = MessageBody(FrameBySource(item.Source, item.Payload), attachments);
+        var body = MessageBody(FrameBySource(item.Source, item.Payload, item.EnqueuedAt), attachments);
         var basePrompt = BasePrompt;
         var plan = await PlanAsync(view, basePrompt, injectedPrompts, body, fromMemory: false, ct, images.Count)
             .ConfigureAwait(false);
@@ -525,12 +526,20 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// Says where a message came from when that changes how it should be read: a sub-agent report is data, and a
     /// timed task fires when the person is probably not there.
     /// </summary>
-    internal static string FrameBySource(InputSource source, string body) => source switch
+    private static string FrameBySource(InputSource source, string body, DateTimeOffset messageAt = default) => source switch
     {
         InputSource.Agent => AgentReportFrame.Wrap(body),
         InputSource.Schedule => ScheduleFrame.Wrap(body),
+        InputSource.Text or InputSource.Voice when messageAt != default =>
+            FormattableString.Invariant($"[用户消息时间：{messageAt.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}]\n{body}"),
         _ => body,
     };
+
+    private static DateTimeOffset UserMessageTime(SessionViewItem entry) =>
+        DateTimeOffset.TryParseExact(entry.Meta?.GetValueOrDefault(SessionEvent.EnqueuedAtMetaKey), "O",
+            CultureInfo.InvariantCulture, DateTimeStyles.None, out var enqueuedAt) && enqueuedAt != default
+            ? enqueuedAt
+            : entry.At;
 
     /// <summary>Whether the window carries this entry as conversation. The compactor folds by the same rule.</summary>
     internal static bool IsConversational(SessionViewItem entry) =>
@@ -555,7 +564,8 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
     /// <summary>Text actually rendered for a replayable history entry.</summary>
     internal static string CostText(SessionViewItem entry) => entry.Kind switch
     {
-        SessionEventKind.User or SessionEventKind.Schedule => FrameBySource(entry.Source, entry.Body),
+        SessionEventKind.User => FrameBySource(entry.Source, entry.Body, UserMessageTime(entry)),
+        SessionEventKind.Schedule => FrameBySource(entry.Source, entry.Body),
         SessionEventKind.Assistant => entry.Body,
         SessionEventKind.ToolCall when IsHandoffTrace(entry) => TraceArguments(entry.Meta!.GetValueOrDefault("args")),
         SessionEventKind.ToolResult when IsHandoffTrace(entry) => Trim(entry.Body),
@@ -623,7 +633,7 @@ public sealed class SessionWindowContextAssembler : IContextAssembler
             openCalls = false;
             turns.Add(entry.Kind == SessionEventKind.Assistant
                 ? new LlmMessage("assistant", entry.Body)
-                : new LlmMessage("user", FrameBySource(entry.Source, entry.Body)));
+                : new LlmMessage("user", CostText(entry)));
         }
 
         return turns;

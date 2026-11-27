@@ -13,6 +13,8 @@ namespace Partner.Core.Sessions;
 /// </summary>
 public sealed record SessionEvent
 {
+    internal const string EnqueuedAtMetaKey = "enqueuedAt";
+
     /// <summary>Assigned by <c>ISessionStore</c> (single writer). Leave 0 on append.</summary>
     public long Seq { get; init; }
 

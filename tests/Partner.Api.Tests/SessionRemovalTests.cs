@@ -447,11 +447,13 @@ public sealed partial class ViewEndpointsTests
         Assert.NotEqual(report.User, (await ConversationAsync()).GetProperty("latestFromSeq").GetInt64());
     }
 
-    [Fact]
-    public async Task Withdrawing_hides_the_conversation_and_everything_after_but_deletes_nothing()
+    [Theory]
+    [InlineData(InputSource.Text)]
+    [InlineData(InputSource.Voice)]
+    public async Task Withdrawing_hides_the_conversation_and_everything_after_but_deletes_nothing(InputSource source)
     {
         await SeedTurnAsync("kept-q", "kept-a");
-        var second = await SeedTurnAsync("withdrawn-q", "withdrawn-a");
+        var second = await SeedTurnAsync("withdrawn-q", "withdrawn-a", source);
         await SeedTurnAsync("later-q", "later-a");
 
         var response = await _http.PostAsync($"/api/session/{second.Reply}/withdraw", content: null);
@@ -460,6 +462,7 @@ public sealed partial class ViewEndpointsTests
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(second.Start, body.GetProperty("withdrawnFrom").GetInt64());
         Assert.Equal(2, body.GetProperty("conversations").GetInt32());
+        Assert.Equal("withdrawn-q", body.GetProperty("draft").GetString());
 
         Assert.Equal(new[] { "kept-q", "kept-a" }, await VisibleBodiesAsync());
         Assert.Equal(2, (await ConversationAsync()).GetProperty("withdrawn").GetProperty("conversations").GetInt32());
@@ -468,6 +471,19 @@ public sealed partial class ViewEndpointsTests
         var log = await LogTextAsync();
         Assert.Contains("withdrawn-q", log, StringComparison.Ordinal);
         Assert.Contains("later-a", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Withdrawing_a_scheduled_conversation_returns_no_draft()
+    {
+        await SeedTurnAsync("keep me", "kept reply");
+        var turn = await SeedTurnAsync("scheduled prompt", "reply", InputSource.Schedule);
+
+        var response = await _http.PostAsync($"/api/session/{turn.Reply}/withdraw", content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("draft").ValueKind);
     }
 
     [Fact]

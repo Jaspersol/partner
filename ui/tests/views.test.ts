@@ -272,7 +272,7 @@ function createStub(overrides: Partial<PartnerApiSurface> = {}) {
     }),
     withdrawFrom: vi.fn(async (seq: number) => {
       calls.removals.push({ seq, kind: 'withdraw' })
-      return { withdrawnFrom: 1, withdrawnTo: 3, conversations: 1, events: 2 }
+      return { withdrawnFrom: 1, withdrawnTo: 3, conversations: 1, events: 2, draft: 'first' }
     }),
     cancelWithdrawal: vi.fn(async () => {
       calls.withdrawalCancels++
@@ -573,12 +573,13 @@ describe('day picker', () => {
     )
     const wrapper = mount(SessionView, { props: { api: createStub({ session }).stub } })
     await flushPromises()
-    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: 'latest', open: true })
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: 'latest', open: true, timeZone })
 
     await column(wrapper, 'dates')
     await wrapper.find('[data-test="session-day-date-2026-09-25"]').trigger('click')
     await flushPromises()
-    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: '2026-09-25', open: false })
+    expect(session.mock.calls.at(-1)?.[2]).toMatchObject({ day: '2026-09-25', open: false, timeZone })
     expect(wrapper.text()).toContain('on 2026-09-25')
     // Choosing a day closes the panel.
     expect(wrapper.find('[data-test="session-day-panel"]').exists()).toBe(false)
@@ -1034,7 +1035,7 @@ describe('session removal', () => {
     expect(calls.removals).toEqual([{ seq: 3, kind: 'delete' }])
   })
 
-  it('withdraws from a row on one press of the row button', async () => {
+  it('withdraws from a reply on one press and puts the original input back in the box', async () => {
     const { stub, calls } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
@@ -1044,6 +1045,52 @@ describe('session removal', () => {
     await flushPromises()
 
     expect(calls.removals).toEqual([{ seq: 3, kind: 'withdraw' }])
+    expect(wrapper.get<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('first')
+  })
+
+  it.each([
+    ['Text', 'original input'],
+    ['Voice', 'original input'],
+    ['Schedule', 'existing draft'],
+  ])('handles %s withdrawals when the older API omits the draft', async (source, expected) => {
+    const { stub } = createStub()
+    const initialSession = await stub.session()
+    const oldItems = initialSession.items
+    const earlier = { ...oldItems[0]!, body: 'earlier input' }
+    const original = { ...earlier, seq: 5, source, body: 'original input' }
+    const reply = { ...oldItems[1]!, seq: 7, body: 'assistant reply' }
+    vi.mocked(stub.session).mockResolvedValueOnce({
+      ...initialSession,
+      lastSeq: 7,
+      items: [earlier, original, reply],
+    }).mockResolvedValue({ ...initialSession, items: [earlier] })
+    vi.mocked(stub.withdrawFrom).mockResolvedValue({ withdrawnFrom: 4, withdrawnTo: 7, conversations: 1, events: 2 })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const input = wrapper.get<HTMLTextAreaElement>('[data-test="composer-input"]')
+    await input.setValue('existing draft')
+    const buttons = wrapper.findAll('[data-test="session-row-withdraw-inline"]')
+    await buttons.at(-1)?.trigger('click')
+    await flushPromises()
+
+    expect(stub.withdrawFrom).toHaveBeenCalledWith(7)
+    expect(input.element.value).toBe(expected)
+  })
+
+  it('keeps the current draft when withdrawal fails', async () => {
+    const { stub } = createStub({
+      withdrawFrom: vi.fn(async () => { throw new Error('409') }),
+    })
+    const wrapper = mount(SessionView, { props: { api: stub } })
+    await flushPromises()
+
+    const input = wrapper.get<HTMLTextAreaElement>('[data-test="composer-input"]')
+    await input.setValue('existing draft')
+    await wrapper.get('[data-test="session-row-withdraw-inline"]').trigger('click')
+    await flushPromises()
+
+    expect(input.element.value).toBe('existing draft')
   })
 
   it('reports a removal through the list itself, with nothing said about it anywhere else', async () => {
@@ -1063,19 +1110,19 @@ describe('session removal', () => {
     expect(wrapper.text()).not.toContain('已删除')
   })
 
-  it('puts the deleted conversation\'s first message back in the box', async () => {
+  it('leaves the current draft unchanged when deleting a conversation', async () => {
     const { stub } = createStub()
     const wrapper = mount(SessionView, { props: { api: stub } })
     await flushPromises()
 
-    // Deleting takes the whole latest conversation, so the text worth keeping is its first message — even
-    // when the reader pressed delete on a later reply. The assistant's reply must not be resendable.
+    const input = wrapper.get<HTMLTextAreaElement>('[data-test="composer-input"]')
+    await input.setValue('existing draft')
     const row = wrapper.findAll('[data-test="session-list"] li')[1]
     await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
     await row?.find('[data-test="session-row-delete-inline"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find<HTMLTextAreaElement>('[data-test="composer-input"]').element.value).toBe('first')
+    expect(input.element.value).toBe('existing draft')
   })
 
   it('keeps the 复用 button putting the reader\'s own message back in the box', async () => {

@@ -69,8 +69,10 @@ export interface WithdrawalState {
 export interface SessionWindow {
   day: string
   open: boolean
-  /** The reader's UTC offset in minutes: "which day" is their calendar, not the server's. */
+  /** Fixed-offset fallback for older servers or unrecognized time zones. */
   offsetMinutes: number
+  /** The reader's IANA time zone, used to determine each event's local date. */
+  timeZone?: string
 }
 
 /** A calendar day that has at least one event. Days without events do not exist. */
@@ -108,6 +110,7 @@ export interface WithdrawResult {
   withdrawnTo: number
   conversations: number
   events: number
+  draft?: string | null
 }
 
 export interface SessionRevision {
@@ -1332,6 +1335,7 @@ export class PartnerApi implements PartnerApiSurface {
       query.set('day', window.day)
       query.set('open', String(window.open))
       query.set('offsetMinutes', String(window.offsetMinutes))
+      if (window.timeZone) query.set('timeZone', window.timeZone)
     }
     // Left to the server when not given: a day's window and a plain read have different sensible sizes.
     if (take !== undefined) query.set('take', String(take))
